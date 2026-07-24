@@ -57,6 +57,12 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
+import {
+  getProviderSummary,
+  getProviderVersionLabel,
+  PROVIDER_STATUS_STYLES,
+  type ProviderStatusKey,
+} from "./providerStatus";
 import { buildProviderInstanceUpdatePatch } from "./SettingsPanels.logic";
 import {
   SettingResetButton,
@@ -68,6 +74,7 @@ import {
 import {
   buildProviderEnvironmentOptions,
   classifyProviderEnvironmentAccess,
+  type ProviderOperateAccess,
   resolveSelectedProviderEnvironmentId,
 } from "./ProviderSettingsPanel.logic";
 
@@ -154,22 +161,18 @@ function EnvironmentUnavailableRow({
   accessKind,
 }: {
   readonly environment: EnvironmentPresentation;
-  readonly accessKind: "loading" | "read-only" | "unavailable" | "error";
+  readonly accessKind: "loading" | "unavailable" | "error";
 }) {
   const title =
     accessKind === "loading"
       ? "Loading provider settings"
-      : accessKind === "read-only"
-        ? "Provider settings are read only"
-        : accessKind === "error"
-          ? "Could not connect to this device"
-          : "Provider settings are unavailable";
+      : accessKind === "error"
+        ? "Could not connect to this device"
+        : "Provider settings are unavailable";
   const description =
     accessKind === "loading"
       ? `Waiting for ${environment.label}'s configuration.`
-      : accessKind === "read-only"
-        ? `This session can view ${environment.label}, but it cannot change provider configuration.`
-        : connectionStatusText(environment.connection);
+      : connectionStatusText(environment.connection);
   return (
     <SettingsSection title="Providers">
       <SettingsRow
@@ -188,7 +191,7 @@ function EnvironmentUnavailableRow({
 }
 
 export function ProviderSettingsPanel() {
-  const { environments } = useEnvironments();
+  const { environments, isReady } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const options = useMemo(
     () => buildProviderEnvironmentOptions(environments, primaryEnvironmentId),
@@ -219,9 +222,15 @@ export function ProviderSettingsPanel() {
       {showDeviceList ? (
         <SettingsSection title="Devices">
           {options.length === 0 ? (
+            // The catalog hydrates asynchronously, so an empty list before it is
+            // ready means "not loaded yet", not "nothing is connected".
             <SettingsRow
-              title="No connected devices"
-              description="Connect an execution environment before configuring providers."
+              title={isReady ? "No connected devices" : "Loading devices"}
+              description={
+                isReady
+                  ? "Connect an execution environment before configuring providers."
+                  : "Reading connected execution environments."
+              }
             />
           ) : (
             <div className="grid gap-1 sm:grid-cols-2">
@@ -291,18 +300,25 @@ function SelectedEnvironmentProviderSettings({
   // Remote connection brokers request the standard client scopes, which include
   // orchestration:operate. The environment RPC layer remains authoritative if a
   // custom remote credential grants less access.
-  const canOperate = isPrimary
-    ? window.desktopBridge
-      ? true
-      : primarySessionState.data?.authenticated
-        ? (primarySessionState.data.scopes ?? []).includes(AuthOrchestrationOperateScope)
-        : null
-    : true;
+  const operateAccess: ProviderOperateAccess = !isPrimary
+    ? "granted"
+    : window.desktopBridge
+      ? "granted"
+      : primarySessionState.isPending
+        ? "pending"
+        : primarySessionState.data?.authenticated
+          ? (primarySessionState.data.scopes ?? []).includes(AuthOrchestrationOperateScope)
+            ? "granted"
+            : "denied"
+          : "denied";
   const access = classifyProviderEnvironmentAccess({
     connectionPhase: environment.connection.phase,
     hasServerConfig: environment.serverConfig !== null,
-    canOperate,
+    operateAccess,
   });
+  if (access.kind === "read-only") {
+    return <ReadOnlyProviderSettings environment={environment} />;
+  }
   if (access.kind !== "editable") {
     return <EnvironmentUnavailableRow environment={environment} accessKind={access.kind} />;
   }
@@ -311,6 +327,55 @@ function SelectedEnvironmentProviderSettings({
       environmentId={environment.environmentId}
       environmentLabel={environment.label}
     />
+  );
+}
+
+/**
+ * Connected devices this session may read but not reconfigure. The provider
+ * catalogue is still worth showing — knowing which providers a box has and
+ * whether they are authenticated is most of the value — so render each one as
+ * a status row and omit every mutation control.
+ */
+function ReadOnlyProviderSettings({
+  environment,
+}: {
+  readonly environment: EnvironmentPresentation;
+}) {
+  const providers = environment.serverConfig?.providers ?? EMPTY_SERVER_PROVIDERS;
+  return (
+    <SettingsSection title="Providers">
+      <SettingsRow
+        title="Read only"
+        description={`This session can view ${environment.label}, but it cannot change provider configuration.`}
+      />
+      {providers.map((provider) => {
+        const driverOption = getDriverOption(provider.driver);
+        const summary = getProviderSummary(provider);
+        const versionLabel = getProviderVersionLabel(provider.version);
+        return (
+          <SettingsRow
+            key={provider.instanceId}
+            title={
+              <span className="inline-flex items-center gap-2">
+                <span
+                  className={cn(
+                    "size-2 rounded-full",
+                    PROVIDER_STATUS_STYLES[provider.status as ProviderStatusKey].dot,
+                  )}
+                  aria-hidden
+                />
+                {driverOption?.label ?? String(provider.driver)}
+                {versionLabel ? (
+                  <code className="text-[11px] text-muted-foreground">{versionLabel}</code>
+                ) : null}
+              </span>
+            }
+            description={summary.detail ?? summary.headline}
+            status={summary.detail ? summary.headline : null}
+          />
+        );
+      })}
+    </SettingsSection>
   );
 }
 
