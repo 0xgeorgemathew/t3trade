@@ -15,6 +15,7 @@ import {
   OrchestrationV2ProviderTurn,
   OrchestrationV2RuntimeRequest,
   OrchestrationV2Subagent,
+  OrchestrationV2SubagentActivation,
   OrchestrationV2TurnItem,
   ProviderApprovalDecision,
   ProviderInteractionMode,
@@ -30,6 +31,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
@@ -102,6 +104,11 @@ export const ProviderAdapterV2Event = Schema.Union([
     type: Schema.Literal("subagent.updated"),
     driver: ProviderDriverKind,
     subagent: OrchestrationV2Subagent,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("subagent_activation.updated"),
+    driver: ProviderDriverKind,
+    activation: OrchestrationV2SubagentActivation,
   }),
   Schema.Struct({
     type: Schema.Literal("message.updated"),
