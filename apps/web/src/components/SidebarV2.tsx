@@ -109,6 +109,7 @@ import {
   filterSidebarV2VisibleThreads,
   firstValidTimestampMs,
   hasUnseenCompletion,
+  isSidebarSubagentThread,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   resolveAdjacentThreadId,

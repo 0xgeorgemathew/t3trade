@@ -219,7 +219,7 @@ export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
     const shell = yield* threads.getShellSnapshot();
     const existingThread = shell.threads.find(
       (thread) =>
-        thread.projectId === project.id && thread.lineage.relationshipToParent !== "subagent",
+        thread.projectId === project.id && !ThreadManagement.isInternalSubagentThread(thread),
     );
     if (existingThread === undefined) {
       const launched = yield* threadLaunch.launch({
