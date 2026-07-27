@@ -21,6 +21,8 @@ import type {
   OrchestrationV2PlanStep,
   OrchestrationV2RuntimeRequest,
   OrchestrationV2Subagent,
+  OrchestrationV2SubagentActivation,
+  OrchestrationV2SubagentUsage,
   OrchestrationV2TurnItem,
   ProviderUserInputAnswers,
   ProviderApprovalDecision,
@@ -105,13 +107,24 @@ import {
   makeSubagentConversationArtifacts,
   subagentThreadTitle,
 } from "../SubagentProjection.ts";
-import { defaultSubagentRole } from "../SubagentObservability.ts";
+import {
+  appendSubagentActivity,
+  defaultSubagentRole,
+  mergeCumulativeSubagentUsage,
+  subagentActivationId,
+} from "../SubagentObservability.ts";
 
 const CODEX_PROVIDER = ProviderDriverKind.make("codex");
 export const CODEX_DRIVER_KIND = CODEX_PROVIDER;
 export const CODEX_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CODEX_DRIVER_KIND);
 const DEFAULT_CODEX_SETTINGS = Schema.decodeSync(CodexSettings)({});
 const CODEX_ASSISTANT_DELTA_FLUSH_INTERVAL_MS = 50;
+const isSettledCodexSubagent = (subagent: OrchestrationV2Subagent) =>
+  subagent.status === "idle" ||
+  subagent.status === "completed" ||
+  subagent.status === "failed" ||
+  subagent.status === "cancelled" ||
+  subagent.status === "interrupted";
 const CodexBackgroundTerminalTerminateResponse = Schema.Struct({
   terminated: Schema.Boolean,
 });
@@ -807,6 +820,7 @@ interface ActiveCodexTurnContext {
   readonly rootNodeId: OrchestrationV2ExecutionNode["id"];
   readonly subagent: CodexSubagentThreadContext | null;
   readonly startedAt: DateTime.Utc;
+  subagentActivation: OrchestrationV2SubagentActivation | null;
 }
 
 /** Snapshot of a still-running commandExecution item for interrupt/fail terminalization. */
@@ -891,12 +905,49 @@ type CodexCollabAgentToolCallItem = Extract<
   CodexSchema.V2ItemCompletedNotification__ThreadItem,
   { readonly type: "collabAgentToolCall" }
 >;
+type CodexCollabAgentStatus = CodexCollabAgentToolCallItem["agentsStates"][string]["status"];
+
+export function codexCollabAgentStatus(
+  status: CodexCollabAgentStatus,
+): OrchestrationV2Subagent["status"] {
+  switch (status) {
+    case "pendingInit":
+      return "pending";
+    case "running":
+      return "running";
+    case "completed":
+      return "idle";
+    case "interrupted":
+      return "interrupted";
+    case "errored":
+    case "notFound":
+      return "failed";
+    case "shutdown":
+      return "cancelled";
+  }
+}
 
 type CodexSubAgentActivityItem = Extract<
   | CodexSchema.V2ItemStartedNotification__ThreadItem
   | CodexSchema.V2ItemCompletedNotification__ThreadItem,
   { readonly type: "subAgentActivity" }
 >;
+
+const CODEX_SUBAGENT_ACTIVITY_LABELS: Readonly<Record<string, string>> = {
+  commandExecution: "Running command",
+  fileChange: "Editing files",
+  mcpToolCall: "Using MCP tool",
+  dynamicToolCall: "Using tool",
+  webSearch: "Searching the web",
+  reasoning: "Reasoning",
+  plan: "Updating plan",
+  todoList: "Updating tasks",
+  collabAgentToolCall: "Coordinating agents",
+  subAgentActivity: "Coordinating subagent",
+};
+
+const codexSubagentActivitySummary = (item: { readonly type: string }) =>
+  CODEX_SUBAGENT_ACTIVITY_LABELS[item.type] ?? null;
 
 export interface CodexAgentMessageDeltaUpdate {
   readonly turnId: string;
@@ -1481,6 +1532,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               rootNodeId: input.turnInput.rootNodeId,
               subagent: null,
               startedAt: input.startedAt,
+              subagentActivation: null,
             };
             yield* Ref.update(activeTurns, (current) => {
               const updated = new Map(current);
@@ -1690,20 +1742,42 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           readonly subagent: CodexSubagentThreadContext;
           readonly status: OrchestrationV2Subagent["status"];
           readonly result?: string | null;
+          readonly progress?: string;
+          readonly activity?: string;
+          readonly usage?: OrchestrationV2SubagentUsage;
+          readonly currentActivationId?: OrchestrationV2Subagent["currentActivationId"];
+          readonly activationCount?: number;
           readonly completedAt?: DateTime.Utc | null;
         }) =>
           Effect.gen(function* () {
             const now = yield* DateTime.now;
             const terminal =
+              input.status === "idle" ||
               input.status === "completed" ||
               input.status === "failed" ||
               input.status === "cancelled" ||
               input.status === "interrupted";
-            const completedAt = terminal ? (input.completedAt ?? now) : null;
+            const completedAt = terminal
+              ? (input.completedAt ?? input.subagent.task.completedAt ?? now)
+              : null;
             const task = {
               ...input.subagent.task,
               status: input.status,
+              ...(input.progress === undefined ? {} : { progress: input.progress }),
               result: input.result === undefined ? input.subagent.task.result : input.result,
+              usage: mergeCumulativeSubagentUsage(input.subagent.task.usage, input.usage),
+              currentActivationId:
+                input.currentActivationId !== undefined
+                  ? input.currentActivationId
+                  : terminal
+                    ? null
+                    : input.subagent.task.currentActivationId,
+              activationCount: input.activationCount ?? input.subagent.task.activationCount,
+              recentActivity: appendSubagentActivity(
+                input.subagent.task.recentActivity,
+                input.activity,
+                now,
+              ),
               completedAt,
               updatedAt: now,
             } satisfies OrchestrationV2Subagent;
@@ -1814,19 +1888,40 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               rootNodeId: providerNodeId,
               subagent,
               startedAt: turn.startedAt,
+              subagentActivation: null,
             };
+            const activationOrdinal = subagent.task.activationCount + 1;
+            const activation = {
+              id: subagentActivationId(subagent.task.id, activationOrdinal),
+              threadId: subagent.task.threadId,
+              subagentId: subagent.task.id,
+              runId: subagent.parentContext.projectionRunId,
+              providerTurnId,
+              ordinal: activationOrdinal,
+              status: "running",
+              usage: null,
+              startedAt: turn.startedAt,
+              completedAt: null,
+              updatedAt: turn.startedAt,
+            } satisfies OrchestrationV2SubagentActivation;
+            activeContext.subagentActivation = activation;
             yield* Ref.update(activeTurns, (current) => {
               const updated = new Map(current);
               updated.set(turn.nativeTurnId, activeContext);
               return updated;
             });
-            if (providerTurnOrdinal > 1 && subagent.task.status !== "running") {
-              yield* emitSubagentTaskUpdate({
-                subagent,
-                status: "running",
-                result: null,
-              });
-            }
+            yield* emitSubagentTaskUpdate({
+              subagent,
+              status: "running",
+              result: providerTurnOrdinal > 1 ? null : subagent.task.result,
+              currentActivationId: activation.id,
+              activationCount: activationOrdinal,
+            });
+            yield* emitProviderEvent({
+              type: "subagent_activation.updated",
+              driver: CODEX_PROVIDER,
+              activation,
+            });
             const now = yield* DateTime.now;
             yield* emitProviderEvent({
               type: "provider_thread.updated",
@@ -1976,11 +2071,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               model: input.model,
               kind: "subagent",
               role: defaultSubagentRole(),
-              status: "running",
+              status: "pending",
               result: null,
               usage: null,
               currentActivationId: null,
-              activationCount: 1,
+              activationCount: 0,
               workflow: null,
               workflowMembership: null,
               recentActivity: [],
@@ -2177,7 +2272,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 nativeToolCallId: input.item.id,
                 prompt: "",
                 title: input.item.agentPath,
-                model: null,
+                // A subAgentActivity frame carries no model of its own. The
+                // agent runs on the turn's selection, so recording null here
+                // left every Codex-native subagent without a model.
+                model: input.context.input.modelSelection.model,
                 ordinal,
                 emitInitialPrompt: false,
               });
@@ -2205,18 +2303,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               if (subagent === undefined) {
                 continue;
               }
-              const nativeStatus = String(state.status);
-              const status: OrchestrationV2Subagent["status"] =
-                nativeStatus === "completed"
-                  ? "completed"
-                  : nativeStatus === "failed" || nativeStatus === "errored"
-                    ? "failed"
-                    : nativeStatus === "cancelled" || nativeStatus === "closed"
-                      ? "cancelled"
-                      : "running";
               yield* emitSubagentTaskUpdate({
                 subagent,
-                status,
+                status: codexCollabAgentStatus(state.status),
                 ...(state.message === null ? {} : { result: state.message }),
               });
             }
@@ -3150,11 +3239,106 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           }).pipe(Effect.orDie, turnTerminalizationPermit.withPermits(1)),
         );
 
+        yield* client.handleServerNotification("thread/tokenUsage/updated", (payload) =>
+          Effect.gen(function* () {
+            const subagent = (yield* Ref.get(subagentThreads)).get(payload.threadId);
+            if (subagent === undefined || payload.tokenUsage.total.totalTokens <= 0) {
+              return;
+            }
+            const total = payload.tokenUsage.total;
+            const usage = {
+              totalTokens: total.totalTokens,
+              inputTokens: total.inputTokens,
+              cachedInputTokens: total.cachedInputTokens,
+              outputTokens: total.outputTokens,
+              reasoningOutputTokens: total.reasoningOutputTokens,
+            } satisfies OrchestrationV2SubagentUsage;
+            yield* emitSubagentTaskUpdate({
+              subagent,
+              status: subagent.task.status,
+              usage,
+            });
+
+            const activeContext = (yield* Ref.get(activeTurns)).get(payload.turnId);
+            if (
+              activeContext === undefined ||
+              activeContext.subagent !== subagent ||
+              activeContext.subagentActivation === null
+            ) {
+              return;
+            }
+            const last = payload.tokenUsage.last;
+            const activation = {
+              ...activeContext.subagentActivation,
+              usage: {
+                totalTokens: last.totalTokens,
+                inputTokens: last.inputTokens,
+                cachedInputTokens: last.cachedInputTokens,
+                outputTokens: last.outputTokens,
+                reasoningOutputTokens: last.reasoningOutputTokens,
+              },
+              updatedAt: yield* DateTime.now,
+            } satisfies OrchestrationV2SubagentActivation;
+            activeContext.subagentActivation = activation;
+            yield* emitProviderEvent({
+              type: "subagent_activation.updated",
+              driver: CODEX_PROVIDER,
+              activation,
+            });
+          }).pipe(Effect.orDie),
+        );
+
+        yield* client.handleServerNotification("thread/status/changed", (payload) =>
+          Effect.gen(function* () {
+            const subagent = (yield* Ref.get(subagentThreads)).get(payload.threadId);
+            if (subagent === undefined || isSettledCodexSubagent(subagent.task)) return;
+            const status =
+              payload.status.type === "active"
+                ? payload.status.activeFlags.length > 0
+                  ? ("waiting" as const)
+                  : ("running" as const)
+                : payload.status.type === "systemError"
+                  ? ("failed" as const)
+                  : null;
+            if (status === null) return;
+            yield* emitSubagentTaskUpdate({ subagent, status });
+
+            const activeContext = Array.from((yield* Ref.get(activeTurns)).values()).find(
+              (context) => context.subagent === subagent,
+            );
+            if (activeContext === undefined || activeContext.subagentActivation === null) return;
+            const now = yield* DateTime.now;
+            const activation = {
+              ...activeContext.subagentActivation,
+              status,
+              completedAt: status === "failed" ? now : null,
+              updatedAt: now,
+            } satisfies OrchestrationV2SubagentActivation;
+            activeContext.subagentActivation = activation;
+            yield* emitProviderEvent({
+              type: "subagent_activation.updated",
+              driver: CODEX_PROVIDER,
+              activation,
+            });
+          }).pipe(Effect.orDie),
+        );
+
         yield* client.handleServerNotification("item/started", (payload) =>
           Effect.gen(function* () {
             const context = yield* awaitActiveTurn(payload.turnId);
             if (context === undefined) {
               return;
+            }
+            if (context.subagent !== null) {
+              const activity = codexSubagentActivitySummary(payload.item);
+              if (activity !== null) {
+                yield* emitSubagentTaskUpdate({
+                  subagent: context.subagent,
+                  status: "running",
+                  progress: activity,
+                  activity,
+                });
+              }
             }
 
             if (payload.item.type === "userMessage") {
@@ -4036,9 +4220,23 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     completedAt: input.completedAt,
                   },
                 });
+                if (input.context.subagentActivation !== null) {
+                  const activation = {
+                    ...input.context.subagentActivation,
+                    status: input.status,
+                    completedAt: input.completedAt,
+                    updatedAt: input.completedAt,
+                  } satisfies OrchestrationV2SubagentActivation;
+                  input.context.subagentActivation = activation;
+                  yield* emitProviderEvent({
+                    type: "subagent_activation.updated",
+                    driver: CODEX_PROVIDER,
+                    activation,
+                  });
+                }
                 yield* emitSubagentTaskUpdate({
                   subagent: input.context.subagent,
-                  status: input.status,
+                  status: input.status === "completed" ? "idle" : input.status,
                   completedAt: input.completedAt,
                 });
               }
