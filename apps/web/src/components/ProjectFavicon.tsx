@@ -65,6 +65,12 @@ function ProjectFaviconImage({
     () => loadedProjectFaviconSrcs.get(cacheKey) ?? null,
   );
   const isLoading = displayedSrc !== src;
+  const handleLoadError = (failedSrc: string) => {
+    if (loadedProjectFaviconSrcs.get(cacheKey) === failedSrc) {
+      loadedProjectFaviconSrcs.delete(cacheKey);
+    }
+    setDisplayedSrc((currentSrc) => (currentSrc === failedSrc ? null : currentSrc));
+  };
 
   return (
     <>
@@ -76,6 +82,7 @@ function ProjectFaviconImage({
           src={displayedSrc}
           alt=""
           className={cn("size-3.5 shrink-0 rounded-sm object-contain", className)}
+          onError={() => handleLoadError(displayedSrc)}
         />
       ) : null}
       {isLoading ? (
@@ -87,6 +94,7 @@ function ProjectFaviconImage({
             loadedProjectFaviconSrcs.set(cacheKey, src);
             setDisplayedSrc(src);
           }}
+          onError={() => handleLoadError(src)}
         />
       ) : null}
     </>
