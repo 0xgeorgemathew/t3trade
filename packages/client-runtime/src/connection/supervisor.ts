@@ -1,3 +1,4 @@
+import { WS_METHODS } from "@t3tools/contracts";
 import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -27,6 +28,7 @@ import {
 } from "./model.ts";
 import * as RpcSession from "../rpc/session.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
+import * as ClientCapabilities from "../platform/capabilities.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
 
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
@@ -223,6 +225,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
   const connectivity = yield* Connectivity.Connectivity;
   const driver = yield* ConnectionDriver.ConnectionDriver;
   const wakeups = yield* ConnectionWakeups.ConnectionWakeups;
+  const desktopFocus = yield* ClientCapabilities.DesktopFocus;
   const initialIntent: SupervisorIntent = {
     desired: options?.initiallyDesired ?? false,
     network: yield* connectivity.status,
@@ -453,6 +456,21 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     }
   });
 
+  const reportDesktopFocus = (rpcSession: RpcSession.RpcSession) =>
+    desktopFocus.changes.pipe(
+      Stream.changes,
+      Stream.switchMap((focused) =>
+        focused ? rpcSession.client[WS_METHODS.clientReportDesktopFocus]({}) : Stream.empty,
+      ),
+      Stream.runDrain,
+      Effect.catchCause((cause) =>
+        Effect.logDebug("Desktop focus reporting stopped for this connection.", {
+          cause: Cause.pretty(cause),
+          environmentId: target.environmentId,
+        }),
+      ),
+    );
+
   const runAttempt = Effect.fnUntraced(function* (
     attempt: number,
     generation: number,
@@ -540,6 +558,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       lastFailure: null,
       retryAt: null,
     });
+    yield* reportDesktopFocus(active.lease.session).pipe(Effect.forkScoped);
 
     const connectedExit = yield* Effect.raceFirst(
       active.lease.session.closed.pipe(

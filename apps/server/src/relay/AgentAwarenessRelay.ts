@@ -26,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
@@ -44,6 +45,7 @@ import { getOrCreateEnvironmentKeyPairFromSecretStore } from "../cloud/environme
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as FocusedDesktopClients from "../presence/FocusedDesktopClients.ts";
 
 export class AgentAwarenessRelay extends Context.Service<
   AgentAwarenessRelay,
@@ -289,15 +291,23 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
     .map((thread) => thread.id);
 }
 
+export function isAgentAwarenessResumableAfterDesktopFocus(
+  state: RelayAgentActivityState | null,
+): boolean {
+  return state !== null && state.phase !== "completed" && state.phase !== "failed";
+}
+
 export const make = Effect.gen(function* () {
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
   const snapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+  const focusedDesktopClients = yield* FocusedDesktopClients.FocusedDesktopClients;
   const crypto = yield* Crypto.Crypto;
   const cloudLinkKeyPair = yield* getOrCreateEnvironmentKeyPairFromSecretStore(secrets);
   const activeSnapshotPublishedRef = yield* Ref.make(false);
   const publishedStateByThreadRef = yield* Ref.make(new Map<ThreadId, string>());
+  const publishSemaphore = yield* Semaphore.make(1);
 
   const readSecretString = (name: string) =>
     secrets
@@ -340,7 +350,16 @@ export const make = Effect.gen(function* () {
   const publishConfirmDeadlines = new Map<ThreadId, number>();
   let schedulePublishConfirm: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
 
-  const publishThreadUnsafe = Effect.fn("publishThreadUnsafe")(function* (threadId: ThreadId) {
+  const publishThreadUnsafe = Effect.fn("publishThreadUnsafe")(function* (
+    threadId: ThreadId,
+    options?: { readonly desktopFocusTombstone?: boolean },
+  ) {
+    if (!options?.desktopFocusTombstone && (yield* focusedDesktopClients.anyFocused)) {
+      yield* Effect.logDebug("agent activity publish skipped; desktop client focused", {
+        threadId,
+      });
+      return;
+    }
     const publishAgentActivity = yield* readPublishAgentActivityEnabled.pipe(
       Effect.orElseSucceed(() => false),
     );
@@ -402,6 +421,22 @@ export const make = Effect.gen(function* () {
           deliveries: deliveryStats(response.deliveries),
         });
       });
+
+    if (options?.desktopFocusTombstone) {
+      const publishIdentity = agentAwarenessPublishIdentity(null);
+      publishConfirmDeadlines.delete(threadId);
+      yield* publishState({
+        projectId: null,
+        state: null,
+        reason: "desktop-focused",
+      });
+      yield* Ref.update(publishedStateByThreadRef, (publishedStates) => {
+        const nextPublishedStates = new Map(publishedStates);
+        nextPublishedStates.set(threadId, publishIdentity);
+        return nextPublishedStates;
+      });
+      return;
+    }
 
     const thread = yield* snapshotQuery.getThreadShellById(threadId);
     const project = Option.isSome(thread)
@@ -499,16 +534,100 @@ export const make = Effect.gen(function* () {
   });
 
   const publishThread: AgentAwarenessRelay["Service"]["publishThread"] = (threadId) =>
-    publishThreadUnsafe(threadId).pipe(
-      Effect.catchCause((cause) => {
-        return Effect.logWarning("agent activity publish failed", {
-          threadId,
-          cause: Cause.pretty(cause),
-        });
-      }),
-      Effect.withSpan("AgentAwarenessRelay.publishThread"),
-      withRelayClientTracing,
+    publishSemaphore
+      .withPermits(1)(publishThreadUnsafe(threadId))
+      .pipe(
+        Effect.catchCause((cause) => {
+          return Effect.logWarning("agent activity publish failed", {
+            threadId,
+            cause: Cause.pretty(cause),
+          });
+        }),
+        Effect.withSpan("AgentAwarenessRelay.publishThread"),
+        withRelayClientTracing,
+      );
+
+  const resolveSnapshotThreadIds = Effect.fn("resolveSnapshotThreadIds")(function* (input: {
+    readonly resumableOnly: boolean;
+  }) {
+    const environmentId = yield* serverEnvironment.getEnvironmentId;
+    const snapshot = yield* snapshotQuery.getShellSnapshot();
+    if (!input.resumableOnly) {
+      return resolveAgentAwarenessRelayActiveThreadIds({
+        environmentId,
+        projects: snapshot.projects,
+        threads: snapshot.threads,
+      });
+    }
+    const projectById = new Map(snapshot.projects.map((project) => [project.id, project]));
+    return snapshot.threads.flatMap((thread) => {
+      const project = projectById.get(thread.projectId);
+      if (!project) {
+        return [];
+      }
+      const state = sanitizeRelayAgentActivityState(
+        projectThreadAwareness({
+          environmentId,
+          project,
+          thread,
+        }),
+      );
+      return isAgentAwarenessResumableAfterDesktopFocus(state) ? [thread.id] : [];
+    });
+  });
+
+  const suppressMobileAgentAwareness = Effect.fn("suppressMobileAgentAwareness")(function* (
+    snapshotThreadIds?: ReadonlyArray<ThreadId>,
+  ) {
+    const projectedThreadIds =
+      snapshotThreadIds ?? (yield* resolveSnapshotThreadIds({ resumableOnly: false }));
+    const publishedStates = yield* Ref.get(publishedStateByThreadRef);
+    const threadIds = new Set(projectedThreadIds);
+    for (const [threadId, identity] of publishedStates) {
+      if (identity !== agentAwarenessPublishIdentity(null)) {
+        threadIds.add(threadId);
+      }
+    }
+    if (threadIds.size === 0) {
+      yield* Effect.logDebug("desktop focus suppression has no mobile agent activity to clear");
+      return;
+    }
+    yield* Effect.logInfo("desktop client focused; clearing mobile agent awareness", {
+      count: threadIds.size,
+    });
+    yield* Effect.forEach(
+      threadIds,
+      (threadId) =>
+        publishSemaphore
+          .withPermits(1)(
+            publishThreadUnsafe(threadId, {
+              desktopFocusTombstone: true,
+            }),
+          )
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("desktop focus agent activity tombstone failed", {
+                threadId,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+            withRelayClientTracing,
+          ),
+      { discard: true },
     );
+  });
+
+  const resumeMobileAgentAwareness = Effect.fn("resumeMobileAgentAwareness")(function* () {
+    const threadIds = yield* resolveSnapshotThreadIds({ resumableOnly: true });
+    if (threadIds.length === 0) {
+      yield* Effect.logDebug("desktop focus ended; no active mobile agent awareness to restore");
+      return;
+    }
+    yield* Effect.logInfo("desktop focus ended; restoring active mobile agent awareness", {
+      count: threadIds.length,
+    });
+    yield* Effect.forEach(threadIds, publishThread, { discard: true });
+  });
 
   const publishActiveThreadsUnsafe = Effect.gen(function* () {
     const publishAgentActivity = yield* readPublishAgentActivityEnabled.pipe(
@@ -530,6 +649,10 @@ export const make = Effect.gen(function* () {
       projects: snapshot.projects,
       threads: snapshot.threads,
     });
+    if (yield* focusedDesktopClients.anyFocused) {
+      yield* suppressMobileAgentAwareness(activeThreadIds);
+      return true;
+    }
     if (activeThreadIds.length === 0) {
       yield* Effect.logDebug("agent activity snapshot has no publishable threads");
       return true;
@@ -626,6 +749,14 @@ export const make = Effect.gen(function* () {
             threadId,
           }).pipe(Effect.andThen(worker.enqueue(threadId)));
         }),
+      );
+      yield* Effect.forkScoped(
+        focusedDesktopClients.changes.pipe(
+          Stream.drop(1),
+          Stream.runForEach((focused) =>
+            focused ? suppressMobileAgentAwareness() : resumeMobileAgentAwareness(),
+          ),
+        ),
       );
     },
   );
