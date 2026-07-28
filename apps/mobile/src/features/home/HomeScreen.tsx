@@ -815,7 +815,7 @@ export function HomeScreen(props: HomeScreenProps) {
             </View>
           ) : null}
         </View>
-        {emptyState.loading ? null : connectionStatus}
+        {connectionStatus}
       </View>
     );
   }

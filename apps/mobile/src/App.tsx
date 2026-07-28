@@ -59,22 +59,22 @@ function SplashScreenCoordinator() {
   const [hydrationBudgetElapsed, setHydrationBudgetElapsed] = useState(false);
   const connectionBootstrapReady =
     AsyncResult.isFailure(catalogResult) || shellSummary.areShellCachesHydrated;
-  const bootstrapReady = isReady && connectionBootstrapReady;
+  const bootstrapReady = isReady && (connectionBootstrapReady || hydrationBudgetElapsed);
 
   useEffect(() => {
-    if (bootstrapReady) return;
+    if (connectionBootstrapReady) return;
     const timeout = setTimeout(
       () => setHydrationBudgetElapsed(true),
       BOOTSTRAP_HYDRATION_BUDGET_MS,
     );
     return () => clearTimeout(timeout);
-  }, [bootstrapReady]);
+  }, [connectionBootstrapReady]);
 
   useEffect(() => {
-    if (bootstrapReady || hydrationBudgetElapsed) {
+    if (bootstrapReady) {
       void splashScreenPrevention.then(() => SplashScreen.hide());
     }
-  }, [bootstrapReady, hydrationBudgetElapsed]);
+  }, [bootstrapReady]);
 
   return null;
 }
