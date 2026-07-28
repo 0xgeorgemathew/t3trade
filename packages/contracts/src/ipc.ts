@@ -912,14 +912,15 @@ export type PreviewAnnotationSubmission = "attach" | "send";
 export const PreviewAnnotationSubmissionSchema: Schema.Codec<PreviewAnnotationSubmission> =
   Schema.Literals(["attach", "send"]);
 
-export interface PreviewAnnotationResult {
+export interface PreviewAnnotationSubmissionResult {
   annotation: PreviewAnnotationPayload;
   submission: PreviewAnnotationSubmission;
 }
-export const PreviewAnnotationResultSchema: Schema.Codec<PreviewAnnotationResult> = Schema.Struct({
-  annotation: PreviewAnnotationPayloadSchema,
-  submission: PreviewAnnotationSubmissionSchema,
-});
+export const PreviewAnnotationSubmissionResultSchema: Schema.Codec<PreviewAnnotationSubmissionResult> =
+  Schema.Struct({
+    annotation: PreviewAnnotationPayloadSchema,
+    submission: PreviewAnnotationSubmissionSchema,
+  });
 
 export const DesktopPreviewTabInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
@@ -1091,7 +1092,7 @@ export interface DesktopPreviewBridge {
    * user cancels (Escape / nav). The promise rejects if the picker can't be
    * activated (no webview, etc.).
    */
-  pickElement: (tabId: string) => Promise<PreviewAnnotationResult | null>;
+  pickElement: (tabId: string) => Promise<PreviewAnnotationSubmissionResult | null>;
   /** Cancel an in-flight preview annotation session. */
   cancelPickElement: (tabId: string) => Promise<void>;
   captureScreenshot: (tabId: string) => Promise<DesktopPreviewScreenshotArtifact>;
