@@ -220,6 +220,12 @@ describe("AssetAccess", () => {
       const faviconResult = yield* issueAssetUrl({
         resource: { _tag: "project-favicon", cwd: root },
       });
+      expect(faviconResult.relativeUrl).toMatch(/\/v[0-9a-z]+-[0-9a-z]+-favicon\.svg$/);
+      expect(
+        yield* issueAssetUrl({
+          resource: { _tag: "project-favicon", cwd: root },
+        }),
+      ).toEqual(faviconResult);
       const faviconSuffix = faviconResult.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
       const faviconSeparatorIndex = faviconSuffix.indexOf("/");
       expect(
@@ -228,6 +234,14 @@ describe("AssetAccess", () => {
           faviconSuffix.slice(faviconSeparatorIndex + 1),
         ),
       ).toEqual({ kind: "file", path: canonicalFaviconPath });
+
+      yield* fileSystem.writeFileString(faviconPath, "<svg>updated favicon</svg>");
+      const updatedFaviconResult = yield* issueAssetUrl({
+        resource: { _tag: "project-favicon", cwd: root },
+      });
+      expect(
+        updatedFaviconResult.relativeUrl.slice(updatedFaviconResult.relativeUrl.lastIndexOf("/")),
+      ).not.toBe(faviconResult.relativeUrl.slice(faviconResult.relativeUrl.lastIndexOf("/")));
 
       yield* fileSystem.remove(faviconPath);
       const fallbackResult = yield* issueAssetUrl({

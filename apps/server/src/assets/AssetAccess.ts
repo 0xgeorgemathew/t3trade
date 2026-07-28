@@ -44,6 +44,8 @@ export const ASSET_ROUTE_PREFIX = "/api/assets";
 
 const SIGNING_SECRET_NAME = "asset-access-signing-key";
 const ASSET_TOKEN_TTL_MS = 60 * 60 * 1000;
+const PROJECT_FAVICON_TOKEN_BUCKET_MS = 30 * 60 * 1000;
+const PROJECT_FAVICON_VERSION_PREFIX = "v";
 const PREVIEW_ASSET_EXTENSIONS = new Set([
   ...WORKSPACE_BROWSER_PREVIEW_EXTENSIONS,
   ...WORKSPACE_IMAGE_PREVIEW_EXTENSIONS,
@@ -169,7 +171,12 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
-  const expiresAt = (yield* Clock.currentTimeMillis) + ASSET_TOKEN_TTL_MS;
+  const issuedAt = yield* Clock.currentTimeMillis;
+  const expiresAt =
+    input.resource._tag === "project-favicon"
+      ? (Math.floor(issuedAt / PROJECT_FAVICON_TOKEN_BUCKET_MS) + 2) *
+        PROJECT_FAVICON_TOKEN_BUCKET_MS
+      : issuedAt + ASSET_TOKEN_TTL_MS;
   let claims: AssetClaims;
   let fileName: string;
 
@@ -293,18 +300,18 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
         ),
       );
       const relativePath = faviconPath ? path.relative(workspaceRoot, faviconPath) : null;
-      if (
-        relativePath &&
-        !(yield* resolveCanonicalWorkspaceFile({ workspaceRoot, relativePath }).pipe(
-          Effect.mapError(
-            (cause) =>
-              new AssetProjectFaviconInspectionError({
-                resource: input.resource,
-                cause,
-              }),
-          ),
-        ))
-      ) {
+      const canonicalFaviconPath = relativePath
+        ? yield* resolveCanonicalWorkspaceFile({ workspaceRoot, relativePath }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new AssetProjectFaviconInspectionError({
+                  resource: input.resource,
+                  cause,
+                }),
+            ),
+          )
+        : null;
+      if (relativePath && !canonicalFaviconPath) {
         return yield* new AssetProjectFaviconNotFoundError({
           resource: input.resource,
         });
@@ -324,7 +331,22 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
         relativePath,
         expiresAt,
       };
-      fileName = relativePath ? path.basename(relativePath) : PROJECT_FAVICON_FALLBACK_MARKER;
+      if (relativePath && canonicalFaviconPath) {
+        const faviconInfo = yield* fileSystem.stat(canonicalFaviconPath).pipe(
+          Effect.mapError(
+            (cause) =>
+              new AssetProjectFaviconInspectionError({
+                resource: input.resource,
+                cause,
+              }),
+          ),
+        );
+        const modifiedAt = Option.getOrUndefined(faviconInfo.mtime)?.getTime() ?? 0;
+        const revision = `${modifiedAt.toString(36)}-${faviconInfo.size.toString(36)}`;
+        fileName = `${PROJECT_FAVICON_VERSION_PREFIX}${revision}-${path.basename(relativePath)}`;
+      } else {
+        fileName = PROJECT_FAVICON_FALLBACK_MARKER;
+      }
       break;
     }
   }

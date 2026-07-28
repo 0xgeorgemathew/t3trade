@@ -3,12 +3,15 @@ import { Image } from "expo-image";
 import { useState } from "react";
 import { View } from "react-native";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { isProjectFaviconFallbackUrl } from "@t3tools/shared/projectFavicon";
+import {
+  getProjectFaviconCacheKey,
+  isProjectFaviconFallbackUrl,
+} from "@t3tools/shared/projectFavicon";
 import { useThemeColor } from "../lib/useThemeColor";
 import { useAssetUrl } from "../state/assets";
 
 /* ─── Favicon cache (matches web pattern) ────────────────────────────── */
-const loadedFaviconUrls = new Set<string>();
+const loadedFaviconKeys = new Set<string>();
 
 /* ─── Component ──────────────────────────────────────────────────────── */
 export function ProjectFavicon(props: {
@@ -26,10 +29,15 @@ export function ProjectFavicon(props: {
       : { _tag: "project-favicon", cwd: props.workspaceRoot },
   );
   const renderableFaviconUrl = isProjectFaviconFallbackUrl(faviconUrl) ? null : faviconUrl;
+  const cacheKey =
+    renderableFaviconUrl && props.workspaceRoot
+      ? getProjectFaviconCacheKey(props.environmentId, props.workspaceRoot, renderableFaviconUrl)
+      : null;
 
   return (
     <ProjectFaviconImage
-      key={faviconUrl}
+      key={cacheKey}
+      cacheKey={cacheKey}
       faviconUrl={renderableFaviconUrl}
       open={props.open}
       projectTitle={props.projectTitle}
@@ -39,6 +47,7 @@ export function ProjectFavicon(props: {
 }
 
 function ProjectFaviconImage(props: {
+  readonly cacheKey: string | null;
   readonly faviconUrl: string | null;
   readonly open?: boolean;
   readonly projectTitle: string;
@@ -47,7 +56,7 @@ function ProjectFaviconImage(props: {
   const iconMuted = useThemeColor("--color-icon-subtle");
 
   const [status, setStatus] = useState<"loading" | "loaded" | "error">(() =>
-    props.faviconUrl && loadedFaviconUrls.has(props.faviconUrl) ? "loaded" : "loading",
+    props.cacheKey && loadedFaviconKeys.has(props.cacheKey) ? "loaded" : "loading",
   );
 
   const showImage = props.faviconUrl !== null && status === "loaded";
@@ -76,7 +85,10 @@ function ProjectFaviconImage(props: {
         <Image
           source={{
             uri: props.faviconUrl,
+            ...(props.cacheKey ? { cacheKey: props.cacheKey } : {}),
           }}
+          cachePolicy="memory-disk"
+          recyclingKey={props.cacheKey}
           accessibilityLabel={`${props.projectTitle} favicon`}
           style={{
             width: props.size,
@@ -86,7 +98,7 @@ function ProjectFaviconImage(props: {
           }}
           contentFit="contain"
           onLoad={() => {
-            if (props.faviconUrl) loadedFaviconUrls.add(props.faviconUrl);
+            if (props.cacheKey) loadedFaviconKeys.add(props.cacheKey);
             setStatus("loaded");
           }}
           onError={() => setStatus("error")}
