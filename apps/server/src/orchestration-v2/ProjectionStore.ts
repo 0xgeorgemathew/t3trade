@@ -477,10 +477,9 @@ const decodeNodePayload = (json: string) =>
   Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2ExecutionNodeJsonSchema))(json);
 const decodeSubagentPayload = (json: string) =>
   Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2SubagentJsonSchema))(json);
-const decodeSubagentActivationPayload = (json: string) =>
-  Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2SubagentActivationJsonSchema))(
-    json,
-  );
+const decodeSubagentActivationPayload = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(OrchestrationV2SubagentActivationJsonSchema),
+);
 const decodeProviderSessionPayload = (json: string) =>
   Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2ProviderSessionJsonSchema))(json);
 const decodeProviderThreadPayload = (json: string) =>

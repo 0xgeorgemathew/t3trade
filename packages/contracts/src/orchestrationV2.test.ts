@@ -47,6 +47,16 @@ const LegacyShellStreamItem = Schema.Union([
 const decodeLegacyShellStreamItem = Schema.decodeUnknownSync(LegacyShellStreamItem);
 const decodeOrchestrationV2Command = Schema.decodeUnknownSync(OrchestrationV2Command);
 const decodeOrchestrationV2TurnItem = Schema.decodeUnknownSync(OrchestrationV2TurnItem);
+const decodeOrchestrationV2Subagent = Schema.decodeUnknownSync(OrchestrationV2Subagent);
+const decodeOrchestrationV2SubagentActivation = Schema.decodeUnknownSync(
+  OrchestrationV2SubagentActivation,
+);
+const decodeOrchestrationV2DomainEventJson = Schema.decodeUnknownSync(
+  OrchestrationV2DomainEventJson,
+);
+const decodeStoredOrchestrationV2Subagent = Schema.decodeUnknownSync(
+  Schema.fromJsonString(OrchestrationV2SubagentJson),
+);
 
 describe("orchestration V2 contracts", () => {
   it("lets legacy snapshot decoders ignore enrichment metadata", () => {
@@ -397,7 +407,7 @@ describe("orchestration V2 contracts", () => {
   });
 
   it("decodes provider-native subagent lifecycle records and timeline items", () => {
-    const subagent = Schema.decodeUnknownSync(OrchestrationV2Subagent)({
+    const subagent = decodeOrchestrationV2Subagent({
       id: "node-subagent-1",
       threadId: "thread-1",
       runId: "run-1",
@@ -436,7 +446,7 @@ describe("orchestration V2 contracts", () => {
       completedAt: now,
       updatedAt: now,
     });
-    const activation = Schema.decodeUnknownSync(OrchestrationV2SubagentActivation)({
+    const activation = decodeOrchestrationV2SubagentActivation({
       id: "node-subagent-1:activation:2",
       threadId: "thread-1",
       subagentId: subagent.id,
@@ -460,8 +470,8 @@ describe("orchestration V2 contracts", () => {
       recentActivity: _recentActivity,
       ...legacySubagent
     } = subagent;
-    const decodedLegacySubagent = Schema.decodeUnknownSync(OrchestrationV2Subagent)(legacySubagent);
-    const decodedLegacyEvent = Schema.decodeUnknownSync(OrchestrationV2DomainEventJson)({
+    const decodedLegacySubagent = decodeOrchestrationV2Subagent(legacySubagent);
+    const decodedLegacyEvent = decodeOrchestrationV2DomainEventJson({
       id: "event-legacy-subagent",
       type: "subagent.updated",
       threadId: "thread-1",
@@ -477,7 +487,7 @@ describe("orchestration V2 contracts", () => {
         updatedAt: DateTime.formatIso(now),
       },
     });
-    const decodedActivityEvent = Schema.decodeUnknownSync(OrchestrationV2DomainEventJson)({
+    const decodedActivityEvent = decodeOrchestrationV2DomainEventJson({
       id: "event-subagent-activity",
       type: "subagent.updated",
       threadId: "thread-1",
@@ -579,9 +589,7 @@ describe("orchestration V2 contracts", () => {
     });
 
     // The projection reads stored rows through exactly this schema.
-    const decoded = Schema.decodeUnknownSync(Schema.fromJsonString(OrchestrationV2SubagentJson))(
-      legacyPayloadJson,
-    );
+    const decoded = decodeStoredOrchestrationV2Subagent(legacyPayloadJson);
 
     expect(decoded.kind).toBe("subagent");
     expect(decoded.role).toEqual({ name: "general-purpose", source: "app_default" });
@@ -615,7 +623,7 @@ describe("orchestration V2 contracts", () => {
       completedAt: null,
       updatedAt: now,
     };
-    const decode = Schema.decodeUnknownSync(OrchestrationV2Subagent);
+    const decode = decodeOrchestrationV2Subagent;
 
     // Legacy records predate the field and must behave as settled_only.
     expect(decode(appOwnedSubagent).completionWake).toBeUndefined();
