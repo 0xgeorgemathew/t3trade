@@ -39,4 +39,14 @@ export const make = Effect.gen(function* () {
   });
 });
 
+export function holdFocusLease(presence: {
+  readonly acquire: Effect.Effect<void, never, Scope.Scope>;
+}): Stream.Stream<never> {
+  return Stream.fromEffect(presence.acquire).pipe(
+    Stream.drain,
+    Stream.concat(Stream.never),
+    Stream.scoped,
+  );
+}
+
 export const layer = Layer.effect(FocusedDesktopClients, make);

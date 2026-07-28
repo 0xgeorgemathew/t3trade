@@ -52,4 +52,22 @@ describe("FocusedDesktopClients", () => {
       expect(observed).toEqual([false, true, false]);
     }).pipe(Effect.provide(FocusedDesktopClients.layer)),
   );
+
+  it.effect("holds a focus lease for the full lifetime of the RPC stream", () =>
+    Effect.gen(function* () {
+      const presence = yield* FocusedDesktopClients.FocusedDesktopClients;
+      const stream = yield* FocusedDesktopClients.holdFocusLease(presence).pipe(
+        Stream.runDrain,
+        Effect.forkChild({ startImmediately: true }),
+      );
+
+      for (let iteration = 0; iteration < 100 && !(yield* presence.anyFocused); iteration++) {
+        yield* Effect.yieldNow;
+      }
+      expect(yield* presence.anyFocused).toBe(true);
+
+      yield* Fiber.interrupt(stream);
+      expect(yield* presence.anyFocused).toBe(false);
+    }).pipe(Effect.provide(FocusedDesktopClients.layer)),
+  );
 });

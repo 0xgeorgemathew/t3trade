@@ -28,6 +28,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -519,6 +520,137 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
     ),
   );
 
+  it.effect("rechecks desktop focus immediately before publishing agent activity", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const originalFetch = globalThis.fetch;
+        let fetchCount = 0;
+        let focusReadCount = 0;
+        let snapshotReadCount = 0;
+        const secrets = makeMemorySecretStore();
+        const now = "2026-05-25T00:00:00.000Z";
+        const environmentId = "env-1" as EnvironmentId;
+        const projectId = "project-1" as ProjectId;
+        const threadId = "thread-1" as ThreadId;
+        const project = {
+          id: projectId,
+          title: "T3 Code",
+          workspaceRoot: "/workspace",
+          repositoryIdentity: null,
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        } satisfies OrchestrationProjectShell;
+        const thread = {
+          id: threadId,
+          projectId,
+          title: "Run remote agent",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          latestTurn: {
+            turnId: "turn-1" as TurnId,
+            state: "running",
+            requestedAt: now,
+            startedAt: now,
+            completedAt: null,
+            assistantMessageId: null,
+          },
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "Codex",
+            runtimeMode: "full-access",
+            activeTurnId: "turn-1" as TurnId,
+            lastError: null,
+            updatedAt: now,
+          },
+          latestUserMessageAt: now,
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
+          hasActionableProposedPlan: false,
+        } satisfies OrchestrationThreadShell;
+        const descriptor = {
+          environmentId,
+          label: "Test Desktop",
+          platform: { os: "darwin", arch: "arm64" },
+          serverVersion: "0.0.0-test",
+          capabilities: { repositoryIdentity: true },
+        } satisfies ExecutionEnvironmentDescriptor;
+
+        globalThis.fetch = (() => {
+          fetchCount += 1;
+          return Promise.resolve(Response.json({ ok: true, deliveries: [] }));
+        }) as unknown as typeof fetch;
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            globalThis.fetch = originalFetch;
+          }),
+        );
+        yield* secrets.setString(RELAY_URL_SECRET, "https://transport.example.test");
+        yield* secrets.setString(RELAY_ENVIRONMENT_CREDENTIAL_SECRET, "relay-credential");
+        yield* secrets.setString(PUBLISH_AGENT_ACTIVITY_SECRET, "true");
+
+        const dependencies = Layer.mergeAll(
+          Layer.succeed(ServerSecretStore.ServerSecretStore, secrets.store),
+          Layer.succeed(ServerEnvironment.ServerEnvironment, {
+            getEnvironmentId: Effect.succeed(environmentId),
+            getDescriptor: Effect.succeed(descriptor),
+          }),
+          Layer.succeed(OrchestrationEngineService, {
+            readEvents: () => Stream.empty,
+            dispatch: () => Effect.succeed({ sequence: 1 }),
+            streamDomainEvents: Stream.empty,
+            latestSequence: Effect.succeed(0),
+          } satisfies OrchestrationEngineShape),
+          Layer.succeed(ProjectionSnapshotQuery, {
+            getThreadShellById: () =>
+              Effect.sync(() => {
+                snapshotReadCount += 1;
+                return Option.some(thread);
+              }),
+            getProjectShellById: () => Effect.succeed(Option.some(project)),
+          } as unknown as ProjectionSnapshotQueryShape),
+          Layer.succeed(
+            FocusedDesktopClients.FocusedDesktopClients,
+            FocusedDesktopClients.FocusedDesktopClients.of({
+              anyFocused: Effect.sync(() => {
+                focusReadCount += 1;
+                return focusReadCount > 1;
+              }),
+              changes: Stream.empty,
+              acquire: Effect.void,
+            }),
+          ),
+        );
+
+        yield* Effect.gen(function* () {
+          const relay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
+          yield* relay.publishThread(threadId);
+        }).pipe(
+          Effect.provide(
+            AgentAwarenessRelay.layer.pipe(
+              Layer.provide(dependencies),
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ),
+        );
+
+        expect(focusReadCount).toBe(2);
+        expect(snapshotReadCount).toBe(1);
+        expect(fetchCount).toBe(0);
+      }),
+    ),
+  );
+
   it.effect("keeps the orchestration listener armed until relay config is installed", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -754,6 +886,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
         let snapshotThreads: Array<OrchestrationThreadShell> = [thread];
         const focusedDesktopClients = yield* FocusedDesktopClients.make;
 
+        let tombstoneAttempts = 0;
         globalThis.fetch = (async (
           input: Parameters<typeof fetch>[0],
           init?: Parameters<typeof fetch>[1],
@@ -770,6 +903,12 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           const payload = (await request.json()) as {
             readonly state: RelayAgentActivityState | null;
           };
+          if (payload.state === null) {
+            tombstoneAttempts += 1;
+            if (tombstoneAttempts === 1) {
+              throw new Error("transient tombstone publish failure");
+            }
+          }
           runFork(Queue.offer(fetches, { url, state: payload.state }));
           return Response.json({ ok: true, deliveries: [] });
         }) as typeof fetch;
@@ -837,9 +976,17 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
 
           const desktopFocusScope = yield* Scope.make();
           yield* focusedDesktopClients.acquire.pipe(Scope.provide(desktopFocusScope));
+          for (let iteration = 0; iteration < 10; iteration++) {
+            if (tombstoneAttempts >= 2) {
+              break;
+            }
+            yield* TestClock.adjust("1 second");
+            yield* Effect.yieldNow;
+          }
           const focusedPublish = yield* Queue.take(fetches).pipe(Effect.timeout("2 seconds"));
           expect(focusedPublish.url.origin).toBe("https://transport.example.test");
           expect(focusedPublish.state).toBeNull();
+          expect(tombstoneAttempts).toBe(2);
 
           snapshotThreads = [];
           yield* Scope.close(desktopFocusScope, Exit.void);

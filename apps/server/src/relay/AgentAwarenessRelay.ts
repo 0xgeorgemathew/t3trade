@@ -385,6 +385,15 @@ export const make = Effect.gen(function* () {
       readonly reason: string;
     }) =>
       Effect.gen(function* () {
+        if (!options?.desktopFocusTombstone && (yield* focusedDesktopClients.anyFocused)) {
+          yield* Effect.logDebug(
+            "agent activity publish skipped; desktop client focused during publish",
+            {
+              threadId,
+            },
+          );
+          return false;
+        }
         const proof = yield* makePublishProof({
           privateKey: cloudLinkKeyPair.privateKey,
           relayIssuer: relayConfig.issuer,
@@ -420,6 +429,7 @@ export const make = Effect.gen(function* () {
           ok: response.ok,
           deliveries: deliveryStats(response.deliveries),
         });
+        return true;
       });
 
     if (options?.desktopFocusTombstone) {
@@ -521,11 +531,14 @@ export const make = Effect.gen(function* () {
       });
     }
 
-    yield* publishState({
+    const published = yield* publishState({
       projectId: snapshot.projectId,
       state: snapshot.state,
       reason: snapshot.reason,
     });
+    if (!published) {
+      return;
+    }
     yield* Ref.update(publishedStateByThreadRef, (publishedStates) => {
       const nextPublishedStates = new Map(publishedStates);
       nextPublishedStates.set(threadId, publishIdentity);
@@ -576,6 +589,44 @@ export const make = Effect.gen(function* () {
     });
   });
 
+  let scheduleDesktopFocusTombstoneRetry: (
+    threadId: ThreadId,
+  ) => Effect.Effect<void, never, Scope.Scope> = () => Effect.void;
+
+  const publishDesktopFocusTombstone = Effect.fn("publishDesktopFocusTombstone")(function* (
+    threadId: ThreadId,
+  ) {
+    if (!(yield* focusedDesktopClients.anyFocused)) {
+      return;
+    }
+    const published = yield* publishSemaphore
+      .withPermits(1)(
+        publishThreadUnsafe(threadId, {
+          desktopFocusTombstone: true,
+        }),
+      )
+      .pipe(
+        Effect.as(true),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("desktop focus agent activity tombstone failed; retrying", {
+            threadId,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(false)),
+        ),
+        withRelayClientTracing,
+      );
+    if (!published) {
+      yield* scheduleDesktopFocusTombstoneRetry(threadId);
+    }
+  });
+
+  scheduleDesktopFocusTombstoneRetry = (threadId) =>
+    Effect.sleep("1 second").pipe(
+      Effect.andThen(publishDesktopFocusTombstone(threadId)),
+      Effect.forkScoped,
+      Effect.asVoid,
+    );
+
   const suppressMobileAgentAwareness = Effect.fn("suppressMobileAgentAwareness")(function* (
     snapshotThreadIds?: ReadonlyArray<ThreadId>,
   ) {
@@ -595,26 +646,10 @@ export const make = Effect.gen(function* () {
     yield* Effect.logInfo("desktop client focused; clearing mobile agent awareness", {
       count: threadIds.size,
     });
-    yield* Effect.forEach(
-      threadIds,
-      (threadId) =>
-        publishSemaphore
-          .withPermits(1)(
-            publishThreadUnsafe(threadId, {
-              desktopFocusTombstone: true,
-            }),
-          )
-          .pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("desktop focus agent activity tombstone failed", {
-                threadId,
-                cause: Cause.pretty(cause),
-              }),
-            ),
-            withRelayClientTracing,
-          ),
-      { discard: true },
-    );
+    yield* Effect.forEach(threadIds, publishDesktopFocusTombstone, {
+      concurrency: 4,
+      discard: true,
+    });
   });
 
   const resumeMobileAgentAwareness = Effect.fn("resumeMobileAgentAwareness")(function* () {

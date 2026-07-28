@@ -1128,10 +1128,7 @@ const makeWsRpcLayer = (
           observeRpcStream(
             WS_METHODS.clientReportDesktopFocus,
             currentSession.client.deviceType === "desktop"
-              ? Stream.fromEffect(focusedDesktopClients.acquire).pipe(
-                  Stream.drain,
-                  Stream.concat(Stream.never),
-                )
+              ? FocusedDesktopClients.holdFocusLease(focusedDesktopClients)
               : Stream.empty,
             { "rpc.aggregate": "client-presence" },
           ),
