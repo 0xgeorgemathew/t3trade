@@ -34,7 +34,7 @@ const CONNECTION_ESTABLISHMENT_TIMEOUT = "15 seconds";
 // A foreground probe only verifies an already-open socket. Waiting as long as
 // a full connection attempt makes a stale mobile lease look connected for far
 // too long after the app resumes.
-const CONNECTION_PROBE_TIMEOUT = "3 seconds";
+const CONNECTION_PROBE_TIMEOUT = "5 seconds";
 const BACKOFF_RESET_AFTER_MS = 30_000;
 
 interface SupervisorIntent {

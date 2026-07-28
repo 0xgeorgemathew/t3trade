@@ -731,7 +731,7 @@ describe("EnvironmentSupervisor", () => {
 
       yield* awaitState(supervisor.state, (state) => state.phase === "connected");
       yield* harness.wake("application-active");
-      yield* TestClock.adjust("3 seconds");
+      yield* TestClock.adjust("5 seconds");
       yield* awaitState(
         supervisor.state,
         (state) => state.phase === "backoff" && state.lastFailure?.reason === "timeout",
