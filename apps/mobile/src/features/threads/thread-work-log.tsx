@@ -10,7 +10,6 @@ import { T3_CODE_BRAND_MARK_SOURCE } from "../../components/brandAssets";
 import { cn } from "../../lib/cn";
 import type { ThreadFeedActivity } from "../../lib/threadActivity";
 import Animated, { FadeIn } from "react-native-reanimated";
-import { useV2ItemSupport } from "../../state/v2-item-support";
 import { ThreadActivityInspector } from "./ThreadActivityInspector";
 
 const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
@@ -112,11 +111,6 @@ function ThreadActivityThreadLink(props: {
   readonly iconColor: import("react-native").ColorValue;
 }) {
   const row = props.activity.projectedItem;
-  const support = useV2ItemSupport({
-    environmentId: props.environmentId,
-    sourceThreadId: row.sourceThreadId,
-    sourceItemId: row.sourceItemId,
-  });
   const navigation = useNavigation();
   const item = row.item;
   let targetThreadId: ThreadId | null = null;
