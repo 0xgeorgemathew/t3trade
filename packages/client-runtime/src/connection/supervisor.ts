@@ -31,7 +31,10 @@ import * as ConnectionWakeups from "./wakeups.ts";
 
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
 const CONNECTION_ESTABLISHMENT_TIMEOUT = "15 seconds";
-const CONNECTION_PROBE_TIMEOUT = "15 seconds";
+// A foreground probe only verifies an already-open socket. Waiting as long as
+// a full connection attempt makes a stale mobile lease look connected for far
+// too long after the app resumes.
+const CONNECTION_PROBE_TIMEOUT = "3 seconds";
 const BACKOFF_RESET_AFTER_MS = 30_000;
 
 interface SupervisorIntent {
@@ -645,7 +648,11 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       }
 
       failureCount += 1;
-      const delayMs = retryDelayMs(failureCount - 1);
+      // A lease that was healthy for a meaningful period gets one immediate
+      // reconnect. If that fresh attempt also fails, the normal exponential
+      // backoff resumes, so an unavailable server still cannot create a hot
+      // retry loop.
+      const delayMs = outcome.stable ? 0 : retryDelayMs(failureCount - 1);
       pendingRetry = Option.map(attemptSpan, (previousAttempt) => ({
         previousAttempt,
         failureCount,
