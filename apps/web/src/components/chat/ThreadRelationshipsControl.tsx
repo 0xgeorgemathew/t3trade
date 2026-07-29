@@ -124,7 +124,7 @@ export function ThreadRelationshipsPanel(props: {
   const canMerge = mergeTargetThreadId !== null && latestCompletedRun !== null;
   const canDetach = projection ? canDetachThreadProviderSession(projection) : false;
 
-  if (relationshipRows.length === 0) {
+  if (relationshipRows.length === 0 && !canDetach) {
     return null;
   }
 
