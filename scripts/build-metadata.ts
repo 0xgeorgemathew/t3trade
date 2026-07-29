@@ -8,13 +8,14 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { Command } from "effect/unstable/cli";
+import { T3_FORK_NAME } from "@t3tools/shared/buildMetadata";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 
 /** Version metadata a T3 Trades build artifact exposes: the fork's own
     product version, alongside the exact upstream T3 Code commit it was
     built against (see docs/upstream/BASELINE.md). */
 export const BuildMetadata = Schema.Struct({
-  fork: Schema.Literal("T3 Trades"),
+  fork: Schema.Literal(T3_FORK_NAME),
   productVersion: Schema.NonEmptyString,
   t3UpstreamCommit: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/)),
 });
@@ -28,7 +29,7 @@ const decodeDesktopPackageJson = Schema.decodeUnknownEffect(
 );
 const encodeBuildMetadataJson = Schema.encodeEffect(fromJsonStringPretty(BuildMetadata));
 
-const BASELINE_SHA_PATTERN = /\| Pinned commit \(full SHA\) \| `([0-9a-f]{40})` \|/;
+const BASELINE_SHA_PATTERN = /\| Pinned commit \(full SHA\)\s*\| `([0-9a-f]{40})`\s*\|/;
 
 export class BuildMetadataParseError extends Schema.TaggedErrorClass<BuildMetadataParseError>()(
   "BuildMetadataParseError",
@@ -70,7 +71,7 @@ export const resolveBuildMetadata = Effect.fn("resolveBuildMetadata")(function* 
     });
   }
 
-  return { fork: "T3 Trades" as const, productVersion: desktopPackage.version, t3UpstreamCommit };
+  return { fork: T3_FORK_NAME, productVersion: desktopPackage.version, t3UpstreamCommit };
 });
 
 const readBuildMetadata = Effect.fn("readBuildMetadata")(function* () {

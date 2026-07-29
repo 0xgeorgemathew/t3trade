@@ -59,6 +59,10 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
   label: TrimmedNonEmptyString,
   platform: ExecutionEnvironmentPlatform,
   serverVersion: TrimmedNonEmptyString,
+  /** The fork's product name, e.g. "T3 Trades". See docs/upstream/BASELINE.md. */
+  fork: TrimmedNonEmptyString,
+  /** The upstream T3 Code commit (full SHA) this build forked from. */
+  t3UpstreamCommit: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/)),
   capabilities: ExecutionEnvironmentCapabilities,
 });
 export type ExecutionEnvironmentDescriptor = typeof ExecutionEnvironmentDescriptor.Type;

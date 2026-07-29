@@ -1,4 +1,5 @@
 import { EnvironmentId, type ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
+import { T3_FORK_NAME, T3_UPSTREAM_COMMIT } from "@t3tools/shared/buildMetadata";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -137,6 +138,8 @@ export const make = Effect.gen(function* () {
       arch: platformArch(hostArchitecture),
     },
     serverVersion: packageJson.version,
+    fork: T3_FORK_NAME,
+    t3UpstreamCommit: T3_UPSTREAM_COMMIT,
     capabilities: {
       repositoryIdentity: true,
       connectionProbe: true,

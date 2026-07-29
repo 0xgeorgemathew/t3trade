@@ -44,6 +44,8 @@ describe("SSH environment IPC", () => {
           label: "Remote Devbox",
           platform: { os: "linux", arch: "x64" },
           serverVersion: "1.2.3",
+          fork: "T3 Trades",
+          t3UpstreamCommit: "a8e05cbb92633a1351529f2bc402071f615e5051",
           capabilities: { repositoryIdentity: true },
         });
       }),
@@ -59,6 +61,8 @@ describe("SSH environment IPC", () => {
         label: "Remote Devbox",
         platform: { os: "linux", arch: "x64" },
         serverVersion: "1.2.3",
+        fork: "T3 Trades",
+        t3UpstreamCommit: "a8e05cbb92633a1351529f2bc402071f615e5051",
         capabilities: { repositoryIdentity: true },
       });
       assert.deepEqual(requestUrls, ["http://127.0.0.1:41773/.well-known/t3/environment"]);
