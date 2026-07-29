@@ -1,19 +1,15 @@
 import { memo, useState } from "react";
 import { createPortal } from "react-dom";
 import type { AssetResource, ScopedThreadRef } from "@t3tools/contracts";
-import { isWorkspaceVideoPreviewPath } from "@t3tools/shared/filePreview";
+import {
+  isDirectMarkdownMediaSource,
+  isWorkspaceVideoPreviewPath,
+  markdownMediaFileName,
+  resolveMarkdownMediaSource,
+} from "@t3tools/shared/filePreview";
 
 import { useAssetUrlState } from "../../assets/assetUrls";
 import { ExpandedImageDialog } from "./ExpandedImageDialog";
-
-/** Sources the browser can load directly without a signed workspace asset URL. */
-const DIRECT_MEDIA_SRC_PATTERN = /^(?:https?:|data:|blob:|\/\/)/i;
-
-/** `markdownUrlTransform` escapes Windows drive paths as `/C:/…` so they survive sanitization. */
-const ESCAPED_WINDOWS_DRIVE_PATH_PATTERN = /^\/[A-Za-z]:[\\/]/;
-
-/** Paths that are absolute on either platform (after Windows-drive unescaping). */
-const ABSOLUTE_PATH_PATTERN = /^(?:[/\\]|[A-Za-z]:[\\/])/;
 
 const MEDIA_FRAME_CLASS_NAME =
   "my-2 block max-h-96 max-w-full rounded-lg border border-border/60 bg-background object-contain";
@@ -24,48 +20,6 @@ interface MarkdownMediaProps {
   threadRef?: ScopedThreadRef | undefined;
   /** Force the media kind; when omitted it is inferred from the file extension. */
   kind?: "image" | "video" | undefined;
-}
-
-function safeDecode(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-function mediaFileName(src: string): string {
-  const withoutQuery = src.split(/[?#]/, 1)[0] ?? src;
-  const basename = withoutQuery.slice(withoutQuery.lastIndexOf("/") + 1);
-  return basename.length > 0 ? safeDecode(basename) : safeDecode(withoutQuery);
-}
-
-/**
- * Normalize a non-direct markdown src into a filesystem-style path: strip
- * query/fragment, decode percent escapes, and unescape the `/C:/…` form the
- * markdown URL transform uses to carry Windows drive paths through
- * sanitization.
- */
-function mediaPathFromSrc(src: string): string {
-  const withoutQuery = src.split(/[?#]/, 1)[0] ?? src;
-  const decoded = safeDecode(withoutQuery);
-  return ESCAPED_WINDOWS_DRIVE_PATH_PATTERN.test(decoded) ? decoded.slice(1) : decoded;
-}
-
-/**
- * Browser evidence artifacts (screenshots/recordings from the embedded
- * browser) are referenced by the absolute path the preview tools return,
- * e.g. `/…/userdata/browser-artifacts/browser-recording-x.webm`. They are
- * served by file name from the server's browser-artifacts directory. Only
- * absolute paths qualify — a workspace-relative path like
- * `docs/browser-artifacts/x.png` is an ordinary repo file.
- */
-function browserArtifactFileName(path: string): string | null {
-  if (!ABSOLUTE_PATH_PATTERN.test(path)) {
-    return null;
-  }
-  const match = /[/\\]browser-artifacts[/\\]([^/\\]+)$/.exec(path);
-  return match?.[1] ?? null;
 }
 
 function MediaUnavailable({ name }: { name: string }) {
@@ -171,22 +125,18 @@ export const MarkdownMedia = memo(function MarkdownMedia({
   if (!src) {
     return null;
   }
-  const name = alt && alt.trim().length > 0 ? alt.trim() : mediaFileName(src);
+  const name = alt && alt.trim().length > 0 ? alt.trim() : markdownMediaFileName(src);
   const isVideo = kind === "video" || (kind === undefined && isWorkspaceVideoPreviewPath(src));
-  if (DIRECT_MEDIA_SRC_PATTERN.test(src)) {
+  if (isDirectMarkdownMediaSource(src)) {
     return <ResolvedMedia url={src} name={name} isVideo={isVideo} />;
   }
   if (!threadRef) {
     return <MediaUnavailable name={name} />;
   }
-  const path = mediaPathFromSrc(src);
-  const artifactFileName = browserArtifactFileName(path);
-  const resource: AssetResource = artifactFileName
-    ? { _tag: "browser-artifact", fileName: artifactFileName }
-    : {
-        _tag: "workspace-file",
-        threadId: threadRef.threadId,
-        path: path.startsWith("./") ? path.slice(2) : path,
-      };
-  return <ResourceMedia threadRef={threadRef} resource={resource} name={name} isVideo={isVideo} />;
+  const source = resolveMarkdownMediaSource(src, threadRef.threadId);
+  return source._tag === "Asset" ? (
+    <ResourceMedia threadRef={threadRef} resource={source.resource} name={name} isVideo={isVideo} />
+  ) : (
+    <ResolvedMedia url={source.url} name={name} isVideo={isVideo} />
+  );
 });
