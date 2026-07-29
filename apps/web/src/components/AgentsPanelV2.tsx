@@ -1,6 +1,7 @@
 import {
   deriveOrchestrationV2SubagentPanelState,
   formatSubagentTokenCount,
+  isSettledOrchestrationV2Subagent,
 } from "@t3tools/client-runtime/state/orchestration-v2-subagents";
 import type {
   OrchestrationV2Subagent,
@@ -69,7 +70,9 @@ function AgentCard(props: {
   activations: ReadonlyArray<OrchestrationV2SubagentActivation>;
 }) {
   const { agent } = props;
-  const detail = agent.progress?.trim() || agent.result?.trim() || agent.prompt.trim();
+  const detail = isSettledOrchestrationV2Subagent(agent)
+    ? agent.result?.trim() || agent.progress?.trim() || agent.prompt.trim()
+    : agent.progress?.trim() || agent.result?.trim() || agent.prompt.trim();
   const usage = usageSummary(agent);
   const activities = keyedActivities(agent);
   return (

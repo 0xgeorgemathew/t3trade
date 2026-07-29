@@ -40,7 +40,9 @@ const phaseStatus = (agents: ReadonlyArray<OrchestrationV2Subagent>) =>
     ? ("pending" as const)
     : agents.every(isSettledOrchestrationV2Subagent)
       ? ("done" as const)
-      : ("running" as const);
+      : agents.every((agent) => agent.status === "pending")
+        ? ("pending" as const)
+        : ("running" as const);
 
 export function deriveOrchestrationV2SubagentPanelState(input: {
   readonly subagents: ReadonlyArray<OrchestrationV2Subagent>;

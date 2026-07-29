@@ -137,6 +137,49 @@ describe("deriveOrchestrationV2SubagentPanelState", () => {
     expect(result.activationsBySubagentId.get(researcher.id)).toEqual(activations);
   });
 
+  it("keeps future all-pending workflow phases pending", () => {
+    const workflow = agent("workflow-1", {
+      kind: "workflow",
+      workflow: {
+        phases: [
+          { index: 0, title: "Empty" },
+          { index: 1, title: "Queued" },
+          { index: 2, title: "Active" },
+          { index: 3, title: "Settled" },
+        ],
+      },
+    });
+    const member = (id: string, phaseIndex: number, status: OrchestrationV2Subagent["status"]) =>
+      agent(id, {
+        kind: "workflow_agent",
+        status,
+        workflowMembership: {
+          workflowSubagentId: workflowId,
+          agentIndex: phaseIndex,
+          phaseIndex,
+          attempt: 1,
+        },
+      });
+
+    const result = deriveOrchestrationV2SubagentPanelState({
+      subagents: [
+        workflow,
+        member("queued-a", 1, "pending"),
+        member("queued-b", 1, "pending"),
+        member("active", 2, "waiting"),
+        member("settled", 3, "completed"),
+      ],
+      activations: [],
+    });
+
+    expect(result.groups[0]?.phases.map((phase) => phase.status)).toEqual([
+      "pending",
+      "pending",
+      "running",
+      "done",
+    ]);
+  });
+
   it("distinguishes unavailable usage from a reported zero", () => {
     const unavailable = deriveOrchestrationV2SubagentPanelState({
       subagents: [agent("unreported")],

@@ -78,6 +78,19 @@ describe("AgentsPanelV2", () => {
     expect(markup).toContain("Research");
   });
 
+  it("shows the final result instead of stale progress for a settled agent", () => {
+    const markup = renderPanel([
+      agent("settled-agent", {
+        status: "idle",
+        progress: "Still working on the old step",
+        result: "Final answer from the agent",
+      }),
+    ]);
+
+    expect(markup).toContain("Final answer from the agent");
+    expect(markup).not.toContain("Still working on the old step");
+  });
+
   it("renders workflow members under their phase", () => {
     const markup = renderPanel([
       agent("workflow-1", {
