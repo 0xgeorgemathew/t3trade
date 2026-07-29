@@ -108,6 +108,7 @@ import {
   formatWorkingDurationLabel,
   firstValidTimestampMs,
   hasUnseenCompletion,
+  isThreadTitleRegenerationPending,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   resolveAdjacentThreadId,
@@ -118,6 +119,7 @@ import {
   sortLogicalProjectsForSidebar,
   sortSettledThreadsForSidebarV2,
   sortThreadsForSidebarV2,
+  threadTitleRegenerationRemainingMs,
 } from "./Sidebar.logic";
 import { resolveLocalCheckoutBranchMismatch } from "./BranchToolbar.logic";
 import {
@@ -421,6 +423,23 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
     [thread.environmentId, thread.id],
   );
   const threadKey = scopedThreadKey(threadRef);
+  const titleRegeneration = thread.titleRegeneration ?? null;
+  const [timedOutTitleRegenerationRequestId, setTimedOutTitleRegenerationRequestId] = useState<
+    string | null
+  >(null);
+  const titleRegenerationRemaining = threadTitleRegenerationRemainingMs(thread, Date.now());
+  const isRegeneratingTitle =
+    titleRegeneration !== null &&
+    timedOutTitleRegenerationRequestId !== titleRegeneration.requestId &&
+    titleRegenerationRemaining > 0;
+  useEffect(() => {
+    if (titleRegeneration === null || titleRegenerationRemaining <= 0) return;
+    const timeoutId = window.setTimeout(
+      () => setTimedOutTitleRegenerationRequestId(titleRegeneration.requestId),
+      titleRegenerationRemaining,
+    );
+    return () => window.clearTimeout(timeoutId);
+  }, [titleRegeneration, titleRegenerationRemaining]);
   const lastVisitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[threadKey]);
   const isSelected = useThreadSelectionStore((state) => state.selectedThreadKeys.has(threadKey));
   const openPrLink = useOpenPrLink();
@@ -690,7 +709,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   ) : (
     <span
       className={cn(
-        "min-w-0 flex-1 text-sm",
+        "min-w-0 flex-1 text-sm transition-opacity motion-reduce:transition-none",
         shouldRecede ? "font-normal" : "font-medium",
         variant === "card"
           ? cn(
@@ -711,6 +730,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                   ? "text-muted-foreground"
                   : "text-muted-foreground/70",
             ),
+        isRegeneratingTitle && "opacity-[0.55]",
       )}
     >
       {thread.title}
@@ -749,6 +769,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                 role="button"
                 tabIndex={0}
                 data-testid="sidebar-v2-row-slim"
+                aria-busy={isRegeneratingTitle || undefined}
                 className={cn(rowSurfaceClassName, "flex h-9 items-center gap-2.5 px-2.5")}
                 onClick={handleClick}
                 onDoubleClick={handleDoubleClick}
@@ -774,6 +795,11 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
               />
             </span>
             {title}
+            {isRegeneratingTitle ? (
+              <span role="status" className="sr-only">
+                Regenerating title
+              </span>
+            ) : null}
             {/* The PR badge stays outside the hover-fading slot: it must
               remain visible AND clickable while the row is hovered. Only
               the time/jump label yields to the settle affordance. */}
@@ -858,6 +884,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
               role="button"
               tabIndex={0}
               data-testid="sidebar-v2-row-card"
+              aria-busy={isRegeneratingTitle || undefined}
               className={rowSurfaceClassName}
               onClick={handleClick}
               onDoubleClick={handleDoubleClick}
@@ -953,7 +980,14 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                 ) : null}
               </span>
             </div>
-            <div className="mt-1 flex min-w-0">{title}</div>
+            <div className="mt-1 flex min-w-0">
+              {title}
+              {isRegeneratingTitle ? (
+                <span role="status" className="sr-only">
+                  Regenerating title
+                </span>
+              ) : null}
+            </div>
             <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/75">
               {thread.branch ? (
                 <span className="min-w-0 flex-1 truncate whitespace-nowrap">{thread.branch}</span>
@@ -1997,6 +2031,7 @@ export default function SidebarV2() {
         const supportsTitleRegeneration =
           serverConfigs.get(thread.environmentId)?.environment.capabilities
             .threadTitleRegeneration === true;
+        const isRegeneratingTitle = isThreadTitleRegenerationPending(thread, Date.now());
         const isSettled = settledThreadKeysRef.current.has(threadKey);
         const isSnoozed = snoozedThreadKeysRef.current.has(threadKey);
         // Presets resolve at menu-open time (same as the popover).
@@ -2036,7 +2071,13 @@ export default function SidebarV2() {
                 : []),
               { id: "rename", label: "Rename thread" },
               ...(supportsTitleRegeneration
-                ? [{ id: "regenerate-title", label: "Regenerate title" }]
+                ? [
+                    {
+                      id: "regenerate-title",
+                      label: isRegeneratingTitle ? "Regenerating…" : "Regenerate title",
+                      disabled: isRegeneratingTitle,
+                    },
+                  ]
                 : []),
               { id: "mark-unread", label: "Mark unread" },
               { id: "delete", label: "Delete", destructive: true, icon: "trash" },
@@ -2089,6 +2130,7 @@ export default function SidebarV2() {
             startThreadRename(threadRef, thread.title);
             return;
           case "regenerate-title": {
+            if (isRegeneratingTitle) return;
             const result = await updateThreadMetadata({
               environmentId: threadRef.environmentId,
               input: { threadId: threadRef.threadId, regenerateTitle: true },
