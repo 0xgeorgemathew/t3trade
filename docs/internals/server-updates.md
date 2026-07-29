@@ -1,5 +1,7 @@
 # Server Update Architecture
 
+> For maintainers. Using T3 Code? See [docs/user](../user/).
+
 T3 Code can update a connected server to the exact version of the client that detected version
 drift. This path exists primarily for remote environments, where the user may not have a terminal
 open on the server machine.
@@ -54,7 +56,8 @@ flowchart TD
     B -->|boot-service or respawn| E[server.updateServer]
     E --> F[Install exact t3 version in pinned runtime]
     F --> G[Run version preflight]
-    G -->|fails| H[Remove failed runtime and keep current server]
+    G -->|bad code or version| H[Remove candidate runtime and keep current server]
+    G -->|cannot run preflight| H2[Keep candidate and current server]
     G -->|passes| I{Handoff method}
     I -->|boot-service| J[Rewrite and restart T3 systemd unit]
     I -->|respawn| K[Start delayed replacement and exit current process]
@@ -72,8 +75,14 @@ successfully. Boot-service setup and self-update share the same process-wide ins
 they cannot mutate a pinned runtime concurrently.
 
 Before any restart, the current Node executable runs the replacement with `--version`. A failed
-install, failed preflight, or wrong reported version leaves the current server running. A failed
-preflight also removes the candidate runtime so retrying the same version performs a clean install.
+install, failed preflight, or wrong reported version leaves the current server running.
+
+Candidate cleanup is narrower than "any failed preflight". The candidate runtime is removed only when
+the preflight process actually completes and reports a bad exit code or the wrong version: that is
+the case where a completed npm install produced an unusable tree, so retrying the same version must
+perform a clean install rather than reuse it. If the preflight cannot run at all, for example a spawn
+error or the `PREFLIGHT_TIMEOUT` elapsing, the update fails before reaching cleanup and the candidate
+directory is left in place.
 
 ## Host Service Lifecycle
 

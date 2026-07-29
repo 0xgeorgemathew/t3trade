@@ -31,11 +31,19 @@ The update does not remove saved threads, settings, or project files.
 The available action depends on how that server was started. T3 Code does not update connected
 servers silently in the background.
 
-If the server uses the T3 Code background service, you can also update it directly on the host:
+**Copy update command** gives you `npx t3@<client-version>`, which relaunches the server directly
+at the matching version. Add whatever startup options you normally use.
+
+If the server instead runs as the T3 Code background service, update the service on the host and
+pin the same version:
 
 ```sh
-npx t3@latest service update
+npx t3@<client-version> service update
 ```
+
+`service update` installs the version of the CLI that invoked it, so `npx t3@latest service update`
+only resolves the skew when your client happens to be on the latest release. The exact version from
+the warning always works.
 
 See [Running T3 Code in the Background](./background-service.md) for install, status, and removal
 commands.
