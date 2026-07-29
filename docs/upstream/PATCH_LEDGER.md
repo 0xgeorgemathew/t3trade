@@ -61,9 +61,10 @@ string, and that has to be a deliberate migration, not a drive-by rename:
 
 ### Applied
 
-| Date       | Seam                      | File(s)                                     | Change                                                                                                                                                                                              |
-| ---------- | ------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-07-30 | Static migration registry | `apps/server/src/persistence/Migrations.ts` | Added the `Migration0035` static import and the `[35, "TradingDomain", Migration0035]` entry to `migrationEntries`. Trading tables start at 035; highest upstream migration at the baseline is 034. |
+| Date       | Seam                        | File(s)                                     | Change                                                                                                                                                                                              |
+| ---------- | --------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-30 | Static migration registry   | `apps/server/src/persistence/Migrations.ts` | Added the `Migration0035` static import and the `[35, "TradingDomain", Migration0035]` entry to `migrationEntries`. Trading tables start at 035; highest upstream migration at the baseline is 034. |
+| 2026-07-30 | Server package dependencies | `apps/server/package.json`                  | Added `"@t3tools/trading-contracts": "workspace:*"` so `apps/server/src/trading/**` can import the domain contracts.                                                                                |
 
 ## Future entries
 

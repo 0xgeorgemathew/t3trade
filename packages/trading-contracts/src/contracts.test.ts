@@ -281,6 +281,7 @@ describe("subpath exports", () => {
     expect(Object.keys(exportMap).sort()).toEqual(
       [
         ".",
+        "./primitives",
         "./account",
         "./authority",
         "./mission",

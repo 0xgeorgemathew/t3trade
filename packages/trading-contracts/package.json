@@ -8,6 +8,10 @@
       "types": "./src/index.ts",
       "import": "./src/index.ts"
     },
+    "./primitives": {
+      "types": "./src/primitives.ts",
+      "import": "./src/primitives.ts"
+    },
     "./account": {
       "types": "./src/account.ts",
       "import": "./src/account.ts"
