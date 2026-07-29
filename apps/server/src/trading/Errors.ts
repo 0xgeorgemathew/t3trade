@@ -51,6 +51,26 @@ export class TradingMissionTransitionError extends Schema.TaggedErrorClass<Tradi
   }
 }
 
+/**
+ * The harness binding is immutable for an active POC mission (§10.2).
+ *
+ * Only the binding's identity — provider, providerInstanceId, threadId — is
+ * frozen. Session id, resume cursor, and availability are runtime bookkeeping
+ * that ProviderService updates as the session starts, resumes, and drops.
+ */
+export class TradingHarnessBindingImmutableError extends Schema.TaggedErrorClass<TradingHarnessBindingImmutableError>()(
+  "TradingHarnessBindingImmutableError",
+  {
+    missionId: Schema.String,
+    status: TradingMissionStatus,
+    changedFields: Schema.Array(Schema.String),
+  },
+) {
+  override get message(): string {
+    return `Mission ${this.missionId} is ${this.status}; its harness binding cannot change (${this.changedFields.join(", ")})`;
+  }
+}
+
 /** A stale optimistic version was supplied for a mission row. */
 export class TradingMissionVersionConflictError extends Schema.TaggedErrorClass<TradingMissionVersionConflictError>()(
   "TradingMissionVersionConflictError",

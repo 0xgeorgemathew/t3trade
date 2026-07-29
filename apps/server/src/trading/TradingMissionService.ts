@@ -17,6 +17,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import {
+  TradingHarnessBindingImmutableError,
   TradingMissionAlreadyActiveError,
   TradingMissionNotFoundError,
   TradingMissionTransitionError,
@@ -51,6 +52,30 @@ export const TransitionTradingMissionInput = Schema.Struct({
 });
 export type TransitionTradingMissionInput = typeof TransitionTradingMissionInput.Type;
 
+export const UpdateHarnessBindingInput = Schema.Struct({
+  missionId: Schema.String,
+  expectedVersion: Schema.Number,
+  harness: TradingHarnessBinding,
+});
+export type UpdateHarnessBindingInput = typeof UpdateHarnessBindingInput.Type;
+
+/**
+ * The binding fields frozen for the life of an active mission (§10.2). Recovery
+ * §18.3 depends on this: "no restart ever performs automatic provider
+ * substitution."
+ */
+export const HARNESS_BINDING_IDENTITY_FIELDS = [
+  "provider",
+  "providerInstanceId",
+  "threadId",
+] as const;
+
+const changedIdentityFields = (
+  current: TradingHarnessBinding,
+  next: TradingHarnessBinding,
+): ReadonlyArray<string> =>
+  HARNESS_BINDING_IDENTITY_FIELDS.filter((field) => current[field] !== next[field]);
+
 export type TradingMissionServiceError =
   | PersistenceSqlError
   | TradingMissionAlreadyActiveError
@@ -76,6 +101,25 @@ export interface TradingMissionServiceShape {
   readonly transition: (
     input: TransitionTradingMissionInput,
   ) => Effect.Effect<TradingMission, TradingMissionServiceError>;
+
+  /**
+   * Update the binding's runtime bookkeeping — session id, resume cursor,
+   * model, availability — which ProviderService owns and which changes as a
+   * session starts, resumes, and drops.
+   *
+   * Fails with `TradingHarnessBindingImmutableError` if the caller tries to
+   * change the binding's identity (provider, providerInstanceId, threadId)
+   * while the mission is active.
+   */
+  readonly updateHarnessBinding: (
+    input: UpdateHarnessBindingInput,
+  ) => Effect.Effect<
+    TradingMission,
+    | PersistenceSqlError
+    | TradingHarnessBindingImmutableError
+    | TradingMissionNotFoundError
+    | TradingMissionVersionConflictError
+  >;
 
   readonly getMission: (
     missionId: string,
@@ -287,9 +331,47 @@ const makeTradingMissionService = Effect.gen(function* () {
       return yield* getMission(input.missionId);
     });
 
+  const updateHarnessBinding: TradingMissionServiceShape["updateHarnessBinding"] = (input) =>
+    Effect.gen(function* () {
+      const rows = yield* readMissionRow(input.missionId);
+      const row = rows[0];
+      if (row === undefined) {
+        return yield* new TradingMissionNotFoundError({ missionId: input.missionId });
+      }
+      if (row.version !== input.expectedVersion) {
+        return yield* new TradingMissionVersionConflictError({
+          missionId: input.missionId,
+          expectedVersion: input.expectedVersion,
+          currentVersion: row.version,
+        });
+      }
+
+      const current = yield* hydrate(row);
+      const changed = changedIdentityFields(current.harness, input.harness);
+      if (changed.length > 0 && isActiveMissionStatus(current.status)) {
+        return yield* new TradingHarnessBindingImmutableError({
+          missionId: input.missionId,
+          status: current.status,
+          changedFields: changed,
+        });
+      }
+
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql`
+        UPDATE trading_missions
+        SET harness_json = ${encodeHarnessJson(input.harness)},
+            version = version + 1,
+            updated_at = ${now}
+        WHERE mission_id = ${input.missionId} AND version = ${input.expectedVersion}
+      `.pipe(Effect.mapError(sqlFail("updateHarnessBinding")));
+
+      return yield* getMission(input.missionId);
+    });
+
   return {
     createMission,
     transition,
+    updateHarnessBinding,
     getMission,
     findActiveMission,
   } satisfies TradingMissionServiceShape;
