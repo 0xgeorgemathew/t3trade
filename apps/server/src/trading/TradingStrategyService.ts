@@ -1,0 +1,164 @@
+/**
+ * TradingStrategyService - versioned momentum strategy publishing (§14.3).
+ *
+ * Publishing is a versioned, side-effecting operation. It requires an expected
+ * current version and, on acceptance, increments the strategy version and
+ * supersedes the watches bound to the previous version, so an obsolete watch can
+ * never wake a harness against stale intent (§11.3).
+ *
+ * @module TradingStrategyService
+ */
+import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+
+import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
+import { TradingMissionNotFoundError } from "./Errors.ts";
+import { isActiveMissionStatus } from "./MissionTransitions.ts";
+import {
+  MomentumStrategyState,
+  TradingMissionStatus,
+  TradingPublishMomentumStrategyInput,
+  TradingPublishMomentumStrategyResult,
+} from "./Schemas.ts";
+
+export interface TradingStrategyServiceShape {
+  /**
+   * Publish a momentum strategy under optimistic locking.
+   *
+   * A stale expected version is rejected rather than silently overwriting
+   * current state; the rejection carries the version the server actually holds.
+   */
+  readonly publishMomentumStrategy: (
+    input: TradingPublishMomentumStrategyInput,
+  ) => Effect.Effect<
+    TradingPublishMomentumStrategyResult,
+    PersistenceSqlError | TradingMissionNotFoundError
+  >;
+
+  readonly getCurrentStrategy: (
+    missionId: string,
+  ) => Effect.Effect<Option.Option<MomentumStrategyState>, PersistenceSqlError>;
+}
+
+export class TradingStrategyService extends Context.Service<
+  TradingStrategyService,
+  TradingStrategyServiceShape
+>()("t3/trading/TradingStrategyService") {}
+
+const StrategyJson = Schema.fromJsonString(MomentumStrategyState);
+const decodeStrategyJson = Schema.decodeUnknownSync(StrategyJson);
+const encodeStrategyJson = Schema.encodeUnknownSync(StrategyJson);
+const decodeMissionStatus = Schema.decodeUnknownSync(TradingMissionStatus);
+
+const makeTradingStrategyService = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+
+  const sqlFail = (operation: string) =>
+    toPersistenceSqlError(`TradingStrategyService.${operation}`);
+
+  const getCurrentStrategy: TradingStrategyServiceShape["getCurrentStrategy"] = (missionId) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{ readonly strategy_json: string }>`
+        SELECT s.strategy_json
+        FROM momentum_strategy_versions s
+        JOIN trading_missions m
+          ON m.mission_id = s.mission_id AND m.strategy_version = s.version
+        WHERE s.mission_id = ${missionId}
+      `.pipe(Effect.mapError(sqlFail("getCurrentStrategy")));
+
+      const row = rows[0];
+      return row === undefined ? Option.none() : Option.some(decodeStrategyJson(row.strategy_json));
+    });
+
+  const publishMomentumStrategy: TradingStrategyServiceShape["publishMomentumStrategy"] = (input) =>
+    Effect.gen(function* () {
+      const missions = yield* sql<{
+        readonly status: string;
+        readonly strategy_version: number;
+      }>`
+        SELECT status, strategy_version FROM trading_missions
+        WHERE mission_id = ${input.missionId}
+      `.pipe(Effect.mapError(sqlFail("publish:readMission")));
+
+      const mission = missions[0];
+      if (mission === undefined) {
+        return yield* new TradingMissionNotFoundError({ missionId: input.missionId });
+      }
+
+      const status = decodeMissionStatus(mission.status);
+      if (!isActiveMissionStatus(status)) {
+        return {
+          outcome: "rejected",
+          reason: "mission_not_active",
+          currentVersion: mission.strategy_version,
+        } as const;
+      }
+
+      if (mission.strategy_version !== input.expectedVersion) {
+        return {
+          outcome: "rejected",
+          reason: "stale_strategy_version",
+          currentVersion: mission.strategy_version,
+        } as const;
+      }
+
+      const version = input.expectedVersion + 1;
+      const now = yield* Clock.currentTimeMillis;
+      const strategy: MomentumStrategyState = {
+        version,
+        ...input.strategy,
+        updatedAt: now,
+      };
+
+      yield* sql`
+        INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+        VALUES (${input.missionId}, ${version}, ${encodeStrategyJson(strategy)}, ${now})
+      `.pipe(Effect.mapError(sqlFail("publish:insertStrategy")));
+
+      // §11.3: publishing a new strategy supersedes the active watches of the
+      // prior version. Only active watches can be superseded; triggered,
+      // consumed, cancelled, and expired watches keep their terminal status.
+      const superseded = yield* sql<{ readonly watch_id: string }>`
+        SELECT watch_id FROM trading_watches
+        WHERE mission_id = ${input.missionId}
+          AND status = 'active'
+          AND strategy_version < ${version}
+      `.pipe(Effect.mapError(sqlFail("publish:selectSuperseded")));
+
+      yield* sql`
+        UPDATE trading_watches
+        SET status = 'superseded', version = version + 1, updated_at = ${now}
+        WHERE mission_id = ${input.missionId}
+          AND status = 'active'
+          AND strategy_version < ${version}
+      `.pipe(Effect.mapError(sqlFail("publish:supersedeWatches")));
+
+      yield* sql`
+        UPDATE trading_missions
+        SET strategy_version = ${version}, version = version + 1, updated_at = ${now}
+        WHERE mission_id = ${input.missionId} AND strategy_version = ${input.expectedVersion}
+      `.pipe(Effect.mapError(sqlFail("publish:bumpMission")));
+
+      return {
+        outcome: "accepted",
+        strategy,
+        strategyVersion: version,
+        supersededWatchIds: superseded.map((row) => row.watch_id),
+      } as const;
+    });
+
+  return {
+    publishMomentumStrategy,
+    getCurrentStrategy,
+  } satisfies TradingStrategyServiceShape;
+});
+
+export const TradingStrategyServiceLive = Layer.effect(
+  TradingStrategyService,
+  makeTradingStrategyService,
+);

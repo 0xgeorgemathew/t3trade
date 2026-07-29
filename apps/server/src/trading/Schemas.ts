@@ -65,6 +65,8 @@ export {
 } from "@t3tools/trading-contracts/strategy";
 
 export {
+  PublishMomentumStrategyBody,
+  PublishMomentumStrategyRejection,
   TRADING_GET_MISSION_TOOL,
   TRADING_PUBLISH_MOMENTUM_STRATEGY_TOOL,
   TradingGetMissionInput,
