@@ -57,6 +57,14 @@ string, and that has to be a deliberate migration, not a drive-by rename:
 | Agent-facing provider identity           | `apps/server/src/provider/Layers/*Provider.ts`, `apps/server/src/provider/CodexDeveloperInstructions.ts`, `apps/server/src/textGeneration/OpenCodeTextGeneration.ts`, `apps/server/src/mcp/McpHttpServer.ts`                           | Strings that identify the tool to the coding agent itself (Claude/Codex/Cursor/Grok/OpenCode), not end-user UI copy — renaming risks changing agent behavior and needs its own review                              |
 | Marketing site                           | `apps/marketing/src/**` (index, download, legal/privacy/terms pages, testimonials)                                                                                                                                                     | Includes legal-document copy; a rebrand pass there needs legal sign-off, not just a find-and-replace                                                                                                               |
 
+## PROMPT-01 · Trading domain and workspace
+
+### Applied
+
+| Date       | Seam                      | File(s)                                     | Change                                                                                                                                                                                              |
+| ---------- | ------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-30 | Static migration registry | `apps/server/src/persistence/Migrations.ts` | Added the `Migration0035` static import and the `[35, "TradingDomain", Migration0035]` entry to `migrationEntries`. Trading tables start at 035; highest upstream migration at the baseline is 034. |
+
 ## Future entries
 
 Add a new `## PROMPT-NN · <phase name>` section per phase that touches
