@@ -1,24 +1,26 @@
 # Upstream Baseline
 
 This file records the pinned upstream commit that T3 Trades' fork was built
-from, per the Git strategy repository model.
+from, per the Git strategy repository model. See `SPEC_EVIDENCE.md` for the
+separately tracked pin of the requirements/spec commit this baseline's
+acceptance criteria were checked against.
 
 ## Current baseline
 
-| Field                           | Value                                                                    |
-| ------------------------------- | ------------------------------------------------------------------------ |
-| Upstream repository             | `https://github.com/pingdotgg/t3code.git`                                |
-| Upstream branch                 | `main`                                                                   |
-| Pinned commit (full SHA)        | `a8e05cbb92633a1351529f2bc402071f615e5051`                               |
-| Pinned commit (short SHA)       | `a8e05cbb`                                                               |
-| Upstream commit date            | 2026-07-29                                                               |
-| Upstream package version at pin | `0.0.31`                                                                 |
-| Accepted-baseline tag           | `upstream-base/2026-07-29-a8e05cbb`                                      |
-| Fork repository                 | `https://github.com/0xgeorgemathew/t3trade.git`                          |
-| Fork product line               | `origin/main`                                                            |
-| Fork version at baseline        | `0.0.31` (unchanged from upstream; product versioning begins at Phase 1) |
-| Pinned by                       | PROMPT-00 · Fork and integration baseline                                |
-| Pinned on                       | 2026-07-30                                                               |
+| Field                           | Value                                                                                |
+| ------------------------------- | ------------------------------------------------------------------------------------ |
+| Upstream repository             | `https://github.com/pingdotgg/t3code.git`                                            |
+| Upstream branch                 | `main`                                                                               |
+| Pinned commit (full SHA)        | `a8e05cbb92633a1351529f2bc402071f615e5051`                                           |
+| Pinned commit (short SHA)       | `a8e05cbb`                                                                           |
+| Upstream commit date            | 2026-07-29                                                                           |
+| Upstream package version at pin | `0.0.31`                                                                             |
+| Accepted-baseline tag           | `upstream-base/2026-07-29-a8e05cbb`                                                  |
+| Fork repository                 | `https://github.com/0xgeorgemathew/t3trade.git`                                      |
+| Fork product line               | `origin/main`                                                                        |
+| Fork version at baseline        | `0.0.31` (unchanged from upstream; fork versioning splits at the first fork release) |
+| Pinned by                       | PROMPT-00 · Fork and integration baseline                                            |
+| Pinned on                       | 2026-07-30                                                                           |
 
 ## How this was pinned
 

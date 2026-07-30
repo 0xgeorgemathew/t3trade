@@ -128,7 +128,10 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         threadId: ThreadId.make(request.threadId),
         providerSessionId,
         providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
-        capabilities: new Set(["preview"]),
+        // Capability is granted uniformly per session; authorization for a
+        // trading call is resolved per call, from the mission bound to this
+        // credential's thread.
+        capabilities: new Set(["preview", "trading"]),
         issuedAt,
       };
       yield* SynchronizedRef.update(state, ({ records }) => {

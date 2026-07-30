@@ -26,6 +26,34 @@ talk to it over RPC, and a mobile app for remote monitoring/control.
 | Provider drivers | `apps/server/src/provider/Drivers/*Driver.ts`, `apps/server/src/provider/Layers/*Adapter.ts` | One driver + adapter pair per supported coding agent (Claude, Codex, Cursor, Grok, OpenCode); this is the extension point the roadmap's "per-provider conformance for Codex, Claude, OpenCode" (acceptance outcome 9) plugs into |
 | Remote relay     | `infra/relay`, `packages/tailscale`, `packages/ssh`                                          | Cross-machine access, tunneling, remote environments                                                                                                                                                                             |
 
+## Path-level inventory
+
+The table above is a layer-level map; this is the path-level inventory of
+the specific upstream seams later phases are most likely to touch or
+extend. Update this table (not just the narrative above) as new seams are
+identified.
+
+| Path                                                            | What it is                                                                                                       |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `apps/server/src/ws.ts`                                         | RPC transport (WebSocket) server/web/desktop/mobile clients connect over                                         |
+| `apps/server/src/provider/Layers/ProviderService.ts`            | Provider-layer service wiring (Effect `Layer`) for the per-agent driver/adapter seam                             |
+| `apps/server/src/provider/Services/ProviderService.ts`          | Provider service interface/implementation consumed by the layer above                                            |
+| `apps/server/src/provider/Layers/ProviderSessionDirectory.ts`   | Tracks live provider sessions per project/thread at the layer boundary                                           |
+| `apps/server/src/provider/Services/ProviderSessionDirectory.ts` | Provider session directory service interface/implementation                                                      |
+| `apps/server/src/orchestration/Layers/OrchestrationEngine.ts`   | Orchestration layer wiring for the decide/project event loop                                                     |
+| `apps/server/src/orchestration/Services/OrchestrationEngine.ts` | Orchestration engine service interface/implementation                                                            |
+| `apps/server/src/orchestration/decider.ts`                      | Pure decision function: current state + command → events, for thread/mission orchestration                       |
+| `apps/server/src/orchestration/projector.ts`                    | Pure projection function: events → read-model state                                                              |
+| `apps/server/src/orchestration/Layers/ProjectionPipeline.ts`    | Layer wiring the projector into the persisted/broadcast event pipeline                                           |
+| `apps/server/src/orchestration/Services/ProjectionPipeline.ts`  | Projection pipeline service interface/implementation                                                             |
+| `apps/server/src/persistence/Migrations.ts`                     | SQLite schema migrations; any new persisted state (e.g. mission/trading tables) adds here                        |
+| `apps/server/src/mcp/McpHttpServer.ts`                          | MCP server entrypoint exposed to external MCP clients                                                            |
+| `apps/server/src/mcp/McpSessionRegistry.ts`                     | Tracks live MCP client sessions                                                                                  |
+| `apps/server/src/mcp/McpInvocationContext.ts`                   | Per-invocation context (auth, project scope) threaded through MCP tool calls                                     |
+| `packages/shared/src/DrainableWorker.ts`                        | Background worker primitive that finishes in-flight work before shutdown                                         |
+| `packages/shared/src/KeyedCoalescingWorker.ts`                  | Background worker primitive that coalesces repeated work by key (e.g. per-thread projection)                     |
+| `AGENTS.md`                                                     | Repo-root agent operating instructions (changed in #4782); any new agent-facing surface should keep this current |
+
 ## Where trading is additive, not a rewrite
 
 Per PROMPT-00's constraints (preserve upstream services, extend via new

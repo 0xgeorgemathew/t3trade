@@ -16,6 +16,8 @@ it.effect(
         label: "Test environment",
         platform: { os: "darwin" as const, arch: "arm64" as const },
         serverVersion: "0.0.0-test",
+        fork: "T3 Trades",
+        t3UpstreamCommit: "a8e05cbb92633a1351529f2bc402071f615e5051",
         capabilities: { repositoryIdentity: true },
       };
 

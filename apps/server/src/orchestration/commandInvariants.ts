@@ -6,6 +6,7 @@ import type {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
+import type { TradingMissionStatus } from "@t3tools/trading-contracts";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import * as Effect from "effect/Effect";
 
@@ -164,6 +165,33 @@ export function requireThreadAbsent(input: {
       input.command.type,
       `Thread '${input.threadId}' already exists and cannot be created twice.`,
     ),
+  );
+}
+
+/**
+ * The §11.1 status a deterministic user control moves a mission to.
+ *
+ * The control names an intent; §11.1 names the destination. Legality of the
+ * `from` side is enforced by `TradingMissionService.transition`, which calls
+ * `validateTransition` and is the only writer of mission status — the decider
+ * would have to re-implement it to check here.
+ */
+export const TRADING_CONTROL_TARGET_STATUS = {
+  "trading.mission.pause": "paused",
+  "trading.mission.resume": "analysing",
+  "trading.mission.revoke": "revoked",
+} as const satisfies Record<string, TradingMissionStatus>;
+
+export function requireTradingControlTarget(input: {
+  readonly command: OrchestrationCommand;
+  readonly controlType: keyof typeof TRADING_CONTROL_TARGET_STATUS;
+}): Effect.Effect<TradingMissionStatus, OrchestrationCommandInvariantError> {
+  const target = TRADING_CONTROL_TARGET_STATUS[input.controlType];
+  if (target !== undefined) {
+    return Effect.succeed(target);
+  }
+  return Effect.fail(
+    invariantError(input.command.type, `No §11.1 target status for '${input.controlType}'.`),
   );
 }
 

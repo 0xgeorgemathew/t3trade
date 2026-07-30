@@ -69,6 +69,10 @@ import {
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
+
+/** The `updatedAt` an empty mission snapshot reports. */
+const EPOCH_ISO = "1970-01-01T00:00:00.000Z";
 import {
   observeRpcEffect as instrumentRpcEffect,
   observeRpcStream as instrumentRpcStream,
@@ -343,6 +347,7 @@ const makeWsRpcLayer = (
       const currentSessionId = currentSession.sessionId;
       const crypto = yield* Crypto.Crypto;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+      const tradingMissionProjection = yield* TradingMissionProjection;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
       const keybindings = yield* Keybindings.Keybindings;
@@ -1219,6 +1224,30 @@ const makeWsRpcLayer = (
                 (cause) =>
                   new OrchestrationGetSnapshotError({
                     message: "Failed to load archived orchestration shell snapshot",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getTradingMissionSnapshot]: (_input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getTradingMissionSnapshot,
+            tradingMissionProjection.list().pipe(
+              Effect.map((missions) => ({
+                // Missions are projected from the ordered event stream, so the
+                // newest row's updatedAt is the snapshot's own freshness.
+                snapshotSequence: 0,
+                missions,
+                updatedAt: missions[0]?.updatedAt ?? EPOCH_ISO,
+              })),
+              Effect.tapError((cause) =>
+                Effect.logError("trading mission snapshot load failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to load the trading mission snapshot",
                     cause,
                   }),
               ),

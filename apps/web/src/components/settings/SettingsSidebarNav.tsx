@@ -9,6 +9,7 @@ import {
   Link2Icon,
   PaletteIcon,
   Settings2Icon,
+  TrendingUpIcon,
 } from "lucide-react";
 import { useCanGoBack, useNavigate } from "@tanstack/react-router";
 
@@ -31,7 +32,8 @@ export type SettingsSectionPath =
   | "/settings/source-control"
   | "/settings/connections"
   | "/settings/beta"
-  | "/settings/archived";
+  | "/settings/archived"
+  | "/settings/trading";
 
 export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   label: string;
@@ -46,6 +48,7 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   { label: "Connections", to: "/settings/connections", icon: Link2Icon },
   { label: "Beta", to: "/settings/beta", icon: FlaskConicalIcon },
   { label: "Archive", to: "/settings/archived", icon: ArchiveIcon },
+  { label: "Trading", to: "/settings/trading", icon: TrendingUpIcon },
 ];
 
 export function SettingsSidebarNav({ pathname }: { pathname: string }) {

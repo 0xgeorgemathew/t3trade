@@ -84,6 +84,7 @@ import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngi
 import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
+import { TradingMissionProjectionLive } from "./trading/TradingMissionProjection.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./provider/providerMaintenance.ts";
@@ -138,6 +139,8 @@ const testEnvironmentDescriptor = {
     arch: "arm64" as const,
   },
   serverVersion: "0.0.0-test",
+  fork: "T3 Trades",
+  t3UpstreamCommit: "a8e05cbb92633a1351529f2bc402071f615e5051",
   capabilities: {
     repositoryIdentity: true,
   },
@@ -763,6 +766,11 @@ const buildAppUnderTest = (options?: {
     );
 
     const appLayer = servedRoutesLayer.pipe(
+      // The /mcp trading toolkit and the mission snapshot RPC both read
+      // persisted mission state, so the routes layer now genuinely needs the
+      // trading projection and a database to build.
+      Layer.provide(TradingMissionProjectionLive),
+      Layer.provide(SqlitePersistenceMemory),
       Layer.provide(resourceTelemetryLayer),
       Layer.provide(
         Layer.mock(BrowserTraceCollector.BrowserTraceCollector)({

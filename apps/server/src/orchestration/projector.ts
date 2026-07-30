@@ -748,6 +748,15 @@ export function projectEvent(
         }),
       );
 
+    // Trading events advance the stream but carry no thread or project state.
+    // The mission read model is maintained by the trading projector in
+    // ProjectionPipeline, against its own projection table.
+    case "trading.mission-create-requested":
+    case "trading.mission-control-requested":
+    case "trading.mission-status-changed":
+    case "trading.mission-strategy-published":
+      return Effect.succeed(nextBase);
+
     default:
       return Effect.succeed(nextBase);
   }

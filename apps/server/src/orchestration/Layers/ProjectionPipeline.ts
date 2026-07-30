@@ -34,6 +34,10 @@ import {
   ProjectionTurnRepository,
 } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
+import {
+  TradingMissionProjection,
+  TradingMissionProjectionLive,
+} from "../../trading/TradingMissionProjection.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../../persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepositoryLive } from "../../persistence/Layers/ProjectionProjects.ts";
 import { ProjectionStateRepositoryLive } from "../../persistence/Layers/ProjectionState.ts";
@@ -65,6 +69,10 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
   threadTurns: "projection.thread-turns",
   checkpoints: "projection.checkpoints",
   pendingApprovals: "projection.pending-approvals",
+  // Kept last, and deliberately absent from REQUIRED_SNAPSHOT_PROJECTORS in
+  // ProjectionSnapshotQuery: the orchestration read model does not contain
+  // missions, so its snapshot must not wait on this projector.
+  tradingMissions: "projection.trading-missions",
 } as const;
 
 type ProjectorName =
@@ -472,6 +480,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const sql = yield* SqlClient.SqlClient;
     const eventStore = yield* OrchestrationEventStore;
     const projectionStateRepository = yield* ProjectionStateRepository;
+    const tradingMissionProjection = yield* TradingMissionProjection;
     const projectionProjectRepository = yield* ProjectionProjectRepository;
     const projectionThreadRepository = yield* ProjectionThreadRepository;
     const projectionThreadMessageRepository = yield* ProjectionThreadMessageRepository;
@@ -1536,7 +1545,36 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       }
     });
 
+    /**
+     * Trading events name the mission that changed; the projection service
+     * re-reads it from the authoritative trading tables and writes the flat
+     * read-model row the workspace shell renders.
+     */
+    const applyTradingMissionsProjection: ProjectorDefinition["apply"] = Effect.fn(
+      "applyTradingMissionsProjection",
+    )(function* (event: OrchestrationEvent) {
+      switch (event.type) {
+        // Only the applied events project. A *-requested event has not been
+        // accepted by TradingMissionService yet, so projecting it would show
+        // the user a status the domain may still refuse.
+        case "trading.mission-status-changed":
+        case "trading.mission-strategy-published":
+          yield* tradingMissionProjection.refresh({
+            missionId: event.payload.missionId,
+            occurredAt: event.occurredAt,
+          });
+          return;
+
+        default:
+          return;
+      }
+    });
+
     const projectors: ReadonlyArray<ProjectorDefinition> = [
+      {
+        name: ORCHESTRATION_PROJECTOR_NAMES.tradingMissions,
+        apply: applyTradingMissionsProjection,
+      },
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.projects,
         apply: applyProjectsProjection,
@@ -1667,6 +1705,7 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   OrchestrationProjectionPipeline,
   makeOrchestrationProjectionPipeline(),
 ).pipe(
+  Layer.provideMerge(TradingMissionProjectionLive),
   Layer.provideMerge(ProjectionProjectRepositoryLive),
   Layer.provideMerge(ProjectionThreadRepositoryLive),
   Layer.provideMerge(ProjectionThreadMessageRepositoryLive),

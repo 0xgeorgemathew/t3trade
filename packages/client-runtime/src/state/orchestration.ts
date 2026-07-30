@@ -20,5 +20,9 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:archived-shell-snapshot",
       tag: ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
     }),
+    tradingMissionSnapshot: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:trading-mission-snapshot",
+      tag: ORCHESTRATION_WS_METHODS.getTradingMissionSnapshot,
+    }),
   };
 }

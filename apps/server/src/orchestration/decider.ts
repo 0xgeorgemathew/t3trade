@@ -19,6 +19,7 @@ import {
   requireThreadArchived,
   requireThreadAbsent,
   requireThreadNotArchived,
+  requireTradingControlTarget,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
 
@@ -1166,6 +1167,99 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         },
       };
       return [unsettledEvent, activityAppendedEvent];
+    }
+
+    // -- trading (spec §11.1, §14.7) ----------------------------------------
+    //
+    // Every trading command names the thread its mission's harness is bound to
+    // (§10.2), so the mission's events ride the same ordered stream as that
+    // thread's and reach the UI over the server's existing WS push path.
+
+    case "trading.mission.create": {
+      yield* requireThreadNotArchived({ readModel, command, threadId: command.threadId });
+
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "mission",
+          aggregateId: command.missionId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "trading.mission-create-requested",
+        payload: {
+          missionId: command.missionId,
+          threadId: command.threadId,
+          tradingAccountId: command.tradingAccountId,
+          instruction: command.instruction,
+          allocatedCapitalUsd: command.allocatedCapitalUsd,
+          requestedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "trading.mission.pause":
+    case "trading.mission.resume":
+    case "trading.mission.revoke": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      const targetStatus = yield* requireTradingControlTarget({
+        command,
+        controlType: command.type,
+      });
+
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "mission",
+          aggregateId: command.missionId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "trading.mission-control-requested",
+        payload: {
+          missionId: command.missionId,
+          threadId: command.threadId,
+          control: command.type,
+          targetStatus,
+          requestedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "trading.mission.status-set": {
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "mission",
+          aggregateId: command.missionId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "trading.mission-status-changed",
+        payload: {
+          missionId: command.missionId,
+          threadId: command.threadId,
+          status: command.status,
+          blockedReason: command.blockedReason ?? null,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "trading.mission.strategy-published": {
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "mission",
+          aggregateId: command.missionId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "trading.mission-strategy-published",
+        payload: {
+          missionId: command.missionId,
+          threadId: command.threadId,
+          strategyVersion: command.strategyVersion,
+          supersededWatchIds: command.supersededWatchIds,
+          updatedAt: command.createdAt,
+        },
+      };
     }
 
     default: {

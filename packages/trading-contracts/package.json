@@ -1,0 +1,55 @@
+{
+  "name": "@t3tools/trading-contracts",
+  "version": "0.0.31",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./primitives": {
+      "types": "./src/primitives.ts",
+      "import": "./src/primitives.ts"
+    },
+    "./account": {
+      "types": "./src/account.ts",
+      "import": "./src/account.ts"
+    },
+    "./authority": {
+      "types": "./src/authority.ts",
+      "import": "./src/authority.ts"
+    },
+    "./mission": {
+      "types": "./src/mission.ts",
+      "import": "./src/mission.ts"
+    },
+    "./strategy": {
+      "types": "./src/strategy.ts",
+      "import": "./src/strategy.ts"
+    },
+    "./watch": {
+      "types": "./src/watch.ts",
+      "import": "./src/watch.ts"
+    },
+    "./events": {
+      "types": "./src/events.ts",
+      "import": "./src/events.ts"
+    },
+    "./tools": {
+      "types": "./src/tools.ts",
+      "import": "./src/tools.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "test": "vp test run"
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}
