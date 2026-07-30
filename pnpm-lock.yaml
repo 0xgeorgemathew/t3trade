@@ -567,6 +567,9 @@ importers:
       '@t3tools/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@t3tools/trading-contracts':
+        specifier: workspace:*
+        version: link:../../packages/trading-contracts
       '@tanstack/react-pacer':
         specifier: ^0.19.4
         version: 0.19.4(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
