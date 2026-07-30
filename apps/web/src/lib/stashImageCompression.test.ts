@@ -118,9 +118,13 @@ describe("compressImageForStash", () => {
   });
 
   it("reports too-large when even the smallest encoding overflows the budget", async () => {
-    const { close } = stubCanvasPipeline(() => 8_000_000);
+    // Every quality/scale pass encodes and base64s this payload (15 passes on
+    // the give-up path), and jsdom's btoa is per-character. Keep the sizes
+    // just over the 1.3M-char budget so the semantics are identical without
+    // the timeout-prone 8MB-per-pass base64 work.
+    const { close } = stubCanvasPipeline(() => 1_400_000);
 
-    const result = await compressImageForStash(makeFile(9_000_000));
+    const result = await compressImageForStash(makeFile(2_000_000));
 
     expect(result).toEqual({ ok: false, reason: "too-large" });
     // The bitmap must still be released on the give-up path.
