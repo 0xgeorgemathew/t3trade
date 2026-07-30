@@ -1,5 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+
+import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -177,6 +179,16 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         effect: "4.0.0-beta.59",
       },
     );
+  });
+
+  it("keeps the server's runtime dependencies free of workspace specs", () => {
+    // The staged app prod-installs the server's `dependencies`, where a
+    // workspace:* spec cannot resolve. Bundled workspace packages (contracts,
+    // shared, trading-contracts, ...) belong in devDependencies.
+    const workspaceSpecs = Object.entries(serverPackageJson.dependencies).filter(([, spec]) =>
+      spec.startsWith("workspace:"),
+    );
+    assert.deepStrictEqual(workspaceSpecs, []);
   });
 
   it("carries only staged dependency patch metadata into staged desktop installs", () => {
