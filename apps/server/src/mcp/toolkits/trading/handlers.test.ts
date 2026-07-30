@@ -17,7 +17,11 @@ import { HttpBody, HttpClient, HttpRouter, HttpServer } from "effect/unstable/ht
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import type { OrchestrationCommand } from "@t3tools/contracts";
+import * as Stream from "effect/Stream";
+
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
+import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { runMigrations } from "../../../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../../../persistence/NodeSqliteClient.ts";
 import type { PublishMomentumStrategyBody } from "../../../trading/Schemas.ts";
@@ -89,10 +93,29 @@ const parseJsonRpc = (body: string): { readonly result?: any; readonly error?: a
   return decodeJson(payload) as { readonly result?: any; readonly error?: any };
 };
 
+/**
+ * Records what the toolkit raises on the orchestration engine, so a test can
+ * assert that an accepted publish reaches the ordered push path instead of
+ * stopping at the database.
+ */
+const dispatchedCommands: Array<OrchestrationCommand> = [];
+
+const recordingEngine = Layer.succeed(OrchestrationEngineService, {
+  dispatch: (command) =>
+    Effect.sync(() => {
+      dispatchedCommands.push(command);
+      return { sequence: dispatchedCommands.length };
+    }),
+  readEvents: () => Stream.empty,
+  streamDomainEvents: Stream.empty,
+  latestSequence: Effect.succeed(0),
+});
+
 const TradingMcpLayer = McpHttpServer.layer.pipe(
   Layer.provideMerge(McpSessionRegistry.layer),
   Layer.provideMerge(TradingLayerLive),
   Layer.provideMerge(NodeSqliteClient.layerMemory()),
+  Layer.provide(recordingEngine),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(Layer.succeed(ServerEnvironment.ServerEnvironment, fakeEnvironment)),
   Layer.provide(NodeServices.layer),
@@ -119,6 +142,7 @@ const withMcpServer = <A, E>(
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
+      dispatchedCommands.length = 0;
       const built = yield* Layer.build(
         HttpRouter.serve(TradingMcpLayer, { disableListenLog: true, disableLogger: true }),
       );
@@ -138,7 +162,7 @@ const withMcpServer = <A, E>(
         `.pipe(Effect.asVoid, Effect.orDie);
       const httpClient = yield* HttpClient.HttpClient;
 
-      yield* runMigrations({ toMigrationInclusive: 35 }).pipe(Effect.provide(built), Effect.orDie);
+      yield* runMigrations({ toMigrationInclusive: 36 }).pipe(Effect.provide(built), Effect.orDie);
       yield* missions
         .createMission({
           missionId: MISSION_ID,
@@ -226,6 +250,13 @@ it.effect("serves trading_get_mission and a versioned publish over the real /mcp
       });
       assert.equal(after.result.structuredContent.strategyVersion, 1);
       assert.equal(after.result.structuredContent.strategy.name, "overnight range break");
+
+      // The accepted publish was announced on the orchestration engine, which
+      // is what puts it on the server's ordered WS push path.
+      assert.deepStrictEqual(
+        dispatchedCommands.map((command) => command.type),
+        ["trading.mission.strategy-published"],
+      );
     }),
   ),
 );

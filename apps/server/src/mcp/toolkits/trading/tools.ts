@@ -18,8 +18,10 @@ import {
   TradingPublishMomentumStrategyResult,
   TradingToolRejectedError,
 } from "@t3tools/trading-contracts/tools";
+import * as Crypto from "effect/Crypto";
 import { Tool, Toolkit } from "effect/unstable/ai";
 
+import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
@@ -28,6 +30,10 @@ const dependencies = [
   McpInvocationContext.McpInvocationContext,
   TradingMissionService,
   TradingStrategyService,
+  // An accepted publish is announced on the orchestration event stream so the
+  // workspace sees it over the ordered WS push path.
+  OrchestrationEngineService,
+  Crypto.Crypto,
 ];
 
 export const TradingGetMissionTool = Tool.make("trading_get_mission", {

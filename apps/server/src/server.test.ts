@@ -84,6 +84,7 @@ import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngi
 import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
+import { TradingMissionProjectionLive } from "./trading/TradingMissionProjection.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./provider/providerMaintenance.ts";
@@ -765,8 +766,10 @@ const buildAppUnderTest = (options?: {
     );
 
     const appLayer = servedRoutesLayer.pipe(
-      // The /mcp trading toolkit reads persisted mission state, so the routes
-      // layer now genuinely needs a database to build.
+      // The /mcp trading toolkit and the mission snapshot RPC both read
+      // persisted mission state, so the routes layer now genuinely needs the
+      // trading projection and a database to build.
+      Layer.provide(TradingMissionProjectionLive),
       Layer.provide(SqlitePersistenceMemory),
       Layer.provide(resourceTelemetryLayer),
       Layer.provide(

@@ -131,6 +131,17 @@ export interface TradingMissionServiceShape {
   ) => Effect.Effect<Option.Option<TradingMission>, PersistenceSqlError>;
 
   /**
+   * The mission row's optimistic-locking version.
+   *
+   * `TradingMission` is a published contract (§10.3) and does not carry the row
+   * version, so a caller that needs to transition a mission it did not just
+   * write reads the version through here.
+   */
+  readonly getMissionVersion: (
+    missionId: string,
+  ) => Effect.Effect<number, PersistenceSqlError | TradingMissionNotFoundError>;
+
+  /**
    * The still-authoritative mission whose harness binding names `threadId`, if
    * any.
    *
@@ -255,6 +266,19 @@ const makeTradingMissionService = Effect.gen(function* () {
       const row = rows[0];
       if (row === undefined) return Option.none();
       return Option.some(yield* hydrate(row).pipe(Effect.orDie));
+    });
+
+  const getMissionVersion: TradingMissionServiceShape["getMissionVersion"] = (missionId) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{ readonly version: number }>`
+        SELECT version FROM trading_missions WHERE mission_id = ${missionId}
+      `.pipe(Effect.mapError(sqlFail("getMissionVersion")));
+
+      const row = rows[0];
+      if (row === undefined) {
+        return yield* new TradingMissionNotFoundError({ missionId });
+      }
+      return row.version;
     });
 
   const findMissionByThreadId: TradingMissionServiceShape["findMissionByThreadId"] = (threadId) =>
@@ -398,6 +422,7 @@ const makeTradingMissionService = Effect.gen(function* () {
     transition,
     updateHarnessBinding,
     getMission,
+    getMissionVersion,
     findActiveMission,
     findMissionByThreadId,
   } satisfies TradingMissionServiceShape;
