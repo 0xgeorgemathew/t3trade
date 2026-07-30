@@ -46,6 +46,9 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
 
     const resolved = yield* registry.resolve(token);
     expect(resolved?.threadId).toBe(threadId);
+    // Capability is granted uniformly per session; a trading call's
+    // authorization is resolved per call from the thread's mission binding.
+    expect([...(resolved?.capabilities ?? [])].sort()).toEqual(["preview", "trading"]);
 
     yield* registry.revokeThread(threadId);
     expect(yield* registry.resolve(token)).toBeUndefined();

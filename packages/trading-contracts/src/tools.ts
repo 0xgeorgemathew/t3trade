@@ -26,6 +26,50 @@ import { PersistedWatch } from "./watch.ts";
 export const TRADING_GET_MISSION_TOOL = "trading_get_mission";
 export const TRADING_PUBLISH_MOMENTUM_STRATEGY_TOOL = "trading_publish_momentum_strategy";
 
+// -- shared tool rejection ---------------------------------------------------
+
+/**
+ * Why a trading tool refused to act at all.
+ *
+ * These are distinct from `trading_publish_momentum_strategy`'s in-band
+ * `outcome: "rejected"`, which reports a *published* result the harness can
+ * retry against. A `TradingToolRejectedError` means the call never reached the
+ * mission: the credential did not carry the capability, or the calling thread
+ * is not the thread an active mission is bound to (§10.2).
+ *
+ * Fork-owned: the spec names the tools and their payloads but does not publish
+ * a tool-level failure type.
+ */
+export const TradingToolRejectionReason = Schema.Literals([
+  "capability_not_granted",
+  "thread_not_bound_to_mission",
+  "mission_not_bound_to_thread",
+  "mission_not_found",
+]);
+export type TradingToolRejectionReason = typeof TradingToolRejectionReason.Type;
+
+export class TradingToolRejectedError extends Schema.TaggedErrorClass<TradingToolRejectedError>()(
+  "TradingToolRejectedError",
+  {
+    reason: TradingToolRejectionReason,
+    /** The thread whose MCP credential made the call. */
+    threadId: Schema.String,
+    /** The mission the call named, when it named one. */
+    missionId: Schema.optional(Schema.String),
+  },
+) {
+  /**
+   * The MCP tool boundary passes a *declared* failure's message through
+   * verbatim and collapses anything else to a generic internal-error string, so
+   * this message is what makes the rejection legible to the harness. Keep the
+   * tag and every field in it.
+   */
+  override get message(): string {
+    const mission = this.missionId === undefined ? "" : `, mission=${this.missionId}`;
+    return `TradingToolRejectedError: ${this.reason} (thread=${this.threadId}${mission})`;
+  }
+}
+
 // -- trading_get_mission -----------------------------------------------------
 
 export const TradingGetMissionInput = Schema.Struct({

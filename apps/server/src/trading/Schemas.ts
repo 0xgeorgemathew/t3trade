@@ -73,6 +73,8 @@ export {
   TradingGetMissionResult,
   TradingPublishMomentumStrategyInput,
   TradingPublishMomentumStrategyResult,
+  TradingToolRejectedError,
+  TradingToolRejectionReason,
 } from "@t3tools/trading-contracts/tools";
 
 export {

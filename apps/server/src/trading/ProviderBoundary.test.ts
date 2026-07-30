@@ -12,6 +12,16 @@ import { assert, describe, it } from "@effect/vitest";
  */
 const tradingDir = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 
+/**
+ * Every directory the trading extension owns. The MCP toolkit lives beside the
+ * other toolkits rather than under `trading/`, but it is trading code and the
+ * same boundary applies to it.
+ */
+const TRADING_SOURCE_DIRS: ReadonlyArray<string> = [
+  tradingDir,
+  NodePath.join(tradingDir, "..", "mcp", "toolkits", "trading"),
+];
+
 const readTradingSources = (): ReadonlyArray<{
   readonly file: string;
   readonly source: string;
@@ -23,7 +33,7 @@ const readTradingSources = (): ReadonlyArray<{
       return entry.name.endsWith(".ts") ? [full] : [];
     });
 
-  return walk(tradingDir)
+  return TRADING_SOURCE_DIRS.flatMap(walk)
     .filter((file) => !file.endsWith(".test.ts"))
     .map((file) => ({
       file: NodePath.relative(tradingDir, file),

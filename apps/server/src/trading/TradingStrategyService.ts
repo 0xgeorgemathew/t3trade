@@ -20,7 +20,10 @@ import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/
 import { TradingMissionNotFoundError } from "./Errors.ts";
 import { isActiveMissionStatus } from "./MissionTransitions.ts";
 import {
+  MarketWatch,
   MomentumStrategyState,
+  PersistedWatch,
+  PersistedWatchStatus,
   TradingMissionStatus,
   TradingPublishMomentumStrategyInput,
   TradingPublishMomentumStrategyResult,
@@ -43,6 +46,15 @@ export interface TradingStrategyServiceShape {
   readonly getCurrentStrategy: (
     missionId: string,
   ) => Effect.Effect<Option.Option<MomentumStrategyState>, PersistenceSqlError>;
+
+  /**
+   * Every persisted watch for a mission, newest first — including the
+   * superseded ones, so a reader can see what the previous strategy version
+   * was waiting on.
+   */
+  readonly listWatches: (
+    missionId: string,
+  ) => Effect.Effect<ReadonlyArray<PersistedWatch>, PersistenceSqlError>;
 }
 
 export class TradingStrategyService extends Context.Service<
@@ -54,6 +66,28 @@ const StrategyJson = Schema.fromJsonString(MomentumStrategyState);
 const decodeStrategyJson = Schema.decodeUnknownSync(StrategyJson);
 const encodeStrategyJson = Schema.encodeUnknownSync(StrategyJson);
 const decodeMissionStatus = Schema.decodeUnknownSync(TradingMissionStatus);
+const decodeWatchJson = Schema.decodeUnknownSync(Schema.fromJsonString(MarketWatch));
+const decodeWatchStatus = Schema.decodeUnknownSync(PersistedWatchStatus);
+
+interface WatchRow {
+  readonly watch_id: string;
+  readonly mission_id: string;
+  readonly strategy_version: number;
+  readonly watch_json: string;
+  readonly status: string;
+  readonly created_at: number;
+  readonly updated_at: number;
+}
+
+const toPersistedWatch = (row: WatchRow): PersistedWatch => ({
+  id: row.watch_id,
+  missionId: row.mission_id,
+  strategyVersion: row.strategy_version,
+  watch: decodeWatchJson(row.watch_json),
+  status: decodeWatchStatus(row.status),
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
 
 const makeTradingStrategyService = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -74,6 +108,17 @@ const makeTradingStrategyService = Effect.gen(function* () {
       const row = rows[0];
       return row === undefined ? Option.none() : Option.some(decodeStrategyJson(row.strategy_json));
     });
+
+  const listWatches: TradingStrategyServiceShape["listWatches"] = (missionId) =>
+    sql<WatchRow>`
+      SELECT watch_id, mission_id, strategy_version, watch_json, status, created_at, updated_at
+      FROM trading_watches
+      WHERE mission_id = ${missionId}
+      ORDER BY created_at DESC, watch_id DESC
+    `.pipe(
+      Effect.mapError(sqlFail("listWatches")),
+      Effect.map((rows) => rows.map(toPersistedWatch)),
+    );
 
   const publishMomentumStrategy: TradingStrategyServiceShape["publishMomentumStrategy"] = (input) =>
     Effect.gen(function* () {
@@ -155,6 +200,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
   return {
     publishMomentumStrategy,
     getCurrentStrategy,
+    listWatches,
   } satisfies TradingStrategyServiceShape;
 });
 

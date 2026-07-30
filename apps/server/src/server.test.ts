@@ -765,6 +765,9 @@ const buildAppUnderTest = (options?: {
     );
 
     const appLayer = servedRoutesLayer.pipe(
+      // The /mcp trading toolkit reads persisted mission state, so the routes
+      // layer now genuinely needs a database to build.
+      Layer.provide(SqlitePersistenceMemory),
       Layer.provide(resourceTelemetryLayer),
       Layer.provide(
         Layer.mock(BrowserTraceCollector.BrowserTraceCollector)({

@@ -129,6 +129,18 @@ export interface TradingMissionServiceShape {
   readonly findActiveMission: (
     userId: string,
   ) => Effect.Effect<Option.Option<TradingMission>, PersistenceSqlError>;
+
+  /**
+   * The still-authoritative mission whose harness binding names `threadId`, if
+   * any.
+   *
+   * This is how a harness-facing tool call resolves which mission it is allowed
+   * to act on: the credential carries a thread, §10.2 freezes that thread onto
+   * one active mission, so the thread is the authorization.
+   */
+  readonly findMissionByThreadId: (
+    threadId: string,
+  ) => Effect.Effect<Option.Option<TradingMission>, PersistenceSqlError>;
 }
 
 export class TradingMissionService extends Context.Service<
@@ -239,6 +251,19 @@ const makeTradingMissionService = Effect.gen(function* () {
         SELECT * FROM trading_missions
         WHERE user_id = ${userId} AND status NOT IN ('revoked', 'completed')
       `.pipe(Effect.mapError(sqlFail("findActiveMission")));
+
+      const row = rows[0];
+      if (row === undefined) return Option.none();
+      return Option.some(yield* hydrate(row).pipe(Effect.orDie));
+    });
+
+  const findMissionByThreadId: TradingMissionServiceShape["findMissionByThreadId"] = (threadId) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<MissionRow>`
+        SELECT * FROM trading_missions
+        WHERE json_extract(harness_json, '$.threadId') = ${threadId}
+          AND status NOT IN ('revoked', 'completed')
+      `.pipe(Effect.mapError(sqlFail("findMissionByThreadId")));
 
       const row = rows[0];
       if (row === undefined) return Option.none();
@@ -374,6 +399,7 @@ const makeTradingMissionService = Effect.gen(function* () {
     updateHarnessBinding,
     getMission,
     findActiveMission,
+    findMissionByThreadId,
   } satisfies TradingMissionServiceShape;
 });
 
