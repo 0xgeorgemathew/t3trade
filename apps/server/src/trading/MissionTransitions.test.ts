@@ -46,6 +46,80 @@ const LEGAL_EDGES: ReadonlyArray<readonly [TradingMissionStatus, TradingMissionS
 
 const legalKeys = new Set(LEGAL_EDGES.map(([from, to]) => `${from}->${to}`));
 
+/**
+ * The §11.1 table transcribed exactly as published, including the spec's own
+ * `suspend` / `end` shorthand. This is a transcription, not a derivation: it
+ * must be edited only when the published table changes.
+ */
+const SUSPEND = ["paused", "agent_unavailable", "blocked"] as const;
+const END = ["revoked", "completed"] as const;
+
+const PUBLISHED_TABLE: Readonly<Record<TradingMissionStatus, readonly TradingMissionStatus[]>> = {
+  initializing: ["analysing", ...SUSPEND, ...END],
+  analysing: ["waiting", ...SUSPEND, ...END],
+  waiting: ["analysing", "executing", ...SUSPEND, ...END],
+  executing: ["position_open", "waiting", ...SUSPEND, ...END],
+  position_open: ["waiting", "analysing", "executing", ...SUSPEND, ...END],
+  paused: ["analysing", ...SUSPEND, ...END],
+  agent_unavailable: ["analysing", ...SUSPEND, ...END],
+  blocked: ["analysing", ...SUSPEND, ...END],
+  revoked: [],
+  completed: [],
+};
+
+const sorted = (statuses: readonly TradingMissionStatus[]): readonly TradingMissionStatus[] =>
+  [...statuses].sort();
+
+describe("published §11.1 transition table", () => {
+  it("lists exactly the ten published statuses", () => {
+    assert.deepStrictEqual(
+      sorted(ALL_MISSION_STATUSES),
+      sorted(Object.keys(PUBLISHED_TABLE) as TradingMissionStatus[]),
+    );
+  });
+
+  it("implements the published table verbatim", () => {
+    for (const from of ALL_MISSION_STATUSES) {
+      // "No self-transitions" applies to the shorthand too: a suspended status
+      // is not among its own `suspend` targets.
+      const published = PUBLISHED_TABLE[from].filter((to) => to !== from);
+      assert.deepStrictEqual(
+        sorted(allowedTransitions(from)),
+        sorted(published),
+        `allowed transitions out of ${from}`,
+      );
+    }
+  });
+
+  it("requires blockedReason exactly when entering blocked", () => {
+    for (const from of ALL_MISSION_STATUSES) {
+      for (const to of allowedTransitions(from)) {
+        const withoutReason = validateTransition({ from, to });
+        const withReason = validateTransition({
+          from,
+          to,
+          blockedReason: "protection_failure",
+        });
+        if (to === "blocked") {
+          assert.deepStrictEqual(
+            withoutReason,
+            { reason: "blocked_reason_required" },
+            `${from} -> blocked`,
+          );
+          assert.equal(withReason, undefined, `${from} -> blocked with reason`);
+        } else {
+          assert.equal(withoutReason, undefined, `${from} -> ${to}`);
+          assert.deepStrictEqual(
+            withReason,
+            { reason: "blocked_reason_not_allowed" },
+            `${from} -> ${to} with reason`,
+          );
+        }
+      }
+    }
+  });
+});
+
 describe("mission state machine (§11.1)", () => {
   it("covers all ten published statuses", () => {
     assert.equal(ALL_MISSION_STATUSES.length, 10);

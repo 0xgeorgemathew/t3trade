@@ -1,9 +1,12 @@
 /**
  * Mission state machine - spec §11.1.
  *
- * The only legal paths through mission state. A harness run may not invent
- * transitions; the deterministic authority and execution services may only move
- * a mission to `blocked` for one of the four persisted reasons.
+ * §11.1 publishes the complete transition table: ten statuses, no
+ * self-transitions, and `blockedReason` required exactly when entering
+ * `blocked`. This module is a direct encoding of that table — a harness run may
+ * not invent transitions, and the deterministic authority and execution
+ * services may only move a mission to `blocked` for one of the four persisted
+ * reasons.
  *
  * @module MissionTransitions
  */
@@ -32,19 +35,10 @@ export const LOOP_STATUSES = [
 ] as const;
 
 /**
- * The active loop's edges.
+ * The active loop's edges, verbatim from the §11.1 transition table.
  *
- * `initializing -> analysing -> waiting -> executing -> position_open -> waiting`
- * is the published main loop. Three further edges come from the §11.1 loop
- * description ("wake on event, reassess, enter or decline, manage, close") and
- * §12.4's worked example rather than from the diagram's arrows:
- *
- * - `waiting -> analysing` and `position_open -> analysing`: a watch fires and
- *   the harness reassesses in the next turn.
- * - `executing -> waiting`: the execution record reached a non-fill terminal
- *   (§11.4 rejected/canceled/expired), so no position was opened.
- * - `position_open -> executing`: scale-in and partial reduction, both of which
- *   the authority admits, are executions raised while a position is open.
+ * `MissionTransitions.test.ts` asserts this table equals the published one edge
+ * for edge, so the meaning of each edge stays with the spec rather than here.
  */
 const LOOP_TRANSITIONS: Readonly<
   Record<(typeof LOOP_STATUSES)[number], readonly TradingMissionStatus[]>

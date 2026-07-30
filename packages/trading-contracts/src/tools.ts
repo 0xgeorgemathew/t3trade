@@ -6,6 +6,10 @@
  * version, and a stale expected-version publish is rejected rather than
  * silently overwriting current state.
  *
+ * §14.3 publishes `TradingPublishMomentumStrategyInput` and
+ * `TradingPublishMomentumStrategyResult` in full; both are mirrored here
+ * field-for-field.
+ *
  * Scope note: §14.1/§14.2/§14.4-§14.7 name their tools but publish no input or
  * output schemas, and execution is out of scope for this phase. Only the two
  * §14.3 mission tools are modeled here.

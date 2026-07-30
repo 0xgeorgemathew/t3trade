@@ -13,11 +13,10 @@ export const TradingTimeframe = Schema.Literals(["1m", "3m", "5m", "15m", "1h"])
 export type TradingTimeframe = typeof TradingTimeframe.Type;
 
 /**
- * A condition the harness published in prose, with optional structured hints.
+ * A condition the harness published in prose, with optional structured hints -
+ * spec §10.5.
  *
- * NOTE: fork-authored shape. `AgentConditionDescription` is referenced by five
- * `MomentumStrategyState` fields on the spec site but never defined there. The
- * `description` field carries the authoritative conclusion; the optional fields
+ * `description` carries the authoritative conclusion; the three optional fields
  * are display hints only and are never used to make a runtime decision — watch
  * predicates come from `MarketWatch`, never from a condition description.
  */

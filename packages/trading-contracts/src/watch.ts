@@ -59,11 +59,11 @@ export const PersistedWatchStatus = Schema.Literals([
 export type PersistedWatchStatus = typeof PersistedWatchStatus.Type;
 
 /**
- * A watch as persisted, bound to the strategy version that registered it.
+ * A watch as persisted, bound to the strategy version that registered it -
+ * spec §12.1.
  *
- * NOTE: fork-authored shape. §11.3 publishes the six statuses and states that a
- * watch is "bound to a strategy version", but does not publish the record's
- * field names. `watch` carries the published `MarketWatch` union verbatim.
+ * `watch` carries the published `MarketWatch` union verbatim; `strategyVersion`
+ * is what makes a watch supersedable when the harness publishes v(n+1).
  */
 export const PersistedWatch = Schema.Struct({
   id: TradingId,
