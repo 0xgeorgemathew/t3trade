@@ -27,6 +27,14 @@ import {
   TradingPublishMomentumStrategyResult,
 } from "./tools.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
+import {
+  TradingCloid,
+  TradingExecutionRecord,
+  TradingFill,
+  TradingLossBudget,
+  TradingOrderIntent,
+  TradingRiskReservation,
+} from "./execution.ts";
 
 const decodeAccount = Schema.decodeUnknownSync(TradingAccount);
 const decodeAuthority = Schema.decodeUnknownSync(TradingAuthority);
@@ -47,6 +55,12 @@ const decodeOrderBook = Schema.decodeUnknownSync(OrderBook);
 const decodeAgentAccountSnapshot = Schema.decodeUnknownSync(AgentAccountSnapshot);
 const decodeAgentNetPosition = Schema.decodeUnknownSync(AgentNetPosition);
 const decodeAgentOpenOrder = Schema.decodeUnknownSync(AgentOpenOrder);
+const decodeOrderIntent = Schema.decodeUnknownSync(TradingOrderIntent);
+const decodeExecutionRecord = Schema.decodeUnknownSync(TradingExecutionRecord);
+const decodeFill = Schema.decodeUnknownSync(TradingFill);
+const decodeReservation = Schema.decodeUnknownSync(TradingRiskReservation);
+const decodeLossBudget = Schema.decodeUnknownSync(TradingLossBudget);
+const decodeCloid = Schema.decodeUnknownSync(TradingCloid);
 
 const account: TradingAccount = {
   id: "acct_1",
@@ -431,6 +445,159 @@ describe("§10.6 market- and account-read contracts (Phase 2 pin)", () => {
   });
 });
 
+describe("TradingOrderIntent", () => {
+  const stop = { stopPrice: 3_700, plannedLossAtStopUsd: 18 };
+  const intent = {
+    missionId: "mission_1",
+    strategyVersion: 1,
+    executionSequence: 0,
+    actionType: "open",
+    market: "ETH",
+    side: "buy",
+    size: 0.5,
+    orderPreference: "marketable_ioc",
+    limitPrice: 3_750,
+    stop,
+    reduceOnly: false,
+  } as const;
+
+  it("decodes a valid position-increasing entry intent", () => {
+    const decoded = decodeOrderIntent(intent);
+    expect(decoded.side).toBe("buy");
+    expect(decoded.stop.stopPrice).toBe(3_700);
+  });
+
+  it("rejects an intent without a stop (§16.3 item 17)", () => {
+    expect(() => decodeOrderIntent({ ...intent, stop: undefined })).toThrow();
+  });
+
+  it("rejects a non-positive size", () => {
+    expect(() => decodeOrderIntent({ ...intent, size: 0 })).toThrow();
+  });
+});
+
+describe("TradingCloid", () => {
+  it("accepts a 32-char lowercase hex string", () => {
+    expect(decodeCloid("0123456789abcdef0123456789abcdef")).toBe(
+      "0123456789abcdef0123456789abcdef",
+    );
+  });
+
+  it("rejects a cloid with a 0x prefix (wire convention is bare)", () => {
+    expect(() => decodeCloid("0x0123456789abcdef0123456789abcdef")).toThrow();
+  });
+
+  it("rejects a cloid of the wrong length", () => {
+    expect(() => decodeCloid("0123456789abcdef")).toThrow();
+  });
+});
+
+describe("TradingExecutionRecord", () => {
+  const record = {
+    executionId: "exec_1",
+    missionId: "mission_1",
+    strategyVersion: 1,
+    executionSequence: 0,
+    actionType: "open",
+    cloid: "0123456789abcdef0123456789abcdef",
+    idempotencyKey: "idem_1",
+    market: "ETH",
+    side: "buy",
+    size: 0.5,
+    limitPrice: 3_750,
+    timeInForce: "ioc",
+    reduceOnly: false,
+    signerAddress: "0xabc",
+    status: "previewed",
+    orderResults: [],
+    createdAt: 1_753_000_000_000,
+    updatedAt: 1_753_000_000_000,
+  } as const;
+
+  it("decodes a previewed execution record before signing", () => {
+    expect(decodeExecutionRecord(record).status).toBe("previewed");
+  });
+
+  it("rejects an unknown execution status", () => {
+    expect(() => decodeExecutionRecord({ ...record, status: "pending" })).toThrow();
+  });
+});
+
+describe("TradingFill", () => {
+  const fill = {
+    fillId: "fill_1",
+    missionId: "mission_1",
+    orderId: 90_542_681,
+    market: "ETH",
+    side: "buy",
+    filledSize: 0.5,
+    avgFillPrice: 3_748,
+    feeUsd: 0.0187,
+    feeToken: "USDC",
+    tradedAt: 1_753_000_000_000,
+    observedAt: 1_753_000_000_000,
+  } as const;
+
+  it("decodes a reconciled fill", () => {
+    expect(decodeFill(fill).filledSize).toBe(0.5);
+  });
+
+  it("rejects a non-positive filled size", () => {
+    expect(() => decodeFill({ ...fill, filledSize: 0 })).toThrow();
+  });
+});
+
+describe("TradingRiskReservation", () => {
+  const reservation = {
+    reservationId: "res_1",
+    missionId: "mission_1",
+    executionId: "exec_1",
+    cloid: "0123456789abcdef0123456789abcdef",
+    actionType: "open",
+    reservedRiskUsd: 20,
+    status: "reserved",
+    reservedAt: 1_753_000_000_000,
+  } as const;
+
+  it("decodes a reserved pending-entry reservation", () => {
+    expect(decodeReservation(reservation).status).toBe("reserved");
+  });
+
+  it("accepts a released reservation with a release timestamp", () => {
+    expect(
+      decodeReservation({ ...reservation, status: "released", releasedAt: 1_753_000_001_000 })
+        .releasedAt,
+    ).toBe(1_753_000_001_000);
+  });
+});
+
+describe("TradingLossBudget", () => {
+  const budget = {
+    maximumCumulativeLossUsd: 100,
+    closedPnlUsd: -12,
+    netFundingUsd: -0.5,
+    allPaidTradingFeesUsd: 1.2,
+    realizedMissionResultUsd: -13.7,
+    realizedLossUsedUsd: 13.7,
+    openPositionRiskUsd: 18,
+    pendingEntryRiskUsd: 20,
+    lossBudgetUsedUsd: 51.7,
+    remainingCumulativeLossUsd: 48.3,
+    exhausted: false,
+    observedAt: 1_753_000_000_000,
+  } as const;
+
+  it("decodes a non-exhausted budget", () => {
+    expect(decodeLossBudget(budget).remainingCumulativeLossUsd).toBe(48.3);
+  });
+
+  it("accepts an exhausted budget at zero remaining", () => {
+    expect(
+      decodeLossBudget({ ...budget, remainingCumulativeLossUsd: 0, exhausted: true }).exhausted,
+    ).toBe(true);
+  });
+});
+
 describe("subpath exports", () => {
   it("maps every domain-area module to a subpath whose types and import agree", () => {
     const exportMap = packageJson.exports as Record<string, { types: string; import: string }>;
@@ -448,6 +615,7 @@ describe("subpath exports", () => {
         "./tools",
         "./market",
         "./account-snapshot",
+        "./execution",
       ].sort(),
     );
 

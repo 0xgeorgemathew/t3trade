@@ -39,6 +39,22 @@
     "./Gateway": {
       "types": "./src/Gateway.ts",
       "import": "./src/Gateway.ts"
+    },
+    "./Cloid": {
+      "types": "./src/Cloid.ts",
+      "import": "./src/Cloid.ts"
+    },
+    "./NonceCoordinator": {
+      "types": "./src/NonceCoordinator.ts",
+      "import": "./src/NonceCoordinator.ts"
+    },
+    "./Signing": {
+      "types": "./src/Signing.ts",
+      "import": "./src/Signing.ts"
+    },
+    "./OrderMapper": {
+      "types": "./src/OrderMapper.ts",
+      "import": "./src/OrderMapper.ts"
     }
   },
   "scripts": {
@@ -47,6 +63,8 @@
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
+    "@noble/curves": "catalog:",
+    "@noble/hashes": "catalog:",
     "@t3tools/trading-contracts": "workspace:*",
     "effect": "catalog:"
   },

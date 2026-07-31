@@ -148,3 +148,19 @@ sit under `packages/hyperliquid/fixtures/` and are replayed by `wire.test.ts`.
 Add a new `## PROMPT-NN · <phase name>` section per phase that touches
 upstream-owned files, so `SYNC_RUNBOOK.md` batches can be checked against
 this ledger for expected conflicts.
+
+## PROMPT-04 · Trading execution and reconciliation
+
+Fork-owned additions (`packages/trading-contracts/src/execution.ts`,
+`packages/hyperliquid/src/{Cloid,NonceCoordinator,Signing,OrderMapper}.ts`,
+`apps/server/src/trading/InterimSignerConfig.ts`,
+`docs/architecture/trading-execution.md`) are new files and cannot conflict
+on sync, so they are not listed. Only upstream-owned edits appear below.
+
+### Applied
+
+| Date       | Seam              | File(s)                                                                            | Change                                                                                                                                                                                                                |
+| ---------- | ----------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-31 | Build-time env    | `.env.example`                                                                     | Added the optional `T3_TRADES_INTERIM_SIGNER_KEY` / `T3_TRADES_INTERIM_SIGNER_ADDRESS` knobs for the interim testnet signer (PROMPT-04). Fail-closed when unset; Privy replaces this in PROMPT-06.                    |
+| 2026-07-31 | hyperliquid deps  | `packages/hyperliquid/package.json`                                                | Added `@noble/curves` and `@noble/hashes` (both already in the workspace catalog, consumed elsewhere for DPoP) as dependencies and the `./Cloid`, `./NonceCoordinator`, `./Signing`, `./OrderMapper` subpath exports. |
+| 2026-07-31 | trading-contracts | `packages/trading-contracts/package.json`, `src/index.ts`, `src/contracts.test.ts` | Added the `./execution` subpath and its export/tests for the deferred execution-domain contracts (§14.4–§14.7, §15, §16.2, §18).                                                                                      |

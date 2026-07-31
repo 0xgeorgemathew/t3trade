@@ -47,6 +47,10 @@
     "./account-snapshot": {
       "types": "./src/account-snapshot.ts",
       "import": "./src/account-snapshot.ts"
+    },
+    "./execution": {
+      "types": "./src/execution.ts",
+      "import": "./src/execution.ts"
     }
   },
   "scripts": {
