@@ -55,6 +55,10 @@
     "./OrderMapper": {
       "types": "./src/OrderMapper.ts",
       "import": "./src/OrderMapper.ts"
+    },
+    "./Msgpack": {
+      "types": "./src/Msgpack.ts",
+      "import": "./src/Msgpack.ts"
     }
   },
   "scripts": {
