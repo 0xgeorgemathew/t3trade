@@ -18,7 +18,7 @@ import {
   WireOpenOrdersResponse,
 } from "./wire.ts";
 
-const decode = <A>(schema: Schema.Schema<A>) => Schema.decodeUnknownSync(schema);
+const decode = Schema.decodeUnknownSync;
 
 describe("Hyperliquid wire schemas decode exchange responses", () => {
   it("decodes metaAndAssetCtxs parallel arrays", () => {

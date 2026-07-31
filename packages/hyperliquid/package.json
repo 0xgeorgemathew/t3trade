@@ -35,10 +35,6 @@
     "./Precision": {
       "types": "./src/Precision.ts",
       "import": "./src/Precision.ts"
-    },
-    "./Gateway": {
-      "types": "./src/Gateway.ts",
-      "import": "./src/Gateway.ts"
     }
   },
   "scripts": {

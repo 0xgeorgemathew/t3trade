@@ -38,11 +38,17 @@ export interface FakeInfoResponses {
 }
 
 /**
+ * The implementation shape of {@link HyperliquidInfoClient} — the `Service`
+ * member of the tag, which is what `.of()` produces and `Layer.succeed` accepts.
+ */
+type HyperliquidInfoClientService = (typeof HyperliquidInfoClient)["Service"];
+
+/**
  * Build a fake Info client from canned responses. Unset methods fail with a
  * descriptive error so a test notices a missing fixture rather than silently
  * returning undefined.
  */
-export function makeFakeInfoClient(responses: FakeInfoResponses): HyperliquidInfoClient {
+export function makeFakeInfoClient(responses: FakeInfoResponses): HyperliquidInfoClientService {
   const fail = (op: string) => Effect.die(`FakeInfoClient: no canned response for ${op}`);
   return HyperliquidInfoClient.of({
     metaAndAssetCtxs: responses.metaAndAssetCtxs
@@ -74,7 +80,7 @@ export const fakeInfoClientLayer = (responses: FakeInfoResponses) =>
  */
 export function makeFakeWebSocketClient(
   deliveries: ReadonlyArray<WsDelivery>,
-): HyperliquidWebSocketClient {
+): (typeof HyperliquidWebSocketClient)["Service"] {
   return HyperliquidWebSocketClient.of({
     subscribe: (subscription: WsSubscription) =>
       Stream.fromIterable(deliveries).pipe(

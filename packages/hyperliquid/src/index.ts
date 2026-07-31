@@ -15,3 +15,5 @@ export * from "./errors.ts";
 export * from "./wire.ts";
 export * from "./InfoClient.ts";
 export * from "./WebSocketClient.ts";
+export * from "./MarketResolver.ts";
+export * from "./Precision.ts";
