@@ -20,8 +20,10 @@ import * as Option from "effect/Option";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 
 import type { TradingMission } from "../../../trading/Schemas.ts";
+import type { PersistedWatch } from "../../../trading/Schemas.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
+import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { TradingToolkit } from "./tools.ts";
@@ -132,6 +134,70 @@ const announceStrategyPublished = Effect.fn("TradingToolkit.announceStrategyPubl
   },
 );
 
+const announceWatchRegistered = Effect.fn("TradingToolkit.announceWatchRegistered")(
+  function* (input: {
+    readonly threadId: string;
+    readonly missionId: string;
+    readonly watch: PersistedWatch;
+  }) {
+    const engine = yield* OrchestrationEngineService;
+    const crypto = yield* Crypto.Crypto;
+    const commandId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+    const createdAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+
+    yield* engine
+      .dispatch({
+        type: "trading.mission.watch-registered",
+        commandId: CommandId.make(commandId),
+        threadId: ThreadId.make(input.threadId),
+        missionId: TradingMissionId.make(input.missionId),
+        watch: input.watch,
+        createdAt,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("could not announce a registered watch to the orchestration engine", {
+            missionId: input.missionId,
+            watchId: input.watch.id,
+            cause,
+          }),
+        ),
+      );
+  },
+);
+
+const announceWatchCancelled = Effect.fn("TradingToolkit.announceWatchCancelled")(
+  function* (input: {
+    readonly threadId: string;
+    readonly missionId: string;
+    readonly watchId: string;
+  }) {
+    const engine = yield* OrchestrationEngineService;
+    const crypto = yield* Crypto.Crypto;
+    const commandId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+    const createdAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+
+    yield* engine
+      .dispatch({
+        type: "trading.mission.watch-cancelled",
+        commandId: CommandId.make(commandId),
+        threadId: ThreadId.make(input.threadId),
+        missionId: TradingMissionId.make(input.missionId),
+        watchId: input.watchId,
+        createdAt,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("could not announce a cancelled watch to the orchestration engine", {
+            missionId: input.missionId,
+            watchId: input.watchId,
+            cause,
+          }),
+        ),
+      );
+  },
+);
+
 const handlers = {
   trading_get_mission: (input) =>
     resolveBoundCall(input.missionId).pipe(Effect.flatMap(({ mission }) => readMission(mission))),
@@ -226,7 +292,7 @@ const handlers = {
         .getMasterWalletAddress(mission.tradingAccountId)
         .pipe(Effect.orDie);
       const gateway = yield* HyperliquidGateway;
-      return yield* gateway.getAccountSnapshot(address as `0x${string}`).pipe(Effect.orDie);
+      return yield* gateway.getAccountSnapshot(address).pipe(Effect.orDie);
     }),
 
   trading_get_position: (input) =>
@@ -237,7 +303,7 @@ const handlers = {
         .getMasterWalletAddress(mission.tradingAccountId)
         .pipe(Effect.orDie);
       const gateway = yield* HyperliquidGateway;
-      return yield* gateway.getPosition(address as `0x${string}`, input.market).pipe(Effect.orDie);
+      return yield* gateway.getPosition(address, input.market).pipe(Effect.orDie);
     }),
 
   trading_get_open_orders: (input) =>
@@ -248,7 +314,106 @@ const handlers = {
         .getMasterWalletAddress(mission.tradingAccountId)
         .pipe(Effect.orDie);
       const gateway = yield* HyperliquidGateway;
-      return yield* gateway.getOpenOrders(address as `0x${string}`).pipe(Effect.orDie);
+      return yield* gateway.getOpenOrders(address).pipe(Effect.orDie);
+    }),
+
+  // -- §14.4 watch tools ------------------------------------------------------
+  //
+  // Each starts with the same resolveBoundCall authorization gate, then writes
+  // through TradingWatchService. register and cancel announce the change on the
+  // orchestration event stream so the workspace sees it over the ordered WS push
+  // path; list is a plain read.
+
+  trading_register_watch: (input) =>
+    Effect.gen(function* () {
+      const { threadId } = yield* resolveBoundCall(input.missionId);
+      const watches = yield* TradingWatchService;
+      const watch = yield* watches.registerWatch(input).pipe(
+        Effect.catchTags({
+          TradingMissionNotFoundError: () =>
+            new TradingToolRejectedError({
+              reason: "mission_not_found",
+              threadId,
+              missionId: input.missionId,
+            }),
+          PersistenceSqlError: (error) => Effect.die(error),
+        }),
+      );
+      yield* announceWatchRegistered({
+        threadId,
+        missionId: input.missionId,
+        watch,
+      });
+      return watch;
+    }),
+
+  trading_schedule_reassessment: (input) =>
+    Effect.gen(function* () {
+      const { threadId } = yield* resolveBoundCall(input.missionId);
+      const watches = yield* TradingWatchService;
+      // A scheduled reassessment is a watch of type `scheduled_reassessment`;
+      // it rides the same register/announce path as any other watch.
+      const watch = yield* watches
+        .registerWatch({
+          missionId: input.missionId,
+          watch: { type: "scheduled_reassessment", runAt: input.runAt },
+        })
+        .pipe(
+          Effect.catchTags({
+            TradingMissionNotFoundError: () =>
+              new TradingToolRejectedError({
+                reason: "mission_not_found",
+                threadId,
+                missionId: input.missionId,
+              }),
+            PersistenceSqlError: (error) => Effect.die(error),
+          }),
+        );
+      yield* announceWatchRegistered({
+        threadId,
+        missionId: input.missionId,
+        watch,
+      });
+      return watch;
+    }),
+
+  trading_list_watches: (input) =>
+    Effect.gen(function* () {
+      yield* resolveBoundCall(input.missionId);
+      // listWatches lives on TradingStrategyService (the mission read model
+      // reads watches through it).
+      const strategies = yield* TradingStrategyService;
+      return yield* strategies.listWatches(input.missionId).pipe(
+        Effect.catchTags({
+          PersistenceSqlError: (error) => Effect.die(error),
+        }),
+      );
+    }),
+
+  trading_cancel_watch: (input) =>
+    Effect.gen(function* () {
+      const { threadId } = yield* resolveBoundCall(input.missionId);
+      const watches = yield* TradingWatchService;
+      const cancelled = yield* watches.cancelWatch(input).pipe(
+        Effect.catchTags({
+          TradingMissionNotFoundError: () =>
+            new TradingToolRejectedError({
+              reason: "mission_not_found",
+              threadId,
+              missionId: input.missionId,
+            }),
+          PersistenceSqlError: (error) => Effect.die(error),
+        }),
+      );
+      if (cancelled === null) {
+        return { outcome: "rejected", reason: "watch_not_active" as const };
+      }
+      yield* announceWatchCancelled({
+        threadId,
+        missionId: input.missionId,
+        watchId: input.watchId,
+      });
+      return { outcome: "cancelled" as const, watch: cancelled };
     }),
 } satisfies Parameters<typeof TradingToolkit.toLayer>[0];
 

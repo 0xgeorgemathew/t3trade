@@ -12,6 +12,8 @@
  * @module TradingToolkitTools
  */
 import {
+  TradingCancelWatchInput,
+  TradingCancelWatchResult,
   TradingGetMissionInput,
   TradingGetMissionResult,
   TradingGetAccountStateInput,
@@ -20,9 +22,15 @@ import {
   TradingGetOpenOrdersInput,
   TradingGetOrderBookInput,
   TradingGetPositionInput,
+  TradingListWatchesInput,
+  TradingListWatchesResult,
   TradingPublishMomentumStrategyInput,
   TradingPublishMomentumStrategyResult,
+  TradingRegisterWatchInput,
+  TradingRegisterWatchResult,
   TradingResolveMarketInput,
+  TradingScheduleReassessmentInput,
+  TradingScheduleReassessmentResult,
   TradingToolRejectedError,
 } from "@t3tools/trading-contracts/tools";
 import {
@@ -44,14 +52,17 @@ import { OrchestrationEngineService } from "../../../orchestration/Services/Orch
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
+import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
   TradingMissionService,
   TradingStrategyService,
-  // An accepted publish is announced on the orchestration event stream so the
-  // workspace sees it over the ordered WS push path.
+  // Watch tools (register/cancel/list) write through the watch service.
+  TradingWatchService,
+  // An accepted publish or watch change is announced on the orchestration event
+  // stream so the workspace sees it over the ordered WS push path.
   OrchestrationEngineService,
   Crypto.Crypto,
   // Phase 2 read tools reach Hyperliquid through the gateway.
@@ -188,6 +199,64 @@ export const TradingGetOpenOrdersTool = Tool.make("trading_get_open_orders", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, true);
 
+// -- §14.4 watch tools (Phase 3) ---------------------------------------------
+
+export const TradingRegisterWatchTool = Tool.make("trading_register_watch", {
+  description:
+    "Register a typed market watch bound to the mission's current strategy version. The watch is created active; it fires when its predicate matches (a candle's final close, a price cross against a fresh mark/mid, an order or position update) and is superseded automatically on the next strategy publish. Use this to arm the conditions that should wake the next run.",
+  parameters: TradingRegisterWatchInput,
+  success: TradingRegisterWatchResult,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Register watch")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+export const TradingScheduleReassessmentTool = Tool.make("trading_schedule_reassessment", {
+  description:
+    "Schedule a time-based reassessment of this mission at a future Unix-millisecond timestamp. This registers a scheduled_reassessment watch through the same path as trading_register_watch; the evaluator fires it when the timestamp passes. Use this when the harness should wake at a known time (e.g. a funding settlement) rather than on a market signal.",
+  parameters: TradingScheduleReassessmentInput,
+  success: TradingScheduleReassessmentResult,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Schedule reassessment")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+export const TradingListWatchesTool = Tool.make("trading_list_watches", {
+  description:
+    "List every watch registered for this mission, newest first, including its status (active, triggered, superseded, cancelled). Call this to see which conditions are currently armed before deciding whether to register another.",
+  parameters: TradingListWatchesInput,
+  success: TradingListWatchesResult,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "List watches")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+export const TradingCancelWatchTool = Tool.make("trading_cancel_watch", {
+  description:
+    "Cancel an active watch by id. Only an active watch can be cancelled; a watch that already fired, was superseded by a strategy publish, or does not exist is rejected. Use this to disarm a condition that is no longer relevant.",
+  parameters: TradingCancelWatchInput,
+  success: TradingCancelWatchResult,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Cancel watch")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
 export const TradingToolkit = Toolkit.make(
   TradingGetMissionTool,
   TradingPublishMomentumStrategyTool,
@@ -198,4 +267,8 @@ export const TradingToolkit = Toolkit.make(
   TradingGetAccountStateTool,
   TradingGetPositionTool,
   TradingGetOpenOrdersTool,
+  TradingRegisterWatchTool,
+  TradingScheduleReassessmentTool,
+  TradingListWatchesTool,
+  TradingCancelWatchTool,
 );
