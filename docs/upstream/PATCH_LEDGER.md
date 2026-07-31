@@ -181,6 +181,42 @@ session with a fresh mission snapshot when a typed event fires.
 
 (Fork-owned: `TradingEventInbox.ts`, `WatchEvaluator.ts`, and tests are new files under `apps/server/src/trading/`.)
 
+### Step 4+5 — Turn coordinator and wake path (2026-07-31)
+
+| Date       | Seam                         | File(s)                                                             | Change                                                                                                                                                                       |
+| ---------- | ---------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-31 | Trading runtime layer        | `apps/server/src/trading/runtimeLayer.ts`                           | `TradingWakeupComposerLive` wired with gateway + mission/watch/inbox deps; `coordinatorWithDeps` provides it. `TradingLayerLive` composition updated.                        |
+| 2026-07-31 | Mission service address type | `apps/server/src/trading/TradingMissionService.ts`                  | `getMasterWalletAddress` return type changed from `string` to `EvmAddress` so callers (composer, handlers) pass it to the gateway without a cast.                            |
+| 2026-07-31 | Watch service read           | `apps/server/src/trading/TradingWatchService.ts`                    | `getWatch(watchId)` added so the wake path can resolve the triggering watch for the wakeup snapshot.                                                                         |
+| 2026-07-31 | Integration harness layer    | `apps/server/integration/OrchestrationEngineHarness.integration.ts` | `TradingLayerLive` now provided with `orchestrationLayer` + `projectionSnapshotQueryLayer` so the coordinator's `OrchestrationEngineService` requirement is met type-safely. |
+
+(Fork-owned: `TradingTurnCoordinator.ts` (wake dispatch + lease-release watcher), `TradingWakeupComposer.ts`, `TradingWakePath.integration.test.ts` — new files under `apps/server/`.)
+
+### Step 6 — Watch MCP tools (2026-07-31)
+
+| Date       | Seam                  | File(s)                                            | Change                                                                                                          |
+| ---------- | --------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| 2026-07-31 | Toolkit dependencies  | `apps/server/src/mcp/toolkits/trading/tools.ts`    | `TradingWatchService` added to the shared `dependencies` array so watch handlers can resolve it.                |
+| 2026-07-31 | Toolkit handler casts | `apps/server/src/mcp/toolkits/trading/handlers.ts` | Three `address as \`0x${string}\``casts removed (now that`getMasterWalletAddress`returns`EvmAddress` natively). |
+
+(Fork-owned: the four tool definitions and four handlers are additions to existing files; no new files.)
+
+### Step 7 — Thread-derived binding and first run (2026-07-31)
+
+| Date       | Seam                          | File(s)                                             | Change                                                                                                                                                                                                                                |
+| ---------- | ----------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-31 | Mission reactor provider read | `apps/server/src/trading/TradingMissionReactor.ts`  | `ProjectionSnapshotQuery` dependency added; `resolveHarnessBinding` derives provider/instance from the thread's session (replacing the hardcoded `provider: "claude"`). First run (`cause: mission_created`) dispatched after create. |
+| 2026-07-31 | Coordinator fork              | `apps/server/src/trading/TradingTurnCoordinator.ts` | Wake fork switched from `forkScoped` to `forkDetach`; `requestRun` no longer requires `Scope.Scope`.                                                                                                                                  |
+
+## PROMPT-03 · Follow-ups (tracked)
+
+The following were scoped out of this phase and are tracked for a future pass:
+
+- **Web mission composer** — a composer surface in the bound thread for authoring `{instruction, allocatedCapitalUsd}` and dispatching `trading.mission.create`. No trading command dispatch exists on the web today (`apps/web/src` has the read path via `useTradingMissionForThread` but zero `trading.mission.create` wiring).
+- **Trading timeline** — render watch/run/inbox activity rows alongside chat messages, fed by the mission snapshot. The `TimelineEntry` `kind: "work"` row in `session-logic.ts` is the plug-in point.
+- **Lifecycle rail, versioned plan card, armed card (web)** — Step 8 surfaces. The plan's Research/Plan/Armed/Entered/Managing/Closed vocabulary does not exist in `TradingMissionStatus` (10 statuses today); either a UI-side mapping or a contract change is needed. `MissionThreadPanel.tsx:44` has `pending = true` hardcoded.
+- **Mobile equivalents** — React Native versions of the above in `apps/mobile/src/features/threads/`; shared label/format helpers to move to `packages/client-runtime`.
+
 ## Future entries
 
 Add a new `## PROMPT-NN · <phase name>` section per phase that touches
