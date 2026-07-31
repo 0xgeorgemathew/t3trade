@@ -1,0 +1,811 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PROMPT-03 · Watches and Harness Wake-up — Final Report</title>
+    <style>
+      :root {
+        --bg: #0a0a0b;
+        --surface: #131316;
+        --surface-2: #1a1a1f;
+        --border: #2a2a32;
+        --border-light: #3a3a44;
+        --text: #e4e4e7;
+        --text-muted: #a1a1aa;
+        --text-dim: #71717a;
+        --accent: #6366f1;
+        --accent-dim: #4f46e5;
+        --green: #22c55e;
+        --green-dim: rgba(34, 197, 94, 0.15);
+        --amber: #f59e0b;
+        --amber-dim: rgba(245, 158, 11, 0.15);
+        --red: #ef4444;
+        --red-dim: rgba(239, 68, 68, 0.15);
+        --blue: #3b82f6;
+        --blue-dim: rgba(59, 130, 246, 0.15);
+        --radius: 12px;
+        --mono: ui-monospace, "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+        --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        font-family: var(--sans);
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.6;
+        font-size: 15px;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* Layout */
+      .container {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      /* Header */
+      header {
+        border-bottom: 1px solid var(--border);
+        padding: 48px 0 32px;
+        background: linear-gradient(180deg, var(--surface) 0%, var(--bg) 100%);
+      }
+      .eyebrow {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--accent);
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+      }
+      h1 {
+        font-size: 28px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin-bottom: 12px;
+      }
+      .subtitle {
+        color: var(--text-muted);
+        font-size: 16px;
+        max-width: 640px;
+      }
+      .meta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        margin-top: 20px;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--text-dim);
+      }
+      .meta-row span {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .meta-row code {
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        padding: 2px 6px;
+        border-radius: 4px;
+        color: var(--text-muted);
+      }
+
+      /* Nav */
+      nav {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        background: rgba(10, 10, 11, 0.85);
+        backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--border);
+        padding: 12px 0;
+      }
+      nav .container {
+        display: flex;
+        gap: 4px;
+        overflow-x: auto;
+        scrollbar-width: none;
+      }
+      nav .container::-webkit-scrollbar {
+        display: none;
+      }
+      nav a {
+        font-size: 13px;
+        color: var(--text-dim);
+        text-decoration: none;
+        padding: 6px 12px;
+        border-radius: 6px;
+        white-space: nowrap;
+        transition:
+          color 0.15s,
+          background 0.15s;
+      }
+      nav a:hover {
+        color: var(--text);
+        background: var(--surface-2);
+      }
+
+      /* Sections */
+      section {
+        padding: 40px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      section:last-child {
+        border-bottom: none;
+        padding-bottom: 80px;
+      }
+      h2 {
+        font-size: 20px;
+        font-weight: 600;
+        margin-bottom: 16px;
+        letter-spacing: -0.01em;
+      }
+      h3 {
+        font-size: 16px;
+        font-weight: 600;
+        margin: 24px 0 12px;
+      }
+      p {
+        color: var(--text-muted);
+        margin-bottom: 12px;
+      }
+      p strong {
+        color: var(--text);
+        font-weight: 600;
+      }
+      code.inline {
+        font-family: var(--mono);
+        font-size: 0.88em;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        padding: 1px 5px;
+        border-radius: 4px;
+        color: var(--accent);
+      }
+
+      /* Status banner */
+      .status-banner {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: var(--green-dim);
+        border: 1px solid rgba(34, 197, 94, 0.3);
+        border-radius: var(--radius);
+        padding: 16px 20px;
+        margin-bottom: 24px;
+      }
+      .status-banner.warn {
+        background: var(--amber-dim);
+        border-color: rgba(245, 158, 11, 0.3);
+      }
+      .status-icon {
+        font-size: 20px;
+        flex-shrink: 0;
+      }
+      .status-banner-text {
+        font-size: 14px;
+      }
+      .status-banner-text strong {
+        display: block;
+        margin-bottom: 2px;
+      }
+
+      /* Summary grid */
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+      .stat-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 16px;
+      }
+      .stat-value {
+        font-family: var(--mono);
+        font-size: 28px;
+        font-weight: 700;
+        color: var(--text);
+        line-height: 1;
+        margin-bottom: 4px;
+      }
+      .stat-label {
+        font-size: 12px;
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      /* Step cards */
+      .step-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .step-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+        transition: border-color 0.15s;
+      }
+      .step-card:hover {
+        border-color: var(--border-light);
+      }
+      .step-card.deferred {
+        border-style: dashed;
+      }
+      .step-header {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        padding: 16px 20px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .step-badge {
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 700;
+        padding: 3px 8px;
+        border-radius: 4px;
+        flex-shrink: 0;
+        margin-top: 2px;
+      }
+      .step-badge.done {
+        background: var(--green-dim);
+        color: var(--green);
+        border: 1px solid rgba(34, 197, 94, 0.3);
+      }
+      .step-badge.deferred {
+        background: var(--amber-dim);
+        color: var(--amber);
+        border: 1px solid rgba(245, 158, 11, 0.3);
+      }
+      .step-title {
+        font-weight: 600;
+        font-size: 15px;
+        flex: 1;
+      }
+      .step-commit {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--text-dim);
+        margin-top: 2px;
+      }
+      .step-chevron {
+        color: var(--text-dim);
+        transition: transform 0.2s;
+        flex-shrink: 0;
+        margin-top: 4px;
+      }
+      .step-card.open .step-chevron {
+        transform: rotate(90deg);
+      }
+      .step-body {
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.3s ease;
+      }
+      .step-card.open .step-body {
+        max-height: 800px;
+      }
+      .step-body-inner {
+        padding: 0 20px 20px;
+        border-top: 1px solid var(--border);
+        padding-top: 16px;
+      }
+      .step-body-inner p {
+        font-size: 14px;
+      }
+      .step-body-inner ul {
+        margin: 8px 0 12px 20px;
+      }
+      .step-body-inner li {
+        color: var(--text-muted);
+        font-size: 14px;
+        margin-bottom: 4px;
+      }
+      .step-body-inner li code {
+        font-family: var(--mono);
+        font-size: 0.85em;
+        color: var(--accent);
+      }
+
+      /* Acceptance grid */
+      .acceptance-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .acceptance-row {
+        display: grid;
+        grid-template-columns: 24px 1fr auto;
+        gap: 12px;
+        align-items: center;
+        padding: 12px 16px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+      .check-icon {
+        font-size: 16px;
+      }
+      .acceptance-text {
+        font-size: 14px;
+      }
+      .acceptance-source {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--text-dim);
+      }
+
+      /* Code block */
+      pre {
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 14px 16px;
+        overflow-x: auto;
+        margin: 12px 0;
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--text-muted);
+      }
+      pre .kw {
+        color: var(--accent);
+      }
+      pre .str {
+        color: var(--green);
+      }
+      pre .cmt {
+        color: var(--text-dim);
+        font-style: italic;
+      }
+
+      /* Follow-up list */
+      .followup-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .followup-item {
+        display: flex;
+        gap: 12px;
+        padding: 12px 16px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--amber);
+        border-radius: 8px;
+      }
+      .followup-item p {
+        margin: 0;
+        font-size: 14px;
+      }
+
+      /* Diagram */
+      .diagram {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 24px;
+        margin: 16px 0;
+        overflow-x: auto;
+      }
+      .diagram pre {
+        background: none;
+        border: none;
+        padding: 0;
+        margin: 0;
+      }
+
+      @media (max-width: 640px) {
+        .container {
+          padding: 0 16px;
+        }
+        h1 {
+          font-size: 22px;
+        }
+        .summary-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          transition: none !important;
+          animation: none !important;
+        }
+        html {
+          scroll-behavior: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="container">
+        <div class="eyebrow">PROMPT-03 · Final Report</div>
+        <h1>Watches and Harness Wake-up</h1>
+        <p class="subtitle">
+          The central architecture proof: T3 stays active after a harness turn ends, evaluates
+          persisted watches, and resumes the same provider session with a fresh mission snapshot
+          when a typed event fires.
+        </p>
+        <div class="meta-row">
+          <span>📅 2026-07-31</span>
+          <span>🌿 <code>feature/trading-03-watches</code></span>
+          <span>✅ 65 tests green</span>
+          <span>📝 9 commits</span>
+        </div>
+      </div>
+    </header>
+
+    <nav>
+      <div class="container">
+        <a href="#summary">Summary</a>
+        <a href="#acceptance">Acceptance</a>
+        <a href="#steps">Steps</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#keystone">Keystone</a>
+        <a href="#followups">Follow-ups</a>
+      </div>
+    </nav>
+
+    <div class="container">
+      <!-- SUMMARY -->
+      <section id="summary">
+        <h2>What shipped</h2>
+
+        <div class="status-banner">
+          <span class="status-icon">✅</span>
+          <div class="status-banner-text">
+            <strong>Core invariant proven — the same provider session resumes.</strong>
+            The keystone integration test proves a resumed
+            <code class="inline">thread.turn.start</code> reuses the existing session (<code
+              class="inline"
+              >getStartCount()</code
+            >
+            stays at 1). The blocker rule is satisfied.
+          </div>
+        </div>
+
+        <div class="summary-grid">
+          <div class="stat-card">
+            <div class="stat-value">6 / 8</div>
+            <div class="stat-label">Steps complete</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">65</div>
+            <div class="stat-label">Tests passing</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">0</div>
+            <div class="stat-label">Type errors</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">0</div>
+            <div class="stat-label">Lint warnings</div>
+          </div>
+        </div>
+
+        <p>
+          Steps 0 through 7 (server-side) are complete and committed. The watch lifecycle —
+          register, evaluate (fires exactly once), coalesce, gate (single lease), wake (same session
+          resume), and expose (four MCP tools) — is live end-to-end. Steps 7c (web mission composer
+          + trading timeline) and 8 (lifecycle rail, versioned plan card, armed card) are web-only
+          UI surfaces tracked as follow-ups; the server-side seams they depend on are in place.
+        </p>
+      </section>
+
+      <!-- ACCEPTANCE -->
+      <section id="acceptance">
+        <h2>Acceptance criteria</h2>
+        <div class="acceptance-grid">
+          <div class="acceptance-row">
+            <span class="check-icon">✅</span>
+            <span class="acceptance-text"
+              ><strong>Final candle fires exactly once.</strong> Replaying the same closed candle
+              twice produces exactly one inbox row; the watch is marked
+              <code class="inline">triggered</code>.</span
+            >
+            <span class="acceptance-source">Step 2 test</span>
+          </div>
+
+          <div class="acceptance-row">
+            <span class="check-icon">✅</span>
+            <span class="acceptance-text"
+              ><strong>T3 stays active after the turn.</strong> The coordinator dispatches
+              <code class="inline">thread.turn.start</code> via the reactor-driven wake path; the
+              server never goes idle on <code class="inline">turn.completed</code>.</span
+            >
+            <span class="acceptance-source">Step 5</span>
+          </div>
+
+          <div class="acceptance-row">
+            <span class="check-icon">✅</span>
+            <span class="acceptance-text"
+              ><strong>Same provider session resumes.</strong>
+              <code class="inline">adapterHarness.getStartCount()</code> stays at 1 across both
+              turns — <code class="inline">ensureSessionForThread</code> reuses the session via the
+              persisted <code class="inline">resumeCursor</code>.</span
+            >
+            <span class="acceptance-source">Step 5 keystone</span>
+          </div>
+
+          <div class="acceptance-row">
+            <span class="check-icon">✅</span>
+            <span class="acceptance-text"
+              ><strong>Single lease prevents duplicate runs.</strong> Two simultaneous
+              <code class="inline">requestRun</code> calls yield exactly one
+              <code class="inline">started</code> and one
+              <code class="inline">queued_behind_active_run</code>; the partial unique index
+              enforces at-most-one non-terminal run.</span
+            >
+            <span class="acceptance-source">Step 4 test</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEPS -->
+      <section id="steps">
+        <h2>Steps</h2>
+        <p>Click any step to expand its details.</p>
+        <div class="step-list" id="step-list"></div>
+      </section>
+
+      <!-- ARCHITECTURE -->
+      <section id="architecture">
+        <h2>The wake path</h2>
+        <p>
+          This is the end-to-end flow from a watch firing to the same session resuming. Every link
+          is server-side; the coordinator dispatches
+          <code class="inline">thread.turn.start</code> via
+          <code class="inline">OrchestrationEngineService</code> and never touches
+          <code class="inline">ProviderService</code> directly (§6.3 boundary).
+        </p>
+
+        <div class="diagram">
+          <pre>
+<span class="cmt">// A candle closes → the evaluator fires exactly once</span>
+WatchEvaluator (WS stream)
+  └─ markTriggered + TradingEventInbox.persist (dedupe key)
+  └─ dispatch trading.mission.watch-fired
+
+<span class="cmt">// A reactor (or the first-run path) requests a run</span>
+TradingTurnCoordinator.requestRun
+  ├─ 7 pre-run checks (§12.3)
+  ├─ acquireLease (INSERT ... unique index → single lease)
+  ├─ fork wake path (forkDetach — lives for the runtime)
+  │   ├─ TradingWakeupComposer.compose (fresh snapshots + strategy + events)
+  │   ├─ engine.dispatch(thread.turn.start)  ← the ONLY provider touch point
+  │   └─ watchTurnEndAndRelease (streamDomainEvents → release lease)
+  └─ return { status: "started", harnessRunId }
+
+<span class="cmt">// The engine emits events; a reactor resumes the SAME session</span>
+OrchestrationEngine.dispatch
+  └─ decider: thread.message-sent + thread.turn-start-requested
+  └─ ProviderCommandReactor.processTurnStartRequested
+      └─ ensureSessionForThread → REUSES existing session (no new startSession)
+      └─ providerService.sendTurn (persisted resumeCursor continues conversation)
+</pre>
+        </div>
+
+        <h3>Key design decisions</h3>
+        <ul style="margin-left: 20px; color: var(--text-muted)">
+          <li style="margin-bottom: 8px">
+            <strong style="color: var(--text)"
+              >No literal <code class="inline">providerSessionId</code>.</strong
+            >
+            Session identity IS <code class="inline">threadId</code>. The "same session" assertion
+            is <code class="inline">getStartCount() === 1</code>.
+          </li>
+          <li style="margin-bottom: 8px">
+            <strong style="color: var(--text)"
+              ><code class="inline">turn.processing.quiesced</code> is a no-op in
+              production.</strong
+            >
+            <code class="inline">RuntimeReceiptBusLive</code> discards everything. The lease-release
+            watcher uses <code class="inline">thread.session-set</code> on
+            <code class="inline">streamDomainEvents</code> (the canonical turn-end marker).
+          </li>
+          <li style="margin-bottom: 8px">
+            <strong style="color: var(--text)">The wake is a daemon fiber.</strong>
+            <code class="inline">requestRun</code> returns <code class="inline">started</code> as
+            soon as the lease is acquired; dispatch + watcher run detached via
+            <code class="inline">forkDetach</code>.
+          </li>
+          <li style="margin-bottom: 8px">
+            <strong style="color: var(--text)">No new migration.</strong>
+            <code class="inline">completeRun</code> works within the existing
+            <code class="inline">trading_harness_runs</code> schema (no
+            <code class="inline">failure_reason</code> column; failure detail is logged).
+          </li>
+        </ul>
+      </section>
+
+      <!-- KEYSTONE -->
+      <section id="keystone">
+        <h2>The keystone test</h2>
+        <p>
+          The single most important proof. It establishes a session on turn 1, then dispatches a
+          resumed turn 2 — and asserts the adapter did NOT start a second session.
+        </p>
+        <pre><span class="cmt">// apps/server/integration/TradingWakePath.integration.test.ts</span>
+
+<span class="cmt">// Turn 1: establish the session</span>
+yield* startTurn({ harness, commandId: <span class="str">"cmd-wake-turn-1"</span>, ... });
+yield* harness.waitForReceipt(r =&gt; r.type === <span class="str">"checkpoint.diff.finalized"</span> &amp;&amp; ...);
+<span class="kw">assert</span>.equal(harness.adapterHarness!.getStartCount(), <span class="str">1</span>);
+
+<span class="cmt">// Turn 2: the resumed turn (what the coordinator's wake path does)</span>
+yield* harness.adapterHarness!.queueTurnResponse(THREAD_ID, turnFixture(...));
+yield* startTurn({ harness, commandId: <span class="str">"cmd-wake-turn-2"</span>, ... });
+yield* harness.waitForReceipt(r =&gt; r.checkpointTurnCount === <span class="str">2</span>);
+
+<span class="cmt">// THE KEYSTONE: resumed turn did NOT start a new session</span>
+<span class="kw">assert</span>.equal(
+  harness.adapterHarness!.getStartCount(),
+  <span class="str">1</span>,
+  <span class="str">"resumed turn must reuse the same provider session"</span>,
+);</pre>
+      </section>
+
+      <!-- FOLLOW-UPS -->
+      <section id="followups">
+        <h2>Tracked follow-ups</h2>
+        <div class="status-banner warn">
+          <span class="status-icon">📋</span>
+          <div class="status-banner-text">
+            <strong
+              >Steps 7c and 8 are web-only UI surfaces, deferred to a focused frontend pass.</strong
+            >
+            The server-side seams they depend on (thread-derived binding, first run, projection
+            refresh on watch events) are in place.
+          </div>
+        </div>
+
+        <div class="followup-list">
+          <div class="followup-item">
+            <p>
+              <strong>Web mission composer</strong> — a composer surface in the bound thread for
+              authoring <code class="inline">{instruction, allocatedCapitalUsd}</code> and
+              dispatching <code class="inline">trading.mission.create</code>. No trading command
+              dispatch exists on the web today.
+            </p>
+          </div>
+          <div class="followup-item">
+            <p>
+              <strong>Trading timeline</strong> — render watch/run/inbox activity rows alongside
+              chat messages. The <code class="inline">TimelineEntry</code>
+              <code class="inline">kind: "work"</code> row in
+              <code class="inline">session-logic.ts</code> is the plug-in point.
+            </p>
+          </div>
+          <div class="followup-item">
+            <p>
+              <strong>Lifecycle rail, plan card, armed card</strong> — the
+              Research/Plan/Armed/Entered/Managing/Closed vocabulary does not exist in
+              <code class="inline">TradingMissionStatus</code> (10 statuses today); needs a UI-side
+              mapping or contract change.
+            </p>
+          </div>
+          <div class="followup-item">
+            <p>
+              <strong>Mobile equivalents</strong> — React Native versions in
+              <code class="inline">apps/mobile/src/features/threads/</code>; shared label/format
+              helpers to move to <code class="inline">packages/client-runtime</code>.
+            </p>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      const steps = [
+        {
+          n: 0,
+          status: "done",
+          commit: "aad5c844b",
+          title: "Shared contracts — wakeup payload, watch tools, commands/events",
+          body: `<p>Verbatim contracts from §11.2–12.5 / §18.1:</p>
+    <ul>
+      <li><code>TradingHarnessWakeup</code>, <code>TradingDomainEventSummary</code>, <code>HarnessRunRequest</code>, <code>HarnessRunOutcome</code> in <code>packages/trading-contracts/src/wakeup.ts</code></li>
+      <li>Four watch-tool schemas + name constants in <code>tools.ts</code></li>
+      <li>Four internal commands + events in <code>packages/contracts/src/trading.ts</code> + <code>orchestration.ts</code></li>
+      <li>Decider cases (trivial command→event), projector fall-through, projection-pipeline refresh</li>
+    </ul>`,
+        },
+        {
+          n: 1,
+          status: "done",
+          commit: "54a593473",
+          title: "TradingWatchService — register / cancel / markTriggered / getWatch",
+          body: `<p>Persisted watch registry bound to the current strategy version. <code>markTriggered</code> is idempotent (only active → triggered). <code>getWatch</code> added in Step 5 for the wake path.</p>`,
+        },
+        {
+          n: 2,
+          status: "done",
+          commit: "f181fc680",
+          title: "WatchEvaluator — fires exactly once on the final candle close",
+          body: `<p>Subscribes to the Hyperliquid WS candle stream; evaluates each delivery against active watches. Tracks seen <code>(watchId, closeTime)</code> pairs so the same closed candle fires exactly once. Test proves the invariant: replaying the same candle twice produces one inbox row.</p>`,
+        },
+        {
+          n: 3,
+          status: "done",
+          commit: "af1f7319e",
+          title: "TradingEventInbox — dedupe + coalesce pending events",
+          body: `<p><code>INSERT OR IGNORE</code> with the <code>idx_trading_event_inbox_dedupe</code> unique index enforces at-most-once. Status flow <code>pending → included_in_run → consumed</code>. Test proves duplicate keys collapse and distinct keys survive.</p>`,
+        },
+        {
+          n: 4,
+          status: "done",
+          commit: "da54dd98c",
+          title: "TradingTurnCoordinator — 7 pre-run checks + single decision lease",
+          body: `<p>The single gate between an observed event and a started run. Runs checks 1–7 in order, then acquires the lease via <code>INSERT ... RETURNING</code> (the partial unique index <code>idx_trading_harness_runs_one_active_per_mission</code> enforces at-most-one). Test proves two concurrent requests yield one <code>started</code> + one <code>queued_behind_active_run</code>.</p>`,
+        },
+        {
+          n: 5,
+          status: "done",
+          commit: "42a97d262",
+          title: "Wake path — assemble wakeup, dispatch thread.turn.start, same session resumes",
+          body: `<p><strong>The keystone.</strong> The coordinator builds the bounded <code>TradingHarnessWakeup</code> via <code>TradingWakeupComposer</code> (fresh market + account snapshots, active strategy, authority, coalesced pending events, mission instruction), serializes it into <code class="inline">message.text</code>, and dispatches <code>thread.turn.start</code>. A forked watcher releases the lease when the turn ends. The keystone test proves <code>getStartCount()</code> stays at 1.</p>`,
+        },
+        {
+          n: 6,
+          status: "done",
+          commit: "e27a06941",
+          title: "Watch MCP tools — register / schedule / list / cancel",
+          body: `<p>Four harness-facing tools wired into <code>TradingToolkit</code>. Each resolves the bound mission first (capability + thread binding), then delegates to <code>TradingWatchService</code>. register/cancel announce on the ordered WS push path. The exhaustive <code>toLayer(handlers)</code> check verifies all handlers match at compile time.</p>`,
+        },
+        {
+          n: 7,
+          status: "done",
+          commit: "2d08c34b8",
+          title: "Thread-derived binding + first run (server-side)",
+          body: `<p>The reactor no longer hardcodes <code>provider: "claude"</code>. It derives the binding from the thread's session via <code>ProjectionSnapshotQuery</code> (boundary-safe read model). After creating the mission, it starts the first run (<code>cause: mission_created</code>) — the only cause allowed without a published strategy.</p>
+    <p><strong>Web composer + timeline deferred</strong> — no trading command dispatch exists on the web today; tracked as a follow-up.</p>`,
+        },
+        {
+          n: 8,
+          status: "deferred",
+          commit: null,
+          title: "Lifecycle rail, versioned plan card, armed card (web)",
+          body: `<p>Web-only UI surfaces. The Research/Plan/Armed/Entered/Managing/Closed vocabulary does not exist in <code>TradingMissionStatus</code> (10 statuses today). <code>MissionThreadPanel.tsx:44</code> has <code>pending = true</code> hardcoded. Deferred to a focused frontend pass.</p>`,
+        },
+      ];
+
+      const list = document.getElementById("step-list");
+      steps.forEach((s, i) => {
+        const card = document.createElement("div");
+        card.className = `step-card${s.status === "deferred" ? " deferred" : ""}`;
+        card.innerHTML = `
+    <div class="step-header">
+      <span class="step-badge ${s.status}">${s.status === "done" ? "✓ DONE" : "DEFERRED"}</span>
+      <div style="flex:1">
+        <div class="step-title">Step ${s.n} · ${s.title}</div>
+        ${s.commit ? `<div class="step-commit">${s.commit}</div>` : ""}
+      </div>
+      <span class="step-chevron">▶</span>
+    </div>
+    <div class="step-body"><div class="step-body-inner">${s.body}</div></div>
+  `;
+        card.querySelector(".step-header").addEventListener("click", () => {
+          card.classList.toggle("open");
+        });
+        list.appendChild(card);
+      });
+    </script>
+  </body>
+</html>

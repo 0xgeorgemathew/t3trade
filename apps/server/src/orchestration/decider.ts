@@ -1262,6 +1262,80 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "trading.mission.watch-registered": {
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "mission",
+          aggregateId: command.missionId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "trading.mission-watch-registered",
+        payload: {
+          missionId: command.missionId,
+          threadId: command.threadId,
+          watch: command.watch,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "trading.mission.watch-cancelled": {
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "mission",
+          aggregateId: command.missionId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "trading.mission-watch-cancelled",
+        payload: {
+          missionId: command.missionId,
+          threadId: command.threadId,
+          watchId: command.watchId,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "trading.mission.watch-fired": {
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "mission",
+          aggregateId: command.missionId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "trading.mission-watch-fired",
+        payload: {
+          missionId: command.missionId,
+          threadId: command.threadId,
+          watchId: command.watchId,
+          deduplicationKey: command.deduplicationKey,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "trading.mission.run-started": {
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "mission",
+          aggregateId: command.missionId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "trading.mission-run-started",
+        payload: {
+          missionId: command.missionId,
+          threadId: command.threadId,
+          harnessRunId: command.harnessRunId,
+          cause: command.cause,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
     default: {
       command satisfies never;
       const fallback = command as never as { type: string };

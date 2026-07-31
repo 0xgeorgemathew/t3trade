@@ -1559,6 +1559,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         // the user a status the domain may still refuse.
         case "trading.mission-status-changed":
         case "trading.mission-strategy-published":
+        case "trading.mission-watch-registered":
+        case "trading.mission-watch-cancelled":
+        case "trading.mission-watch-fired":
+        case "trading.mission-run-started":
           yield* tradingMissionProjection.refresh({
             missionId: event.payload.missionId,
             occurredAt: event.occurredAt,

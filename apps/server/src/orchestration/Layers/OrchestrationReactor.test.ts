@@ -10,6 +10,7 @@ import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import { TradingMissionReactor } from "../../trading/TradingMissionReactor.ts";
+import { WatchEvaluator } from "../../trading/WatchEvaluator.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
@@ -72,6 +73,14 @@ describe("OrchestrationReactor", () => {
               return Effect.void;
             },
             drain: Effect.void,
+          }),
+        ),
+        Layer.provideMerge(
+          Layer.succeed(WatchEvaluator, {
+            start: () => Effect.void,
+            drain: Effect.void,
+            evaluateDelivery: () => Effect.void,
+            sweep: Effect.void,
           }),
         ),
         Layer.provideMerge(

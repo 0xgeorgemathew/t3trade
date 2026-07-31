@@ -143,6 +143,90 @@ sit under `packages/hyperliquid/fixtures/` and are replayed by `wire.test.ts`.
 | Fixture recorder            | Logged counts but never wrote a fixture; now records raw responses (market fixtures need no credentials) and decode-checks them at record time.                                                                                                                                                                                                                                                                                                      |
 | Test-runner rule            | The trading test files used `Effect.runPromise`, which `t3code(no-manual-effect-runtime-in-tests)` rejects — lint was failing at the Phase 2 HEAD. Converted to `@effect/vitest` `it.effect`/`it.live`.                                                                                                                                                                                                                                              |
 
+## PROMPT-03 · Watches and harness wake-up
+
+Phase 3 — the central architecture proof. The T3 server stays active after a
+harness turn ends, evaluates persisted watches, and resumes the same provider
+session with a fresh mission snapshot when a typed event fires.
+
+### Step 0 — Shared contracts (2026-07-31)
+
+| Date       | Seam                                  | File(s)                                                                            | Change                                                                                                                                                                                                                                                             |
+| ---------- | ------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-07-31 | trading-contracts subpath exports     | `packages/trading-contracts/package.json`, `src/index.ts`, `src/contracts.test.ts` | `./wakeup` subpath added (§12.2 `TradingHarnessWakeup`, `TradingDomainEventSummary`; §12.3 `HarnessRunRequest`, `HarnessRunOutcome`); barrel re-export added; expected-subpaths snapshot updated.                                                                  |
+| 2026-07-31 | Watch tool contracts                  | `packages/trading-contracts/src/tools.ts`                                          | Four §14.4 watch-tool schemas + name constants: `trading_register_watch`, `trading_schedule_reassessment`, `trading_list_watches`, `trading_cancel_watch` (inputs/results reusing `MarketWatch`/`PersistedWatch`).                                                 |
+| 2026-07-31 | Orchestration trading commands/events | `packages/contracts/src/trading.ts`, `packages/contracts/src/orchestration.ts`     | Four internal commands + four payloads + four event literals: `trading.mission.{watch-registered,watch-cancelled,watch-fired,run-started}`. Literals appended to `OrchestrationEventType`; event structs added to the `OrchestrationEvent` union; imports updated. |
+| 2026-07-31 | Decider cases                         | `apps/server/src/orchestration/decider.ts`                                         | Four new `case`s mirroring the existing trading command→event pattern (exhaustiveness `satisfies never` forced them).                                                                                                                                              |
+| 2026-07-31 | Pure projector fall-through           | `apps/server/src/orchestration/projector.ts`                                       | Four new trading event types added to the no-op fall-through list (the mission read model is maintained by `ProjectionPipeline`, not here).                                                                                                                        |
+| 2026-07-31 | SQL projection refresh                | `apps/server/src/orchestration/Layers/ProjectionPipeline.ts`                       | `applyTradingMissionsProjection` switch now refreshes on the four new event types (re-reads the authoritative row from migration-035 tables, as the existing trading events do).                                                                                   |
+| 2026-07-31 | Server contract re-exports            | `apps/server/src/trading/Schemas.ts`                                               | Re-exports the wakeup contracts and the four watch-tool schemas so server modules import them from one place.                                                                                                                                                      |
+
+### Step 1 — Watch registry (2026-07-31)
+
+| Date       | Seam                  | File(s)                                   | Change                                                    |
+| ---------- | --------------------- | ----------------------------------------- | --------------------------------------------------------- |
+| 2026-07-31 | Trading runtime layer | `apps/server/src/trading/runtimeLayer.ts` | `TradingWatchServiceLive` merged into `TradingLayerLive`. |
+
+(Fork-owned: `TradingWatchService.ts` + test are new files under `apps/server/src/trading/`.)
+
+### Step 2+3 — Watch evaluator and event inbox (2026-07-31)
+
+| Date       | Seam                           | File(s)                                                                                                                      | Change                                                                                                                                   |
+| ---------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-31 | Trading runtime layer          | `apps/server/src/trading/runtimeLayer.ts`                                                                                    | `TradingEventInboxLive` and `HyperliquidWsLayerLive` merged into `TradingLayerLive`.                                                     |
+| 2026-07-31 | Orchestration reactor          | `apps/server/src/orchestration/Layers/OrchestrationReactor.ts`                                                               | `WatchEvaluator` yielded and `start()` called (subscribes to the WS candle stream, announces `trading.mission.watch-fired`).             |
+| 2026-07-31 | Server reactor wiring          | `apps/server/src/server.ts`                                                                                                  | `WatchEvaluatorLive.pipe(Layer.provide(TradingLayerLive))` added to `ReactorLayerLive` (mirrors `TradingMissionReactorLive`).            |
+| 2026-07-31 | Reactor test stubs             | `apps/server/src/orchestration/Layers/OrchestrationReactor.test.ts`, `integration/OrchestrationEngineHarness.integration.ts` | Stub `WatchEvaluator` provided in both test layers (engine harness does not exercise trading).                                           |
+| 2026-07-31 | Hyperliquid dev subpath export | `packages/hyperliquid/package.json`                                                                                          | `./InfoClientTest` subpath added so the evaluator test can import `fakeWebSocketClientLayer` (dev-only fake; live WS client unaffected). |
+
+(Fork-owned: `TradingEventInbox.ts`, `WatchEvaluator.ts`, and tests are new files under `apps/server/src/trading/`.)
+
+### Step 4+5 — Turn coordinator and wake path (2026-07-31)
+
+| Date       | Seam                         | File(s)                                                             | Change                                                                                                                                                                       |
+| ---------- | ---------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-31 | Trading runtime layer        | `apps/server/src/trading/runtimeLayer.ts`                           | `TradingWakeupComposerLive` wired with gateway + mission/watch/inbox deps; `coordinatorWithDeps` provides it. `TradingLayerLive` composition updated.                        |
+| 2026-07-31 | Mission service address type | `apps/server/src/trading/TradingMissionService.ts`                  | `getMasterWalletAddress` return type changed from `string` to `EvmAddress` so callers (composer, handlers) pass it to the gateway without a cast.                            |
+| 2026-07-31 | Watch service read           | `apps/server/src/trading/TradingWatchService.ts`                    | `getWatch(watchId)` added so the wake path can resolve the triggering watch for the wakeup snapshot.                                                                         |
+| 2026-07-31 | Integration harness layer    | `apps/server/integration/OrchestrationEngineHarness.integration.ts` | `TradingLayerLive` now provided with `orchestrationLayer` + `projectionSnapshotQueryLayer` so the coordinator's `OrchestrationEngineService` requirement is met type-safely. |
+
+(Fork-owned: `TradingTurnCoordinator.ts` (wake dispatch + lease-release watcher), `TradingWakeupComposer.ts`, `TradingWakePath.integration.test.ts` — new files under `apps/server/`.)
+
+### Step 6 — Watch MCP tools (2026-07-31)
+
+| Date       | Seam                  | File(s)                                            | Change                                                                                                          |
+| ---------- | --------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| 2026-07-31 | Toolkit dependencies  | `apps/server/src/mcp/toolkits/trading/tools.ts`    | `TradingWatchService` added to the shared `dependencies` array so watch handlers can resolve it.                |
+| 2026-07-31 | Toolkit handler casts | `apps/server/src/mcp/toolkits/trading/handlers.ts` | Three `address as \`0x${string}\``casts removed (now that`getMasterWalletAddress`returns`EvmAddress` natively). |
+
+(Fork-owned: the four tool definitions and four handlers are additions to existing files; no new files.)
+
+### Step 7 — Thread-derived binding and first run (2026-07-31)
+
+| Date       | Seam                          | File(s)                                             | Change                                                                                                                                                                                                                                |
+| ---------- | ----------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-31 | Mission reactor provider read | `apps/server/src/trading/TradingMissionReactor.ts`  | `ProjectionSnapshotQuery` dependency added; `resolveHarnessBinding` derives provider/instance from the thread's session (replacing the hardcoded `provider: "claude"`). First run (`cause: mission_created`) dispatched after create. |
+| 2026-07-31 | Coordinator fork              | `apps/server/src/trading/TradingTurnCoordinator.ts` | Wake fork switched from `forkScoped` to `forkDetach`; `requestRun` no longer requires `Scope.Scope`.                                                                                                                                  |
+
+### Review pass — wake-loop closure and inbox lifecycle (2026-07-31)
+
+| Date       | Seam                        | File(s)                                                                                                                      | Change                                                                                                                                                                                                                                                                                |
+| ---------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-31 | Mission reactor wake loop   | `apps/server/src/trading/TradingMissionReactor.ts`                                                                           | `trading.mission-watch-fired` now handled: the reactor derives the run cause from the fired watch's type and calls `TradingTurnCoordinator.requestRun` (forked retry while queued behind an active run). This closes the watch→resume loop, which previously ended at the projection. |
+| 2026-07-31 | Coordinator release watcher | `apps/server/src/trading/TradingTurnCoordinator.ts`                                                                          | Turn-end watcher takes exactly one matching event (was a process-lifetime stream consumer per run), is forked before the dispatch, and `markIncludedConsumed` is keyed by mission id (was mistakenly the thread id). Inbox claim is one atomic `UPDATE … RETURNING`.                  |
+| 2026-07-31 | Inbox schema                | `apps/server/src/persistence/Migrations.ts`, `Migrations/037_TradingInboxSummary.ts`                                         | Migration 037 adds `trading_event_inbox.summary` so the human summary persisted with an event survives to the wakeup (it was previously discarded). Dedupe keys are now scoped per watch id.                                                                                          |
+| 2026-07-31 | Watch evaluator coverage    | `apps/server/src/trading/WatchEvaluator.ts`                                                                                  | Candle subscriptions widened to all five §13 direct intervals; a 2s sweep evaluates `price_cross` (fresh gateway snapshot) and fires due `scheduled_reassessment` watches. Redundant in-memory seen-close set removed (`markTriggered` + inbox dedupe are the durable guards).        |
+| 2026-07-31 | Test stubs                  | `apps/server/src/orchestration/Layers/OrchestrationReactor.test.ts`, `integration/OrchestrationEngineHarness.integration.ts` | `WatchEvaluator` stubs gained the new `sweep` member.                                                                                                                                                                                                                                 |
+
+## PROMPT-03 · Follow-ups (tracked)
+
+The following were scoped out of this phase and are tracked for a future pass:
+
+- **Web mission composer** — a composer surface in the bound thread for authoring `{instruction, allocatedCapitalUsd}` and dispatching `trading.mission.create`. No trading command dispatch exists on the web today (`apps/web/src` has the read path via `useTradingMissionForThread` but zero `trading.mission.create` wiring).
+- **Trading timeline** — render watch/run/inbox activity rows alongside chat messages, fed by the mission snapshot. The `TimelineEntry` `kind: "work"` row in `session-logic.ts` is the plug-in point.
+- **Lifecycle rail, versioned plan card, armed card (web)** — Step 8 surfaces. The plan's Research/Plan/Armed/Entered/Managing/Closed vocabulary does not exist in `TradingMissionStatus` (10 statuses today); either a UI-side mapping or a contract change is needed. `MissionThreadPanel.tsx:44` has `pending = true` hardcoded.
+- **Mobile equivalents** — React Native versions of the above in `apps/mobile/src/features/threads/`; shared label/format helpers to move to `packages/client-runtime`.
+
 ## Future entries
 
 Add a new `## PROMPT-NN · <phase name>` section per phase that touches

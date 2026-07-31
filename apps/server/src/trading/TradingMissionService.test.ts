@@ -35,7 +35,7 @@ const createInput = (overrides?: { readonly missionId?: string; readonly userId?
  */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 35 });
+  yield* runMigrations({ toMigrationInclusive: 37 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
 });

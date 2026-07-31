@@ -1,0 +1,1621 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>T3 Trades — Prompt Completeness Eval (PROMPT-00 / 01 / 02)</title>
+    <style>
+      :root {
+        --ivory: #faf9f5;
+        --slate: #141413;
+        --clay: #d97757;
+        --oat: #e3dacc;
+        --olive: #6b8e4e;
+        --rust: #b04a3f;
+        --amber: #c8843b;
+        --gray-100: #f0eee6;
+        --gray-200: #e5e2d8;
+        --gray-300: #d1cfc5;
+        --gray-400: #b3b1a6;
+        --gray-500: #87867f;
+        --gray-700: #3d3d3a;
+        --white: #ffffff;
+
+        --serif: ui-serif, Georgia, serif;
+        --sans: system-ui, -apple-system, sans-serif;
+        --mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+        --radius-panel: 12px;
+        --radius-row: 8px;
+        --border: 1.5px solid var(--gray-300);
+
+        --c-pass: var(--olive);
+        --c-warn: var(--amber);
+        --c-fail: var(--rust);
+        --c-na: var(--gray-400);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 48px 20px 120px;
+        background: var(--ivory);
+        color: var(--slate);
+        font-family: var(--sans);
+        font-size: 15px;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .page {
+        max-width: 980px;
+        margin: 0 auto;
+      }
+
+      /* ---------- Header ---------- */
+      header {
+        margin-bottom: 36px;
+      }
+      .header-top {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+      h1 {
+        font-family: var(--serif);
+        font-weight: 500;
+        font-size: 34px;
+        letter-spacing: -0.01em;
+        margin: 0;
+      }
+      .auto-pill {
+        font-family: var(--mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--gray-500);
+        background: var(--gray-100);
+        border: var(--border);
+        border-radius: 999px;
+        padding: 5px 11px;
+        white-space: nowrap;
+      }
+      .meta {
+        color: var(--gray-500);
+        font-size: 14px;
+      }
+      .meta .repo,
+      .meta .baseline {
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--gray-700);
+      }
+
+      /* ---------- Filter bar ---------- */
+      .filter-bar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background: var(--ivory);
+        margin: 0 -20px 32px;
+        padding: 14px 20px;
+        border-bottom: 1px solid var(--gray-300);
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .filter-bar .spacer {
+        flex: 1;
+      }
+      .chip {
+        font-family: var(--mono);
+        font-size: 12px;
+        padding: 6px 12px;
+        border: 1.5px solid var(--gray-300);
+        border-radius: 999px;
+        background: var(--white);
+        color: var(--gray-700);
+        cursor: pointer;
+        user-select: none;
+        transition:
+          background 120ms,
+          color 120ms,
+          border-color 120ms;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .chip:hover {
+        border-color: var(--gray-400);
+      }
+      .chip.active {
+        background: var(--slate);
+        color: var(--white);
+        border-color: var(--slate);
+      }
+      .chip .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+      .chip[data-filter="pass"] .dot {
+        background: var(--c-pass);
+      }
+      .chip[data-filter="warn"] .dot {
+        background: var(--c-warn);
+      }
+      .chip[data-filter="fail"] .dot {
+        background: var(--c-fail);
+      }
+      .chip[data-filter="prompt"] .dot {
+        background: var(--clay);
+      }
+      .search {
+        font-family: var(--sans);
+        font-size: 13px;
+        padding: 6px 12px;
+        border: 1.5px solid var(--gray-300);
+        border-radius: 999px;
+        background: var(--white);
+        color: var(--slate);
+        width: 200px;
+      }
+      .search:focus {
+        outline: none;
+        border-color: var(--gray-400);
+      }
+
+      /* ---------- Sections ---------- */
+      section {
+        margin-bottom: 44px;
+      }
+      h2 {
+        font-family: var(--serif);
+        font-weight: 500;
+        font-size: 22px;
+        letter-spacing: -0.01em;
+        margin: 0 0 6px;
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+      }
+      h2 .prompt-score {
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 400;
+        color: var(--gray-500);
+        letter-spacing: 0.02em;
+      }
+      hr.rule {
+        border: none;
+        border-top: 1px solid var(--gray-300);
+        margin: 0 0 22px;
+      }
+
+      /* ---------- Summary band ---------- */
+      .summary-band {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 12px;
+      }
+      @media (max-width: 820px) {
+        .summary-band {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+      .stat-card {
+        background: var(--white);
+        border: var(--border);
+        border-radius: var(--radius-panel);
+        padding: 18px 18px 16px;
+      }
+      .stat-card .top-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 10px;
+      }
+      .stat-card .bar-wrap {
+        height: 6px;
+        background: var(--gray-100);
+        border-radius: 999px;
+        overflow: hidden;
+        display: flex;
+      }
+      .stat-card .bar-seg {
+        height: 100%;
+      }
+      .stat-card .bar-seg.pass {
+        background: var(--c-pass);
+      }
+      .stat-card .bar-seg.warn {
+        background: var(--c-warn);
+      }
+      .stat-card .bar-seg.fail {
+        background: var(--c-fail);
+      }
+      .stat-num {
+        font-family: var(--serif);
+        font-size: 30px;
+        font-weight: 500;
+        line-height: 1;
+        color: var(--slate);
+      }
+      .stat-num .total {
+        font-size: 15px;
+        color: var(--gray-500);
+      }
+      .stat-label {
+        font-family: var(--sans);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--gray-500);
+        margin-top: 6px;
+      }
+      .stat-badge {
+        font-family: var(--mono);
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        padding: 3px 8px;
+        border-radius: 4px;
+      }
+      .stat-badge.ok {
+        background: rgba(107, 142, 78, 0.15);
+        color: var(--c-pass);
+      }
+      .stat-badge.warn {
+        background: rgba(200, 132, 59, 0.15);
+        color: var(--c-warn);
+      }
+      .stat-badge.risk {
+        background: rgba(176, 74, 63, 0.15);
+        color: var(--c-fail);
+      }
+
+      /* ---------- Findings table ---------- */
+      table.findings {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        background: var(--white);
+        border: var(--border);
+        border-radius: var(--radius-panel);
+        overflow: hidden;
+      }
+      table.findings thead th {
+        text-align: left;
+        font-family: var(--sans);
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--gray-500);
+        background: var(--gray-100);
+        padding: 11px 14px;
+        border-bottom: 1px solid var(--gray-300);
+        position: sticky;
+        top: 0;
+      }
+      table.findings tbody td {
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--gray-100);
+        font-size: 13.5px;
+        vertical-align: top;
+      }
+      table.findings tbody tr:last-child td {
+        border-bottom: none;
+      }
+      table.findings tbody tr.hidden {
+        display: none;
+      }
+      table.findings tbody tr:hover {
+        background: var(--ivory);
+      }
+
+      .status-cell {
+        white-space: nowrap;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .status-cell .sdot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .status-cell.pass .sdot {
+        background: var(--c-pass);
+      }
+      .status-cell.pass {
+        color: var(--c-pass);
+      }
+      .status-cell.warn .sdot {
+        background: var(--c-warn);
+      }
+      .status-cell.warn {
+        color: var(--c-warn);
+      }
+      .status-cell.fail .sdot {
+        background: var(--c-fail);
+      }
+      .status-cell.fail {
+        color: var(--c-fail);
+      }
+      .status-cell.na .sdot {
+        background: var(--c-na);
+      }
+      .status-cell.na {
+        color: var(--c-na);
+      }
+
+      .req-id {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--gray-500);
+        white-space: nowrap;
+      }
+      .req-text {
+        color: var(--slate);
+      }
+      .req-text .sub {
+        color: var(--gray-500);
+        font-size: 12.5px;
+      }
+      .evidence {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--gray-700);
+        line-height: 1.5;
+      }
+      .evidence code {
+        color: var(--clay);
+        background: var(--gray-100);
+        padding: 1px 4px;
+        border-radius: 3px;
+      }
+      .prompt-tag {
+        font-family: var(--mono);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--gray-500);
+        background: var(--gray-100);
+        padding: 2px 6px;
+        border-radius: 3px;
+        white-space: nowrap;
+      }
+
+      /* ---------- Verdict block ---------- */
+      .verdict {
+        background: var(--white);
+        border: var(--border);
+        border-radius: var(--radius-panel);
+        padding: 22px 26px;
+        margin-bottom: 28px;
+      }
+      .verdict.warn {
+        border-left: 4px solid var(--c-warn);
+        padding-left: 23px;
+      }
+      .verdict.fail {
+        border-left: 4px solid var(--c-fail);
+        padding-left: 23px;
+      }
+      .verdict.ok {
+        border-left: 4px solid var(--c-pass);
+        padding-left: 23px;
+      }
+      .verdict h3 {
+        font-family: var(--serif);
+        font-weight: 500;
+        font-size: 18px;
+        margin: 0 0 8px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .verdict p {
+        margin: 6px 0;
+        color: var(--gray-700);
+        font-size: 14px;
+      }
+      .verdict .gap-list {
+        margin: 10px 0 0;
+        padding-left: 18px;
+      }
+      .verdict .gap-list li {
+        margin-bottom: 6px;
+        font-size: 13.5px;
+      }
+      .verdict .gap-list code {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--clay);
+        background: var(--gray-100);
+        padding: 1px 4px;
+        border-radius: 3px;
+      }
+
+      /* ---------- Gap callout ---------- */
+      .gap-callout {
+        background: var(--oat);
+        border-radius: var(--radius-panel);
+        padding: 18px 22px;
+        margin-top: 16px;
+      }
+      .gap-callout h4 {
+        font-family: var(--sans);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--gray-700);
+        margin: 0 0 8px;
+      }
+      .gap-callout p {
+        font-size: 13.5px;
+        color: var(--gray-700);
+        margin: 4px 0;
+      }
+      .gap-callout code {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--clay);
+      }
+
+      /* ---------- Methodology ---------- */
+      .method {
+        background: var(--gray-100);
+        border-radius: var(--radius-panel);
+        padding: 16px 20px;
+        font-size: 13px;
+        color: var(--gray-700);
+      }
+      .method ol {
+        margin: 6px 0 0;
+        padding-left: 18px;
+      }
+      .method li {
+        margin-bottom: 4px;
+      }
+
+      /* ---------- Footer ---------- */
+      footer {
+        margin-top: 56px;
+        padding-top: 20px;
+        border-top: 1px solid var(--gray-300);
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--gray-500);
+        line-height: 1.7;
+      }
+      footer a {
+        color: var(--clay);
+        text-decoration: none;
+      }
+      footer a:hover {
+        text-decoration: underline;
+      }
+
+      /* reduced motion */
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          transition: none !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header>
+        <div class="header-top">
+          <h1>Prompt Completeness Eval &mdash; PROMPT-00 / 01 / 02</h1>
+          <span class="auto-pill">verification only · no code changed</span>
+        </div>
+        <div class="meta">
+          Evaluated 2026-07-31 &nbsp;&middot;&nbsp;
+          <span class="repo">0xgeorgemathew/t3trade @ main (0940e4cb1)</span>
+          &nbsp;&middot;&nbsp; baseline
+          <span class="baseline">upstream-base/2026-07-29-a8e05cbb</span>
+        </div>
+      </header>
+
+      <!-- Sticky filter bar -->
+      <div class="filter-bar" id="filterBar">
+        <span class="chip active" data-filter="all">All <span id="countAll"></span></span>
+        <span class="chip" data-filter="pass"
+          ><span class="dot"></span>Pass <span id="countPass"></span
+        ></span>
+        <span class="chip" data-filter="warn"
+          ><span class="dot"></span>Partial <span id="countWarn"></span
+        ></span>
+        <span class="chip" data-filter="fail"
+          ><span class="dot"></span>Missing <span id="countFail"></span
+        ></span>
+        <span class="spacer"></span>
+        <span class="chip" data-filter="prompt" data-prompt="00">PROMPT-00</span>
+        <span class="chip" data-filter="prompt" data-prompt="01">PROMPT-01</span>
+        <span class="chip" data-filter="prompt" data-prompt="02">PROMPT-02</span>
+        <input
+          class="search"
+          id="searchBox"
+          type="search"
+          placeholder="Filter findings…"
+          aria-label="Filter findings"
+        />
+      </div>
+
+      <!-- Overall summary -->
+      <section>
+        <div class="summary-band">
+          <div class="stat-card">
+            <div class="top-row">
+              <span class="stat-num">42<span class="total">/52</span></span
+              ><span class="stat-badge ok">81%</span>
+            </div>
+            <div class="bar-wrap">
+              <span class="bar-seg pass" style="width: 81%"></span
+              ><span class="bar-seg warn" style="width: 6%"></span
+              ><span class="bar-seg fail" style="width: 13%"></span>
+            </div>
+            <div class="stat-label">All checks</div>
+          </div>
+          <div class="stat-card">
+            <div class="top-row">
+              <span class="stat-num">12<span class="total">/15</span></span
+              ><span class="stat-badge warn">80%</span>
+            </div>
+            <div class="bar-wrap">
+              <span class="bar-seg pass" style="width: 80%"></span
+              ><span class="bar-seg warn" style="width: 7%"></span
+              ><span class="bar-seg fail" style="width: 13%"></span>
+            </div>
+            <div class="stat-label">PROMPT-00</div>
+          </div>
+          <div class="stat-card">
+            <div class="top-row">
+              <span class="stat-num">13<span class="total">/14</span></span
+              ><span class="stat-badge ok">93%</span>
+            </div>
+            <div class="bar-wrap">
+              <span class="bar-seg pass" style="width: 93%"></span
+              ><span class="bar-seg warn" style="width: 7%"></span>
+            </div>
+            <div class="stat-label">PROMPT-01</div>
+          </div>
+          <div class="stat-card">
+            <div class="top-row">
+              <span class="stat-num">17<span class="total">/23</span></span
+              ><span class="stat-badge warn">74%</span>
+            </div>
+            <div class="bar-wrap">
+              <span class="bar-seg pass" style="width: 74%"></span
+              ><span class="bar-seg warn" style="width: 9%"></span
+              ><span class="bar-seg fail" style="width: 17%"></span>
+            </div>
+            <div class="stat-label">PROMPT-02</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Headline verdicts -->
+      <section>
+        <div class="verdict ok">
+          <h3>
+            PROMPT-01 &mdash; Trading domain and workspace:
+            <span style="color: var(--c-pass)">COMPLETE</span>
+          </h3>
+          <p>
+            Every named deliverable is present and faithful to the spec.
+            <code>packages/trading-contracts</code> covers all eight domain areas (account,
+            authority, mission, strategy, market, watch, events, tools) with execution/order write
+            contracts correctly absent. The <code>TradingMissionService</code> enforces the §11.1
+            state machine and the one-active-mission invariant at both service and DB-unique-index
+            layers. <code>pocAuthorityDefaults</code> returns the exact required values (3x / $3k /
+            $100 / $20 / isolated / reversal-off). Migrations 035 &amp; 036 exist and the projector
+            round-trips domain state into the flat read model.
+          </p>
+          <p>
+            The single blemish is a missing migration round-trip test for <strong>036</strong> (035
+            is fully covered). This is a test-coverage gap, not a functional gap.
+          </p>
+        </div>
+
+        <div class="verdict warn">
+          <h3>
+            PROMPT-00 &mdash; Fork and integration baseline:
+            <span style="color: var(--c-warn)">FUNCTIONALLY COMPLETE</span>
+          </h3>
+          <p>
+            The fork builds, emits upstream-pinned metadata, and the four
+            <code>docs/upstream/*.md</code> files are all present and populated. Remotes are
+            correctly oriented (upstream fetch-only with a <code>DISABLE</code> push URL). The
+            annotated baseline tag <code>upstream-base/2026-07-29-a8e05cbb</code> exists.
+            Updater/release/server-replacement endpoints all resolve to the fork's own repo or
+            env-driven config &mdash; none point at upstream.
+          </p>
+          <p>Three residual gaps, none blocking the build:</p>
+          <ul class="gap-list">
+            <li>
+              <code>productVersion</code> is defined in the build-metadata schema and tested in
+              isolation, but is
+              <strong>not emitted by the runtime server/client descriptors</strong> (they emit
+              <code>serverVersion</code>/<code>APP_VERSION</code> instead).
+              <code>t3UpstreamCommit</code> <em>is</em> emitted correctly. The
+              <code>build:metadata</code> script is registered but never wired into CI.
+            </li>
+            <li>
+              The
+              <strong>fork-independence CI check only matches <code>pingdotgg/t3code</code></strong
+              >, not the <code>t3.codes</code> hosted-app/marketing/Clerk hostnames, which remain
+              live in source (acknowledged as deferred in the PATCH_LEDGER, outside the
+              updater/release/release category the prompt names).
+            </li>
+            <li>
+              The <strong>sync-runbook rehearsal branch is gone</strong> &mdash; the runbook
+              documents a clean merge, but no retrievable git artifact proves it. The runbook itself
+              says the branch was local-only.
+            </li>
+          </ul>
+        </div>
+
+        <div class="verdict fail">
+          <h3>
+            PROMPT-02 &mdash; Read-only Hyperliquid integration:
+            <span style="color: var(--c-fail)">CORE COMPLETE · LIVE SURFACE INCOMPLETE</span>
+          </h3>
+          <p>
+            The read-only adapter (<code>packages/hyperliquid</code>) is solid: InfoClient,
+            WebSocketClient, MarketResolver, Precision, and the Gateway all exist with the right
+            shapes, the 500-bar bound, the 2s/5s freshness constants, and no signing. All seven
+            read-only tools are registered with freshness metadata, and account reads resolve the
+            master wallet server-side.
+          </p>
+          <p>
+            However, the prompt's acceptance criteria for the <em>live reconciled surface</em> are
+            not met. The gaps are concentrated in reconciliation and UI wiring:
+          </p>
+          <ul class="gap-list">
+            <li>
+              <strong>WS&middot;Info reconciliation is comment-only</strong> &mdash; the
+              <code>FreshnessSource</code> union models <code>"reconciled"</code>, but the Gateway
+              never consumes the WebSocket client, never emits <code>"reconciled"</code>, and there
+              is no deduplication of replayed records.
+            </li>
+            <li>
+              <strong>Chat-header live price &amp; equity: MISSING.</strong>
+              <code>ChatHeader.tsx</code> has no market-data fields.
+            </li>
+            <li>
+              <strong>Market-snapshot card renders placeholders</strong> &mdash;
+              <code>MissionThreadPanel</code> exists but every metric is <code>"&mdash;"</code> with
+              a hardcoded pending flag; it is pinned above the timeline, not injected into it.
+            </li>
+            <li>
+              <strong>"91/91 smoke tests" is not true</strong> &mdash; the suite is
+              <strong>9</strong> live blocks (~14 expanded); interval coverage itself is fine.
+            </li>
+            <li><strong>Dev mission bind in the testnet lab: MISSING.</strong></li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ============ PROMPT-00 ============ -->
+      <section data-prompt="00">
+        <h2>
+          PROMPT-00 &mdash; Fork and integration baseline
+          <span class="prompt-score">12 pass · 1 partial · 2 missing</span>
+        </h2>
+        <hr class="rule" />
+        <table class="findings">
+          <thead>
+            <tr>
+              <th style="width: 78px">Status</th>
+              <th>Requirement</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody id="body-00">
+            <tr data-status="pass" data-prompt="00">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  <code>docs/upstream/BASELINE.md</code> with pinned commit, tag, version, date
+                </div>
+              </td>
+              <td class="evidence">
+                All four fields present: SHA <code>a8e05cbb…e5051</code>, tag
+                <code>upstream-base/2026-07-29-a8e05cbb</code>, version <code>0.0.31</code>, date
+                <code>2026-07-29</code>.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="00">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text"><code>PATCH_LEDGER.md</code> seeded with branding seams</div>
+              </td>
+              <td class="evidence">
+                8 <strong>Applied</strong> + 10 <strong>Deferred</strong> branding seams, extends
+                through PROMPT-01/02.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="00">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text"><code>INTEGRATION_MAP.md</code> listing verified paths</div>
+              </td>
+              <td class="evidence">
+                17 server/shared seam paths inventoried with role descriptions + conflict-prone
+                seams.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="00">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text"><code>SYNC_RUNBOOK.md</code> validated by a batch</div>
+              </td>
+              <td class="evidence">
+                Runbook documents a rehearsal (branch
+                <code>sync/upstream-2026-07-30-a8e05cbb</code>, clean merge <code>9ea39265</code>, 0
+                conflicts).
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="00">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">Fetch-only <code>upstream</code> remote (no push)</div>
+              </td>
+              <td class="evidence">
+                <code>upstream</code> = <code>pingdotgg/t3code.git</code> fetch; push URL = literal
+                <code>DISABLE</code>.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="00">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">Writable <code>origin</code>; remotes not reversed</div>
+              </td>
+              <td class="evidence">
+                <code>origin</code> = <code>0xgeorgemathew/t3trade.git</code> (fetch+push).
+                Orientation correct.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="00">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td><div class="req-text">Annotated accepted-baseline tag</div></td>
+              <td class="evidence">
+                <code>upstream-base/2026-07-29-a8e05cbb</code> → commit
+                <code>a8e05cbb</code> (v0.0.31), annotated.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="00">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">Feature/<code>trading-*</code> branches exist</div>
+              </td>
+              <td class="evidence">
+                <code>feature/trading-01-domain</code>, <code>feature/trading-02-market-data</code>,
+                <code>feature/trading-02-account-fixtures</code> present locally + on origin.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="00">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td><div class="req-text">Updater feed points at fork, not upstream</div></td>
+              <td class="evidence">
+                electron-updater feed parametrized via <code>app-update.yml</code>; GitHub publish
+                uses <code>${{ github.repository }}</code>. Only localhost mock is hardcoded.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="00">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">Release/server-replacement endpoints fork-controlled</div>
+              </td>
+              <td class="evidence">
+                <code>release.yml</code> uses fork repo for release URLs;
+                <code>selfUpdate.ts</code> npm-installs by version, no upstream hostname.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="00">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">Branding sweep (product name, app ID, artifact name)</div>
+              </td>
+              <td class="evidence">
+                “T3 Trades”, <code>com.t3trades.app</code>,
+                <code>T3-Trades-${version}-${arch}</code>. Signing env-driven, none upstream.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="00">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  <code>t3UpstreamCommit</code> emitted by server &amp; client builds
+                </div>
+              </td>
+              <td class="evidence">
+                Emitted by <code>ServerEnvironment.ts</code> descriptor and web
+                <code>branding.ts</code>. Tested against <code>BASELINE.md</code> in
+                <code>buildMetadata.test.ts</code>.
+              </td>
+            </tr>
+            <tr data-status="warn" data-prompt="00">
+              <td>
+                <span class="status-cell warn"><span class="sdot"></span>Partial</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  <code>productVersion</code> emitted by server &amp; client builds
+                  <div class="sub">Required alongside <code>t3UpstreamCommit</code></div>
+                </div>
+              </td>
+              <td class="evidence">
+                Defined + tested in <code>scripts/build-metadata.ts</code>, but
+                <strong
+                  >runtime descriptors emit <code>serverVersion</code>/<code>APP_VERSION</code>, not
+                  <code>productVersion</code></strong
+                >. <code>build:metadata</code> script never wired into CI.
+              </td>
+            </tr>
+            <tr data-status="warn" data-prompt="00">
+              <td>
+                <span class="status-cell warn"><span class="sdot"></span>Partial</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  CI guard enforcing no upstream endpoints
+                  <div class="sub">
+                    “Ensure endpoint independence via grep <em>and</em> a CI check”
+                  </div>
+                </div>
+              </td>
+              <td class="evidence">
+                <code>check-fork-independence.ts</code> runs in CI but only matches
+                <code>pingdotgg/t3code</code> —
+                <strong>not the live <code>t3.codes</code> hostnames</strong> (app/marketing/Clerk).
+                PATCH_LEDGER defers these.
+              </td>
+            </tr>
+            <tr data-status="fail" data-prompt="00">
+              <td>
+                <span class="status-cell fail"><span class="sdot"></span>Missing</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  Retrivable sync-rehearsal branch artifact
+                  <div class="sub">
+                    “Sync runbook reproduces a clean merge commit on a throwaway sync branch”
+                  </div>
+                </div>
+              </td>
+              <td class="evidence">
+                No <code>sync/upstream-*</code> branch exists in <code>git branch -a</code>. The
+                runbook documents the rehearsal in prose; the branch was local-only and is gone.
+                Claim rests on documentation, not a retrievable artifact.
+              </td>
+            </tr>
+            <tr data-status="warn" data-prompt="00">
+              <td>
+                <span class="status-cell warn"><span class="sdot"></span>Partial</span>
+              </td>
+              <td><div class="req-text">MIT license preserved verbatim</div></td>
+              <td class="evidence">
+                MIT terms intact, but the <strong>copyright holder line was changed</strong> to
+                <code>T3 Tools Inc.</code> (license type preserved; upstream notice overwritten
+                rather than retained alongside).
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ============ PROMPT-01 ============ -->
+      <section data-prompt="01">
+        <h2>
+          PROMPT-01 &mdash; Trading domain and workspace
+          <span class="prompt-score">13 pass · 1 partial · 0 missing</span>
+        </h2>
+        <hr class="rule" />
+        <table class="findings">
+          <thead>
+            <tr>
+              <th style="width: 78px">Status</th>
+              <th>Requirement</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody id="body-01">
+            <tr data-status="pass" data-prompt="01">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text"><code>packages/trading-contracts</code> package</div>
+              </td>
+              <td class="evidence">
+                <code>@t3tools/trading-contracts</code>, workspace-registered, 10 exports
+                (primitives, account, authority, mission, strategy, watch, events, market,
+                account-snapshot, tools).
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="01">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  Domain coverage: account, authority, mission, strategy, market, watch, events,
+                  tools
+                </div>
+              </td>
+              <td class="evidence">
+                All 8 areas have type/schema definitions. Execution/order/position
+                <strong>write</strong> contracts correctly absent (deferred); read-only views exist.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="01">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">Command split: Client / DispatchableClient / Internal</div>
+              </td>
+              <td class="evidence">
+                <code>DispatchableTradingCommand</code> (create + control) &amp;
+                <code>InternalTradingCommand</code> (status-set + strategy-published) in
+                <code>trading.ts</code>, threaded into orchestration command unions.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="01">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  <code>TradingMissionService</code> with §11.1 status transitions
+                </div>
+              </td>
+              <td class="evidence">
+                <code>TradingMissionService.ts</code> + <code>MissionTransitions.ts</code> implement
+                all 10 states, legal transitions, <code>blockedReason</code> invariant, permanent
+                terminals.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="01">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td><div class="req-text">One-active-mission invariant</div></td>
+              <td class="evidence">
+                Enforced at <strong>two layers</strong>: service
+                <code>findActiveMission</code> check + DB unique partial index
+                <code>idx_trading_missions_one_active_per_user</code>.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="01">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  <code>pocAuthorityDefaults</code> with exact risk-policy values
+                </div>
+              </td>
+              <td class="evidence">
+                3x leverage, notional <code>capital×3</code> (=$3k @ $1k), $100 cumulative
+                (<code>×0.1</code>), $20/position (<code>×0.02</code>), isolated-only, reversal-off.
+                All asserted in <code>authority.test.ts</code>.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="01">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  <code>TradingHarnessBinding</code> persisted; immutable while active
+                </div>
+              </td>
+              <td class="evidence">
+                Stored as <code>harness_json</code> on mission row.
+                <code>updateHarnessBinding</code> rejects identity-field changes
+                (provider/instance/threadId) via
+                <code>TradingHarnessBindingImmutableError</code> for any non-terminal status.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="01">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td><div class="req-text">Binding bound to the creating thread</div></td>
+              <td class="evidence">
+                Mission created with <code>harness.threadId</code> from the request; resolved via
+                <code>findMissionByThreadId</code> on
+                <code>json_extract(harness_json,'$.threadId')</code>.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="01">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td><div class="req-text">Migration 035 (trading domain tables)</div></td>
+              <td class="evidence">
+                <code>035_TradingDomain.ts</code>: 7 tables (accounts, missions, authority_versions,
+                strategy_versions, watches, harness_runs, event_inbox) + 2 safety partial-unique
+                indexes.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="01">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td><div class="req-text">Migration 036 (trading projection)</div></td>
+              <td class="evidence">
+                <code>036_TradingProjection.ts</code>: <code>projection_trading_missions</code> +
+                <code>idx_…_thread</code>. Epoch→ISO conversion boundary documented.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="01">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  <code>trading_publish_momentum_strategy</code> with expected-version locking
+                </div>
+              </td>
+              <td class="evidence">
+                Read-then-guard in <code>TradingStrategyService.ts</code>; UPDATE is itself
+                version-guarded (<code>WHERE strategy_version = expected</code>). Stale version
+                rejected with <code>currentVersion</code>.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="01">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td><div class="req-text">Watch supersession on strategy publish</div></td>
+              <td class="evidence">
+                Prior-version <code>active</code> watches marked <code>superseded</code>; terminal
+                statuses preserved; returns <code>supersededWatchIds</code>.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="01">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  Read-only workspace shell (status, mandate, strategy, watch list)
+                </div>
+              </td>
+              <td class="evidence">
+                <code>TradingWorkspacePanel.tsx</code> renders all 4 panels from projection;
+                composer/timeline confirmed absent.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="01">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  <code>trading.mission.create</code> RPC + reactor + projector wired
+                </div>
+              </td>
+              <td class="evidence">
+                Command schema in <code>trading.ts</code>; decider emits
+                <code>mission-create-requested</code>; <code>TradingMissionReactor</code> writes;
+                projector reacts to applied events.
+              </td>
+            </tr>
+            <tr data-status="warn" data-prompt="01">
+              <td>
+                <span class="status-cell warn"><span class="sdot"></span>Partial</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  Migration round-trip tests (035 &amp; 036)
+                  <div class="sub">“Migration round-trip succeeds”</div>
+                </div>
+              </td>
+              <td class="evidence">
+                <strong>035 fully tested</strong> (idempotency + row preservation).
+                <strong>036 has no test file</strong> — it runs only as setup boilerplate in handler
+                tests, asserting nothing about its own idempotency.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ============ PROMPT-02 ============ -->
+      <section data-prompt="02">
+        <h2>
+          PROMPT-02 &mdash; Read-only Hyperliquid integration
+          <span class="prompt-score">13 pass · 2 partial · 5 missing</span>
+        </h2>
+        <hr class="rule" />
+        <table class="findings">
+          <thead>
+            <tr>
+              <th style="width: 78px">Status</th>
+              <th>Requirement</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody id="body-02">
+            <tr data-status="pass" data-prompt="02">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text"><code>packages/hyperliquid</code> read-only adapter</div>
+              </td>
+              <td class="evidence">
+                <code>@t3tools/hyperliquid</code>; InfoClient, WebSocketClient, MarketResolver,
+                Precision, Gateway, wire. Read-only header confirmed; no signing.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="02">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  <code>HyperliquidInfoClient</code> POSTs to testnet <code>/info</code>
+                </div>
+              </td>
+              <td class="evidence">
+                URL <code>https://api.hyperliquid-testnet.xyz/info</code>; 6 read methods
+                (metaAndAssetCtxs, allMids, l2Book, candleSnapshot, clearinghouseState, openOrders).
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="02">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  <code>HyperliquidWebSocketClient</code> on <code>/ws</code>, bounded reconnect
+                </div>
+              </td>
+              <td class="evidence">
+                Backoff 1s→<strong>30s cap</strong>, <strong>max 10 tries</strong>; resubscribes
+                active channels on <code>onopen</code>.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="02">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  Direct 1m/3m/5m/15m/1h candle subscriptions (no synthesis)
+                </div>
+              </td>
+              <td class="evidence">
+                All 5 intervals subscribed directly via <code>{type:"candle",coin,interval}</code>;
+                smoke + wire tests confirm each <code>.i</code> matches. No synthesis code anywhere.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="02">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  <code>HyperliquidMarketResolver</code> (no hardcoded ETH index)
+                </div>
+              </td>
+              <td class="evidence">
+                Resolves symbol/assetIndex/szDecimals/maxLeverage at runtime from
+                <code>metaAndAssetCtxs</code>. Header: “ETH is not always index 1.”
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="02">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  <code>HyperliquidPrecision</code> size/price normalization + min notional
+                </div>
+              </td>
+              <td class="evidence">
+                Size truncates (not rounds) to szDecimals, trailing zeros stripped; price rounds to
+                5 sig-figs; <code>meetsMinimumNotional</code> ($10). Fully unit-tested.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="02">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  <code>HyperliquidGateway</code> boundary for all exchange shapes
+                </div>
+              </td>
+              <td class="evidence">
+                7 read methods; wire shapes mapped to domain types inside Gateway. Nothing else
+                imports wire types for domain logic.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="02">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td><div class="req-text">500-bar bound on tool responses</div></td>
+              <td class="evidence">
+                Constant <code>candleHistoryMaxBars:500</code> + gateway
+                <code>slice(-cap)</code> hard guarantee on the response.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="02">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td><div class="req-text">All seven read-only tools registered</div></td>
+              <td class="evidence">
+                <code>trading_resolve_market</code>, <code>_get_market_snapshot</code>,
+                <code>_get_market_history</code>, <code>_get_order_book</code>,
+                <code>_get_account_state</code>, <code>_get_position</code>,
+                <code>_get_open_orders</code> in <code>tools.ts</code>.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="02">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td><div class="req-text">Freshness metadata on all marketable results</div></td>
+              <td class="evidence">
+                <code>FreshnessMeta</code> (observedAt/source/staleAfterMillis) stamped on snapshot,
+                history, order book, account, position. <code>resolve_market</code> intentionally
+                omits (metadata, not marketable).
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="02">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td><div class="req-text">Account state queried with master-wallet address</div></td>
+              <td class="evidence">
+                Handlers resolve address server-side via <code>getMasterWalletAddress</code>;
+                harness never supplies one. <code>requireMasterAddress</code> rejects empty.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="02">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td><div class="req-text">No signing in read path</div></td>
+              <td class="evidence">
+                No <code>signMessage</code>/<code>createWallet</code>/<code>privateKey</code> in
+                hyperliquid or trading tools. Only numeric-sign math + doc comments.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="02">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td><div class="req-text">Stale-BBO fixture flagged at exactly 2s</div></td>
+              <td class="evidence">
+                <code>bboStaleAfterMillis:2_000</code> constant; asserted in
+                <code>Gateway.test.ts</code>, <code>smoke.test.ts</code>,
+                <code>contracts.test.ts</code>.
+              </td>
+            </tr>
+            <tr data-status="pass" data-prompt="02">
+              <td>
+                <span class="status-cell pass"><span class="sdot"></span>Pass</span>
+              </td>
+              <td><div class="req-text">Fixture recorder</div></td>
+              <td class="evidence">
+                <code>scripts/fixtureRecorder.ts</code> records market fixtures + optional account
+                fixtures (gated on <code>HYPERLIQUID_TESTNET_MASTER_ADDRESS</code>) to
+                <code>fixtures/</code>; decode-checks each response.
+              </td>
+            </tr>
+            <tr data-status="warn" data-prompt="02">
+              <td>
+                <span class="status-cell warn"><span class="sdot"></span>Partial</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  Live smoke suite, env-gated, all candle intervals
+                  <div class="sub">Prompt cites “91/91 tests”</div>
+                </div>
+              </td>
+              <td class="evidence">
+                Suite + env gate (<code>HYPERLIQUID_TESTNET_LIVE</code>) + all 5 intervals PRESENT.
+                <strong>Count is 9 live blocks (~14 expanded), not 91</strong>; whole package is 46
+                tests.
+              </td>
+            </tr>
+            <tr data-status="warn" data-prompt="02">
+              <td>
+                <span class="status-cell warn"><span class="sdot"></span>Partial</span>
+              </td>
+              <td><div class="req-text">Market-snapshot card in the bound thread</div></td>
+              <td class="evidence">
+                <code>MissionThreadPanel</code> exists in <code>ChatView</code> but
+                <strong>renders only “—” placeholders</strong> (<code>const pending = true</code>),
+                pinned <em>above</em> the timeline, not injected into <code>MessagesTimeline</code>.
+              </td>
+            </tr>
+            <tr data-status="fail" data-prompt="02">
+              <td>
+                <span class="status-cell fail"><span class="sdot"></span>Missing</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  WS·Info reconciliation after reconnect
+                  <div class="sub">
+                    “Reconcile canonical state through the Info API after reconnect”
+                  </div>
+                </div>
+              </td>
+              <td class="evidence">
+                <strong>Comment-only.</strong> <code>FreshnessSource</code> models
+                <code>"reconciled"</code> but Gateway never consumes the WS client, never emits
+                <code>"reconciled"</code>, no canonical-state refresh on reconnect.
+              </td>
+            </tr>
+            <tr data-status="fail" data-prompt="02">
+              <td>
+                <span class="status-cell fail"><span class="sdot"></span>Missing</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  De-duplication of replayed records
+                  <div class="sub">“de-duplicate replayed records”</div>
+                </div>
+              </td>
+              <td class="evidence">
+                No dedup set/map/key anywhere in the read path. No record-key dedup logic exists.
+              </td>
+            </tr>
+            <tr data-status="fail" data-prompt="02">
+              <td>
+                <span class="status-cell fail"><span class="sdot"></span>Missing</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  Chat-header live price &amp; equity
+                  <div class="sub">“chat-header essentials (live price, equity)”</div>
+                </div>
+              </td>
+              <td class="evidence">
+                <code>ChatHeader.tsx</code> has no price/equity/mark fields. No market data near the
+                header.
+              </td>
+            </tr>
+            <tr data-status="fail" data-prompt="02">
+              <td>
+                <span class="status-cell fail"><span class="sdot"></span>Missing</span>
+              </td>
+              <td><div class="req-text">Dev mission bind in the testnet lab</div></td>
+              <td class="evidence">
+                No lab-specific dev-mission bind. Only the general server-side
+                <code>updateHarnessBinding</code> exists, used by tests.
+              </td>
+            </tr>
+            <tr data-status="fail" data-prompt="02">
+              <td>
+                <span class="status-cell fail"><span class="sdot"></span>Missing</span>
+              </td>
+              <td>
+                <div class="req-text">
+                  Account-query negative test (execution-wallet address never used)
+                </div>
+              </td>
+              <td class="evidence">
+                Only empty-address rejection tested (<code>"0x"</code>).
+                <strong>No test passes the execution-wallet address and asserts rejection.</strong>
+              </td>
+            </tr>
+            <tr data-status="fail" data-prompt="02">
+              <td>
+                <span class="status-cell fail"><span class="sdot"></span>Missing</span>
+              </td>
+              <td><div class="req-text">Reconnect resubscribe + canonical-refresh tests</div></td>
+              <td class="evidence">
+                <strong>No <code>WebSocketClient.test.ts</code>.</strong> Backoff schedule,
+                resubscribe, and canonical refresh are never asserted.
+              </td>
+            </tr>
+            <tr data-status="fail" data-prompt="02">
+              <td>
+                <span class="status-cell fail"><span class="sdot"></span>Missing</span>
+              </td>
+              <td><div class="req-text">Candle finalization tests for all intervals</div></td>
+              <td class="evidence">
+                <code>finalisedClose</code> assertion exists only for <strong>1m</strong>.
+                3m/5m/15m/1h appear in wire-decode + live-smoke tests but never assert finalization
+                semantics.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="gap-callout">
+          <h4>Why PROMPT-02 fails its own acceptance criteria</h4>
+          <p>
+            The spec says:
+            <em
+              >“reconcile canonical state through the Info API after reconnect; de-duplicate
+              replayed records”</em
+            >
+            and
+            <em
+              >“the bound thread renders live price, equity, and the market snapshot with freshness
+              stamps.”</em
+            >
+            The adapter <strong>can fetch</strong> all of this, but nothing
+            <strong>wires the live stream into the UI or reconciles it</strong>. The WebSocket
+            client reconnects and resubscribes, but no consumer reads its output. The card is a
+            placeholder. So reads work on-demand via tools, but the always-on reconciled view the
+            prompt describes is not realized.
+          </p>
+        </div>
+      </section>
+
+      <!-- Methodology -->
+      <section>
+        <h2>Method</h2>
+        <hr class="rule" />
+        <div class="method">
+          <p>
+            Evidence was gathered by 8 parallel read-only investigations against the working tree at
+            <code>0940e4cb1</code>. No code was written and no tests were run.
+          </p>
+          <ol>
+            <li>
+              Spec requirements extracted verbatim from
+              <code>market-bender.pages.dev/prompts#prompt-00..02</code>.
+            </li>
+            <li>
+              Each acceptance criterion decomposed into a narrow, non-overlapping verification task.
+            </li>
+            <li>Findings reconciled by the orchestrator; conflicts re-checked against source.</li>
+            <li>
+              Status assigned per item: <strong>Pass</strong> (requirement met with evidence),
+              <strong>Partial</strong> (core present, named sub-criterion unmet),
+              <strong>Missing</strong> (no implementation or no test).
+            </li>
+          </ol>
+          <p style="margin-top: 10px">
+            <strong>Note on the “91 tests” figure:</strong> the PROMPT-02 text references a 91-test
+            smoke suite, but the actual suite is an order of magnitude smaller. This is scored as
+            Partial (the suite exists and covers intervals) with the count discrepancy flagged,
+            since the interval coverage — the substantive requirement — is met.
+          </p>
+        </div>
+      </section>
+
+      <footer>
+        Evaluated against spec at
+        <a href="https://market-bender.pages.dev/prompts#prompt-00"
+          >market-bender.pages.dev/prompts</a
+        >
+        · repo <a href="https://github.com/0xgeorgemathew/t3trade">0xgeorgemathew/t3trade</a><br />
+        Verification model: builtin:zai-coding-plan/GLM-5.2 · 8 parallel explore agents · read-only
+        · 2026-07-31<br />
+        Artifact: <code>artifacts/reports/prompts-00-02-completeness-eval-2026-07-31.html</code>
+      </footer>
+    </div>
+
+    <script>
+      (function () {
+        const rows = document.querySelectorAll("table.findings tbody tr");
+        const chips = document.querySelectorAll(".filter-bar .chip");
+        const search = document.getElementById("searchBox");
+        let statusFilter = "all";
+        let promptFilter = "all";
+        let query = "";
+
+        function countStatuses() {
+          let pass = 0,
+            warn = 0,
+            fail = 0;
+          rows.forEach((r) => {
+            const s = r.dataset.status;
+            if (s === "pass") pass++;
+            else if (s === "warn") warn++;
+            else if (s === "fail") fail++;
+          });
+          document.getElementById("countAll").textContent = "(" + (pass + warn + fail) + ")";
+          document.getElementById("countPass").textContent = "(" + pass + ")";
+          document.getElementById("countWarn").textContent = "(" + warn + ")";
+          document.getElementById("countFail").textContent = "(" + fail + ")";
+        }
+
+        function applyFilters() {
+          rows.forEach((r) => {
+            const s = r.dataset.status;
+            const p = r.dataset.prompt;
+            const text = r.textContent.toLowerCase();
+            const statusOk = statusFilter === "all" || s === statusFilter;
+            const promptOk = promptFilter === "all" || p === promptFilter;
+            const queryOk = !query || text.includes(query);
+            r.classList.toggle("hidden", !(statusOk && promptOk && queryOk));
+          });
+        }
+
+        chips.forEach((chip) => {
+          chip.addEventListener("click", () => {
+            const f = chip.dataset.filter;
+            if (f === "prompt") {
+              if (promptFilter === chip.dataset.prompt) {
+                promptFilter = "all";
+                document
+                  .querySelectorAll('.chip[data-filter="prompt"]')
+                  .forEach((c) => c.classList.remove("active"));
+              } else {
+                promptFilter = chip.dataset.prompt;
+                document.querySelectorAll('.chip[data-filter="prompt"]').forEach((c) => {
+                  c.classList.toggle("active", c.dataset.prompt === promptFilter);
+                });
+              }
+            } else {
+              if (statusFilter === f) return;
+              statusFilter = f;
+              document.querySelectorAll('.chip:not([data-filter="prompt"])').forEach((c) => {
+                c.classList.toggle("active", c.dataset.filter === f);
+              });
+            }
+            applyFilters();
+          });
+        });
+
+        if (search) {
+          search.addEventListener("input", () => {
+            query = search.value.trim().toLowerCase();
+            applyFilters();
+          });
+        }
+
+        countStatuses();
+      })();
+    </script>
+  </body>
+</html>

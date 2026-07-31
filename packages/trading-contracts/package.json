@@ -47,6 +47,10 @@
     "./account-snapshot": {
       "types": "./src/account-snapshot.ts",
       "import": "./src/account-snapshot.ts"
+    },
+    "./wakeup": {
+      "types": "./src/wakeup.ts",
+      "import": "./src/wakeup.ts"
     }
   },
   "scripts": {

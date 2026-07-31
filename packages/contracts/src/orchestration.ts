@@ -27,9 +27,13 @@ import {
   TradingMissionControlRequestedPayload,
   TradingMissionCreateRequestedPayload,
   TradingMissionId,
+  TradingMissionRunStartedPayload,
   TradingMissionSnapshot,
   TradingMissionStatusChangedPayload,
   TradingMissionStrategyPublishedPayload,
+  TradingMissionWatchCancelledPayload,
+  TradingMissionWatchFiredPayload,
+  TradingMissionWatchRegisteredPayload,
 } from "./trading.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
@@ -921,6 +925,10 @@ export const OrchestrationEventType = Schema.Literals([
   "trading.mission-control-requested",
   "trading.mission-status-changed",
   "trading.mission-strategy-published",
+  "trading.mission-watch-registered",
+  "trading.mission-watch-cancelled",
+  "trading.mission-watch-fired",
+  "trading.mission-run-started",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -1295,6 +1303,26 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("trading.mission-strategy-published"),
     payload: TradingMissionStrategyPublishedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("trading.mission-watch-registered"),
+    payload: TradingMissionWatchRegisteredPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("trading.mission-watch-cancelled"),
+    payload: TradingMissionWatchCancelledPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("trading.mission-watch-fired"),
+    payload: TradingMissionWatchFiredPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("trading.mission-run-started"),
+    payload: TradingMissionRunStartedPayload,
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;

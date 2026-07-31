@@ -82,3 +82,25 @@ export {
   PersistedWatch,
   PersistedWatchStatus,
 } from "@t3tools/trading-contracts/watch";
+
+export {
+  HarnessRunRequest,
+  HarnessRunOutcome,
+  TradingDomainEventSummary,
+  TradingHarnessWakeup,
+} from "@t3tools/trading-contracts/wakeup";
+
+export {
+  TRADING_CANCEL_WATCH_TOOL,
+  TRADING_LIST_WATCHES_TOOL,
+  TRADING_REGISTER_WATCH_TOOL,
+  TRADING_SCHEDULE_REASSESSMENT_TOOL,
+  TradingCancelWatchInput,
+  TradingCancelWatchResult,
+  TradingListWatchesInput,
+  TradingListWatchesResult,
+  TradingRegisterWatchInput,
+  TradingRegisterWatchResult,
+  TradingScheduleReassessmentInput,
+  TradingScheduleReassessmentResult,
+} from "@t3tools/trading-contracts/tools";
