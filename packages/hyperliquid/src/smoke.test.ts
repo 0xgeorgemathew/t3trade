@@ -10,8 +10,11 @@
  *    subscriptions including every candle interval (the WS half).
  *
  *  - Account reads: additionally need `HYPERLIQUID_TESTNET_MASTER_ADDRESS`
- *    (the §10.6 master-wallet address). Skipped, honestly, until Gate 0's
- *    funded address exists.
+ *    (the §10.6 master-wallet address — the funded Gate-0 account). The
+ *    account must stay in Hyperliquid's Manual (Standard) mode: per-DEX
+ *    segregated balances keep `clearinghouseState` meaningful for reads.
+ *    Mission capital is the PERPS-side USDC balance only — spot USDC is
+ *    invisible to `clearinghouseState` and needs a spot→perp transfer.
  *
  * Uses `it.live` (not `it.effect`): these tests hit the real exchange and need
  * the real clock — a TestClock at epoch 0 would compute nonsense candle
@@ -146,6 +149,7 @@ describeMarket("Hyperliquid testnet live smoke — market reads (Step 9b)", () =
   // interval and pushes the current bar immediately. All five subscriptions
   // share the `candle` channel, so this also proves the client's
   // per-subscription routing (a 1m bar must not surface on the 1h stream).
+  // Testnet can be slow to push the initial bars, so the timeout is generous.
   it.live(
     "serves every §13 candle interval over the WebSocket client",
     () =>
@@ -169,8 +173,8 @@ describeMarket("Hyperliquid testnet live smoke — market reads (Step 9b)", () =
             expect(data?.i).toBe(interval);
           }
         }),
-      ).pipe(Effect.provide(HyperliquidWebSocketClientLive), Effect.timeout("40 seconds")),
-    45_000,
+      ).pipe(Effect.provide(HyperliquidWebSocketClientLive), Effect.timeout("60 seconds")),
+    65_000,
   );
 });
 
