@@ -20,6 +20,7 @@ import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingStrategyServiceLive } from "./TradingStrategyService.ts";
+import { TradingTurnCoordinatorLive } from "./TradingTurnCoordinator.ts";
 import { TradingWatchServiceLive } from "./TradingWatchService.ts";
 
 /**
@@ -47,11 +48,24 @@ export const HyperliquidReadLayerLive = HyperliquidGatewayLive.pipe(
  */
 export const HyperliquidWsLayerLive = HyperliquidWebSocketClientLive;
 
+/**
+ * The trading services. The turn coordinator depends on the mission, strategy,
+ * and inbox services, so it is built with those provided rather than merged
+ * flat — this keeps `TradingLayerLive` free of unsatisfied requirements for
+ * consumers that provide it wholesale (the reactor wiring, the engine harness).
+ */
+const coordinatorWithDeps = TradingTurnCoordinatorLive.pipe(
+  Layer.provideMerge(TradingMissionServiceLive),
+  Layer.provideMerge(TradingStrategyServiceLive),
+  Layer.provideMerge(TradingEventInboxLive),
+);
+
 export const TradingLayerLive = Layer.mergeAll(
   TradingMissionServiceLive,
   TradingStrategyServiceLive,
   TradingWatchServiceLive,
   TradingEventInboxLive,
+  coordinatorWithDeps,
   TradingMissionProjectionLive,
   HyperliquidReadLayerLive,
   HyperliquidWsLayerLive,
