@@ -448,6 +448,7 @@ describe("subpath exports", () => {
         "./tools",
         "./market",
         "./account-snapshot",
+        "./wakeup",
       ].sort(),
     );
 
