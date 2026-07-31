@@ -45,8 +45,12 @@ interface MarketCache {
   readonly observedAtMillis: number;
 }
 
-/** Sentinel for an empty cache (observedAtMillis = 0 forces a fetch on first resolve). */
-const EMPTY_CACHE: MarketCache = { rows: [], observedAtMillis: 0 };
+/**
+ * Sentinel for an empty cache. `-Infinity` (not 0) forces the first resolve to
+ * fetch under ANY clock — a TestClock also starts at 0, where a 0 sentinel
+ * would read as "fresh" and serve the empty cache.
+ */
+const EMPTY_CACHE: MarketCache = { rows: [], observedAtMillis: Number.NEGATIVE_INFINITY };
 
 export class HyperliquidMarketResolver extends Context.Service<
   HyperliquidMarketResolver,
@@ -82,13 +86,13 @@ const makeHyperliquidMarketResolver = Effect.gen(function* () {
     const [meta, assetCtxs] = yield* info.metaAndAssetCtxs;
     const universe = meta.universe;
     const count = Math.min(universe.length, assetCtxs.length);
-    const rows: CachedMarketRow[] = new Array(count);
+    const rows: CachedMarketRow[] = [];
     for (let i = 0; i < count; i++) {
-      rows[i] = {
+      rows.push({
         index: i,
         universe: universe[i]!,
         context: assetCtxs[i]!,
-      };
+      });
     }
     const observedAtMillis = yield* Clock.currentTimeMillis;
     yield* Ref.set(cache, { rows, observedAtMillis });
@@ -125,14 +129,14 @@ const makeHyperliquidMarketResolver = Effect.gen(function* () {
     }
 
     // `onlyIsolated` constrains margin mode, not availability: an isolated
-    // market still accepts new positions. For the POC every resolved universe
-    // entry is available.
+    // market still accepts new positions. Delisted markets stay in the
+    // universe with `isDelisted: true` and do NOT accept new positions.
     const resolved: ResolvedMarket = {
       symbol: matched.universe.name as ResolvedMarket["symbol"],
       assetIndex: matched.index,
       szDecimals: matched.universe.szDecimals,
       maxLeverage: matched.universe.maxLeverage,
-      available: true,
+      available: matched.universe.isDelisted !== true,
     };
     return resolved;
   });

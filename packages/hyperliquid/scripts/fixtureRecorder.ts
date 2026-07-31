@@ -1,74 +1,135 @@
 /**
  * Fixture recorder — Step 9(a).
  *
- * Captures real testnet Info responses into replayable TS fixtures under
- * `packages/hyperliquid/fixtures/`. Run against the live testnet once to
- * produce the Gate-0 interval proof (one fixture per interval proving testnet
- * serves each directly), then the unit tests replay those fixtures offline.
+ * Captures real testnet Info responses as raw JSON fixtures under
+ * `packages/hyperliquid/fixtures/`. The unit tests (`wire.test.ts`) replay
+ * those fixtures offline, so the decode boundary is proven against what the
+ * exchange actually sends, not hand-written approximations. The per-interval
+ * candle fixtures are the Gate-0 proof that testnet serves each interval
+ * directly.
  *
- * Usage:
- *   HYPERLIQUID_TESTNET_MASTER_ADDRESS=0x... \
- *   vp run --filter @t3tools/hyperliquid exec src/fixtureRecorder.ts
+ * Each response is captured raw (pre-decode) so fixtures keep fields the wire
+ * schemas deliberately ignore, then decode-checked against the wire schema so
+ * a recording that no longer decodes fails here, not later in a test.
  *
- * Env-gated: exits early if the master address is unset.
+ * Usage (market fixtures need no credentials):
+ *   node packages/hyperliquid/scripts/fixtureRecorder.ts
+ *
+ * With `HYPERLIQUID_TESTNET_MASTER_ADDRESS=0x...` set, the account fixtures
+ * (clearinghouseState, openOrders) are recorded too.
  *
  * @module HyperliquidFixtureRecorder
  */
-import { Effect, Layer } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
+import { Effect, Layer, Schema } from "effect";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "effect/unstable/http";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
-import { HyperliquidInfoClient, HyperliquidInfoClientLive } from "./index.ts";
+import { TESTNET_ENDPOINTS } from "../src/config.ts";
+import {
+  WireAllMidsResponse,
+  WireCandleSnapshotResponse,
+  WireClearinghouseStateResponse,
+  WireL2BookResponse,
+  WireMetaAndAssetCtxsResponse,
+  WireOpenOrdersResponse,
+} from "../src/wire.ts";
 
 const MASTER_ADDRESS = process.env.HYPERLIQUID_TESTNET_MASTER_ADDRESS;
 const POC_MARKET = process.env.HYPERLIQUID_TESTNET_MARKET ?? "ETH";
 
-const liveLayer = HyperliquidInfoClientLive.pipe(
-  Layer.provide(FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer))),
+const FIXTURES_DIR = NodePath.join(
+  NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
+  "..",
+  "fixtures",
 );
 
-const INTERVALS = ["1m", "3m", "5m", "15m", "1h"] as const;
+const INTERVALS = [
+  { interval: "1m", millis: 60_000 },
+  { interval: "3m", millis: 180_000 },
+  { interval: "5m", millis: 300_000 },
+  { interval: "15m", millis: 900_000 },
+  { interval: "1h", millis: 3_600_000 },
+] as const;
+
+/** Bars per candle fixture — enough to prove the shape, small enough to commit. */
+const FIXTURE_BARS = 20;
 
 /**
- * Capture one fixture per read path. Each fixture is the raw decoded wire
- * value, printed as a TS literal the unit tests can import. The interval
- * fixtures are the Gate-0 proof that testnet serves each interval directly.
+ * POST one raw Info request, decode-check it against `schema`, and write the
+ * RAW body (not the decoded value, which would strip unread fields) to
+ * `fixtures/<name>.json`.
  */
-const recordAll = Effect.gen(function* () {
-  if (!MASTER_ADDRESS) {
-    yield* Effect.logError(
-      "HYPERLIQUID_TESTNET_MASTER_ADDRESS is not set; the recorder needs a funded testnet address.",
-    );
-    return;
-  }
-
-  const info = yield* HyperliquidInfoClient;
-
-  const meta = yield* info.metaAndAssetCtxs;
-  yield* Effect.logInfo(`meta: ${meta[0].universe.length} markets`);
-
-  const book = yield* info.l2Book(POC_MARKET);
-  yield* Effect.logInfo(`l2Book: ${book.levels[0].length} bids, ${book.levels[1].length} asks`);
-
-  for (const interval of INTERVALS) {
-    const candles = yield* info.candleSnapshot({ coin: POC_MARKET, interval });
-    yield* Effect.logInfo(
-      `candleSnapshot ${interval}: ${candles.length} bars (Gate-0 interval proof)`,
-    );
-  }
-
-  const state = yield* info.clearinghouseState(MASTER_ADDRESS);
-  yield* Effect.logInfo(`clearinghouseState: accountValue=${state.marginSummary.accountValue}`);
-
-  const orders = yield* info.openOrders(MASTER_ADDRESS);
-  yield* Effect.logInfo(`openOrders: ${orders.length} orders`);
-
-  yield* Effect.logInfo(
-    "Fixture recording complete. Persist the outputs under packages/hyperliquid/fixtures/.",
+const record = Effect.fn("fixtureRecorder.record")(function* <A>(
+  name: string,
+  body: Record<string, unknown>,
+  schema: Schema.Decoder<A>,
+) {
+  const client = yield* HttpClient.HttpClient;
+  const raw = yield* HttpClientRequest.post(TESTNET_ENDPOINTS.infoHttpUrl).pipe(
+    HttpClientRequest.bodyJson(body),
+    Effect.flatMap(client.execute),
+    Effect.flatMap(HttpClientResponse.filterStatusOk),
+    Effect.flatMap(HttpClientResponse.schemaBodyJson(Schema.Unknown)),
   );
+  yield* Schema.decodeUnknownEffect(schema)(raw);
+  yield* Effect.promise(() =>
+    NodeFSP.writeFile(
+      NodePath.join(FIXTURES_DIR, `${name}.json`),
+      `${JSON.stringify(raw, null, 2)}\n`,
+    ),
+  );
+  yield* Effect.logInfo(`recorded fixtures/${name}.json`);
+  return raw;
 });
 
-Effect.runPromise(recordAll.pipe(Effect.provide(liveLayer))).then(
+const recordAll = Effect.gen(function* () {
+  yield* Effect.promise(() => NodeFSP.mkdir(FIXTURES_DIR, { recursive: true }));
+
+  yield* record("metaAndAssetCtxs", { type: "metaAndAssetCtxs" }, WireMetaAndAssetCtxsResponse);
+  yield* record("allMids", { type: "allMids" }, WireAllMidsResponse);
+  yield* record("l2Book", { type: "l2Book", coin: POC_MARKET }, WireL2BookResponse);
+
+  const now = Date.now();
+  for (const { interval, millis } of INTERVALS) {
+    yield* record(
+      `candles.${interval}`,
+      {
+        type: "candleSnapshot",
+        req: { coin: POC_MARKET, interval, startTime: now - millis * FIXTURE_BARS, endTime: now },
+      },
+      WireCandleSnapshotResponse,
+    );
+  }
+
+  if (MASTER_ADDRESS) {
+    yield* record(
+      "clearinghouseState",
+      { type: "clearinghouseState", user: MASTER_ADDRESS },
+      WireClearinghouseStateResponse,
+    );
+    yield* record(
+      "openOrders",
+      { type: "openOrders", user: MASTER_ADDRESS },
+      WireOpenOrdersResponse,
+    );
+  } else {
+    yield* Effect.logInfo(
+      "HYPERLIQUID_TESTNET_MASTER_ADDRESS unset; skipped the account fixtures (clearinghouseState, openOrders).",
+    );
+  }
+});
+
+Effect.runPromise(
+  recordAll.pipe(Effect.provide(FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer)))),
+).then(
   () => process.exit(0),
   (cause) => {
     console.error("Fixture recording failed:", cause);

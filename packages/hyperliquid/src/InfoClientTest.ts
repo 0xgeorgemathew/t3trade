@@ -76,15 +76,18 @@ export const fakeInfoClientLayer = (responses: FakeInfoResponses) =>
 /**
  * Build a fake WebSocket client from a queue of canned deliveries. Each
  * subscribe returns a stream that emits the deliveries whose subscription
- * type matches.
+ * matches (same identity the live client routes on: type + coin + user +
+ * interval).
  */
 export function makeFakeWebSocketClient(
   deliveries: ReadonlyArray<WsDelivery>,
 ): (typeof HyperliquidWebSocketClient)["Service"] {
+  const sameSubscription = (a: WsSubscription, b: WsSubscription) =>
+    a.type === b.type && a.coin === b.coin && a.user === b.user && a.interval === b.interval;
   return HyperliquidWebSocketClient.of({
     subscribe: (subscription: WsSubscription) =>
       Stream.fromIterable(deliveries).pipe(
-        Stream.filter((d) => d.subscription.type === subscription.type),
+        Stream.filter((d) => sameSubscription(d.subscription, subscription)),
       ),
     isConnected: Effect.succeed(true),
   });

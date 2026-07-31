@@ -112,7 +112,9 @@ function postInfo<A>(
 
 const makeHyperliquidInfoClient = Effect.gen(function* () {
   const endpoints = yield* HyperliquidEndpoints;
-  const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
+  // Status filtering happens per-response in `postInfo` (filterStatusOk there),
+  // so the raw client is used as-is.
+  const client = yield* HttpClient.HttpClient;
 
   const call = <A>(operation: string, body: InfoRequestBody, schema: Schema.Decoder<A>) =>
     postInfo(client, endpoints.infoHttpUrl, operation, body, schema);

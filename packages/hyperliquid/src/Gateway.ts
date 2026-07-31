@@ -25,6 +25,7 @@ import {
   type AgentMarketSnapshot,
   type MarketBestBidOffer,
   type MarketCandle,
+  type MarketCandleInterval,
   type MarketHistory,
   type MarketHistoryRequest,
   type OrderBook,
@@ -41,6 +42,7 @@ import {
 } from "./errors.ts";
 import type {
   WireAssetContext,
+  WireCandle,
   WireCandleSnapshotRequest,
   WireClearinghouseStateResponse,
   WireL2BookResponse,
@@ -86,8 +88,17 @@ export class HyperliquidGateway extends Context.Service<
 >()("@t3tools/hyperliquid/Gateway/HyperliquidGateway") {}
 
 /** Parse a wire string number, defaulting to 0 on missing/empty (defensive). */
-const num = (value: string | undefined): number =>
-  value === undefined || value === "" ? 0 : Number(value);
+const num = (value: string | null | undefined): number =>
+  value === undefined || value === null || value === "" ? 0 : Number(value);
+
+/** Millis per exchange-native candle interval (§13: the five supported intervals). */
+const INTERVAL_MILLIS: Record<MarketCandleInterval, number> = {
+  "1m": 60_000,
+  "3m": 180_000,
+  "5m": 300_000,
+  "15m": 900_000,
+  "1h": 3_600_000,
+};
 
 /** Current epoch millis (testable via Clock). */
 const nowMillis = Effect.map(Clock.currentTimeMillis, (n) => n as number);
@@ -130,7 +141,9 @@ function toMarketSnapshotFields(
   return {
     market: symbol as AgentMarketSnapshot["market"],
     markPrice: mark,
-    midPrice: num(ctx.midPx),
+    // midPx is null when the book is empty; fall back to mark so the snapshot
+    // stays well-formed (the POC market always has a book).
+    midPrice: ctx.midPx === null ? mark : num(ctx.midPx),
     oraclePrice: num(ctx.oraclePx),
     fundingRate8h: num(ctx.funding),
     openInterest: num(ctx.openInterest),
@@ -145,8 +158,8 @@ function toMarketSnapshotFields(
 /** Map a wire l2Book into a domain OrderBook with derived BBO. */
 function toOrderBook(book: WireL2BookResponse, observedAt: number): OrderBook {
   const [wireBids, wireAsks] = book.levels;
-  const bids = (wireBids ?? []).map(([px, sz]) => ({ price: num(px), size: num(sz) }));
-  const asks = (wireAsks ?? []).map(([px, sz]) => ({ price: num(px), size: num(sz) }));
+  const bids = (wireBids ?? []).map((level) => ({ price: num(level.px), size: num(level.sz) }));
+  const asks = (wireAsks ?? []).map((level) => ({ price: num(level.px), size: num(level.sz) }));
   const bestBid = bids[0];
   const bestAsk = asks[0];
   return {
@@ -164,17 +177,17 @@ function toOrderBook(book: WireL2BookResponse, observedAt: number): OrderBook {
   };
 }
 
-/** Map a wire candle tuple `[t, o, h, l, c, v]` into the domain candle. */
-function toCandle(wire: readonly [number, string, string, string, string, string]): MarketCandle {
-  const [openTime, open, high, low, close, volume] = wire;
+/** Map a wire candle object into the domain candle (`t`/`T` = open/close time). */
+function toCandle(wire: WireCandle): MarketCandle {
   return {
-    openTime,
-    closeTime: openTime,
-    open: num(open),
-    close: num(close),
-    high: num(high),
-    low: num(low),
-    volume: num(volume),
+    openTime: wire.t,
+    closeTime: wire.T,
+    open: num(wire.o),
+    close: num(wire.c),
+    high: num(wire.h),
+    low: num(wire.l),
+    volume: num(wire.v),
+    trades: wire.n,
   };
 }
 
@@ -195,20 +208,20 @@ function toPosition(
 
 /** Map a wire open order into the domain AgentOpenOrder. */
 function toOpenOrder(o: WireOpenOrder): AgentOpenOrder {
-  // Hyperliquid uses "B"/"A" internally; normalise to buy/sell for the agent.
-  const side = o.side === "B" || o.side === "buy" ? "buy" : "sell";
-  const limitPx = num(o.limitPx);
-  const sz = num(o.sz);
+  // Hyperliquid sides are "B" (bid) / "A" (ask); normalise to buy/sell.
+  // `sz` is the remaining size, `origSz` the original size.
+  const remaining = num(o.sz);
   return {
     market: o.coin as AgentOpenOrder["market"],
     orderId: o.oid,
     cloid: o.cloid,
-    side,
-    limitPrice: limitPx,
-    size: sz,
-    remainingSize: sz,
-    status: o.orderState.status,
-    createdAt: o.orderState.timestamp,
+    side: o.side === "B" ? "buy" : "sell",
+    limitPrice: num(o.limitPx),
+    size: o.origSz === undefined ? remaining : num(o.origSz),
+    remainingSize: remaining,
+    // The openOrders endpoint only lists resting orders, so every row is open.
+    status: "open",
+    createdAt: o.timestamp,
   };
 }
 
@@ -242,12 +255,16 @@ const makeHyperliquidGateway = Effect.gen(function* () {
   const getMarketSnapshot = Effect.fn("HyperliquidGateway.getMarketSnapshot")(function* (
     symbol: string,
   ) {
-    // Resolve + fetch the asset context in one pass; the resolver's cache may
-    // already hold the metadata, but the asset context is read fresh each call.
-    const resolved = yield* resolver.resolveMarket(symbol);
-
+    // One fresh metaAndAssetCtxs read serves both the index and the context.
+    // Resolving the index from the same response it pairs with removes any
+    // chance of the resolver's cache and this fetch disagreeing about indices
+    // (§10.6: the parallel-array pairing must come from one payload).
     const [meta, assetCtxs] = yield* info.metaAndAssetCtxs;
-    const ctx = assetCtxs[resolved.assetIndex];
+    const assetIndex = meta.universe.findIndex((entry) => entry.name === symbol);
+    if (assetIndex === -1) {
+      return yield* new HyperliquidMarketError({ symbol, reason: "not_found" });
+    }
+    const ctx = assetCtxs[assetIndex];
     if (!ctx) {
       return yield* new HyperliquidMarketError({ symbol, reason: "unavailable" });
     }
@@ -273,26 +290,32 @@ const makeHyperliquidGateway = Effect.gen(function* () {
   ) {
     const observedAt = yield* nowMillis;
 
-    const wireReq: WireCandleSnapshotRequest = {
-      coin: request.market,
-      interval: request.interval,
-      startTime: request.startTime,
-      endTime: request.endTime,
-    };
-    const wireCandles = yield* info.candleSnapshot(wireReq);
-
     // §13: clamp to 500 bars. The caller may request fewer via `maxBars`.
     const cap = Math.min(
       request.maxBars ?? MARKET_FRESHNESS.candleHistoryMaxBars,
       MARKET_FRESHNESS.candleHistoryMaxBars,
     );
-    const trimmed = wireCandles.slice(0, cap);
-    const candles = trimmed.map(toCandle);
 
-    // The most-recent finalised close is the last candle's open time (the
-    // exchange returns closed candles; the in-progress one is the final entry
-    // and is not finalised). §13: a finalised close is processed at most once.
-    const finalisedClose = candles.length > 0 ? candles[candles.length - 1]?.closeTime : undefined;
+    // The exchange requires startTime. When the caller omits it, ask for the
+    // most recent `cap` bars ending now (§10.6: "the most recent window up to
+    // the cap").
+    const startTime = request.startTime ?? observedAt - INTERVAL_MILLIS[request.interval] * cap;
+
+    const wireReq: WireCandleSnapshotRequest = {
+      coin: request.market,
+      interval: request.interval,
+      startTime,
+      endTime: request.endTime,
+    };
+    const wireCandles = yield* info.candleSnapshot(wireReq);
+
+    // Candles arrive oldest→newest; keep the most recent `cap` bars.
+    const candles = wireCandles.slice(-cap).map(toCandle);
+
+    // §13: a finalised close is processed at most once. The newest candle is
+    // usually still in progress (its close time is in the future), so the
+    // most-recent finalised close is the last candle that has actually closed.
+    const finalisedClose = candles.findLast((candle) => candle.closeTime <= observedAt)?.closeTime;
 
     return {
       market: request.market,
@@ -326,7 +349,7 @@ const makeHyperliquidGateway = Effect.gen(function* () {
       address: masterAddress,
       accountValue: num(state.marginSummary.accountValue),
       marginUsed: num(state.marginSummary.totalMarginUsed),
-      withdrawable: num(state.marginSummary.withdrawable),
+      withdrawable: num(state.withdrawable),
       positions,
       freshness: accountFreshness(observedAt, "info_api"),
     } as AgentAccountSnapshot;

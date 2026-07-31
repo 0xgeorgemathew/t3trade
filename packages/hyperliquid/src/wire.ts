@@ -1,21 +1,31 @@
 /**
  * Raw Hyperliquid wire shapes.
  *
- * These mirror the exchange's JSON responses verbatim — arrays where the
- * exchange sends arrays, strings where it sends strings. The Info client and
+ * These mirror the exchange's JSON responses verbatim — objects where the
+ * exchange sends objects, strings where it sends strings. The Info client and
  * WebSocket client decode into these; the gateway then maps them into the
  * domain contracts in `@t3tools/trading-contracts`.
  *
- * Kept permissive (fields the gateway does not read are omitted, so an
- * exchange-added field does not break decoding). Fields the gateway *does*
+ * Every shape below was verified against live testnet responses (recorded
+ * under `packages/hyperliquid/fixtures/`, replayed by `wire.test.ts`). Kept
+ * permissive: fields the gateway does not read are omitted, so an
+ * exchange-added field does not break decoding. Fields the gateway *does*
  * read are typed strictly.
  *
  * @module HyperliquidWire
  */
 import { Schema } from "effect";
 
-/** A price/size level on the order book: `[price, size]`. */
-export const WireBookLevel = Schema.Tuple([Schema.String, Schema.String]);
+/**
+ * A price/size level on the order book. The exchange sends objects, not
+ * `[price, size]` pairs: `{ "px": "1891.2", "sz": "0.8315", "n": 3 }` where
+ * `n` is the number of resting orders at the level.
+ */
+export const WireBookLevel = Schema.Struct({
+  px: Schema.String,
+  sz: Schema.String,
+  n: Schema.Number,
+});
 export type WireBookLevel = typeof WireBookLevel.Type;
 
 // -- Info: meta + asset context ----------------------------------------------
@@ -25,8 +35,10 @@ export const WirePerpUniverse = Schema.Struct({
   name: Schema.String,
   szDecimals: Schema.Number,
   maxLeverage: Schema.Number,
-  /** Whether the market is currently active. */
+  /** Isolated-margin-only market; constrains margin mode, not availability. */
   onlyIsolated: Schema.optional(Schema.Boolean),
+  /** Present and true for delisted markets, which stay in the universe. */
+  isDelisted: Schema.optional(Schema.Boolean),
 });
 export type WirePerpUniverse = typeof WirePerpUniverse.Type;
 
@@ -45,8 +57,8 @@ export type WireMetaResponse = typeof WireMetaResponse.Type;
 export const WireAssetContext = Schema.Struct({
   /** Mark price. */
   markPx: Schema.String,
-  /** Mid price. */
-  midPx: Schema.String,
+  /** Mid price; null when the book is empty (delisted/dead markets). */
+  midPx: Schema.NullOr(Schema.String),
   /** Oracle price. */
   oraclePx: Schema.String,
   /** 8-hour funding rate; may be negative. */
@@ -73,9 +85,11 @@ export type WireMetaAndAssetCtxsResponse = typeof WireMetaAndAssetCtxsResponse.T
 
 // -- Info: allMids ------------------------------------------------------------
 
-export const WireAllMidsResponse = Schema.Struct({
-  mids: Schema.Record(Schema.String, Schema.String),
-});
+/**
+ * `allMids` over HTTP is a flat record keyed by coin (the WS `allMids` channel
+ * wraps the same record in `{ mids }`; this schema is the HTTP shape).
+ */
+export const WireAllMidsResponse = Schema.Record(Schema.String, Schema.String);
 export type WireAllMidsResponse = typeof WireAllMidsResponse.Type;
 
 // -- Info: l2Book --------------------------------------------------------------
@@ -90,22 +104,35 @@ export type WireL2BookResponse = typeof WireL2BookResponse.Type;
 
 // -- Info: candleSnapshot -----------------------------------------------------
 
-/** Raw candle: `[time, open, high, low, close, volume]`. */
-export const WireCandle = Schema.Tuple([
-  Schema.Number,
-  Schema.String,
-  Schema.String,
-  Schema.String,
-  Schema.String,
-  Schema.String,
-]);
+/**
+ * Raw candle. The exchange sends objects, not tuples: `t`/`T` are the open/
+ * close times of the bar, `s` the coin, `i` the interval, `o`/`c`/`h`/`l`/`v`
+ * string-encoded OHLCV, `n` the trade count.
+ */
+export const WireCandle = Schema.Struct({
+  t: Schema.Number,
+  T: Schema.Number,
+  s: Schema.String,
+  i: Schema.String,
+  o: Schema.String,
+  c: Schema.String,
+  h: Schema.String,
+  l: Schema.String,
+  v: Schema.String,
+  n: Schema.Number,
+});
 export type WireCandle = typeof WireCandle.Type;
 
-/** `candleSnapshot` request body. */
+/**
+ * `candleSnapshot` request body. `startTime` is REQUIRED by the exchange —
+ * omitting it is rejected with a deserialization error, so the gateway always
+ * supplies one (derived from the interval and bar cap when the caller gave
+ * none).
+ */
 export const WireCandleSnapshotRequest = Schema.Struct({
   coin: Schema.String,
   interval: Schema.String,
-  startTime: Schema.optional(Schema.Number),
+  startTime: Schema.Number,
   endTime: Schema.optional(Schema.Number),
 });
 export type WireCandleSnapshotRequest = typeof WireCandleSnapshotRequest.Type;
@@ -126,39 +153,44 @@ export const WirePosition = Schema.Struct({
 });
 export type WirePosition = typeof WirePosition.Type;
 
+/**
+ * Clearinghouse state. `withdrawable` sits at the top level, NOT inside
+ * `marginSummary` (verified live; `marginSummary` carries `accountValue`,
+ * `totalNtlPos`, `totalRawUsd`, `totalMarginUsed`).
+ */
 export const WireClearinghouseStateResponse = Schema.Struct({
   marginSummary: Schema.Struct({
     accountValue: Schema.String,
     totalMarginUsed: Schema.String,
-    withdrawable: Schema.String,
   }),
+  withdrawable: Schema.String,
   assetPositions: Schema.Array(
     Schema.Struct({
       position: WirePosition,
       type: Schema.optional(Schema.String),
     }),
   ),
+  time: Schema.optional(Schema.Number),
 });
 export type WireClearinghouseStateResponse = typeof WireClearinghouseStateResponse.Type;
 
 // -- Info: openOrders ---------------------------------------------------------
 
+/**
+ * An open order row. Flat — there is no nested `orderState`: the exchange
+ * sends `{ coin, side, limitPx, sz, oid, timestamp, origSz, cloid? }` where
+ * `sz` is the remaining size and `origSz` the original size. `side` is
+ * `"B"` (bid/buy) or `"A"` (ask/sell).
+ */
 export const WireOpenOrder = Schema.Struct({
   coin: Schema.String,
-  side: Schema.Union([
-    Schema.Literal("B"),
-    Schema.Literal("A"),
-    Schema.Literal("buy"),
-    Schema.Literal("sell"),
-  ]),
+  side: Schema.Literals(["B", "A"]),
   limitPx: Schema.String,
   sz: Schema.String,
   oid: Schema.Number,
+  timestamp: Schema.Number,
+  origSz: Schema.optional(Schema.String),
   cloid: Schema.optional(Schema.String),
-  orderState: Schema.Struct({
-    status: Schema.String,
-    timestamp: Schema.Number,
-  }),
 });
 export type WireOpenOrder = typeof WireOpenOrder.Type;
 

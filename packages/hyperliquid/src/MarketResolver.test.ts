@@ -8,10 +8,9 @@
  *
  * @module HyperliquidMarketResolverTests
  */
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { HyperliquidInfoClient } from "./InfoClient.ts";
-import { HyperliquidMarketError } from "./errors.ts";
 import { makeFakeInfoClient } from "./InfoClientTest.ts";
 import type { WireMetaAndAssetCtxsResponse } from "./wire.ts";
 import { HyperliquidMarketResolver, HyperliquidMarketResolverLive } from "./MarketResolver.ts";
@@ -30,6 +29,8 @@ const FIXTURE: WireMetaAndAssetCtxsResponse = [
       { name: "BTC", szDecimals: 5, maxLeverage: 20 },
       { name: "SOL", szDecimals: 2, maxLeverage: 10 },
       { name: "ETH", szDecimals: 4, maxLeverage: 40 },
+      // Delisted markets stay in the universe on the live exchange.
+      { name: "MATIC", szDecimals: 1, maxLeverage: 50, isDelisted: true },
     ],
   },
   [
@@ -60,6 +61,16 @@ const FIXTURE: WireMetaAndAssetCtxsResponse = [
       dayNtlVlm: "1200000.0",
       prevDayPx: "3700.0",
     },
+    {
+      // Dead book on a delisted market: midPx is null on the live exchange.
+      markPx: "0.21",
+      midPx: null,
+      oraclePx: "0.21",
+      funding: "0.0",
+      openInterest: "0.0",
+      dayNtlVlm: "0.0",
+      prevDayPx: "0.21",
+    },
   ],
 ];
 
@@ -69,18 +80,8 @@ const resolverLayer = Layer.provide(
   Layer.succeed(HyperliquidInfoClient, makeFakeInfoClient({ metaAndAssetCtxs: FIXTURE })),
 );
 
-/** Run an Effect against the resolver test layer. */
-const run = <A, E>(effect: Effect.Effect<A, E, HyperliquidMarketResolver>): Promise<A> =>
-  Effect.runPromise(effect.pipe(Effect.provide(resolverLayer)));
-
 describe("HyperliquidMarketResolver.resolveMarket", () => {
-  it.each<{
-    name: string;
-    symbol: string;
-    expectedIndex: number;
-    expectedSzDecimals: number;
-    expectedMaxLeverage: number;
-  }>([
+  const cases = [
     // ETH at index 2 (NOT 1) — proves the index is resolved from the live
     // universe position, not a hard-coded assumption.
     {
@@ -104,61 +105,62 @@ describe("HyperliquidMarketResolver.resolveMarket", () => {
       expectedSzDecimals: 2,
       expectedMaxLeverage: 10,
     },
-  ])("$name", async ({ symbol, expectedIndex, expectedSzDecimals, expectedMaxLeverage }) => {
-    const resolved = await run(
+  ] as const;
+
+  for (const testCase of cases) {
+    it.effect(testCase.name, () =>
       Effect.gen(function* () {
         const resolver = yield* HyperliquidMarketResolver;
-        return yield* resolver.resolveMarket(symbol);
-      }),
+        const resolved = yield* resolver.resolveMarket(testCase.symbol);
+        expect(resolved.symbol).toBe(testCase.symbol);
+        expect(resolved.assetIndex).toBe(testCase.expectedIndex);
+        expect(resolved.szDecimals).toBe(testCase.expectedSzDecimals);
+        expect(resolved.maxLeverage).toBe(testCase.expectedMaxLeverage);
+        expect(resolved.available).toBe(true);
+      }).pipe(Effect.provide(resolverLayer)),
     );
+  }
 
-    expect(resolved.symbol).toBe(symbol);
-    expect(resolved.assetIndex).toBe(expectedIndex);
-    expect(resolved.szDecimals).toBe(expectedSzDecimals);
-    expect(resolved.maxLeverage).toBe(expectedMaxLeverage);
-    expect(resolved.available).toBe(true);
-  });
+  it.effect("resolves a delisted market as unavailable", () =>
+    Effect.gen(function* () {
+      const resolver = yield* HyperliquidMarketResolver;
+      const resolved = yield* resolver.resolveMarket("MATIC");
+      expect(resolved.assetIndex).toBe(3);
+      expect(resolved.available).toBe(false);
+    }).pipe(Effect.provide(resolverLayer)),
+  );
 
-  it("fails with HyperliquidMarketError(not_found) for an unknown symbol", async () => {
-    const result = await run(
-      Effect.gen(function* () {
-        const resolver = yield* HyperliquidMarketResolver;
-        return yield* resolver.resolveMarket("DOGE");
-      }),
-    ).then(
-      () => "succeeded" as const,
-      (cause: unknown) => cause,
-    );
+  it.effect("fails with HyperliquidMarketError(not_found) for an unknown symbol", () =>
+    Effect.gen(function* () {
+      const resolver = yield* HyperliquidMarketResolver;
+      const error = yield* resolver.resolveMarket("DOGE").pipe(Effect.flip);
+      expect(error._tag).toBe("HyperliquidMarketError");
+      if (error._tag === "HyperliquidMarketError") {
+        expect(error.symbol).toBe("DOGE");
+        expect(error.reason).toBe("not_found");
+      }
+    }).pipe(Effect.provide(resolverLayer)),
+  );
 
-    expect(result).toBeInstanceOf(HyperliquidMarketError);
-    expect((result as HyperliquidMarketError).symbol).toBe("DOGE");
-    expect((result as HyperliquidMarketError).reason).toBe("not_found");
-  });
-
-  it("caches metadata and serves the second resolve from cache (no re-fetch)", async () => {
+  it.effect("caches metadata and serves the second resolve from cache (no re-fetch)", () => {
     // The §13 freshness window (5s) is well beyond two back-to-back resolves,
     // so the InfoClient must be hit exactly once across both calls.
     let fetches = 0;
     const base = makeFakeInfoClient({ metaAndAssetCtxs: FIXTURE });
     const countingInfoLayer = Layer.succeed(HyperliquidInfoClient, {
       ...base,
-      metaAndAssetCtxs: Effect.gen(function* () {
+      metaAndAssetCtxs: Effect.sync(() => {
         fetches += 1;
         return FIXTURE;
       }),
     });
-
-    const layer = Layer.provide(HyperliquidMarketResolverLive, countingInfoLayer);
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const resolver = yield* HyperliquidMarketResolver;
-        const first = yield* resolver.resolveMarket("ETH");
-        const second = yield* resolver.resolveMarket("ETH");
-        expect(first.assetIndex).toBe(2);
-        expect(second.assetIndex).toBe(2);
-      }).pipe(Effect.provide(layer)),
-    );
-
-    expect(fetches).toBe(1);
+    return Effect.gen(function* () {
+      const resolver = yield* HyperliquidMarketResolver;
+      const first = yield* resolver.resolveMarket("ETH");
+      const second = yield* resolver.resolveMarket("ETH");
+      expect(first.assetIndex).toBe(2);
+      expect(second.assetIndex).toBe(2);
+      expect(fetches).toBe(1);
+    }).pipe(Effect.provide(Layer.provide(HyperliquidMarketResolverLive, countingInfoLayer)));
   });
 });
