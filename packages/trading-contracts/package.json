@@ -51,6 +51,10 @@
     "./execution": {
       "types": "./src/execution.ts",
       "import": "./src/execution.ts"
+    },
+    "./loss-accounting": {
+      "types": "./src/lossAccounting.ts",
+      "import": "./src/lossAccounting.ts"
     }
   },
   "scripts": {
