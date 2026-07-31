@@ -37,7 +37,6 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
@@ -68,7 +67,7 @@ export interface TradingTurnCoordinatorShape {
    */
   readonly requestRun: (
     input: HarnessRunRequest,
-  ) => Effect.Effect<HarnessRunOutcome, PersistenceSqlError, Scope.Scope>;
+  ) => Effect.Effect<HarnessRunOutcome, PersistenceSqlError>;
 }
 
 export class TradingTurnCoordinator extends Context.Service<
@@ -366,7 +365,11 @@ const make = Effect.gen(function* () {
           ),
         );
         yield* watchTurnEndAndRelease(runId, mission.harness.threadId);
-      }).pipe(Effect.forkScoped);
+        // `forkDetach` detaches the wake fiber into a root scope so it lives for
+        // the runtime's lifetime without requiring the caller to provide a
+        // scope. The watcher self-terminates once the turn ends (the lease is
+        // released); `completeRun`'s guard makes any late fire a no-op.
+      }).pipe(Effect.forkDetach);
 
       return { status: "started", harnessRunId: runId } as const;
     });

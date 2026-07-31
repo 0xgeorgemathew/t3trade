@@ -15,7 +15,7 @@
  */
 import type { OrchestrationEvent, ThreadId, TradingMissionId } from "@t3tools/contracts";
 import { CommandId } from "@t3tools/contracts";
-import type { TradingMissionStatus } from "@t3tools/trading-contracts";
+import type { TradingMissionStatus, TradingProvider } from "@t3tools/trading-contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -23,11 +23,14 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
+import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
 
 type TradingRequestEvent = Extract<
   OrchestrationEvent,
@@ -60,9 +63,26 @@ export class TradingMissionReactor extends Context.Service<
   TradingMissionReactorShape
 >()("t3/trading/TradingMissionReactor") {}
 
+/**
+ * Map a thread's provider driver kind to the trading provider literal.
+ *
+ * The session's `providerName` is a `ProviderDriverKind` slug (e.g. "codex",
+ * "claude", "claudeAgent", "opencode"). The trading domain only knows three
+ * providers (§10.2): codex, claude, opencode. A claudeAgent session maps to
+ * "claude" (it is the claude driver); anything unrecognized falls back to
+ * "codex" so the mission is still bound and can be corrected on the first run.
+ */
+const toTradingProvider = (driverKind: string | null | undefined): TradingProvider => {
+  if (driverKind === "claude" || driverKind === "claudeAgent") return "claude";
+  if (driverKind === "opencode") return "opencode";
+  return "codex";
+};
+
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
+  const snapshotQuery = yield* ProjectionSnapshotQuery;
   const missions = yield* TradingMissionService;
+  const coordinator = yield* TradingTurnCoordinator;
   const crypto = yield* Crypto.Crypto;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -83,11 +103,48 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Derive the harness binding from the thread the mission is bound to.
+   *
+   * The provider and instance come from the thread's session (the live provider
+   * session the mission's turns will resume). The session may not exist yet at
+   * mission-create time (the first turn establishes it); in that case the
+   * model selection's instance id is the fallback, and the provider defaults to
+   * "codex" until a session materialises. The binding is identity-frozen for an
+   * active mission (§10.2), so this is the one place it is resolved.
+   */
+  const resolveHarnessBinding = Effect.fn("TradingMissionReactor.resolveHarnessBinding")(function* (
+    threadId: ThreadId,
+  ) {
+    const shell = yield* snapshotQuery.getThreadShellById(threadId);
+    if (Option.isNone(shell)) {
+      // The thread was archived or never projected; bind with a minimal
+      // placeholder so the mission exists and can be corrected. The
+      // coordinator's provider-binding check will block runs until a real
+      // binding lands.
+      return {
+        provider: "codex" as TradingProvider,
+        providerInstanceId: "unbound",
+        threadId,
+        status: "available" as const,
+      };
+    }
+    const session = shell.value.session;
+    return {
+      provider: toTradingProvider(session?.providerName ?? null),
+      providerInstanceId: session?.providerInstanceId ?? shell.value.modelSelection.instanceId,
+      threadId,
+      status: "available" as const,
+    };
+  });
+
   const processCreateRequested = Effect.fn("TradingMissionReactor.create")(function* (
     event: Extract<TradingRequestEvent, { type: "trading.mission-create-requested" }>,
   ) {
     const { missionId, threadId, tradingAccountId, instruction, allocatedCapitalUsd } =
       event.payload;
+
+    const harness = yield* resolveHarnessBinding(threadId);
 
     yield* missions.createMission({
       missionId,
@@ -95,15 +152,27 @@ const make = Effect.gen(function* () {
       tradingAccountId,
       instruction,
       allocatedCapitalUsd,
-      harness: {
-        provider: "claude",
-        providerInstanceId: "claude",
-        threadId,
-        status: "available",
-      },
+      harness,
     });
 
     yield* announceStatus({ missionId, threadId, status: "initializing" });
+
+    // Start the first run on the thread's actual provider. The mission_created
+    // cause is the only one allowed to proceed without a published strategy
+    // (coordinator check 7); the resumed turn's first job is to author one.
+    // The coordinator forks the wake path internally (a daemon fiber), so this
+    // returns once the lease is acquired, not when the turn completes.
+    const outcome = yield* coordinator.requestRun({ missionId, cause: "mission_created" }).pipe(
+      Effect.catchCause((cause) => {
+        // A failure to start the first run is logged, not fatal — the
+        // mission exists and a later watch or manual action can start it.
+        return Effect.logWarning("TradingMissionReactor: first run did not start", {
+          missionId,
+          cause: Cause.pretty(cause),
+        });
+      }),
+    );
+    void outcome;
   });
 
   const processControlRequested = Effect.fn("TradingMissionReactor.control")(function* (
