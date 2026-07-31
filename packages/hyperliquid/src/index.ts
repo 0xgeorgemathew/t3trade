@@ -17,3 +17,4 @@ export * from "./InfoClient.ts";
 export * from "./WebSocketClient.ts";
 export * from "./MarketResolver.ts";
 export * from "./Precision.ts";
+export * from "./Gateway.ts";
