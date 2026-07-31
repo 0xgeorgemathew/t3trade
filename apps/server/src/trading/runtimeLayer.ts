@@ -18,6 +18,7 @@ import {
 import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingStrategyServiceLive } from "./TradingStrategyService.ts";
+import { TradingWatchServiceLive } from "./TradingWatchService.ts";
 
 /**
  * The Hyperliquid read path, composed bottom-up so each service's build-time
@@ -40,6 +41,7 @@ export const HyperliquidReadLayerLive = HyperliquidGatewayLive.pipe(
 export const TradingLayerLive = Layer.mergeAll(
   TradingMissionServiceLive,
   TradingStrategyServiceLive,
+  TradingWatchServiceLive,
   TradingMissionProjectionLive,
   HyperliquidReadLayerLive,
 );
