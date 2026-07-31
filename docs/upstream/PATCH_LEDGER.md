@@ -101,6 +101,27 @@ files and cannot conflict on sync, so they are not listed.
 | 2026-07-30 | Trading boundary test scope       | `apps/server/src/trading/ProviderBoundary.test.ts`                                                                                                                    | The §6.3 static scan now also walks `apps/server/src/mcp/toolkits/trading`, so the new toolkit is covered by the same no-provider-process rule.                                                                                                                                                     |
 | 2026-07-30 | Upstream web test deflake         | `apps/web/src/lib/stashImageCompression.test.ts`                                                                                                                      | The give-up-path test stubbed 8MB per encode; 15 encode passes through jsdom's per-character `btoa` exceeded the 15s timeout under full-suite load. Stub sizes reduced to 1.4MB encodes / 2MB file — still over the 1.3M-char budget, identical semantics, ~6× less base64 work.                    |
 
+## PROMPT-02 · Trading market-data read path
+
+Fork-owned additions (`packages/hyperliquid/**`,
+`apps/server/src/mcp/toolkits/trading/**` new tool definitions,
+`apps/web/src/components/trading/**` thread-surface additions) are new files
+and cannot conflict on sync, so they are not listed. Only upstream-owned edits
+appear below.
+
+### Applied
+
+| Date       | Seam                              | File(s)                                            | Change                                                                                                                                                                                                                   |
+| ---------- | --------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-07-31 | trading-contracts subpath exports | `packages/trading-contracts/package.json`          | `./market` and `./account-snapshot` subpaths added to the source-first exports map, serving the new §10.6 read contracts.                                                                                                |
+| 2026-07-31 | trading-contracts subpath parity  | `packages/trading-contracts/src/contracts.test.ts` | The expected-subpaths array gained `./market` and `./account-snapshot`; the source-first regex widened from `[a-zA-Z]+` to `[a-zA-Z-]+` to permit the hyphenated `account-snapshot` module name the spec §10.6 requires. |
+
+### Corrections to the Phase 2 plan
+
+| Date       | Item                          | Finding                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ---------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-31 | "missing desktop IPC handler" | The plan's Step 8 claims `getTradingMissionSnapshot` has "no handler in `apps/desktop`". This is a non-defect: the handler IS implemented server-side at `apps/server/src/ws.ts:1233` (auth wired at `apps/server/src/auth/RpcAuthorization.ts:29`), and the desktop app proxies orchestration RPCs to the server over WebSocket — exactly like `getTurnDiff`. No desktop-local handler exists for any orchestration method by design. This sub-task was skipped rather than fabricated. |
+
 ## Future entries
 
 Add a new `## PROMPT-NN · <phase name>` section per phase that touches
