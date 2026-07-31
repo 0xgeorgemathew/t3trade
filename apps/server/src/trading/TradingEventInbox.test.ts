@@ -18,7 +18,7 @@ const layer = it.layer(
 /** Shared in-memory database; each test migrates then truncates the inbox. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 35 });
+  yield* runMigrations({ toMigrationInclusive: 37 });
   yield* sql`DELETE FROM trading_event_inbox`;
 });
 
@@ -37,17 +37,20 @@ layer("TradingEventInbox", (it) => {
 
       const inserted = yield* inbox.persist({
         ...baseEvent,
-        deduplicationKey: "candle_close:5m:1000",
+        deduplicationKey: "candle_close:watch_1:1000",
         occurredAt: 1_000,
       });
 
       assert.strictEqual(inserted, true);
+      assert.strictEqual(yield* inbox.isPending("mission_1", "candle_close:watch_1:1000"), true);
 
-      const pending = yield* inbox.collectPending("mission_1");
-      assert.equal(pending.length, 1);
-      const [event] = pending;
-      assert.equal(event?.deduplicationKey, "candle_close:5m:1000");
+      const claimed = yield* inbox.claimPending("mission_1");
+      assert.equal(claimed.length, 1);
+      const [event] = claimed;
+      assert.equal(event?.deduplicationKey, "candle_close:watch_1:1000");
       assert.equal(event?.category, "market");
+      // The summary persisted with the event is what the wakeup reads back.
+      assert.equal(event?.summary, "5m candle closed above 3000");
     }),
   );
 
@@ -58,12 +61,12 @@ layer("TradingEventInbox", (it) => {
 
       const first = yield* inbox.persist({
         ...baseEvent,
-        deduplicationKey: "candle_close:5m:2000",
+        deduplicationKey: "candle_close:watch_1:2000",
         occurredAt: 2_000,
       });
       const replay = yield* inbox.persist({
         ...baseEvent,
-        deduplicationKey: "candle_close:5m:2000",
+        deduplicationKey: "candle_close:watch_1:2000",
         occurredAt: 9_999,
       });
 
@@ -71,41 +74,41 @@ layer("TradingEventInbox", (it) => {
       // A replay with the same dedup key is ignored — no second wake-up.
       assert.strictEqual(replay, false);
 
-      const pending = yield* inbox.collectPending("mission_1");
-      assert.equal(pending.length, 1);
-      const [event] = pending;
+      const claimed = yield* inbox.claimPending("mission_1");
+      assert.equal(claimed.length, 1);
+      const [event] = claimed;
       // The original occurrence is kept, not the replay's 9999.
       assert.equal(event?.occurredAt, 2_000);
     }),
   );
 
-  it.effect("keeps distinct deduplication keys", () =>
+  it.effect("keeps distinct deduplication keys and claims oldest first", () =>
     Effect.gen(function* () {
       yield* migrated;
       const inbox = yield* TradingEventInbox;
 
       yield* inbox.persist({
         ...baseEvent,
-        deduplicationKey: "candle_close:5m:100",
+        deduplicationKey: "candle_close:watch_1:100",
         occurredAt: 100,
       });
       yield* inbox.persist({
         ...baseEvent,
-        deduplicationKey: "price_cross:ETH:above:3000",
+        deduplicationKey: "price_cross:watch_2",
         occurredAt: 200,
       });
       yield* inbox.persist({
         ...baseEvent,
-        deduplicationKey: "candle_close:5m:100",
+        deduplicationKey: "candle_close:watch_1:100",
         occurredAt: 300,
       });
 
-      const pending = yield* inbox.collectPending("mission_1");
-      assert.equal(pending.length, 2);
-      const [first, second] = pending;
+      const claimed = yield* inbox.claimPending("mission_1");
+      assert.equal(claimed.length, 2);
+      const [first, second] = claimed;
       // Oldest first.
-      assert.equal(first?.deduplicationKey, "candle_close:5m:100");
-      assert.equal(second?.deduplicationKey, "price_cross:ETH:above:3000");
+      assert.equal(first?.deduplicationKey, "candle_close:watch_1:100");
+      assert.equal(second?.deduplicationKey, "price_cross:watch_2");
     }),
   );
 
@@ -113,24 +116,32 @@ layer("TradingEventInbox", (it) => {
     Effect.gen(function* () {
       yield* migrated;
       const inbox = yield* TradingEventInbox;
+      const sql = yield* SqlClient.SqlClient;
+
+      const statusOf = (key: string) =>
+        Effect.map(
+          sql<{ readonly status: string }>`
+            SELECT status FROM trading_event_inbox WHERE deduplication_key = ${key}
+          `,
+          (rows) => rows[0]?.status,
+        );
 
       yield* inbox.persist({ ...baseEvent, deduplicationKey: "timer:1", occurredAt: 1 });
+      assert.strictEqual(yield* inbox.isPending("mission_1", "timer:1"), true);
 
-      // Before a run starts, the event is pending.
-      assert.equal((yield* inbox.collectPending("mission_1")).length, 1);
-
-      // A run starts: pending events become included_in_run and leave the queue.
-      yield* inbox.markPendingIncludedInRun("mission_1");
-      assert.equal((yield* inbox.collectPending("mission_1")).length, 0);
+      // A run starts: pending events are claimed atomically.
+      const claimed = yield* inbox.claimPending("mission_1");
+      assert.equal(claimed.length, 1);
+      assert.equal(yield* statusOf("timer:1"), "included_in_run");
+      assert.strictEqual(yield* inbox.isPending("mission_1", "timer:1"), false);
 
       // A new event lands as pending for the next run while the first is in-flight.
       yield* inbox.persist({ ...baseEvent, deduplicationKey: "timer:2", occurredAt: 2 });
-      assert.equal((yield* inbox.collectPending("mission_1")).length, 1);
 
-      // The run completes: included_in_run → consumed.
+      // The run completes: included_in_run → consumed; the new event is untouched.
       yield* inbox.markIncludedConsumed("mission_1");
-      // The new event is still pending, unaffected by the prior run's completion.
-      assert.equal((yield* inbox.collectPending("mission_1")).length, 1);
+      assert.equal(yield* statusOf("timer:1"), "consumed");
+      assert.equal(yield* statusOf("timer:2"), "pending");
     }),
   );
 });

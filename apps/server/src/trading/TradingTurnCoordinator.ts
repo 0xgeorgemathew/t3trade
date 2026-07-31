@@ -17,9 +17,10 @@
  * for trading code to resume a session (§6.3), and the persisted `resumeCursor`
  * is what makes the resumed turn continue the same conversation.
  *
- * A forked watcher then listens on `streamDomainEvents` for the turn ending
- * (`thread.session-set` with the session leaving `"running"`) and releases the
- * lease — marking the run `completed` on a clean end, `failed` on an error.
+ * A forked watcher — subscribed before the turn is dispatched, so an early
+ * turn-end cannot slip past it — waits for the first `thread.session-set` where
+ * the session leaves `"running"`, releases the lease (marking the run
+ * `completed` on a clean end, `failed` on an error), and terminates.
  *
  * @module TradingTurnCoordinator
  */
@@ -29,12 +30,15 @@ import {
   DEFAULT_RUNTIME_MODE,
   MessageId,
   ThreadId,
+  type OrchestrationEvent,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -83,6 +87,21 @@ const sqlFail = (operation: string) => toPersistenceSqlError(`TradingTurnCoordin
  * receive malformed JSON.
  */
 const decodeWakeupText = Schema.decodeUnknownSync(Schema.fromJsonString(TradingHarnessWakeup));
+
+/**
+ * The `mission_created` bootstrap message: the resumed turn's first job is to
+ * author a strategy, so it carries just the mission instruction rather than the
+ * full snapshot (which requires an active strategy).
+ */
+const BootstrapWakeup = Schema.Struct({
+  kind: Schema.Literal("trading-harness-wakeup"),
+  bootstrap: Schema.Literal(true),
+  missionId: Schema.String,
+  harnessRunId: Schema.String,
+  cause: Schema.String,
+  instruction: Schema.String,
+});
+const encodeBootstrapText = Schema.encodeSync(Schema.fromJsonString(BootstrapWakeup));
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -134,19 +153,15 @@ const make = Effect.gen(function* () {
   /**
    * Flip a run to a terminal status, releasing the lease. Idempotent by guard:
    * the `WHERE status NOT IN ('completed','failed')` clause makes a repeat call
-   * (e.g. a late watcher fire after the run already reached a terminal state)
-   * a no-op, so it cannot corrupt a future run's lease.
-   *
-   * The `trading_harness_runs` table (migration 035) carries no `failure_reason`
-   * column; the failure detail is logged alongside the transition.
+   * a no-op, so it cannot corrupt a future run's lease. The `trading_harness_runs`
+   * table (migration 035) carries no failure-reason column; the failure detail
+   * is logged alongside the transition.
    */
   const completeRun = Effect.fn("TradingTurnCoordinator.completeRun")(function* (
     runId: string,
     status: "completed" | "failed",
-    failureReason: string | null,
   ) {
     const now = yield* Clock.currentTimeMillis;
-    void failureReason;
     yield* sql`
       UPDATE trading_harness_runs
       SET status = ${status}, completed_at = ${now}
@@ -155,45 +170,54 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Consume `streamDomainEvents` and release the lease when the turn triggered
-   * by this dispatch ends. The turn-end signal is a `thread.session-set` domain
-   * event where the session leaves `"running"` and has no active turn — the
-   * canonical turn-end marker the client runtime itself uses (§B.1).
+   * Wait for the turn triggered by this dispatch to end, then release the lease
+   * and mark the run's claimed inbox events consumed. The turn-end signal is
+   * the first `thread.session-set` domain event where the session leaves
+   * `"running"` with no active turn — the canonical turn-end marker the client
+   * runtime itself uses (§B.1). A failed turn surfaces as status "error"; those
+   * mark the run `failed`.
    *
-   * Runs inside the forked wake fiber (see `requestRun`), so it dies with that
-   * fiber and with the runtime. `completeRun`'s `WHERE status NOT IN (...)`
-   * guard makes a late repeat fire a no-op, so a watcher that outlives its turn
-   * (e.g. the session never transitions) cannot corrupt a future run's lease.
+   * `Stream.take(1)` means the watcher terminates with the turn instead of
+   * consuming the domain-event stream for the life of the process.
    */
-  const watchTurnEndAndRelease = (runId: string, threadId: string) =>
-    Stream.runForEach(engine.streamDomainEvents, (event) =>
-      Effect.gen(function* () {
-        if (event.type !== "thread.session-set") return;
-        if (event.payload.threadId !== threadId) return;
-        const { status, activeTurnId } = event.payload.session;
-        // The session leaving "running" with no active turn is the turn-end
-        // signal. A failed turn surfaces as status "error"; mark those failed.
-        if (status === "running" || activeTurnId !== null) return;
-        const terminal: "completed" | "failed" = status === "error" ? "failed" : "completed";
-        yield* completeRun(runId, terminal, status === "error" ? status : null).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("TradingTurnCoordinator: failed to release lease", {
-              runId,
-              status: terminal,
-              cause: String(cause),
-            }),
-          ),
-        );
-        // Mark the inbox events this run consumed so they are not re-collected.
-        yield* inbox.markIncludedConsumed(threadId).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("TradingTurnCoordinator: failed to mark inbox consumed", {
-              threadId,
-              cause: String(cause),
-            }),
-          ),
-        );
-      }),
+  const isTurnEndFor =
+    (threadId: string) =>
+    (event: OrchestrationEvent): boolean => {
+      if (event.type !== "thread.session-set") return false;
+      if (event.payload.threadId !== threadId) return false;
+      const { status, activeTurnId } = event.payload.session;
+      return status !== "running" && activeTurnId === null;
+    };
+
+  const watchTurnEndAndRelease = (runId: string, missionId: string, threadId: string) =>
+    engine.streamDomainEvents.pipe(
+      Stream.filter(isTurnEndFor(threadId)),
+      Stream.take(1),
+      Stream.runForEach((event) =>
+        Effect.gen(function* () {
+          if (event.type !== "thread.session-set") return;
+          const terminal: "completed" | "failed" =
+            event.payload.session.status === "error" ? "failed" : "completed";
+          yield* completeRun(runId, terminal).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("TradingTurnCoordinator: failed to release lease", {
+                runId,
+                status: terminal,
+                cause: String(cause),
+              }),
+            ),
+          );
+          // Close the inbox lifecycle for the events this run claimed.
+          yield* inbox.markIncludedConsumed(missionId).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("TradingTurnCoordinator: failed to mark inbox consumed", {
+                missionId,
+                cause: String(cause),
+              }),
+            ),
+          );
+        }),
+      ),
     );
 
   /**
@@ -246,8 +270,8 @@ const make = Effect.gen(function* () {
       text = composed.text;
     } else {
       // mission_created bootstrap: no strategy yet. The resumed turn's first
-      // job is to author one. Plain instruction message until Step 7.
-      text = JSON.stringify({
+      // job is to author one.
+      text = encodeBootstrapText({
         kind: "trading-harness-wakeup",
         bootstrap: true,
         missionId: input.missionId,
@@ -314,12 +338,12 @@ const make = Effect.gen(function* () {
       // (execution lands in PROMPT-04); the account row existing is the check.
       // (Intentionally a no-op seam for now.)
 
-      // §12.3 check 6: The event has not been superseded. Collecting the pending
-      // events and marking them included_in_run atomically with the lease means
-      // a superseded event cannot drive a run. The pending set is carried into
-      // the wakeup so the harness sees exactly the events that warranted it.
-      const pendingEvents = yield* inbox.collectPending(input.missionId);
-      yield* inbox.markPendingIncludedInRun(input.missionId);
+      // §12.3 check 6: The event has not been superseded. Claiming the pending
+      // events (flip to included_in_run and return them, one statement) after
+      // the lease is acquired means a superseded event cannot drive a run. The
+      // claimed set is carried into the wakeup so the harness sees exactly the
+      // events that warranted it.
+      const pendingEvents = yield* inbox.claimPending(input.missionId);
 
       // §12.3 check 7: The latest strategy and authority versions are loaded.
       // A `mission_created` first run is the only cause that may proceed without
@@ -327,48 +351,52 @@ const make = Effect.gen(function* () {
       // blocked here so the wakeup's required `activeStrategy` is always present.
       const currentStrategy = yield* strategies.getCurrentStrategy(input.missionId);
       if (currentStrategy._tag === "None" && input.cause !== "mission_created") {
-        yield* completeRun(runId, "failed", "no_active_strategy");
+        yield* completeRun(runId, "failed");
         return { status: "blocked", reason: "no_active_strategy" } as const;
       }
 
-      // All checks passed: fork the wake path (build the wakeup, dispatch
-      // `thread.turn.start`, and watch for the turn ending to release the lease).
+      // All checks passed: fork the wake path (watch for the turn ending, build
+      // the wakeup, dispatch `thread.turn.start`).
       //
       // The wake is a background effect so `requestRun` returns `started` as soon
       // as the lease is acquired — the caller learns the run started, and the
       // dispatch/resume proceeds asynchronously (matching how `thread.turn.start`
       // itself works: dispatch persists events, a reactor drives the provider).
+      // The turn-end watcher is forked BEFORE the dispatch so a turn that ends
+      // quickly cannot slip past the hot domain-event stream; the wake fiber
+      // then lives exactly as long as the watcher (one turn) and terminates.
       // A wake failure marks the run `failed`, releasing the lease and surfacing
       // the run as terminal in the projection.
       yield* Effect.gen(function* () {
-        yield* wakeProvider({
-          missionId: input.missionId,
-          harnessRunId: runId,
-          cause: input.cause,
-          ...(input.triggeringWatchId !== undefined
-            ? { triggeringWatchId: input.triggeringWatchId }
-            : {}),
-          ...(input.userMessage !== undefined ? { userMessage: input.userMessage } : {}),
-          pendingEvents,
-          threadId: mission.harness.threadId,
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.gen(function* () {
-              yield* completeRun(runId, "failed", "wake_dispatch_failed").pipe(
-                Effect.catchCause(() => Effect.void),
-              );
-              yield* Effect.logError("TradingTurnCoordinator: wake dispatch failed", {
-                runId,
-                cause: String(cause),
-              });
-            }),
-          ),
+        const watcher = yield* Effect.forkChild(
+          watchTurnEndAndRelease(runId, input.missionId, mission.harness.threadId),
         );
-        yield* watchTurnEndAndRelease(runId, mission.harness.threadId);
-        // `forkDetach` detaches the wake fiber into a root scope so it lives for
-        // the runtime's lifetime without requiring the caller to provide a
-        // scope. The watcher self-terminates once the turn ends (the lease is
-        // released); `completeRun`'s guard makes any late fire a no-op.
+        const woke = yield* Effect.exit(
+          wakeProvider({
+            missionId: input.missionId,
+            harnessRunId: runId,
+            cause: input.cause,
+            ...(input.triggeringWatchId !== undefined
+              ? { triggeringWatchId: input.triggeringWatchId }
+              : {}),
+            ...(input.userMessage !== undefined ? { userMessage: input.userMessage } : {}),
+            pendingEvents,
+            threadId: mission.harness.threadId,
+          }),
+        );
+        if (Exit.isFailure(woke)) {
+          yield* Fiber.interrupt(watcher);
+          yield* completeRun(runId, "failed").pipe(Effect.catchCause(() => Effect.void));
+          yield* Effect.logError("TradingTurnCoordinator: wake dispatch failed", {
+            runId,
+            cause: String(woke.cause),
+          });
+          return;
+        }
+        yield* Fiber.join(watcher);
+        // `forkDetach` detaches the wake fiber into a root scope so it lives
+        // without requiring the caller to provide a scope. `completeRun`'s
+        // guard makes a late or repeated release a no-op.
       }).pipe(Effect.forkDetach);
 
       return { status: "started", harnessRunId: runId } as const;

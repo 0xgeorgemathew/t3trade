@@ -406,7 +406,12 @@ const handlers = {
         }),
       );
       if (cancelled === null) {
-        return { outcome: "rejected", reason: "watch_not_active" as const };
+        // Distinguish "no such watch" from "watch exists but is terminal".
+        const existing = yield* watches.getWatch(input.watchId).pipe(Effect.orDie);
+        return {
+          outcome: "rejected" as const,
+          reason: existing === null ? ("watch_not_found" as const) : ("watch_not_active" as const),
+        };
       }
       yield* announceWatchCancelled({
         threadId,

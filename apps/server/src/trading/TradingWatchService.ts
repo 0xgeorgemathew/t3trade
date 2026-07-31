@@ -117,34 +117,25 @@ const makeTradingWatchService = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const crypto = yield* Crypto.Crypto;
 
+  /** The mission's row when it exists and is active; a typed error otherwise. */
   const requireActiveMission = Effect.fn("TradingWatchService.requireActiveMission")(function* (
     missionId: string,
   ) {
-    const rows = yield* sql<{ readonly status: string }>`
-      SELECT status FROM trading_missions WHERE mission_id = ${missionId}
+    const rows = yield* sql<{ readonly status: string; readonly strategy_version: number }>`
+      SELECT status, strategy_version FROM trading_missions WHERE mission_id = ${missionId}
     `.pipe(Effect.mapError(sqlFail("requireActiveMission")));
 
     const row = rows[0];
-    if (row === undefined) {
+    if (row === undefined || !isActiveMissionStatus(decodeMissionStatus(row.status))) {
       return yield* new TradingMissionNotFoundError({ missionId });
     }
-    if (!isActiveMissionStatus(decodeMissionStatus(row.status))) {
-      return yield* new TradingMissionNotFoundError({ missionId });
-    }
+    return row;
   });
 
   const registerWatch: TradingWatchServiceShape["registerWatch"] = (input) =>
     Effect.gen(function* () {
-      yield* requireActiveMission(input.missionId);
-
-      const rows = yield* sql<{ readonly strategy_version: number }>`
-        SELECT strategy_version FROM trading_missions WHERE mission_id = ${input.missionId}
-      `.pipe(Effect.mapError(sqlFail("register:readStrategyVersion")));
-
-      const strategyVersion = rows[0]?.strategy_version;
-      if (strategyVersion === undefined) {
-        return yield* new TradingMissionNotFoundError({ missionId: input.missionId });
-      }
+      const mission = yield* requireActiveMission(input.missionId);
+      const strategyVersion = mission.strategy_version;
 
       const now = yield* Clock.currentTimeMillis;
       const watchId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
@@ -174,23 +165,15 @@ const makeTradingWatchService = Effect.gen(function* () {
 
       const now = yield* Clock.currentTimeMillis;
       // Only an active watch can be cancelled; a terminal watch keeps its status.
-      const result = yield* sql<{ readonly watch_id: string }>`
+      const rows = yield* sql<WatchRow>`
         UPDATE trading_watches
         SET status = 'cancelled', version = version + 1, updated_at = ${now}
         WHERE watch_id = ${input.watchId}
           AND mission_id = ${input.missionId}
           AND status = 'active'
-        RETURNING watch_id
+        RETURNING watch_id, mission_id, strategy_version, watch_json, status, created_at, updated_at
       `.pipe(Effect.mapError(sqlFail("cancel:update")));
 
-      if (result.length === 0) {
-        return null;
-      }
-
-      const rows = yield* sql<WatchRow>`
-        SELECT watch_id, mission_id, strategy_version, watch_json, status, created_at, updated_at
-        FROM trading_watches WHERE watch_id = ${input.watchId}
-      `.pipe(Effect.mapError(sqlFail("cancel:read")));
       return rows[0] ? toPersistedWatch(rows[0]) : null;
     });
 
@@ -199,21 +182,13 @@ const makeTradingWatchService = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       // Only an active watch flips to triggered; a concurrent supersede or cancel
       // wins and this returns null so the evaluator does not re-fire it.
-      const result = yield* sql<{ readonly mission_id: string }>`
+      const rows = yield* sql<WatchRow>`
         UPDATE trading_watches
         SET status = 'triggered', version = version + 1, updated_at = ${now}
         WHERE watch_id = ${watchId} AND status = 'active'
-        RETURNING mission_id
+        RETURNING watch_id, mission_id, strategy_version, watch_json, status, created_at, updated_at
       `.pipe(Effect.mapError(sqlFail("markTriggered:update")));
 
-      if (result.length === 0) {
-        return null;
-      }
-
-      const rows = yield* sql<WatchRow>`
-        SELECT watch_id, mission_id, strategy_version, watch_json, status, created_at, updated_at
-        FROM trading_watches WHERE watch_id = ${watchId}
-      `.pipe(Effect.mapError(sqlFail("markTriggered:read")));
       return rows[0] ? toPersistedWatch(rows[0]) : null;
     });
 

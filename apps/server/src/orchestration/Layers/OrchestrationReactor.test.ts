@@ -80,6 +80,7 @@ describe("OrchestrationReactor", () => {
             start: () => Effect.void,
             drain: Effect.void,
             evaluateDelivery: () => Effect.void,
+            sweep: Effect.void,
           }),
         ),
         Layer.provideMerge(

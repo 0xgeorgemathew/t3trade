@@ -1,7 +1,9 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import { EventId, ThreadId, type OrchestrationEvent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -9,7 +11,7 @@ import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { TradingHarnessBinding } from "./Schemas.ts";
-import { TradingEventInboxLive } from "./TradingEventInbox.ts";
+import { TradingEventInbox, TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingStrategyService, TradingStrategyServiceLive } from "./TradingStrategyService.ts";
 import { TradingTurnCoordinator, TradingTurnCoordinatorLive } from "./TradingTurnCoordinator.ts";
@@ -56,7 +58,7 @@ const harness: TradingHarnessBinding = {
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 35 });
+  yield* runMigrations({ toMigrationInclusive: 37 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_harness_runs`;
@@ -223,3 +225,118 @@ layer("TradingTurnCoordinator", (it) => {
     }),
   );
 });
+
+/**
+ * The turn-end release path: a `thread.session-set` event where the session
+ * leaves "running" with no active turn must release the lease (run →
+ * `completed`) and close the inbox lifecycle (`included_in_run` → `consumed`,
+ * keyed by MISSION id). Runs standalone with a queue-backed engine stream so
+ * the test can emit the turn-end event itself.
+ */
+const turnEndEvent = (threadId: string): OrchestrationEvent => ({
+  sequence: 1,
+  eventId: EventId.make("evt-turn-end"),
+  aggregateKind: "thread",
+  aggregateId: ThreadId.make(threadId),
+  occurredAt: "2026-07-30T00:00:01.000Z",
+  commandId: null,
+  causationEventId: null,
+  correlationId: null,
+  metadata: {},
+  type: "thread.session-set",
+  payload: {
+    threadId: ThreadId.make(threadId),
+    session: {
+      threadId: ThreadId.make(threadId),
+      status: "ready",
+      providerName: "claude",
+      runtimeMode: "approval-required",
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: "2026-07-30T00:00:01.000Z",
+    },
+  },
+});
+
+/** Poll a read until `done`, sleeping between attempts (the watcher is a fiber). */
+const awaitCondition = <A, E>(read: Effect.Effect<A, E>, done: (value: A) => boolean) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 300; attempt++) {
+      const value = yield* read;
+      if (done(value)) return value;
+      yield* Effect.sleep("10 millis");
+    }
+    const last = yield* read;
+    return yield* Effect.die(`awaitCondition: condition not reached (last=${String(last)})`);
+  });
+
+it.live("releases the lease and consumes claimed inbox events when the turn ends", () =>
+  Effect.gen(function* () {
+    const queue = yield* Queue.unbounded<OrchestrationEvent>();
+    const queueEngine = Layer.succeed(OrchestrationEngineService, {
+      dispatch: () => Effect.succeed({ sequence: 0 }),
+      readEvents: () => Stream.empty,
+      streamDomainEvents: Stream.fromQueue(queue),
+      latestSequence: Effect.succeed(0),
+    });
+    const testLayer = TradingTurnCoordinatorLive.pipe(
+      Layer.provideMerge(TradingMissionServiceLive),
+      Layer.provideMerge(TradingStrategyServiceLive),
+      Layer.provideMerge(TradingEventInboxLive),
+      Layer.provideMerge(stubComposer),
+      Layer.provideMerge(queueEngine),
+      Layer.provideMerge(NodeSqliteClient.layerMemory()),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    yield* Effect.gen(function* () {
+      yield* runMigrations({ toMigrationInclusive: 37 });
+      const missions = yield* TradingMissionService;
+      yield* missions.createMission({
+        missionId: "mission_1",
+        userId: "local",
+        tradingAccountId: "acct_1",
+        instruction: "Trade ETH momentum",
+        allocatedCapitalUsd: 1_000,
+        harness,
+      });
+
+      // A pending event the run will claim on start.
+      const inbox = yield* TradingEventInbox;
+      yield* inbox.persist({
+        missionId: "mission_1",
+        category: "market",
+        deduplicationKey: "candle_close:watch_1:1000",
+        payload: {},
+        occurredAt: 1_000,
+        summary: "5m candle closed 3100 (above 3000)",
+      });
+
+      // mission_created is the strategy-less bootstrap cause, so the forked
+      // wake succeeds against the stub composer and the watcher stays up.
+      const coordinator = yield* TradingTurnCoordinator;
+      const outcome = yield* coordinator.requestRun({
+        missionId: "mission_1",
+        cause: "mission_created",
+      });
+      assert.equal(outcome.status, "started");
+
+      const sql = yield* SqlClient.SqlClient;
+      const runStatus = sql<{ readonly status: string }>`
+        SELECT status FROM trading_harness_runs WHERE mission_id = 'mission_1'
+      `.pipe(Effect.map((rows) => rows[0]?.status));
+      const inboxStatus = sql<{ readonly status: string }>`
+        SELECT status FROM trading_event_inbox WHERE mission_id = 'mission_1'
+      `.pipe(Effect.map((rows) => rows[0]?.status));
+
+      // The run claimed the pending event and holds the lease.
+      yield* awaitCondition(inboxStatus, (status) => status === "included_in_run");
+      assert.equal(yield* runStatus, "starting");
+
+      // The turn ends: the watcher releases the lease and closes the inbox.
+      yield* Queue.offer(queue, turnEndEvent("thread_1"));
+      yield* awaitCondition(runStatus, (status) => status === "completed");
+      yield* awaitCondition(inboxStatus, (status) => status === "consumed");
+    }).pipe(Effect.provide(testLayer));
+  }),
+);

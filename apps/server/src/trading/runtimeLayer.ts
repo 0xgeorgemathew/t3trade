@@ -50,14 +50,13 @@ export const HyperliquidReadLayerLive = HyperliquidGatewayLive.pipe(
 export const HyperliquidWsLayerLive = HyperliquidWebSocketClientLive;
 
 /**
- * The wakeup composer depends on the gateway, mission, watch, and inbox
- * services, so it is built with those provided rather than merged flat.
+ * The wakeup composer depends on the gateway, mission, and watch services, so
+ * it is built with those provided rather than merged flat.
  */
 const composerWithDeps = TradingWakeupComposerLive.pipe(
   Layer.provide(HyperliquidReadLayerLive),
   Layer.provideMerge(TradingMissionServiceLive),
   Layer.provideMerge(TradingWatchServiceLive),
-  Layer.provideMerge(TradingEventInboxLive),
 );
 
 /**

@@ -1,5 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import {
+  TRADING_CANCEL_WATCH_TOOL,
   TRADING_GET_ACCOUNT_STATE_TOOL,
   TRADING_GET_MARKET_HISTORY_TOOL,
   TRADING_GET_MARKET_SNAPSHOT_TOOL,
@@ -7,15 +8,18 @@ import {
   TRADING_GET_OPEN_ORDERS_TOOL,
   TRADING_GET_ORDER_BOOK_TOOL,
   TRADING_GET_POSITION_TOOL,
+  TRADING_LIST_WATCHES_TOOL,
   TRADING_PUBLISH_MOMENTUM_STRATEGY_TOOL,
+  TRADING_REGISTER_WATCH_TOOL,
   TRADING_RESOLVE_MARKET_TOOL,
+  TRADING_SCHEDULE_REASSESSMENT_TOOL,
 } from "@t3tools/trading-contracts/tools";
 import * as Context from "effect/Context";
 import { Tool } from "effect/unstable/ai";
 
 import { TradingToolkit } from "./tools.ts";
 
-it("exposes the §14.3 mission tools and the §14.2 read tools", () => {
+it("exposes the §14.3 mission tools, the §14.2 read tools, and the §14.4 watch tools", () => {
   expect(
     Object.values(TradingToolkit.tools)
       .map((tool) => tool.name)
@@ -31,6 +35,10 @@ it("exposes the §14.3 mission tools and the §14.2 read tools", () => {
       TRADING_GET_ACCOUNT_STATE_TOOL,
       TRADING_GET_POSITION_TOOL,
       TRADING_GET_OPEN_ORDERS_TOOL,
+      TRADING_REGISTER_WATCH_TOOL,
+      TRADING_SCHEDULE_REASSESSMENT_TOOL,
+      TRADING_LIST_WATCHES_TOOL,
+      TRADING_CANCEL_WATCH_TOOL,
     ].sort(),
   );
 });

@@ -33,7 +33,6 @@ import {
   TradingHarnessWakeup,
   type TradingHarnessRunCause,
 } from "./Schemas.ts";
-import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
 
@@ -107,10 +106,6 @@ const make = Effect.gen(function* () {
   const gateway = yield* HyperliquidGateway;
   const missions = yield* TradingMissionService;
   const watches = yield* TradingWatchService;
-  // `TradingEventInbox` is yielded only to express the build-time dependency
-  // for layer-wiring symmetry; the pending events are passed in by the
-  // coordinator to avoid a re-fetch that could observe a different set.
-  yield* TradingEventInbox;
 
   const resolveTriggeringWatch = (
     watchId: string | undefined,

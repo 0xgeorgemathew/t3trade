@@ -2,9 +2,9 @@
  * TradingEventInbox - persisted mission events with deduplication, spec §18.1.
  *
  * Observed facts are persisted as inbox events keyed for deduplication, then
- * coalesced before a run consumes them. An event moves
+ * claimed by the run that consumes them. An event moves
  * `pending → included_in_run → consumed`, so a queued event is never silently
- * lost and a run always sees the coalesced set it was started with.
+ * lost and a run always sees the set it was started with.
  *
  * Deduplication is enforced by the `idx_trading_event_inbox_dedupe` unique
  * index (migration 035): a second persist with the same
@@ -50,30 +50,25 @@ export interface TradingEventInboxShape {
   readonly persist: (input: PersistEventInput) => Effect.Effect<boolean, PersistenceSqlError>;
 
   /**
-   * The coalesced set of pending events a run for `missionId` should start
-   * with, oldest first.
+   * Atomically claim every pending event for `missionId` — flip them to
+   * `included_in_run` and return them, oldest first.
    *
-   * Coalescing here is the dedupe above plus status filtering: only `pending`
-   * events are returned, and each deduplication key appears at most once (the
-   * newest pending occurrence wins, since an earlier one was either consumed
-   * already or collapsed at insert).
+   * Called by the turn coordinator once a run has acquired the lease, so the
+   * run owns exactly the set it was started with and a follow-up event lands
+   * as pending for the next run.
    */
-  readonly collectPending: (
+  readonly claimPending: (
     missionId: string,
   ) => Effect.Effect<ReadonlyArray<TradingDomainEventSummary>, PersistenceSqlError>;
 
-  /**
-   * Mark every pending event for `missionId` as `included_in_run`.
-   *
-   * Called by the turn coordinator once a run has started, so the run owns the
-   * coalesced set and a follow-up event lands as pending for the next run.
-   */
-  readonly markPendingIncludedInRun: (
+  /** Whether an event with `deduplicationKey` is still pending for `missionId`. */
+  readonly isPending: (
     missionId: string,
-  ) => Effect.Effect<void, PersistenceSqlError>;
+    deduplicationKey: string,
+  ) => Effect.Effect<boolean, PersistenceSqlError>;
 
   /**
-   * Mark the events previously marked `included_in_run` as `consumed`.
+   * Mark the events previously claimed (`included_in_run`) as `consumed`.
    *
    * Called when a run completes, closing the `pending → included_in_run →
    * consumed` lifecycle so the inbox never holds stale in-flight state.
@@ -85,24 +80,18 @@ export class TradingEventInbox extends Context.Service<TradingEventInbox, Tradin
   "t3/trading/TradingEventInbox",
 ) {}
 
-interface InboxRow {
-  readonly event_id: string;
-  readonly mission_id: string;
+interface ClaimedRow {
   readonly category: string;
   readonly deduplication_key: string;
-  readonly payload_json: string;
-  readonly status: string;
   readonly occurred_at: number;
+  readonly summary: string;
 }
 
-const toSummary = (row: InboxRow): TradingDomainEventSummary => ({
+const toSummary = (row: ClaimedRow): TradingDomainEventSummary => ({
   category: decodeCategory(row.category),
   deduplicationKey: row.deduplication_key,
   occurredAt: row.occurred_at,
-  // `summary` is not re-read from the row: it was supplied at persist time and
-  // is not stored separately. Re-derive a minimal label here so a run always
-  // sees a non-empty summary even after a restart re-reads rows.
-  summary: `${row.category}:${row.deduplication_key}`,
+  summary: row.summary,
 });
 
 const sqlFail = (operation: string) => toPersistenceSqlError(`TradingEventInbox.${operation}`);
@@ -124,49 +113,54 @@ const makeTradingEventInbox = Effect.gen(function* () {
       // "this was a replay" signal.
       const inserted = yield* sql<{ readonly event_id: string }>`
         INSERT OR IGNORE INTO trading_event_inbox
-          (event_id, mission_id, category, deduplication_key, payload_json, status, occurred_at, created_at)
+          (event_id, mission_id, category, deduplication_key, payload_json, status, occurred_at, summary, created_at)
         VALUES
-          (${eventId}, ${input.missionId}, ${category},
-           ${input.deduplicationKey}, ${payloadJson}, 'pending', ${input.occurredAt}, ${now})
+          (${eventId}, ${input.missionId}, ${category}, ${input.deduplicationKey},
+           ${payloadJson}, 'pending', ${input.occurredAt}, ${input.summary}, ${now})
         RETURNING event_id
       `.pipe(Effect.mapError(sqlFail("persist")));
 
       return inserted.length > 0;
     });
 
-  const collectPending: TradingEventInboxShape["collectPending"] = (missionId) =>
-    sql<InboxRow>`
-      SELECT event_id, mission_id, category, deduplication_key, payload_json, status, occurred_at
-      FROM trading_event_inbox
+  const claimPending: TradingEventInboxShape["claimPending"] = (missionId) =>
+    sql<ClaimedRow>`
+      UPDATE trading_event_inbox SET status = 'included_in_run'
       WHERE mission_id = ${missionId} AND status = 'pending'
-      ORDER BY occurred_at ASC, event_id ASC
+      RETURNING category, deduplication_key, occurred_at, summary
     `.pipe(
-      Effect.mapError(sqlFail("collectPending")),
-      Effect.map((rows) => rows.map(toSummary)),
+      Effect.mapError(sqlFail("claimPending")),
+      Effect.map((rows) =>
+        rows
+          .map(toSummary)
+          .sort(
+            (a, b) =>
+              a.occurredAt - b.occurredAt || a.deduplicationKey.localeCompare(b.deduplicationKey),
+          ),
+      ),
     );
 
-  const markPendingIncludedInRun: TradingEventInboxShape["markPendingIncludedInRun"] = (
-    missionId,
-  ) =>
-    Effect.gen(function* () {
-      yield* sql`
-        UPDATE trading_event_inbox SET status = 'included_in_run'
-        WHERE mission_id = ${missionId} AND status = 'pending'
-      `.pipe(Effect.mapError(sqlFail("markPendingIncludedInRun")));
-    });
+  const isPending: TradingEventInboxShape["isPending"] = (missionId, deduplicationKey) =>
+    sql<{ readonly event_id: string }>`
+      SELECT event_id FROM trading_event_inbox
+      WHERE mission_id = ${missionId}
+        AND deduplication_key = ${deduplicationKey}
+        AND status = 'pending'
+    `.pipe(
+      Effect.mapError(sqlFail("isPending")),
+      Effect.map((rows) => rows.length > 0),
+    );
 
   const markIncludedConsumed: TradingEventInboxShape["markIncludedConsumed"] = (missionId) =>
-    Effect.gen(function* () {
-      yield* sql`
-        UPDATE trading_event_inbox SET status = 'consumed'
-        WHERE mission_id = ${missionId} AND status = 'included_in_run'
-      `.pipe(Effect.mapError(sqlFail("markIncludedConsumed")));
-    });
+    sql`
+      UPDATE trading_event_inbox SET status = 'consumed'
+      WHERE mission_id = ${missionId} AND status = 'included_in_run'
+    `.pipe(Effect.mapError(sqlFail("markIncludedConsumed")), Effect.asVoid);
 
   return {
     persist,
-    collectPending,
-    markPendingIncludedInRun,
+    claimPending,
+    isPending,
     markIncludedConsumed,
   } satisfies TradingEventInboxShape;
 });

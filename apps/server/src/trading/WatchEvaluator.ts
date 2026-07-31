@@ -1,23 +1,26 @@
 /**
  * WatchEvaluator - evaluates persisted watches against live market data, spec §12.1.
  *
- * Subscribes to the Hyperliquid WebSocket client (PROMPT-02) for the channels
- * active watches care about, and runs the simple, deterministic predicate each
- * watch declares. On a match it flips the watch `active → triggered`, persists
- * an inbox event keyed for deduplication, and announces the firing on the
- * orchestration stream so the turn coordinator and the workspace see it.
+ * Two entry points feed it:
+ *  - WS candle deliveries (one subscription per direct interval, §13) drive the
+ *    `candle_close` watches.
+ *  - A slow periodic sweep drives the `price_cross` watches (fresh BBO/mark via
+ *    the gateway, whose §13 freshness windows apply) and fires
+ *    `scheduled_reassessment` watches whose `runAt` has passed.
  *
- * Invariants the evaluator enforces:
- * - A `candle_close` watch fires only on a final close (close time has passed)
- *   and at most once per `(watch, closeTime)` — a replayed closed candle is
- *   dropped by the seen-close set and, redundantly, by the inbox dedupe key.
- * - A `price_cross` watch evaluates against fresh BBO/mark only (§13: BBO 2s).
+ * On a match it flips the watch `active → triggered`, persists an inbox event
+ * keyed for deduplication, and announces the firing on the orchestration stream
+ * — the `TradingMissionReactor` turns that announcement into a
+ * `TradingTurnCoordinator.requestRun`.
+ *
+ * "Fires exactly once" rests on two guards, both durable:
+ *  - `markTriggered` only flips an `active` watch (atomic UPDATE), so a
+ *    concurrent replay, supersede, or cancel drops the firing.
+ *  - The inbox deduplication key is scoped per watch (`type:watchId:...`), so a
+ *    replay after a restart cannot generate a second wake-up.
  *
  * The evaluator never starts a run itself; the turn coordinator owns the lease
- * and the wake path. A watch firing does not authorize a position (§12.4). The
- * scheduled-reassessment sweep and full per-mission subscription management
- * arrive with the wake path (Step 5); this step proves the candle-close
- * fires-exactly-once invariant end-to-end.
+ * and the wake path. A watch firing does not authorize a position (§12.4).
  *
  * @module WatchEvaluator
  */
@@ -33,29 +36,52 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { type PersistenceSqlError } from "../persistence/Errors.ts";
 import type { PersistedWatch } from "./Schemas.ts";
+import { TradingTimeframe } from "./Schemas.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
+
+/** The POC market every mission trades (§10.1). */
+const POC_MARKET = "ETH";
+
+/**
+ * The five §13 direct candle intervals. Subscribing to all of them keeps the
+ * evaluator free of per-watch subscription management: a candle-close watch on
+ * any direct interval is evaluated the moment its candle arrives.
+ */
+const DIRECT_INTERVALS = TradingTimeframe.literals;
+
+/**
+ * How often the sweep re-reads price-cross and scheduled watches. Matches the
+ * §13 BBO freshness window so a price-cross is evaluated against data no older
+ * than the gateway would serve anyway.
+ */
+const SWEEP_INTERVAL = "2 seconds";
 
 export interface WatchEvaluatorShape {
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   /** Resolves when all in-flight evaluations have settled. For tests. */
   readonly drain: Effect.Effect<void>;
   /**
-   * Direct evaluation entry point. `evaluateDelivery` is what the forked stream
-   * consumer calls per WS delivery; exposing it lets tests drive evaluation
-   * synchronously (the fires-exactly-once invariant) without racing a forked
-   * fiber.
+   * Evaluate a single WS delivery against the candle-close watches it could
+   * match. This is what the forked stream consumers call per delivery;
+   * exposing it lets tests drive evaluation synchronously (the
+   * fires-exactly-once invariant) without racing a forked fiber.
    */
   readonly evaluateDelivery: (delivery: WsDelivery) => Effect.Effect<void, PersistenceSqlError>;
+  /**
+   * One pass of the periodic sweep: evaluate active price-cross watches against
+   * a fresh gateway snapshot and fire due scheduled reassessments. The forked
+   * sweep loop calls this on `SWEEP_INTERVAL`; exposed for tests.
+   */
+  readonly sweep: Effect.Effect<void, PersistenceSqlError>;
 }
 
 export class WatchEvaluator extends Context.Service<WatchEvaluator, WatchEvaluatorShape>()(
@@ -114,34 +140,13 @@ const candleFromDelivery = (delivery: WsDelivery) => {
 
 const make = Effect.gen(function* () {
   const ws = yield* HyperliquidWebSocketClient;
+  const gateway = yield* HyperliquidGateway;
   const watches = yield* TradingWatchService;
   const strategies = yield* TradingStrategyService;
   const missions = yield* TradingMissionService;
   const inbox = yield* TradingEventInbox;
   const engine = yield* OrchestrationEngineService;
   const crypto = yield* Crypto.Crypto;
-
-  /**
-   * Close times already seen per watch, so the same finalised candle can never
-   * fire twice even if the exchange replays it before the watch flips to
-   * `triggered`. This is the primary "fires exactly once" guard; the inbox
-   * dedupe key is the secondary, durable guard.
-   */
-  const seenCloses = yield* Ref.make(new Map<string, Set<number>>());
-
-  const markSeenClose = (watchId: string, closeTime: number) =>
-    Ref.update(seenCloses, (map) => {
-      const set = map.get(watchId) ?? new Set<number>();
-      set.add(closeTime);
-      map.set(watchId, set);
-      return map;
-    });
-
-  const hasSeenClose = (watchId: string, closeTime: number) =>
-    Ref.modify(seenCloses, (map) => {
-      const seen = map.get(watchId)?.has(closeTime) ?? false;
-      return [seen, map] as const;
-    });
 
   const announceFired = Effect.fn("WatchEvaluator.announceFired")(function* (input: {
     readonly missionId: TradingMissionId;
@@ -177,7 +182,7 @@ const make = Effect.gen(function* () {
       const occurredAt = yield* nowMs;
       yield* inbox.persist({
         missionId: fire.tracked.missionId,
-        category: "market",
+        category: fire.tracked.watch.watch.type === "scheduled_reassessment" ? "timer" : "market",
         deduplicationKey: fire.deduplicationKey,
         payload: fire.payload,
         occurredAt,
@@ -212,11 +217,25 @@ const make = Effect.gen(function* () {
   ) => worker.enqueue({ tracked, deduplicationKey: dedupeKey, summary, payload });
 
   /**
+   * The active watches of the active mission, with mission and thread binding.
+   * The POC has one active mission; a multi-mission fork generalizes this read.
+   */
+  const activeTrackedWatches = Effect.fn("WatchEvaluator.activeTrackedWatches")(function* () {
+    const mission = yield* missions.findActiveMission("local");
+    if (mission._tag === "None") return [] as ReadonlyArray<TrackedWatch>;
+    const all = yield* strategies.listWatches(mission.value.id);
+    const threadId = mission.value.harness.threadId as ThreadId;
+    return all
+      .filter((watch) => watch.status === "active")
+      .map((watch) => ({ watch, missionId: mission.value.id as TradingMissionId, threadId }));
+  });
+
+  /**
    * Evaluate a `candle_close` watch against a delivered candle.
    *
-   * Fires only on a final close (close time has passed) and exactly once per
-   * `(watch, closeTime)`. The predicate is a directional price comparison
-   * against the candle's close.
+   * Fires only on a final close (close time has passed). The predicate is a
+   * directional price comparison against the candle's close; the dedupe key is
+   * scoped per watch and close so a replay cannot wake the harness twice.
    */
   const evaluateCandleClose = (tracked: TrackedWatch, delivery: WsDelivery) =>
     Effect.gen(function* () {
@@ -231,17 +250,13 @@ const make = Effect.gen(function* () {
       // §13: a candle is finalised only after its close time has passed.
       if (parsed.closeTime > observedAt) return;
 
-      const alreadySeen = yield* hasSeenClose(tracked.watch.id, parsed.closeTime);
-      if (alreadySeen) return;
-      yield* markSeenClose(tracked.watch.id, parsed.closeTime);
-
       const matched =
         watch.direction === "above" ? parsed.close >= watch.price : parsed.close <= watch.price;
       if (!matched) return;
 
       yield* enqueueFire(
         tracked,
-        `candle_close:${watch.interval}:${parsed.closeTime}`,
+        `candle_close:${tracked.watch.id}:${parsed.closeTime}`,
         `${watch.interval} candle closed ${parsed.close} (${watch.direction} ${watch.price})`,
         { closeTime: parsed.closeTime, close: parsed.close, watchId: tracked.watch.id },
       );
@@ -259,7 +274,6 @@ const make = Effect.gen(function* () {
     const watch = tracked.watch.watch;
     if (watch.type !== "price_cross") return;
 
-    const gateway = yield* HyperliquidGateway;
     const snapshot = yield* gateway.getMarketSnapshot(watch.market).pipe(Effect.orDie);
     const reference = watch.priceSource === "mark" ? snapshot.markPrice : snapshot.midPrice;
 
@@ -270,70 +284,80 @@ const make = Effect.gen(function* () {
     const observedAt = yield* nowMs;
     yield* enqueueFire(
       tracked,
-      `price_cross:${watch.market}:${watch.direction}:${watch.price}`,
+      `price_cross:${tracked.watch.id}`,
       `${watch.priceSource} ${watch.market} crossed ${watch.direction} ${watch.price} (at ${reference})`,
       { reference, observedAt, watchId: tracked.watch.id },
     );
   });
 
-  /** Resolve which active candle-close watches a delivery could match. */
-  const watchesForDelivery = Effect.fn("WatchEvaluator.watchesForDelivery")(function* (
-    delivery: WsDelivery,
-  ) {
-    const interval = delivery.subscription.interval;
-    if (interval === undefined) return [] as ReadonlyArray<TrackedWatch>;
-    // The POC has one active mission; the wake path (Step 5) generalizes this.
-    const mission = yield* missions.findActiveMission("local");
-    if (mission._tag === "None") return [] as ReadonlyArray<TrackedWatch>;
-    const all = yield* strategies.listWatches(mission.value.id);
-    const threadId = mission.value.harness.threadId as ThreadId;
-    return all
-      .filter(
-        (w) =>
-          w.status === "active" && w.watch.type === "candle_close" && w.watch.interval === interval,
-      )
-      .map((watch) => ({ watch, missionId: mission.value.id as TradingMissionId, threadId }));
+  /** Fire a `scheduled_reassessment` watch whose `runAt` has passed. */
+  const evaluateScheduled = (tracked: TrackedWatch, observedAt: number) =>
+    Effect.gen(function* () {
+      const watch = tracked.watch.watch;
+      if (watch.type !== "scheduled_reassessment") return;
+      if (watch.runAt > observedAt) return;
+
+      yield* enqueueFire(
+        tracked,
+        `scheduled_reassessment:${tracked.watch.id}`,
+        `scheduled reassessment due at ${DateTime.formatIso(DateTime.makeUnsafe(watch.runAt))}`,
+        { runAt: watch.runAt, observedAt, watchId: tracked.watch.id },
+      );
+    });
+
+  const evaluateDelivery: WatchEvaluatorShape["evaluateDelivery"] = (delivery) =>
+    Effect.gen(function* () {
+      const interval = delivery.subscription.interval;
+      if (interval === undefined) return;
+      const tracked = yield* activeTrackedWatches();
+      yield* Effect.forEach(tracked, (t) => evaluateCandleClose(t, delivery));
+    });
+
+  const sweep: WatchEvaluatorShape["sweep"] = Effect.gen(function* () {
+    const tracked = yield* activeTrackedWatches();
+    const observedAt = yield* nowMs;
+    for (const t of tracked) {
+      switch (t.watch.watch.type) {
+        case "price_cross":
+          yield* evaluatePriceCross(t);
+          break;
+        case "scheduled_reassessment":
+          yield* evaluateScheduled(t, observedAt);
+          break;
+        default:
+          break;
+      }
+    }
   });
 
   const start: WatchEvaluatorShape["start"] = () =>
     Effect.gen(function* () {
-      // Subscribe to the candle channel for the POC market and route deliveries
-      // to the candle-close watches bound to each interval. (Full per-mission
-      // subscription management arrives with the wake path in Step 5; this proves
-      // the evaluate-once invariant end-to-end.)
+      // One candle subscription per §13 direct interval for the POC market.
+      // Deliveries route to the candle-close watches bound to that interval.
       //
-      // The forked stream consumer reads the same HyperliquidWebSocketClient the
-      // evaluator captured at build, so the service does not need to be in the
-      // forked fiber's context — `ws` is a closed-over local.
-      const subscription = ws.subscribe({ type: "candle", coin: "ETH", interval: "5m" });
+      // The forked consumers read the services the evaluator captured at build,
+      // so nothing extra is required in the forked fibers' context.
+      for (const interval of DIRECT_INTERVALS) {
+        const subscription = ws.subscribe({ type: "candle", coin: POC_MARKET, interval });
+        yield* Effect.forkScoped(
+          Stream.runForEach(subscription, (delivery) =>
+            evaluateDelivery(delivery).pipe(Effect.ignore),
+          ),
+        );
+      }
+
+      // The slow sweep for price-cross and scheduled watches.
       yield* Effect.forkScoped(
-        Stream.runForEach(subscription, (delivery) =>
-          Effect.gen(function* () {
-            const tracked = yield* watchesForDelivery(delivery);
-            yield* Effect.forEach(tracked, (t) => evaluateCandleClose(t, delivery));
-          }).pipe(Effect.ignore),
-        ),
+        Effect.gen(function* () {
+          while (true) {
+            yield* sweep.pipe(Effect.ignore);
+            yield* Effect.sleep(SWEEP_INTERVAL);
+          }
+        }),
       );
     });
 
-  /**
-   * Evaluate a single WS delivery against the active watches it could match,
-   * enqueueing any fires. This is what the forked stream consumer in `start`
-   * calls per delivery; exposing it lets tests drive evaluation synchronously
-   * (the fires-exactly-once invariant) without racing a forked fiber.
-   */
-  const evaluateDelivery = (delivery: WsDelivery) =>
-    Effect.gen(function* () {
-      const tracked = yield* watchesForDelivery(delivery);
-      yield* Effect.forEach(tracked, (t) => evaluateCandleClose(t, delivery));
-    });
-
-  // `evaluatePriceCross` is kept for the wake path (Step 5) to trigger a
-  // price-cross re-evaluation on a BBO delivery; it is not part of the public
-  // shape yet.
-  void evaluatePriceCross;
-
-  return { start, drain: worker.drain, evaluateDelivery } satisfies WatchEvaluatorShape;
+  return { start, drain: worker.drain, evaluateDelivery, sweep } satisfies WatchEvaluatorShape;
 });
 
 export const WatchEvaluatorLive = Layer.effect(WatchEvaluator, make);
