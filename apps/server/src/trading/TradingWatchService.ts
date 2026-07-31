@@ -75,6 +75,15 @@ export interface TradingWatchServiceShape {
   readonly markTriggered: (
     watchId: string,
   ) => Effect.Effect<PersistedWatch | null, PersistenceSqlError>;
+
+  /**
+   * Read a watch by id, regardless of status. The wake path resolves the
+   * triggering watch through this so the resumed snapshot carries the watch
+   * that fired (including its `triggered` status after `markTriggered`).
+   *
+   * Returns `null` when the watch does not exist.
+   */
+  readonly getWatch: (watchId: string) => Effect.Effect<PersistedWatch | null, PersistenceSqlError>;
 }
 
 export class TradingWatchService extends Context.Service<
@@ -208,7 +217,16 @@ const makeTradingWatchService = Effect.gen(function* () {
       return rows[0] ? toPersistedWatch(rows[0]) : null;
     });
 
-  return { registerWatch, cancelWatch, markTriggered } satisfies TradingWatchServiceShape;
+  const getWatch: TradingWatchServiceShape["getWatch"] = (watchId) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<WatchRow>`
+        SELECT watch_id, mission_id, strategy_version, watch_json, status, created_at, updated_at
+        FROM trading_watches WHERE watch_id = ${watchId}
+      `.pipe(Effect.mapError(sqlFail("getWatch")));
+      return rows[0] ? toPersistedWatch(rows[0]) : null;
+    });
+
+  return { registerWatch, cancelWatch, markTriggered, getWatch } satisfies TradingWatchServiceShape;
 });
 
 export const TradingWatchServiceLive = Layer.effect(TradingWatchService, makeTradingWatchService);

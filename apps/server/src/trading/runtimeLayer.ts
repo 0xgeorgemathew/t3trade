@@ -21,6 +21,7 @@ import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingStrategyServiceLive } from "./TradingStrategyService.ts";
 import { TradingTurnCoordinatorLive } from "./TradingTurnCoordinator.ts";
+import { TradingWakeupComposerLive } from "./TradingWakeupComposer.ts";
 import { TradingWatchServiceLive } from "./TradingWatchService.ts";
 
 /**
@@ -49,15 +50,30 @@ export const HyperliquidReadLayerLive = HyperliquidGatewayLive.pipe(
 export const HyperliquidWsLayerLive = HyperliquidWebSocketClientLive;
 
 /**
- * The trading services. The turn coordinator depends on the mission, strategy,
- * and inbox services, so it is built with those provided rather than merged
- * flat — this keeps `TradingLayerLive` free of unsatisfied requirements for
- * consumers that provide it wholesale (the reactor wiring, the engine harness).
+ * The wakeup composer depends on the gateway, mission, watch, and inbox
+ * services, so it is built with those provided rather than merged flat.
+ */
+const composerWithDeps = TradingWakeupComposerLive.pipe(
+  Layer.provide(HyperliquidReadLayerLive),
+  Layer.provideMerge(TradingMissionServiceLive),
+  Layer.provideMerge(TradingWatchServiceLive),
+  Layer.provideMerge(TradingEventInboxLive),
+);
+
+/**
+ * The trading services. The turn coordinator and the wakeup composer depend on
+ * the mission, strategy, watch, and inbox services, so each is built with those
+ * provided rather than merged flat — this keeps `TradingLayerLive` free of
+ * unsatisfied requirements for those internal deps. The coordinator also
+ * requires `OrchestrationEngineService` (to dispatch the resumed turn); that
+ * service is owned by the orchestration layer and provided at the composition
+ * site (server.ts / the engine harness), not re-declared here.
  */
 const coordinatorWithDeps = TradingTurnCoordinatorLive.pipe(
   Layer.provideMerge(TradingMissionServiceLive),
   Layer.provideMerge(TradingStrategyServiceLive),
   Layer.provideMerge(TradingEventInboxLive),
+  Layer.provideMerge(composerWithDeps),
 );
 
 export const TradingLayerLive = Layer.mergeAll(

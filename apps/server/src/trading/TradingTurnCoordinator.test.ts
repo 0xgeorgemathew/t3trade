@@ -2,21 +2,46 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { TradingHarnessBinding } from "./Schemas.ts";
-import { TradingEventInbox, TradingEventInboxLive } from "./TradingEventInbox.ts";
+import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingStrategyService, TradingStrategyServiceLive } from "./TradingStrategyService.ts";
 import { TradingTurnCoordinator, TradingTurnCoordinatorLive } from "./TradingTurnCoordinator.ts";
+import { TradingWakeupComposer } from "./TradingWakeupComposer.ts";
+
+/**
+ * A no-op `OrchestrationEngineService` for the coordinator's unit tests. These
+ * tests verify the seven pre-run checks and the single-lease invariant, not the
+ * wake path (which is forked as a background effect and covered by the keystone
+ * integration test). Dispatch succeeds with a stub sequence; the domain-events
+ * stream is empty so the release watcher never fires — the tests that need a
+ * released lease set the row to `completed` directly.
+ */
+const stubEngine = Layer.succeed(OrchestrationEngineService, {
+  dispatch: () => Effect.succeed({ sequence: 0 }),
+  readEvents: () => Stream.empty,
+  streamDomainEvents: Stream.empty,
+  latestSequence: Effect.succeed(0),
+});
+
+/** A no-op wakeup composer (the unit tests do not exercise the wake path). */
+const stubComposer = Layer.succeed(TradingWakeupComposer, {
+  compose: () => Effect.succeed({ wakeup: {} as never, text: "" }),
+});
 
 const layer = it.layer(
   TradingTurnCoordinatorLive.pipe(
     Layer.provideMerge(TradingMissionServiceLive),
     Layer.provideMerge(TradingStrategyServiceLive),
     Layer.provideMerge(TradingEventInboxLive),
+    Layer.provideMerge(stubComposer),
+    Layer.provideMerge(stubEngine),
     Layer.provideMerge(NodeSqliteClient.layerMemory()),
     Layer.provideMerge(NodeServices.layer),
   ),

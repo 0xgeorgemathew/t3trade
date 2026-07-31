@@ -394,7 +394,17 @@ export const makeOrchestrationIntegrationHarness = (
     const layer = Layer.empty.pipe(
       Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(orchestrationReactorLayer),
-      Layer.provideMerge(TradingLayerLive),
+      // `TradingLayerLive` requires `OrchestrationEngineService` (the turn
+      // coordinator dispatches `thread.turn.start`). The engine is already in
+      // `runtimeServicesLayer`; provide `orchestrationLayer` (with its snapshot
+      // query dep) directly to the trading layer so the requirement is met
+      // type-safely without leaking unrelated dependencies.
+      Layer.provideMerge(
+        TradingLayerLive.pipe(
+          Layer.provide(orchestrationLayer),
+          Layer.provide(projectionSnapshotQueryLayer),
+        ),
+      ),
       Layer.provideMerge(providerRegistryLayer),
       Layer.provide(persistenceLayer),
       Layer.provideMerge(RepositoryIdentityResolver.layer),

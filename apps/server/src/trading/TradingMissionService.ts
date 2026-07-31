@@ -25,6 +25,7 @@ import {
 } from "./Errors.ts";
 import { isActiveMissionStatus, validateTransition } from "./MissionTransitions.ts";
 import {
+  EvmAddress,
   pocAuthorityDefaults,
   TradingAuthority,
   TradingHarnessBinding,
@@ -165,7 +166,7 @@ export interface TradingMissionServiceShape {
    */
   readonly getMasterWalletAddress: (
     tradingAccountId: string,
-  ) => Effect.Effect<string, PersistenceSqlError | TradingMissionNotFoundError>;
+  ) => Effect.Effect<EvmAddress, PersistenceSqlError | TradingMissionNotFoundError>;
 }
 
 export class TradingMissionService extends Context.Service<
