@@ -28,6 +28,7 @@ import {
   pocAuthorityDefaults,
   TradingAuthority,
   TradingHarnessBinding,
+  TradingMasterWallet,
   TradingMission,
   TradingMissionBlockedReason,
   TradingMissionControl,
@@ -152,6 +153,19 @@ export interface TradingMissionServiceShape {
   readonly findMissionByThreadId: (
     threadId: string,
   ) => Effect.Effect<Option.Option<TradingMission>, PersistenceSqlError>;
+
+  /**
+   * The master-wallet address for the account a mission trades against.
+   *
+   * Account reads (§14.2 `trading_get_account_state`, `trading_get_position`,
+   * `trading_get_open_orders`) use the user-owned master-wallet address as
+   * identity — never the execution-wallet address (§10.6). This resolves the
+   * address from the mission's trading account so the gateway receives it
+   * server-side; the harness never supplies an address.
+   */
+  readonly getMasterWalletAddress: (
+    tradingAccountId: string,
+  ) => Effect.Effect<string, PersistenceSqlError | TradingMissionNotFoundError>;
 }
 
 export class TradingMissionService extends Context.Service<
@@ -294,6 +308,27 @@ const makeTradingMissionService = Effect.gen(function* () {
       return Option.some(yield* hydrate(row).pipe(Effect.orDie));
     });
 
+  // Decode the master-wallet JSON column. The address is the identity for
+  // account reads (§10.6); the wallet's privy id is never sent to the exchange.
+  const decodeMasterWalletJson = Schema.decodeUnknownEffect(
+    Schema.fromJsonString(TradingMasterWallet),
+  );
+
+  const getMasterWalletAddress: TradingMissionServiceShape["getMasterWalletAddress"] = (
+    tradingAccountId,
+  ) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{ master_wallet_json: string }>`
+        SELECT master_wallet_json FROM trading_accounts WHERE account_id = ${tradingAccountId}
+      `.pipe(Effect.mapError(sqlFail("getMasterWalletAddress")));
+      const row = rows[0];
+      if (row === undefined) {
+        return yield* new TradingMissionNotFoundError({ missionId: tradingAccountId });
+      }
+      const wallet = yield* decodeMasterWalletJson(row.master_wallet_json).pipe(Effect.orDie);
+      return wallet.address;
+    });
+
   const createMission: TradingMissionServiceShape["createMission"] = (input) =>
     Effect.gen(function* () {
       const existing = yield* findActiveMission(input.userId);
@@ -425,6 +460,7 @@ const makeTradingMissionService = Effect.gen(function* () {
     getMissionVersion,
     findActiveMission,
     findMissionByThreadId,
+    getMasterWalletAddress,
   } satisfies TradingMissionServiceShape;
 });
 

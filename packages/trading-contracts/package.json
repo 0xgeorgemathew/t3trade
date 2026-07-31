@@ -39,6 +39,14 @@
     "./tools": {
       "types": "./src/tools.ts",
       "import": "./src/tools.ts"
+    },
+    "./market": {
+      "types": "./src/market.ts",
+      "import": "./src/market.ts"
+    },
+    "./account-snapshot": {
+      "types": "./src/account-snapshot.ts",
+      "import": "./src/account-snapshot.ts"
     }
   },
   "scripts": {

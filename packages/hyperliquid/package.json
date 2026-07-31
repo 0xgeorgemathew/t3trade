@@ -1,0 +1,58 @@
+{
+  "name": "@t3tools/hyperliquid",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./config": {
+      "types": "./src/config.ts",
+      "import": "./src/config.ts"
+    },
+    "./errors": {
+      "types": "./src/errors.ts",
+      "import": "./src/errors.ts"
+    },
+    "./wire": {
+      "types": "./src/wire.ts",
+      "import": "./src/wire.ts"
+    },
+    "./InfoClient": {
+      "types": "./src/InfoClient.ts",
+      "import": "./src/InfoClient.ts"
+    },
+    "./WebSocketClient": {
+      "types": "./src/WebSocketClient.ts",
+      "import": "./src/WebSocketClient.ts"
+    },
+    "./MarketResolver": {
+      "types": "./src/MarketResolver.ts",
+      "import": "./src/MarketResolver.ts"
+    },
+    "./Precision": {
+      "types": "./src/Precision.ts",
+      "import": "./src/Precision.ts"
+    },
+    "./Gateway": {
+      "types": "./src/Gateway.ts",
+      "import": "./src/Gateway.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "test": "vp test run"
+  },
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "@t3tools/trading-contracts": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

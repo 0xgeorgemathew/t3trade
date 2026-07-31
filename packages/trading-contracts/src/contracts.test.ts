@@ -3,8 +3,22 @@ import { describe, expect, it } from "vite-plus/test";
 
 import packageJson from "../package.json" with { type: "json" };
 import { TradingAccount } from "./account.ts";
+import {
+  accountFreshness,
+  AgentAccountSnapshot,
+  AgentNetPosition,
+  AgentOpenOrder,
+} from "./account-snapshot.ts";
 import { pocAuthorityDefaults, pocRiskPolicyDefaults, TradingAuthority } from "./authority.ts";
 import { MissionInboxEvent } from "./events.ts";
+import {
+  AgentMarketSnapshot,
+  MARKET_FRESHNESS,
+  MarketHistory,
+  MarketHistoryRequest,
+  OrderBook,
+  ResolvedMarket,
+} from "./market.ts";
 import { TradingHarnessRun, TradingMission } from "./mission.ts";
 import { MomentumStrategyState } from "./strategy.ts";
 import {
@@ -25,6 +39,14 @@ const decodeHarnessRun = Schema.decodeUnknownSync(TradingHarnessRun);
 const decodePublishInput = Schema.decodeUnknownSync(TradingPublishMomentumStrategyInput);
 const decodePublishResult = Schema.decodeUnknownSync(TradingPublishMomentumStrategyResult);
 const decodeGetMissionResult = Schema.decodeUnknownSync(TradingGetMissionResult);
+const decodeResolvedMarket = Schema.decodeUnknownSync(ResolvedMarket);
+const decodeAgentMarketSnapshot = Schema.decodeUnknownSync(AgentMarketSnapshot);
+const decodeMarketHistoryRequest = Schema.decodeUnknownSync(MarketHistoryRequest);
+const decodeMarketHistory = Schema.decodeUnknownSync(MarketHistory);
+const decodeOrderBook = Schema.decodeUnknownSync(OrderBook);
+const decodeAgentAccountSnapshot = Schema.decodeUnknownSync(AgentAccountSnapshot);
+const decodeAgentNetPosition = Schema.decodeUnknownSync(AgentNetPosition);
+const decodeAgentOpenOrder = Schema.decodeUnknownSync(AgentOpenOrder);
 
 const account: TradingAccount = {
   id: "acct_1",
@@ -274,6 +296,141 @@ describe("§14.3 mission tool contracts", () => {
   });
 });
 
+describe("§10.6 market- and account-read contracts (Phase 2 pin)", () => {
+  const resolvedMarket: ResolvedMarket = {
+    symbol: "ETH",
+    assetIndex: 1,
+    szDecimals: 4,
+    maxLeverage: 40,
+    available: true,
+  };
+
+  it("decodes a ResolvedMarket and rejects a negative asset index", () => {
+    expect(decodeResolvedMarket(resolvedMarket).assetIndex).toBe(1);
+    expect(() => decodeResolvedMarket({ ...resolvedMarket, assetIndex: -1 })).toThrow();
+  });
+
+  it("decodes an AgentMarketSnapshot with BBO freshness", () => {
+    const decoded = decodeAgentMarketSnapshot({
+      market: "ETH",
+      markPrice: 3_750,
+      midPrice: 3_750.5,
+      oraclePrice: 3_749,
+      fundingRate8h: 0.00012,
+      openInterest: 12_500,
+      dayVolumeUsd: 1_200_000,
+      bestBidOffer: {
+        bidPrice: 3_750.1,
+        bidSize: 2.4,
+        askPrice: 3_750.9,
+        askSize: 1.8,
+        freshness: { observedAt: 1_753_000_000_000, source: "websocket", staleAfterMillis: 2_000 },
+      },
+      freshness: { observedAt: 1_753_000_000_000, source: "websocket", staleAfterMillis: 5_000 },
+      change24hPercent: 1.4,
+      sparkline: [3_700, 3_720, 3_750],
+    });
+    expect(decoded.bestBidOffer.freshness.staleAfterMillis).toBe(
+      MARKET_FRESHNESS.bboStaleAfterMillis,
+    );
+  });
+
+  it("clamps the candle history request to the §13 500-bar cap at the gateway, not the contract", () => {
+    // The contract accepts any positive maxBars; the gateway clamps. Verify the
+    // request shape decodes with and without an explicit cap.
+    expect(decodeMarketHistoryRequest({ market: "ETH", interval: "5m" }).interval).toBe("5m");
+    expect(
+      decodeMarketHistoryRequest({ market: "ETH", interval: "15m", maxBars: 250 }).maxBars,
+    ).toBe(250);
+  });
+
+  it("decodes a MarketHistory and surfaces the finalised close", () => {
+    const decoded = decodeMarketHistory({
+      market: "ETH",
+      interval: "1h",
+      candles: [
+        {
+          openTime: 1_753_000_000_000,
+          closeTime: 1_753_003_600_000,
+          open: 3_740,
+          close: 3_750,
+          high: 3_755,
+          low: 3_735,
+          volume: 120,
+        },
+      ],
+      finalisedClose: 1_753_003_600_000,
+      freshness: { observedAt: 1_753_003_600_000, source: "info_api", staleAfterMillis: 5_000 },
+    });
+    expect(decoded.finalisedClose).toBe(1_753_003_600_000);
+  });
+
+  it("decodes an OrderBook and allows a one-sided book (null levels)", () => {
+    const decoded = decodeOrderBook({
+      market: "ETH",
+      bids: [{ price: 3_750, size: 1.2 }],
+      asks: [],
+      bestBidOffer: {
+        bidPrice: 3_750,
+        bidSize: 1.2,
+        freshness: { observedAt: 1_753_000_000_000, source: "websocket", staleAfterMillis: 2_000 },
+      },
+      freshness: { observedAt: 1_753_000_000_000, source: "websocket", staleAfterMillis: 2_000 },
+    });
+    expect(decoded.asks).toEqual([]);
+    expect(decoded.bestBidOffer.askPrice).toBeUndefined();
+  });
+
+  it("decodes an AgentAccountSnapshot keyed by the master-wallet address", () => {
+    const decoded = decodeAgentAccountSnapshot({
+      address: "0xabc",
+      accountValue: 1_000,
+      marginUsed: 250,
+      withdrawable: 750,
+      positions: [
+        {
+          market: "ETH",
+          size: 0.3,
+          entryPrice: 3_718.4,
+          unrealisedPnl: 9.5,
+          cumulativeFunding: -0.4,
+          marginUsed: 250,
+        },
+      ],
+      freshness: accountFreshness(1_753_000_000_000, "info_api"),
+    });
+    expect(decoded.address).toBe("0xabc");
+    expect(decoded.positions[0]?.market).toBe("ETH");
+  });
+
+  it("decodes an AgentNetPosition with a signed (short) size", () => {
+    const decoded = decodeAgentNetPosition({
+      market: "ETH",
+      size: -0.3,
+      entryPrice: 3_718.4,
+      unrealisedPnl: -9.5,
+      cumulativeFunding: 0.4,
+      marginUsed: 250,
+      freshness: accountFreshness(1_753_000_000_000, "websocket"),
+    });
+    expect(decoded.size).toBe(-0.3);
+  });
+
+  it("decodes an AgentOpenOrder keyed by canonical identity", () => {
+    const decoded = decodeAgentOpenOrder({
+      market: "ETH",
+      orderId: 90_542_681,
+      side: "buy",
+      limitPrice: 3_700,
+      size: 0.3,
+      remainingSize: 0.3,
+      status: "open",
+      createdAt: 1_753_000_000_000,
+    });
+    expect(decoded.orderId).toBe(90_542_681);
+  });
+});
+
 describe("subpath exports", () => {
   it("maps every domain-area module to a subpath whose types and import agree", () => {
     const exportMap = packageJson.exports as Record<string, { types: string; import: string }>;
@@ -289,14 +446,17 @@ describe("subpath exports", () => {
         "./watch",
         "./events",
         "./tools",
+        "./market",
+        "./account-snapshot",
       ].sort(),
     );
 
     // Source-first package: each subpath serves the raw .ts for both types and
-    // import, mirroring packages/shared.
+    // import, mirroring packages/shared. Module names are lowercase, optionally
+    // hyphenated (e.g. account-snapshot).
     for (const [subpath, target] of Object.entries(exportMap)) {
       expect(target.types, subpath).toBe(target.import);
-      expect(target.import, subpath).toMatch(/^\.\/src\/[a-zA-Z]+\.ts$/);
+      expect(target.import, subpath).toMatch(/^\.\/src\/[a-zA-Z-]+\.ts$/);
     }
   });
 });

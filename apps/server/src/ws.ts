@@ -1233,14 +1233,19 @@ const makeWsRpcLayer = (
         [ORCHESTRATION_WS_METHODS.getTradingMissionSnapshot]: (_input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getTradingMissionSnapshot,
-            tradingMissionProjection.list().pipe(
-              Effect.map((missions) => ({
-                // Missions are projected from the ordered event stream, so the
-                // newest row's updatedAt is the snapshot's own freshness.
-                snapshotSequence: 0,
+            Effect.gen(function* () {
+              const missions = yield* tradingMissionProjection.list();
+              // The snapshot sequence is the engine's latest event sequence, so
+              // the client can tell a stale snapshot (behind the subscribed
+              // stream) from a fresh one. Previously this was hardcoded to 0,
+              // which made the sequence useless for ordered catch-up.
+              const snapshotSequence = yield* orchestrationEngine.latestSequence;
+              return {
+                snapshotSequence,
                 missions,
                 updatedAt: missions[0]?.updatedAt ?? EPOCH_ISO,
-              })),
+              };
+            }).pipe(
               Effect.tapError((cause) =>
                 Effect.logError("trading mission snapshot load failed", { cause }),
               ),
