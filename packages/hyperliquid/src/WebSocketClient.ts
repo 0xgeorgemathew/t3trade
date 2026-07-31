@@ -37,7 +37,10 @@ export interface WsDelivery {
   readonly data: unknown;
 }
 
-/** §13: bounded exponential backoff for socket reconnects, capped at 30s, ≤10 tries. */
+/**
+ * §13: bounded exponential backoff for socket reconnects, capped at 30s,
+ * ≤10 tries. Applied per outage — a successful connection resets it.
+ */
 const reconnectSchedule = Schedule.max([
   Schedule.exponential("1 seconds").pipe(
     Schedule.modifyDelay(({ duration }) =>
@@ -49,13 +52,47 @@ const reconnectSchedule = Schedule.max([
 
 /** Parse an inbound WS text frame into the envelope schema. */
 const decodeWsMessage = Schema.decodeUnknownEffect(WireWsMessage);
-/** Parse a raw string into `unknown` (v4 idiom over raw JSON.parse). */
-const parseJson = Schema.decodeUnknownEffect(Schema.Unknown);
+/** Parse a raw JSON string into `unknown` (v4 idiom over raw JSON.parse). */
+const parseJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
 /** Encode an outbound subscribe payload to its JSON wire string. */
 const encodeSubscribe = (sub: WsSubscription): string =>
   JSON.stringify({ method: "subscribe", subscription: sub });
 const encodeUnsubscribe = (sub: WsSubscription): string =>
   JSON.stringify({ method: "unsubscribe", subscription: sub });
+
+/** Canonical identity for a subscription (field order fixed). */
+const keyFor = (sub: WsSubscription): string =>
+  JSON.stringify([sub.type, sub.coin ?? null, sub.user ?? null, sub.interval ?? null]);
+
+/** Read a string property off an unknown payload, when present. */
+const stringField = (data: unknown, field: string): string | undefined => {
+  if (typeof data !== "object" || data === null) return undefined;
+  const value = (data as Record<string, unknown>)[field];
+  return typeof value === "string" ? value : undefined;
+};
+
+/**
+ * Whether a frame on `sub.type`'s channel belongs to `sub` specifically.
+ *
+ * Two subscriptions can share a channel (two coins on `l2Book`; two intervals
+ * on `candle`), so the channel name alone under-routes. The exchange stamps
+ * the payload with the coin (`coin` on book/trade payloads, `s` on candles)
+ * and interval (`i` on candles); when the subscription pins one of those and
+ * the payload names a different one, the frame is not for this subscriber.
+ * A payload that carries no such stamp (e.g. `allMids`) matches by channel.
+ */
+const matchesSubscription = (sub: WsSubscription, data: unknown): boolean => {
+  const payload = Array.isArray(data) ? data[0] : data;
+  if (sub.coin !== undefined) {
+    const coin = stringField(payload, "coin") ?? stringField(payload, "s");
+    if (coin !== undefined && coin !== sub.coin) return false;
+  }
+  if (sub.interval !== undefined) {
+    const interval = stringField(payload, "i");
+    if (interval !== undefined && interval !== sub.interval) return false;
+  }
+  return true;
+};
 
 export class HyperliquidWebSocketClient extends Context.Service<
   HyperliquidWebSocketClient,
@@ -85,15 +122,17 @@ const makeHyperliquidWebSocketClient = Effect.gen(function* () {
     PubSub.shutdown,
   );
 
-  // Active subscriptions, keyed by the JSON of their subscription payload, so
-  // resubscribe after a reconnect replays exactly what was open.
-  const active = new Map<string, WsSubscription>();
+  // Active subscriptions keyed by canonical identity, refcounted so two
+  // subscribers to the same channel share one exchange-side subscription and
+  // the unsubscribe goes out only when the last one leaves. Resubscribe after
+  // a reconnect replays exactly what is open.
+  const active = new Map<string, { readonly sub: WsSubscription; count: number }>();
 
   /** The live WebSocket, when one is open. */
   let socket: WebSocket | null = null;
   let open = false;
-
-  const keyFor = (sub: WsSubscription): string => encodeSubscribe(sub);
+  /** True while the connect loop is running (prevents duplicate sockets). */
+  let connecting = false;
 
   const sendString = (json: string) =>
     Effect.sync(() => {
@@ -102,13 +141,10 @@ const makeHyperliquidWebSocketClient = Effect.gen(function* () {
       }
     });
 
-  const sendSubscribe = (sub: WsSubscription) => sendString(encodeSubscribe(sub));
-  const sendUnsubscribe = (sub: WsSubscription) => sendString(encodeUnsubscribe(sub));
-
   /**
-   * Handle one inbound text frame: parse, decode the envelope, fan out to every
-   * active subscription whose type matches the channel. Never throws — a single
-   * bad frame must not wedge the socket loop.
+   * Handle one inbound text frame: parse, decode the envelope, fan out one
+   * delivery per active subscription the frame belongs to. Never throws — a
+   * single bad frame must not wedge the socket loop.
    */
   const handleFrame = (raw: string) =>
     parseJson(raw).pipe(
@@ -117,9 +153,9 @@ const makeHyperliquidWebSocketClient = Effect.gen(function* () {
         // `subscriptionResponse` acks are not data deliveries.
         if (msg.channel === "subscriptionResponse") return Effect.void;
         const deliveries: WsDelivery[] = [];
-        for (const sub of active.values()) {
-          if (sub.type === msg.channel) {
-            deliveries.push({ subscription: sub, channel: msg.channel, data: msg.data });
+        for (const entry of active.values()) {
+          if (entry.sub.type === msg.channel && matchesSubscription(entry.sub, msg.data)) {
+            deliveries.push({ subscription: entry.sub, channel: msg.channel, data: msg.data });
           }
         }
         if (deliveries.length === 0) return Effect.void;
@@ -131,15 +167,18 @@ const makeHyperliquidWebSocketClient = Effect.gen(function* () {
 
   /**
    * Open the socket and wire its events into the PubSub. The effect resolves
-   * when the socket closes (so the reconnect schedule re-enters); it fails with
-   * a transient error on connect failure. The returned finalizer closes the
-   * underlying socket so a scope shutdown tears it down cleanly.
+   * with `true` when a connection that had opened closes again (a completed
+   * session — reconnect with a fresh backoff), and fails when the connection
+   * never opened (a connect failure — retry under the backoff schedule). The
+   * returned finalizer closes the underlying socket so a scope shutdown tears
+   * it down cleanly.
    */
-  const openSocket: Effect.Effect<unknown, HyperliquidRequestError> = Effect.callback<
-    unknown,
+  const openSocket: Effect.Effect<boolean, HyperliquidRequestError> = Effect.callback<
+    boolean,
     HyperliquidRequestError
   >((resume) => {
     let ws: WebSocket;
+    let wasOpen = false;
     try {
       ws = new WebSocket(endpoints.webSocketUrl);
     } catch (cause) {
@@ -158,9 +197,10 @@ const makeHyperliquidWebSocketClient = Effect.gen(function* () {
 
     ws.onopen = () => {
       open = true;
+      wasOpen = true;
       // Resubscribe everything that was active before the (re)connect.
-      for (const sub of active.values()) {
-        ws.send(encodeSubscribe(sub));
+      for (const entry of active.values()) {
+        ws.send(encodeSubscribe(entry.sub));
       }
     };
 
@@ -170,17 +210,17 @@ const makeHyperliquidWebSocketClient = Effect.gen(function* () {
       Effect.runFork(handleFrame(event.data));
     };
 
-    ws.onerror = () => {
-      // The close handler drives reconnect; onerror just flags state.
-      open = false;
-    };
-
     ws.onclose = () => {
       open = false;
-      // Resolve with a transient failure so the reconnect schedule re-enters.
-      resume(
-        Effect.fail(new HyperliquidRequestError({ operation: "ws_close", reason: "network" })),
-      );
+      if (wasOpen) {
+        // A completed session: reconnect immediately with a fresh schedule.
+        resume(Effect.succeed(true));
+      } else {
+        // Never opened: a connect failure the backoff schedule retries.
+        resume(
+          Effect.fail(new HyperliquidRequestError({ operation: "ws_connect", reason: "network" })),
+        );
+      }
     };
 
     return Effect.sync(() => {
@@ -191,40 +231,71 @@ const makeHyperliquidWebSocketClient = Effect.gen(function* () {
     });
   });
 
-  // §13: bounded exponential backoff. On exhaustion, log and leave the socket
-  // closed — the gateway's staleness gate catches the gap, and a new subscribe
-  // re-attempts connection. Run detached so it does not block layer build.
-  const connectWithBackoff = openSocket.pipe(
-    Effect.retry(reconnectSchedule),
+  /**
+   * Connect, stay connected, reconnect forever. Each outage gets a fresh §13
+   * backoff schedule (retry wraps a single connect attempt; forever restarts
+   * after a completed session). On exhaustion — ten straight connect failures
+   * — log and leave the socket closed: the gateway's staleness gate catches
+   * the gap, and a later subscribe re-attempts connection.
+   */
+  const connectLoop = Effect.acquireRelease(
+    Effect.sync(() => {
+      connecting = true;
+    }),
+    () =>
+      Effect.sync(() => {
+        connecting = false;
+      }),
+  ).pipe(
+    Effect.andThen(openSocket.pipe(Effect.retry(reconnectSchedule), Effect.forever)),
     Effect.catch((err: HyperliquidRequestError) =>
       Effect.logError("HyperliquidWebSocketClient: reconnect attempts exhausted", {
         operation: err.operation,
       }),
     ),
+    Effect.scoped,
   );
 
-  yield* Effect.forkScoped(connectWithBackoff);
+  yield* Effect.forkScoped(connectLoop);
 
   return HyperliquidWebSocketClient.of({
     subscribe: (subscription) =>
       Stream.fromEffect(
         Effect.gen(function* () {
           const key = keyFor(subscription);
-          active.set(key, subscription);
-          yield* sendSubscribe(subscription);
-          if (!open) {
-            yield* Effect.forkScoped(connectWithBackoff.pipe(Effect.ignore));
+          const existing = active.get(key);
+          if (existing) {
+            existing.count += 1;
+          } else {
+            active.set(key, { sub: subscription, count: 1 });
+            yield* sendString(encodeSubscribe(subscription));
           }
+          if (!open && !connecting) {
+            yield* Effect.forkScoped(connectLoop);
+          }
+          return key;
         }),
       ).pipe(
-        Stream.flatMap(() =>
+        Stream.flatMap((key) =>
           Stream.fromPubSub(inbound).pipe(
-            // Filter to this subscription's channel.
-            Stream.filter((delivery) => delivery.subscription.type === subscription.type),
+            // Only this subscription's deliveries.
+            Stream.filter((delivery) => keyFor(delivery.subscription) === key),
           ),
         ),
-        // Unsubscribe when the stream's scope closes.
-        Stream.ensuring(sendUnsubscribe(subscription)),
+        // Drop the refcount when the stream's scope closes; the exchange-side
+        // unsubscribe goes out when the last subscriber leaves.
+        Stream.ensuring(
+          Effect.gen(function* () {
+            const key = keyFor(subscription);
+            const entry = active.get(key);
+            if (!entry) return;
+            entry.count -= 1;
+            if (entry.count <= 0) {
+              active.delete(key);
+              yield* sendString(encodeUnsubscribe(subscription));
+            }
+          }),
+        ),
       ),
     isConnected: Effect.sync(() => open),
   });
