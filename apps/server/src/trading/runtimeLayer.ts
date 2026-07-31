@@ -15,6 +15,7 @@ import {
   HyperliquidInfoClientLive,
   HyperliquidMarketResolverLive,
 } from "@t3tools/hyperliquid";
+import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingStrategyServiceLive } from "./TradingStrategyService.ts";
@@ -42,6 +43,7 @@ export const TradingLayerLive = Layer.mergeAll(
   TradingMissionServiceLive,
   TradingStrategyServiceLive,
   TradingWatchServiceLive,
+  TradingEventInboxLive,
   TradingMissionProjectionLive,
   HyperliquidReadLayerLive,
 );
