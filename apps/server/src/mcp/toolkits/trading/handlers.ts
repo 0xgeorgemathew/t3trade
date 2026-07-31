@@ -23,6 +23,7 @@ import type { TradingMission } from "../../../trading/Schemas.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { TradingToolkit } from "./tools.ts";
 
 interface BoundCall {
@@ -166,6 +167,88 @@ const handlers = {
       }
 
       return published;
+    }),
+
+  // -- §14.2 read-only market-data tools -------------------------------------
+  //
+  // Every read handler resolves the bound mission first (the same capability +
+  // thread-binding check as the §14.3 tools), then delegates to the gateway.
+  // Account reads additionally resolve the master-wallet address from the
+  // mission's trading account — the harness never supplies an address.
+  //
+  // Gateway transport errors (network, decode, identity) are defects here, not
+  // typed tool failures: the only declared failure is `TradingToolRejectedError`
+  // (an authz refusal), and a transport failure is an internal error the MCP
+  // boundary surfaces generically. `Effect.orDie` collapses the gateway's typed
+  // errors into a defect so they never widen the handler's error channel.
+
+  trading_resolve_market: (input) =>
+    Effect.gen(function* () {
+      yield* resolveBoundCall(input.missionId);
+      const gateway = yield* HyperliquidGateway;
+      return yield* gateway.resolveMarket(input.market).pipe(Effect.orDie);
+    }),
+
+  trading_get_market_snapshot: (input) =>
+    Effect.gen(function* () {
+      yield* resolveBoundCall(input.missionId);
+      const gateway = yield* HyperliquidGateway;
+      return yield* gateway.getMarketSnapshot(input.market).pipe(Effect.orDie);
+    }),
+
+  trading_get_market_history: (input) =>
+    Effect.gen(function* () {
+      yield* resolveBoundCall(input.missionId);
+      const gateway = yield* HyperliquidGateway;
+      return yield* gateway
+        .getMarketHistory({
+          market: input.market,
+          interval: input.interval,
+          startTime: input.startTime,
+          endTime: input.endTime,
+          maxBars: input.maxBars,
+        })
+        .pipe(Effect.orDie);
+    }),
+
+  trading_get_order_book: (input) =>
+    Effect.gen(function* () {
+      yield* resolveBoundCall(input.missionId);
+      const gateway = yield* HyperliquidGateway;
+      return yield* gateway.getOrderBook(input.market).pipe(Effect.orDie);
+    }),
+
+  trading_get_account_state: (input) =>
+    Effect.gen(function* () {
+      const { mission } = yield* resolveBoundCall(input.missionId);
+      const missions = yield* TradingMissionService;
+      const address = yield* missions
+        .getMasterWalletAddress(mission.tradingAccountId)
+        .pipe(Effect.orDie);
+      const gateway = yield* HyperliquidGateway;
+      return yield* gateway.getAccountSnapshot(address as `0x${string}`).pipe(Effect.orDie);
+    }),
+
+  trading_get_position: (input) =>
+    Effect.gen(function* () {
+      const { mission } = yield* resolveBoundCall(input.missionId);
+      const missions = yield* TradingMissionService;
+      const address = yield* missions
+        .getMasterWalletAddress(mission.tradingAccountId)
+        .pipe(Effect.orDie);
+      const gateway = yield* HyperliquidGateway;
+      return yield* gateway.getPosition(address as `0x${string}`, input.market).pipe(Effect.orDie);
+    }),
+
+  trading_get_open_orders: (input) =>
+    Effect.gen(function* () {
+      const { mission } = yield* resolveBoundCall(input.missionId);
+      const missions = yield* TradingMissionService;
+      const address = yield* missions
+        .getMasterWalletAddress(mission.tradingAccountId)
+        .pipe(Effect.orDie);
+      const gateway = yield* HyperliquidGateway;
+      return yield* gateway.getOpenOrders(address as `0x${string}`).pipe(Effect.orDie);
     }),
 } satisfies Parameters<typeof TradingToolkit.toLayer>[0];
 

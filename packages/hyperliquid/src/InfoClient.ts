@@ -112,9 +112,7 @@ function postInfo<A>(
 
 const makeHyperliquidInfoClient = Effect.gen(function* () {
   const endpoints = yield* HyperliquidEndpoints;
-  // Raw client; `postInfo` applies `filterStatusOk` so it can map the resulting
-  // HttpClientError to the tagged request error.
-  const client = yield* HttpClient.HttpClient;
+  const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
 
   const call = <A>(operation: string, body: InfoRequestBody, schema: Schema.Decoder<A>) =>
     postInfo(client, endpoints.infoHttpUrl, operation, body, schema);

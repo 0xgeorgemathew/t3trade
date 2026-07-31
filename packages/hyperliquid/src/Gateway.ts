@@ -245,6 +245,7 @@ const makeHyperliquidGateway = Effect.gen(function* () {
     // Resolve + fetch the asset context in one pass; the resolver's cache may
     // already hold the metadata, but the asset context is read fresh each call.
     const resolved = yield* resolver.resolveMarket(symbol);
+
     const [meta, assetCtxs] = yield* info.metaAndAssetCtxs;
     const ctx = assetCtxs[resolved.assetIndex];
     if (!ctx) {
@@ -271,6 +272,7 @@ const makeHyperliquidGateway = Effect.gen(function* () {
     request: MarketHistoryRequest,
   ) {
     const observedAt = yield* nowMillis;
+
     const wireReq: WireCandleSnapshotRequest = {
       coin: request.market,
       interval: request.interval,
@@ -303,6 +305,7 @@ const makeHyperliquidGateway = Effect.gen(function* () {
 
   const getOrderBook = Effect.fn("HyperliquidGateway.getOrderBook")(function* (symbol: string) {
     const observedAt = yield* nowMillis;
+
     const wireBook = yield* info.l2Book(symbol);
     return toOrderBook(wireBook, observedAt);
   });
@@ -312,6 +315,7 @@ const makeHyperliquidGateway = Effect.gen(function* () {
   ) {
     const masterAddress = yield* requireMasterAddress(address);
     const observedAt = yield* nowMillis;
+
     const state = yield* info.clearinghouseState(String(masterAddress));
 
     const positions: ReadonlyArray<AccountPosition> = state.assetPositions.map((row) =>
@@ -362,6 +366,7 @@ const makeHyperliquidGateway = Effect.gen(function* () {
     address: EvmAddress,
   ) {
     const masterAddress = yield* requireMasterAddress(address);
+
     const wireOrders = yield* info.openOrders(String(masterAddress));
     return wireOrders.map(toOpenOrder);
   });
