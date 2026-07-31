@@ -161,6 +161,26 @@ session with a fresh mission snapshot when a typed event fires.
 | 2026-07-31 | SQL projection refresh                | `apps/server/src/orchestration/Layers/ProjectionPipeline.ts`                       | `applyTradingMissionsProjection` switch now refreshes on the four new event types (re-reads the authoritative row from migration-035 tables, as the existing trading events do).                                                                                   |
 | 2026-07-31 | Server contract re-exports            | `apps/server/src/trading/Schemas.ts`                                               | Re-exports the wakeup contracts and the four watch-tool schemas so server modules import them from one place.                                                                                                                                                      |
 
+### Step 1 — Watch registry (2026-07-31)
+
+| Date       | Seam                  | File(s)                                   | Change                                                    |
+| ---------- | --------------------- | ----------------------------------------- | --------------------------------------------------------- |
+| 2026-07-31 | Trading runtime layer | `apps/server/src/trading/runtimeLayer.ts` | `TradingWatchServiceLive` merged into `TradingLayerLive`. |
+
+(Fork-owned: `TradingWatchService.ts` + test are new files under `apps/server/src/trading/`.)
+
+### Step 2+3 — Watch evaluator and event inbox (2026-07-31)
+
+| Date       | Seam                           | File(s)                                                                                                                      | Change                                                                                                                                   |
+| ---------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-31 | Trading runtime layer          | `apps/server/src/trading/runtimeLayer.ts`                                                                                    | `TradingEventInboxLive` and `HyperliquidWsLayerLive` merged into `TradingLayerLive`.                                                     |
+| 2026-07-31 | Orchestration reactor          | `apps/server/src/orchestration/Layers/OrchestrationReactor.ts`                                                               | `WatchEvaluator` yielded and `start()` called (subscribes to the WS candle stream, announces `trading.mission.watch-fired`).             |
+| 2026-07-31 | Server reactor wiring          | `apps/server/src/server.ts`                                                                                                  | `WatchEvaluatorLive.pipe(Layer.provide(TradingLayerLive))` added to `ReactorLayerLive` (mirrors `TradingMissionReactorLive`).            |
+| 2026-07-31 | Reactor test stubs             | `apps/server/src/orchestration/Layers/OrchestrationReactor.test.ts`, `integration/OrchestrationEngineHarness.integration.ts` | Stub `WatchEvaluator` provided in both test layers (engine harness does not exercise trading).                                           |
+| 2026-07-31 | Hyperliquid dev subpath export | `packages/hyperliquid/package.json`                                                                                          | `./InfoClientTest` subpath added so the evaluator test can import `fakeWebSocketClientLayer` (dev-only fake; live WS client unaffected). |
+
+(Fork-owned: `TradingEventInbox.ts`, `WatchEvaluator.ts`, and tests are new files under `apps/server/src/trading/`.)
+
 ## Future entries
 
 Add a new `## PROMPT-NN · <phase name>` section per phase that touches

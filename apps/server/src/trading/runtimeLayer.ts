@@ -14,6 +14,7 @@ import {
   HyperliquidGatewayLive,
   HyperliquidInfoClientLive,
   HyperliquidMarketResolverLive,
+  HyperliquidWebSocketClientLive,
 } from "@t3tools/hyperliquid";
 import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
@@ -39,6 +40,13 @@ export const HyperliquidReadLayerLive = HyperliquidGatewayLive.pipe(
   Layer.provide(Layer.mergeAll(infoWithHttp, resolverWithInfo)),
 );
 
+/**
+ * The WebSocket client layer. It owns a scoped socket, so it is kept separate
+ * from the read layer (which is HTTP-only) and provided to the services that
+ * consume streams — currently the watch evaluator.
+ */
+export const HyperliquidWsLayerLive = HyperliquidWebSocketClientLive;
+
 export const TradingLayerLive = Layer.mergeAll(
   TradingMissionServiceLive,
   TradingStrategyServiceLive,
@@ -46,4 +54,5 @@ export const TradingLayerLive = Layer.mergeAll(
   TradingEventInboxLive,
   TradingMissionProjectionLive,
   HyperliquidReadLayerLive,
+  HyperliquidWsLayerLive,
 );

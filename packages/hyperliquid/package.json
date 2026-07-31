@@ -39,6 +39,10 @@
     "./Gateway": {
       "types": "./src/Gateway.ts",
       "import": "./src/Gateway.ts"
+    },
+    "./InfoClientTest": {
+      "types": "./src/InfoClientTest.ts",
+      "import": "./src/InfoClientTest.ts"
     }
   },
   "scripts": {
