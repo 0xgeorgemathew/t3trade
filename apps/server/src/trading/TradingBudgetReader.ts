@@ -29,11 +29,14 @@ interface FillBudgetRow {
   readonly fee_usd: number;
 }
 
-/** A typed row from `trading_position_snapshots`. */
+/** A typed row from `trading_position_snapshots`, joined to the stop on the mission's latest execution record. */
 interface PositionBudgetRow {
   readonly market: string;
   readonly size: number;
   readonly entry_price: number | null;
+  readonly observed_at: number | null;
+  /** Stop from the mission's latest execution record carrying one (Task 1 column). */
+  readonly stop_price: number | null;
 }
 
 /** A typed row from `trading_risk_reservations`. */
@@ -88,26 +91,40 @@ export const makeTradingBudgetReader = Effect.gen(function* () {
       const closedPnlUsd = fills.reduce((sum, f) => sum + (f.closed_pnl ?? 0), 0);
       const allPaidTradingFeesUsd = fills.reduce((sum, f) => sum + f.fee_usd, 0);
 
-      // Open-position risk. A full implementation needs the stop price + a
-      // taker-rate exit-fee estimate per open position. The position snapshot
-      // table does not yet carry the stop or fee estimates; until the
-      // protection layer (PROMPT-05) writes them, open risk is approximated
-      // from the snapshot's size and entry only when a stop is derivable. For
-      // the budget gate's purpose — blocking new exposure — the dominant term
-      // is the pending-entry risk below, which IS fully populated.
+      // Open-position risk. The stop price is threaded from the mission's
+      // latest execution record that carries one (Task 1 column). Without a
+      // stop, `openPositionRisk` cannot compute a directional loss-to-stop, so
+      // we pass `undefined` and the contract floors the term at zero — we do
+      // NOT fabricate a stop (a fabricated 0 made longs book the full notional
+      // as risk, exhausting the budget instantly).
+      //
+      // The exit-fee and slippage-reserve terms are still zero here. Task 5
+      // wires the fee read; PROMPT-05's protection layer writes the exact
+      // per-position reserve. Until then open risk is approximate (the
+      // dominant blocking term is the pending-entry risk below, which is
+      // fully populated).
       const positions = yield* sql<PositionBudgetRow>`
-        SELECT market, size, entry_price FROM trading_position_snapshots
-        WHERE mission_id = ${input.missionId} AND size != 0
+        SELECT p.market, p.size, p.entry_price, p.observed_at, s.stop_price
+        FROM trading_position_snapshots p
+        LEFT JOIN (
+          SELECT mission_id, stop_price
+          FROM trading_execution_records
+          WHERE mission_id = ${input.missionId}
+            AND stop_price IS NOT NULL
+          ORDER BY updated_at DESC
+          LIMIT 1
+        ) s ON s.mission_id = p.mission_id
+        WHERE p.mission_id = ${input.missionId} AND p.size != 0
       `.pipe(Effect.mapError(sqlFail("positions")));
+      const latestPositionObservedAt = positions
+        .map((p) => p.observed_at)
+        .reduce<number | null>((max, t) => (max === null || (t ?? -1) > max ? t : max), null);
       const openPositions = positions.map((p) => ({
         missionId: input.missionId,
         direction: p.size >= 0 ? ("long" as const) : ("short" as const),
         size: Math.abs(p.size),
         weightedEntryPrice: p.entry_price ?? undefined,
-        // The stop + fee estimate are written by the protection layer; until
-        // then an open position contributes its unpaid-exit-fee estimate of
-        // zero and no slippage reserve. This is conservative for new-entry
-        // blocking (under-counts open risk) and corrected when protection lands.
+        stopPrice: p.stop_price ?? undefined,
         paidFeesUsd: 0,
         estimatedExitFeeUsd: 0,
         stopSlippageReserveUsd: 0,
@@ -135,7 +152,13 @@ export const makeTradingBudgetReader = Effect.gen(function* () {
           stopSlippageReserveUsd: 0,
         }));
 
-      const observedAt = yield* Clock.currentTimeMillis;
+      // `observedAt` is the freshness anchor for preview item 9 (account-and-
+      // bbo-fresh) and for the reactor's `accountObservedAt`. It must reflect
+      // when the position/account snapshot was actually reconciled, not the
+      // clock at read time — otherwise the age is always ~0 and the freshness
+      // gate can never fire. Fall back to the clock only when no position has
+      // been observed yet (e.g. a brand-new mission with no fills).
+      const observedAt = latestPositionObservedAt ?? (yield* Clock.currentTimeMillis);
 
       return {
         maximumCumulativeLossUsd: input.maximumCumulativeLossUsd,
