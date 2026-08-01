@@ -119,17 +119,50 @@ const AGENT_TYPE_HASH = keccak_256(
 );
 
 /**
+ * The EIP-712 domain type-hash. EIP-712 derives this from the canonical
+ * `EIP712Domain(string name,string version,uint256 chainId,address
+ * verifyingContract)` declaration.
+ */
+const DOMAIN_TYPE_HASH = keccak_256(
+  new TextEncoder().encode(
+    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+  ),
+);
+
+/** Encode a non-negative integer as a 32-byte big-endian uint256 (EIP-712). */
+function uint256Be(n: number): Uint8Array {
+  const bytes = new Uint8Array(32);
+  let v = BigInt(n);
+  for (let i = 31; i >= 0 && v > 0n; i--) {
+    bytes[i] = Number(v & 0xffn);
+    v >>= 8n;
+  }
+  return bytes;
+}
+
+/** Left-pad a 20-byte address to 32 bytes (EIP-712 address encoding). */
+function addressTo32(hex: string): Uint8Array {
+  const raw = hexToBytes(hex.slice(2));
+  const padded = new Uint8Array(32);
+  padded.set(raw, 12);
+  return padded;
+}
+
+/**
  * EIP-712 domain separator:
- * `keccak256(typeHash ‖ keccak256(name) ‖ keccak256(version) ‖ chainId ‖ verifyingContract)`.
+ * `keccak256(typeHash ‖ keccak256(name) ‖ keccak256(version) ‖ uint256(chainId) ‖ address(verifyingContract))`.
+ * Every field is ABI-encoded to 32 bytes per the EIP-712 spec.
  */
 const DOMAIN_SEPARATOR = (() => {
   const out: number[] = [];
-  const typeHash = AGENT_TYPE_HASH;
-  const nameHash = keccak_256(new TextEncoder().encode(HYPERLIQUID_EIP712_DOMAIN.name));
-  const versionHash = keccak_256(new TextEncoder().encode(HYPERLIQUID_EIP712_DOMAIN.version));
-  const chainId = uint64Be(HYPERLIQUID_EIP712_DOMAIN.chainId);
-  const verifyingContract = hexToBytes(HYPERLIQUID_EIP712_DOMAIN.verifyingContract.slice(2));
-  for (const part of [typeHash, nameHash, versionHash, chainId, verifyingContract]) {
+  const parts = [
+    DOMAIN_TYPE_HASH,
+    keccak_256(new TextEncoder().encode(HYPERLIQUID_EIP712_DOMAIN.name)),
+    keccak_256(new TextEncoder().encode(HYPERLIQUID_EIP712_DOMAIN.version)),
+    uint256Be(HYPERLIQUID_EIP712_DOMAIN.chainId),
+    addressTo32(HYPERLIQUID_EIP712_DOMAIN.verifyingContract),
+  ];
+  for (const part of parts) {
     for (let i = 0; i < part.length; i++) out.push(part[i]!);
   }
   return keccak_256(new Uint8Array(out));
@@ -212,14 +245,32 @@ export function packSignature(sig: HyperliquidSignature): Uint8Array {
 }
 
 /**
- * Sign an L1 action and return the packed signature as a `0x`-prefixed hex
- * string — the exact shape the exchange expects in the `signature` field of a
- * POST `/exchange` body. Convenience wrapper over {@link signL1Action} +
- * {@link packSignature} so callers never handle raw bytes.
+ * The signature shape the exchange expects in the `signature` field of a POST
+ * `/exchange` body. Note `v` is 27 or 28 (Ethereum recovery id + 27), not the
+ * raw 0/1 — the exchange deserializes into this exact object shape.
  */
-export function signAndPackL1Action(
+export interface HyperliquidWireSignature {
+  /** First 32-byte component, `0x`-prefixed hex. */
+  readonly r: `0x${string}`;
+  /** Second 32-byte component, `0x`-prefixed hex. */
+  readonly s: `0x${string}`;
+  /** Recovery identifier, biased to 27/28 per Ethereum convention. */
+  readonly v: 27 | 28;
+}
+
+/**
+ * Sign an L1 action and return the signature in the exact object shape the
+ * exchange expects (`{ r, s, v }` with `v ∈ {27, 28}`). Convenience wrapper
+ * over {@link signL1Action} so callers never handle raw bytes or the v-bias.
+ */
+export function signL1ActionForWire(
   input: ActionHashInput & { privateKey: Uint8Array; isTestnet?: boolean },
-): `0x${string}` {
+): HyperliquidWireSignature {
   const signature = signL1Action(input);
-  return `0x${bytesToHex(packSignature(signature))}` as `0x${string}`;
+  return {
+    r: `0x${bytesToHex(signature.r)}` as `0x${string}`,
+    s: `0x${bytesToHex(signature.s)}` as `0x${string}`,
+    // Bias the raw recovery id (0/1) to Ethereum's 27/28.
+    v: (signature.v === 0 ? 27 : 28) as 27 | 28,
+  };
 }

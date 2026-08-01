@@ -253,20 +253,27 @@ export const WireOrderStatusRow = Schema.Struct({
 export type WireOrderStatusRow = typeof WireOrderStatusRow.Type;
 
 /**
- * The `status` block of an exchange response when the action was accepted.
- * `resting` and `filled` variants carry the order id; `error` carries a
- * reason. Kept permissive: the exchange adds fields, and only `statuses` is
- * load-bearing for the per-order inspection (§17.2 step 4).
+ * The exchange's `/exchange` response. Kept permissive: the noop returns
+ * `{"status":"ok","response":{"type":"default"}}` (no `statuses`), while an
+ * order returns `{"response":{"type":"ok","statuses":[...]}}`. Only
+ * `response.statuses` is load-bearing for the per-order inspection (§17.2
+ * step 4); everything else is accepted verbatim.
  */
 export const WireExchangeResponse = Schema.Struct({
-  /** "order" | "cancel" | "modify" | … — echoes the action type. */
-  type: Schema.String,
-  /** "ok" | "err" — top-level acceptance. */
-  response: Schema.Struct({
-    type: Schema.String,
-    statuses: Schema.optional(Schema.Array(Schema.Union([Schema.String, WireOrderStatusRow]))),
-  }),
-  /// The exchange sometimes returns a top-level `status` string instead.
+  /** "ok" | "err" — top-level acceptance for some action types (noop). */
   status: Schema.optional(Schema.String),
+  /** "default" | "ok" | "err" — the response variant. */
+  response: Schema.Union([
+    Schema.Struct({
+      type: Schema.String,
+      statuses: Schema.optional(Schema.Array(Schema.Union([Schema.String, WireOrderStatusRow]))),
+    }),
+    // The noop returns response: {type: "default"} with no statuses.
+    Schema.Struct({
+      type: Schema.String,
+    }),
+  ]),
+  /// "order" | "cancel" | "noop" | … — echoes the action type.
+  type: Schema.optional(Schema.String),
 });
 export type WireExchangeResponse = typeof WireExchangeResponse.Type;

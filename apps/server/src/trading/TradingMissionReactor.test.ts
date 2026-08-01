@@ -33,13 +33,13 @@ import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { TradingMissionProjection } from "./TradingMissionProjection.ts";
 import { TradingMissionReactor, TradingMissionReactorLive } from "./TradingMissionReactor.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
-import { TradingLayerLive } from "./runtimeLayer.ts";
+import { TradingCoreLayerLive } from "./runtimeLayer.ts";
 
 const THREAD_ID = ThreadId.make("thread-trading-reactor");
 const MISSION_ID = TradingMissionId.make("mission-trading-reactor");
 
 const TestLayer = TradingMissionReactorLive.pipe(
-  Layer.provideMerge(TradingLayerLive),
+  Layer.provideMerge(TradingCoreLayerLive),
   Layer.provideMerge(OrchestrationEngineLive),
   Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
   Layer.provideMerge(OrchestrationProjectionPipelineLive),

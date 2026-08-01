@@ -33,7 +33,7 @@ import {
 } from "@t3tools/hyperliquid/OrderMapper";
 import { HyperliquidExchangeClient, type SignedAction } from "@t3tools/hyperliquid/ExchangeClient";
 import { HyperliquidNonceCoordinator } from "@t3tools/hyperliquid/NonceCoordinator";
-import { signAndPackL1Action } from "@t3tools/hyperliquid/Signing";
+import { signL1ActionForWire } from "@t3tools/hyperliquid/Signing";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import type {
   TradingExecutionRecord,
@@ -354,7 +354,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       const signed = yield* nonceCoord
         .runWithNonce((nonce) =>
           Effect.gen(function* () {
-            const signature = signAndPackL1Action({
+            const signature = signL1ActionForWire({
               action,
               nonce,
               privateKey: signer.privateKeyBytes,
@@ -387,7 +387,11 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       );
 
       // --- 8. inspect EVERY per-order status ---------------------------------
-      const orderResults = yield* inspectOrderStatuses(response.response.statuses, intent);
+      const responseView = response.response as {
+        type: string;
+        statuses?: ReadonlyArray<unknown>;
+      };
+      const orderResults = yield* inspectOrderStatuses(responseView.statuses, intent);
 
       // --- 9. update the execution record with the result --------------------
       const accepted = orderResults.some((r) => r.status === "ok" || r.status === "triggered");

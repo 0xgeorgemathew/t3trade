@@ -26,8 +26,8 @@ type ExchangeError = HyperliquidRequestError | HyperliquidDecodeError;
 export interface SignedAction {
   readonly action: Record<string, unknown>;
   readonly nonce: number;
-  /** 65-byte r‖s‖v signature, hex-encoded with 0x prefix. */
-  readonly signature: `0x${string}`;
+  /** Signature in the exchange's `{ r, s, v }` shape (v ∈ {27, 28}). */
+  readonly signature: { readonly r: `0x${string}`; readonly s: `0x${string}`; readonly v: 27 | 28 };
 }
 
 /**

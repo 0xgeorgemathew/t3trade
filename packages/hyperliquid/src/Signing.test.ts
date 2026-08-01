@@ -133,17 +133,26 @@ import { secp256k1 } from "@noble/curves/secp256k1";
 const AGENT_TYPE_HASH = keccak_256(
   new TextEncoder().encode("Agent(string source,bytes32 connectionId)"),
 );
+const DOMAIN_TYPE_HASH = keccak_256(
+  new TextEncoder().encode(
+    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+  ),
+);
+/** uint256 chainId (1337) as 32 big-endian bytes. */
+const chainId256 = (() => {
+  const b = new Uint8Array(32);
+  new DataView(b.buffer).setUint32(28, 1337);
+  return b;
+})();
+/** 20-byte zero address left-padded to 32 bytes (EIP-712 address encoding). */
+const zeroAddress32 = new Uint8Array(32);
 const DOMAIN_SEPARATOR = keccak_256(
   concatBytes(
-    AGENT_TYPE_HASH,
+    DOMAIN_TYPE_HASH,
     keccak_256(new TextEncoder().encode("Exchange")),
     keccak_256(new TextEncoder().encode("1")),
-    (() => {
-      const b = new Uint8Array(8);
-      new DataView(b.buffer).setBigUint64(0, 1337n);
-      return b;
-    })(),
-    hexToBytes("0000000000000000000000000000000000000000"),
+    chainId256,
+    zeroAddress32,
   ),
 );
 
