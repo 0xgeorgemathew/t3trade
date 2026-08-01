@@ -34,6 +34,11 @@ import type { HarnessRunRequest } from "./Schemas.ts";
 import { TradingMissionProjection } from "./TradingMissionProjection.ts";
 import { TradingMissionReactor, TradingMissionReactorLive } from "./TradingMissionReactor.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
+import {
+  HyperliquidReconciler,
+  type ReconcileInput,
+  type ReconciliationTrigger,
+} from "./HyperliquidReconciler.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
 import { TradingLayerLive } from "./runtimeLayer.ts";
 
@@ -87,7 +92,9 @@ const createMission = Effect.gen(function* () {
   yield* settle;
 });
 
-const control = (type: "trading.mission.pause" | "trading.mission.resume") =>
+const control = (
+  type: "trading.mission.pause" | "trading.mission.resume" | "trading.mission.revoke",
+) =>
   Effect.gen(function* () {
     const engine = yield* OrchestrationEngineService;
     yield* engine.dispatch({
@@ -104,6 +111,36 @@ const projectedMission = TradingMissionProjection.pipe(
   Effect.flatMap((projection) => projection.getByThreadId(THREAD_ID)),
   Effect.orDie,
 );
+
+/**
+ * Move the test mission straight into the §16.4 blocked state, the way the
+ * reactor's own `blockForExhaustion` does after a post-submit budget exhausts.
+ * `initializing → blocked` is a legal §11.1 exit, so the service accepts it
+ * directly; the reactor only reaches `blocked` through execution, which these
+ * control-matrix tests do not drive. The matching `status-set` announcement is
+ * dispatched afterwards so the projection reflects the blocked status, exactly
+ * as the reactor's execution path does (TradingMissionReactor L438).
+ */
+const blockMission = Effect.gen(function* () {
+  const missions = yield* TradingMissionService;
+  yield* missions.transition({
+    missionId: MISSION_ID,
+    to: "blocked",
+    expectedVersion: yield* missions.getMissionVersion(MISSION_ID),
+    blockedReason: "cumulative_loss_limit",
+  });
+  const engine = yield* OrchestrationEngineService;
+  yield* engine.dispatch({
+    type: "trading.mission.status-set",
+    commandId: yield* commandId,
+    threadId: THREAD_ID,
+    missionId: MISSION_ID,
+    status: "blocked",
+    blockedReason: "cumulative_loss_limit",
+    createdAt: NOW,
+  });
+  yield* settle;
+});
 
 const PROJECT_ID = ProjectId.make("project-trading-reactor");
 
@@ -222,6 +259,80 @@ it.layer(TestLayer)("trading mission reactor", (it) => {
       assert.equal(stillRevoked.status, "revoked", "the domain must refuse the control");
     }),
   );
+
+  // ── §16.4 blocked-mission control matrix ────────────────────────────────────
+  //
+  // The bug B4 fixed was `guardResume` running before the control's target
+  // status was read, which rejected pause and revoke too. The matrix below
+  // pins the correct behaviour: while a mission is blocked under
+  // `cumulative_loss_limit`, revocation and pause remain available (the user
+  // must be able to recover safely), but resume is rejected and leaves the
+  // mission blocked. A later case reconciles before resuming a merely-paused
+  // mission.
+
+  it.effect("§16.4: permits revocation while a mission is blocked", () =>
+    // §16.4 item 4: revocation is explicitly permitted while blocked, so the
+    // user can wind the mission down without first clearing the block.
+    Effect.gen(function* () {
+      yield* started;
+      yield* createMission;
+      yield* blockMission;
+
+      yield* control("trading.mission.revoke");
+
+      const revoked = yield* projectedMission;
+      assert.ok(Option.isSome(revoked), "expected a projected mission row");
+      assert.equal(revoked.value.status, "revoked");
+    }),
+  );
+
+  it.effect("§16.4: permits pause while a mission is blocked", () =>
+    // Pause is a control, not a resume, so the exhaustion gate does not apply;
+    // the blocked mission transitions to paused and the projection reflects it.
+    Effect.gen(function* () {
+      yield* started;
+      yield* createMission;
+      yield* blockMission;
+
+      yield* control("trading.mission.pause");
+
+      const paused = yield* projectedMission;
+      assert.ok(Option.isSome(paused));
+      assert.equal(paused.value.status, "paused");
+    }),
+  );
+
+  it.effect("§16.4: rejects resume while blocked and leaves the mission blocked", () =>
+    // The reactor's guardResume must reject a resume dispatched on a blocked
+    // mission (TradingExhaustionError / resume_blocked). The rejection is
+    // caught and logged by the reactor's runEvent guard (a refused control is
+    // a normal outcome, not a crash), so dispatch resolves; the proof that the
+    // guard fired is the projection still reading blocked — transition was
+    // never reached. This is the regression net for bug B4: had guardResume run
+    // before the control type was read, pause/revoke would have been rejected
+    // too; here resume alone is refused.
+    Effect.gen(function* () {
+      yield* started;
+      yield* createMission;
+      yield* blockMission;
+
+      yield* control("trading.mission.resume");
+
+      // The mission must NOT have transitioned back to analysing.
+      const stillBlocked = yield* projectedMission;
+      assert.ok(Option.isSome(stillBlocked));
+      assert.equal(
+        stillBlocked.value.status,
+        "blocked",
+        "resume must not transition a blocked mission",
+      );
+      assert.equal(
+        stillBlocked.value.blockedReason,
+        "cumulative_loss_limit",
+        "the block reason must survive a refused resume",
+      );
+    }),
+  );
 });
 
 /**
@@ -283,6 +394,97 @@ it.live("asks the coordinator for a run when a watch fires", () =>
       assert.equal(calls[1]?.cause, "market_watch_triggered");
       assert.equal(calls[1]?.triggeringWatchId, "watch_1");
       assert.equal(calls[1]?.missionId, MISSION_ID);
+    }).pipe(Effect.scoped, Effect.provide(StubbedLayer));
+  }),
+);
+
+/**
+ * §16.4 ordering: a resume of a merely-*paused* (not blocked) mission must run
+ * the `before_resuming_paused_mission` reconcile BEFORE the transition, so the
+ * budget gate and the resumed turn see reconciled truth rather than a stale
+ * local cache. The reactor wraps the reconcile in a catch (a reconcile failure
+ * is logged, not fatal), so to observe the trigger the mission's trading
+ * account must resolve a master address — otherwise the reconcile is never
+ * reached and the trigger never fires.
+ *
+ * A recording stub reconciler captures the trigger; the live layer is otherwise
+ * intact so the real reactor ordering (guard → reconcile → transition →
+ * announce) is what runs.
+ */
+it.live("reconciles before resuming a paused mission", () =>
+  Effect.gen(function* () {
+    const triggers: Array<ReconciliationTrigger> = [];
+    const stubReconciler = Layer.succeed(HyperliquidReconciler, {
+      reconcile: (input: ReconcileInput, trigger: ReconciliationTrigger) =>
+        Effect.sync(() => {
+          triggers.push(trigger);
+          assert.equal(input.missionId, MISSION_ID);
+          return { position: null, openOrders: [], fills: [], observedAt: 0 };
+        }),
+    });
+
+    const StubbedLayer = TradingMissionReactorLive.pipe(
+      Layer.provide(stubReconciler),
+      Layer.provideMerge(TradingLayerLive),
+      Layer.provideMerge(OrchestrationEngineLive),
+      Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+      Layer.provideMerge(OrchestrationProjectionPipelineLive),
+      Layer.provideMerge(OrchestrationEventStoreLive),
+      Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+      Layer.provideMerge(RepositoryIdentityResolver.layer),
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-resumereconcile-" }),
+      ),
+      Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    yield* Effect.gen(function* () {
+      yield* started;
+      yield* createMission;
+
+      // Seed the trading account so getMasterWalletAddress resolves and the
+      // reactor actually reaches reconciler.reconcile. The wallet JSON shape is
+      // the published TradingMasterWallet contract (§10.1).
+      const sql = yield* SqlClient.SqlClient;
+      const masterWalletJson =
+        '{"privyWalletId":"wallet-trading-reactor",' +
+        '"address":"0x000000000000000000000000000000000000beef",' +
+        '"ownership":"user"}';
+      yield* sql`
+        INSERT INTO trading_accounts (
+          account_id, user_id, environment, master_wallet_json,
+          execution_wallet_json, status, created_at, updated_at
+        ) VALUES (
+          'acct-trading-reactor', 'local', 'hyperliquid_testnet', ${masterWalletJson},
+          ${masterWalletJson}, 'ready', 0, 0
+        )
+      `;
+
+      // Get into the active loop, then pause — the state resume targets.
+      const missions = yield* TradingMissionService;
+      yield* missions.transition({
+        missionId: MISSION_ID,
+        to: "analysing",
+        expectedVersion: yield* missions.getMissionVersion(MISSION_ID),
+      });
+      yield* control("trading.mission.pause");
+
+      const paused = yield* projectedMission;
+      assert.ok(Option.isSome(paused));
+      assert.equal(paused.value.status, "paused");
+
+      yield* control("trading.mission.resume");
+
+      // The reconcile must have fired with the §18.2 trigger, and only then did
+      // the mission resume — so the projection now reads analysing.
+      assert.isTrue(
+        triggers.includes("before_resuming_paused_mission"),
+        "resume must reconcile before the transition",
+      );
+      const resumed = yield* projectedMission;
+      assert.ok(Option.isSome(resumed));
+      assert.equal(resumed.value.status, "analysing");
     }).pipe(Effect.scoped, Effect.provide(StubbedLayer));
   }),
 );
