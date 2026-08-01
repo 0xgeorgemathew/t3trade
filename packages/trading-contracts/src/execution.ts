@@ -245,6 +245,8 @@ export const TradingFill = Schema.Struct({
   feeUsd: Schema.Number,
   /** Exchange-assigned fee in base/quote currency, verbatim. */
   feeToken: Schema.String,
+  /** Realised PnL the exchange attributes to this fill (§16.2 closedPnl). */
+  closedPnl: Schema.Number,
   tradedAt: UnixMillis,
   observedAt: UnixMillis,
 });
@@ -275,6 +277,8 @@ export const TradingPositionSnapshot = Schema.Struct({
    * 6–8: only canonical confirmation marks a position protected.
    */
   protectedSize: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** Exchange liquidation price (`clearinghouseState.liquidationPx`). */
+  liquidationPrice: Schema.optional(Price),
   observedAt: UnixMillis,
 });
 export type TradingPositionSnapshot = typeof TradingPositionSnapshot.Type;

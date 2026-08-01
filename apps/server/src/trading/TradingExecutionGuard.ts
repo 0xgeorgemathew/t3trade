@@ -19,6 +19,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { isPermittedUnderExhaustion } from "@t3tools/trading-contracts/loss-accounting";
 import type { TradingLossBudget } from "@t3tools/trading-contracts/execution";
+import { HyperliquidGateway } from "@t3tools/hyperliquid";
+import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
 
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { HyperliquidExecutionService, type ExecutionInput } from "./HyperliquidExecutionService.ts";
@@ -80,11 +82,15 @@ export class TradingExecutionGuard extends Context.Service<
 
     /**
      * Reduce-only close (§17.2). Submits a reduce-only IOC that brings the
-     * position to flat, then reconciles canonical state.
+     * position to flat, then reconciles canonical state to confirm flat.
      */
     readonly reduceOnlyClose: (
       executionInput: ExecutionInput,
-    ) => Effect.Effect<void, TradingExhaustionError, SqlClient.SqlClient>;
+    ) => Effect.Effect<
+      void,
+      TradingExhaustionError,
+      SqlClient.SqlClient | HyperliquidGateway | HyperliquidInfoClient
+    >;
   }
 >()("t3/trading/TradingExecutionGuard") {}
 
@@ -146,11 +152,15 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
 
   const reduceOnlyClose = (
     executionInput: ExecutionInput,
-  ): Effect.Effect<void, TradingExhaustionError, SqlClient.SqlClient> =>
+  ): Effect.Effect<
+    void,
+    TradingExhaustionError,
+    SqlClient.SqlClient | HyperliquidGateway | HyperliquidInfoClient
+  > =>
     Effect.gen(function* () {
       // A reduce-only close is permitted under exhaustion (§16.4). Run it
       // through the execution service (which signs + submits a reduce-only
-      // IOC), then reconcile to confirm flat.
+      // IOC), then reconcile to confirm the canonical position is flat.
       yield* execution.submitOrder(executionInput).pipe(
         Effect.mapError(
           (cause) =>
@@ -160,10 +170,36 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
             }),
         ),
       );
-      // Reconcile after the close to confirm the canonical position is flat.
-      // The master address is resolved by the caller via the preview context.
-      // (Full wiring lands with the reactor integration.)
-      void reconciler;
+      const { intent } = executionInput;
+      // Reconcile to confirm flat. The master address is the §10.6 identity
+      // for canonical reads — resolved by the caller through the mission's
+      // trading account, threaded here via a closure-built input.
+      const state = yield* reconciler
+        .reconcile(
+          {
+            missionId: intent.missionId,
+            masterAddress: executionInput.masterAddress,
+            market: intent.market,
+          },
+          "after_position_update",
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new TradingExhaustionError({
+                reason: "budget_exhausted",
+                detail: `reconcile failed after close: ${cause.reason}`,
+              }),
+          ),
+        );
+      // §17.2: never assume the close landed. Escalate if the canonical
+      // position is not flat rather than marking the mission closed on a lie.
+      if (state.position !== null && state.position.size !== 0) {
+        return yield* new TradingExhaustionError({
+          reason: "budget_exhausted",
+          detail: `close_did_not_flatten: size ${state.position.size} remains`,
+        });
+      }
     });
 
   return TradingExecutionGuard.of({

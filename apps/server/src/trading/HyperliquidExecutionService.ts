@@ -73,6 +73,12 @@ export interface ExecutionInput {
   readonly previewContext: PreviewContext;
   /** Allowed slippage in bps for marketable IOC pricing (§15.4). */
   readonly allowedSlippageBps: number;
+  /**
+   * The master-wallet address (§10.6 identity) for canonical reads. The
+   * execution service records the signer address on the order; this is the
+   * account/position identity a later reconcile (e.g. reduce-only close) uses.
+   */
+  readonly masterAddress: string;
 }
 
 /**

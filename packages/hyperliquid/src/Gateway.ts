@@ -203,6 +203,7 @@ function toPosition(
     unrealisedPnl: num(p.unrealizedPnl),
     cumulativeFunding: num(p.cumulativeFunding),
     marginUsed: num(p.marginUsed),
+    liquidationPx: p.liquidationPx != null ? num(p.liquidationPx) : undefined,
   };
 }
 

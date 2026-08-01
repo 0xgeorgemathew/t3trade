@@ -80,11 +80,14 @@ describeLive("HyperliquidExecutionSmoke — live /exchange", () => {
 
         const exchange = yield* HyperliquidExchangeClient;
         const response = yield* exchange.submit({ action, nonce, signature });
-        // A noop returns {"status":"ok","response":{"type":"default"}}.
+        // A noop returns {"status":"ok","response":{"type":"default"}}. Assert
+        // both: the top-level status is the live-acceptance signal, the
+        // response type confirms the noop shape.
         yield* Effect.logInfo("[execution-smoke] response", {
           status: "status" in response ? response.status : undefined,
           responseType: response.response.type,
         });
+        expect("status" in response ? response.status : undefined).toBe("ok");
         expect(response.response.type).toBe("default");
       }).pipe(Effect.provide(exchangeLayer)),
     30_000,

@@ -26,6 +26,7 @@ import {
   TradingMissionBlockedReason,
   TradingMissionControl,
   TradingMissionStatus,
+  TradingOrderIntent,
 } from "@t3tools/trading-contracts";
 import * as Schema from "effect/Schema";
 
@@ -88,6 +89,8 @@ export const TradingPositionView = Schema.Struct({
   unrealisedPnl: Schema.Number,
   marginUsed: Schema.Number,
   protectedSize: Schema.Number,
+  /** Exchange liquidation price, surfaced to the position card. */
+  liquidationPrice: Schema.optional(Schema.Number),
   observedAt: IsoDateTime,
 });
 export type TradingPositionView = typeof TradingPositionView.Type;
@@ -268,6 +271,29 @@ export const TradingMissionRunStartedCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * A harness entry request to place a signed order (§17.2).
+ *
+ * Server-raised (not client-dispatchable): the harness publishes its decision
+ * lease proof, and `TradingMissionReactor` runs the §17.2 write side — preview,
+ * persist-before-signing, sign in the nonce lane, submit, inspect, reconcile.
+ * Carries the `TradingOrderIntent` verbatim plus the authority version + harness
+ * run that own the decision lease, so preview can reject a stale run before it
+ * mutates durable state (§18 optimistic versioning).
+ */
+export const TradingExecutionRequestedCommand = Schema.Struct({
+  type: Schema.Literal("trading.execution.requested"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  missionId: TradingMissionId,
+  intent: TradingOrderIntent,
+  /** The authority version the harness saw when it decided; preview rejects a mismatch. */
+  expectedAuthorityVersion: NonNegativeInt,
+  /** The harness run that owns the decision lease for this mission. */
+  activeHarnessRunId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
 export const InternalTradingCommand = Schema.Union([
   TradingMissionStatusSetCommand,
   TradingMissionStrategyPublishedCommand,
@@ -275,6 +301,7 @@ export const InternalTradingCommand = Schema.Union([
   TradingMissionWatchCancelledCommand,
   TradingMissionWatchFiredCommand,
   TradingMissionRunStartedCommand,
+  TradingExecutionRequestedCommand,
 ]);
 export type InternalTradingCommand = typeof InternalTradingCommand.Type;
 
@@ -357,6 +384,20 @@ export const TradingMissionRunStartedPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+/**
+ * A harness asked the reactor to execute an order. The reactor runs the §17.2
+ * write side (preview → submit → reconcile); this event is the question, the
+ * reactor's status-set + persisted records are the answer.
+ */
+export const TradingExecutionRequestedPayload = Schema.Struct({
+  missionId: TradingMissionId,
+  threadId: ThreadId,
+  intent: TradingOrderIntent,
+  expectedAuthorityVersion: NonNegativeInt,
+  activeHarnessRunId: TrimmedNonEmptyString,
+  requestedAt: IsoDateTime,
+});
+
 export const TRADING_EVENT_TYPES = [
   "trading.mission-create-requested",
   "trading.mission-control-requested",
@@ -366,4 +407,5 @@ export const TRADING_EVENT_TYPES = [
   "trading.mission-watch-cancelled",
   "trading.mission-watch-fired",
   "trading.mission-run-started",
+  "trading.execution-requested",
 ] as const;

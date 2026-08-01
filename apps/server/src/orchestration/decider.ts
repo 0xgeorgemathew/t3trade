@@ -1336,6 +1336,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "trading.execution.requested": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "mission",
+          aggregateId: command.missionId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "trading.execution-requested",
+        payload: {
+          missionId: command.missionId,
+          threadId: command.threadId,
+          intent: command.intent,
+          expectedAuthorityVersion: command.expectedAuthorityVersion,
+          activeHarnessRunId: command.activeHarnessRunId,
+          requestedAt: command.createdAt,
+        },
+      };
+    }
+
     default: {
       command satisfies never;
       const fallback = command as never as { type: string };

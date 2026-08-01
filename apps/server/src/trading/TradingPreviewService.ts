@@ -69,8 +69,19 @@ export interface PreviewContext {
   readonly currentStrategyVersion: number;
   /** The authority version the mission currently holds. */
   readonly currentAuthorityVersion: number;
+  /**
+   * The authority version the requesting harness run observed when it decided
+   * (§18 optimistic versioning). Must equal `currentAuthorityVersion`, else a
+   * stale run is rejected before it mutates durable state.
+   */
+  readonly expectedAuthorityVersion: number;
   /** The harness run id that owns the decision lease for this mission. */
   readonly activeHarnessRunId: string | null;
+  /**
+   * The approved execution-wallet address for this mission's account (§10.6).
+   * A request whose signer is not the approved wallet is rejected at preview.
+   */
+  readonly approvedExecutionWalletAddress: string | null;
   /** Fresh BBO for the market (§15.4: 2s window). */
   readonly bbo: MarketBestBidOffer;
   /** Account freshness observedAt (§13: 5s window). */
@@ -127,9 +138,15 @@ const strategyVersionCurrent: Check = (intent, ctx) =>
       );
 
 const authorityVersionCurrent: Check = (_intent, ctx) =>
-  // The mission carries the current authority; a stale run is rejected before
-  // it can mutate durable state (§18 optimistic versioning).
-  Effect.void;
+  // §18 optimistic versioning: the harness run decided against
+  // `expectedAuthorityVersion`; if the mission has since moved to a newer
+  // authority, the run is stale and must not mutate durable state.
+  ctx.expectedAuthorityVersion === ctx.currentAuthorityVersion
+    ? Effect.void
+    : reject(
+        "authority_version_current",
+        `intent saw authority v${ctx.expectedAuthorityVersion} ≠ current v${ctx.currentAuthorityVersion}`,
+      );
 
 const harnessRunOwnsLease: Check = (_intent, ctx) =>
   ctx.activeHarnessRunId !== null
@@ -149,9 +166,16 @@ const marketIsEth: Check = (intent, _ctx) =>
     : reject("market_is_eth", `POC trades ETH only; got ${intent.market}`);
 
 const executionWalletApproved: Check = (_intent, ctx) =>
-  // The interim signer's address is verified against the approved API wallet
-  // at sign time; the preview confirms the account has an approved wallet row.
-  Effect.void;
+  // The mission's account must name an approved execution wallet. The interim
+  // signer's address is checked at sign time against this value; preview
+  // rejects when no wallet is approved so the failure is visible before a nonce
+  // is spent.
+  ctx.approvedExecutionWalletAddress !== null
+    ? Effect.void
+    : reject(
+        "execution_wallet_approved",
+        "no approved execution wallet for this mission's account",
+      );
 
 const accountAndBboFresh: Check = (_intent, ctx) => {
   const bboAge = ctx.nowMs - ctx.bbo.freshness.observedAt;

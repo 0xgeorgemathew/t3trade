@@ -31,13 +31,20 @@ import { TradingStrategyServiceLive } from "./TradingStrategyService.ts";
 import { TradingTurnCoordinatorLive } from "./TradingTurnCoordinator.ts";
 import { TradingWakeupComposerLive } from "./TradingWakeupComposer.ts";
 import { TradingWatchServiceLive } from "./TradingWatchService.ts";
+import { TradingBudgetReaderLive } from "./TradingBudgetReader.ts";
+import { TradingFillReconcilerLive } from "./TradingFillReconciler.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
 const resolverWithInfo = HyperliquidMarketResolverLive.pipe(Layer.provide(infoWithHttp));
-
-export const HyperliquidReadLayerLive = HyperliquidGatewayLive.pipe(
+const gatewayWithRead = HyperliquidGatewayLive.pipe(
   Layer.provide(Layer.mergeAll(infoWithHttp, resolverWithInfo)),
+);
+
+export const HyperliquidReadLayerLive = Layer.mergeAll(
+  infoWithHttp,
+  resolverWithInfo,
+  gatewayWithRead,
 );
 
 export const HyperliquidWsLayerLive = HyperliquidWebSocketClientLive;
@@ -69,23 +76,30 @@ const coordinatorWithDeps = TradingTurnCoordinatorLive.pipe(
 const exchangeWithHttp = HyperliquidExchangeClientLive.pipe(Layer.provide(httpWithNode));
 
 /**
- * The full trading layer. A1 will correct the consumer/foundation direction
- * of the final composition; keeping the stages explicit makes that boundary
- * visible and preserves both the wakeup and execution services after merge.
+ * The full trading layer. Foundations are built first, then supplied to the
+ * preview/budget consumers and finally to the execution consumers.
  */
 const TradingFoundation = Layer.mergeAll(
   TradingCoreLayerLive,
   InterimSignerConfigLive,
   exchangeWithHttp,
   HyperliquidNonceCoordinatorLive(),
+  HyperliquidWebSocketClientLive,
 );
 
-const TradingExecutionLayerLive = TradingFoundation.pipe(
-  Layer.provideMerge(TradingPreviewServiceLive),
-  Layer.provideMerge(HyperliquidExecutionServiceLive),
-  Layer.provideMerge(HyperliquidReconcilerLive),
-  Layer.provideMerge(TradingExecutionGuardLive),
+const TradingWithPreview = Layer.mergeAll(TradingPreviewServiceLive, TradingBudgetReaderLive).pipe(
+  Layer.provideMerge(TradingFoundation),
 );
+
+const TradingExecutionCore = Layer.mergeAll(
+  HyperliquidExecutionServiceLive,
+  HyperliquidReconcilerLive,
+).pipe(Layer.provideMerge(TradingWithPreview));
+
+const TradingExecutionLayerLive = Layer.mergeAll(
+  TradingExecutionGuardLive,
+  TradingFillReconcilerLive,
+).pipe(Layer.provideMerge(TradingExecutionCore));
 
 export const TradingLayerLive = Layer.mergeAll(
   TradingMissionServiceLive,
@@ -95,4 +109,4 @@ export const TradingLayerLive = Layer.mergeAll(
   coordinatorWithDeps,
   TradingExecutionLayerLive,
   HyperliquidWsLayerLive,
-);
+).pipe(Layer.provideMerge(infoWithHttp));

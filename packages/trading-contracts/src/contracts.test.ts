@@ -534,6 +534,7 @@ describe("TradingFill", () => {
     avgFillPrice: 3_748,
     feeUsd: 0.0187,
     feeToken: "USDC",
+    closedPnl: 0,
     tradedAt: 1_753_000_000_000,
     observedAt: 1_753_000_000_000,
   } as const;

@@ -150,6 +150,8 @@ export const WirePosition = Schema.Struct({
   unrealizedPnl: Schema.String,
   cumulativeFunding: Schema.optional(Schema.String),
   marginUsed: Schema.String,
+  /** Exchange liquidation price; present once leverage creates one. */
+  liquidationPx: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type WirePosition = typeof WirePosition.Type;
 

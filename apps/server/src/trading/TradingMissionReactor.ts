@@ -38,21 +38,29 @@ import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
+import { TradingExecutionGuard } from "./TradingExecutionGuard.ts";
+import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
+import { HyperliquidReconciler } from "./HyperliquidReconciler.ts";
+import { TradingBudgetReader } from "./TradingBudgetReader.ts";
+import { InterimSignerConfig } from "./InterimSignerConfig.ts";
+import { HyperliquidGateway } from "@t3tools/hyperliquid";
+import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
+import { evaluateLossBudget } from "@t3tools/trading-contracts/loss-accounting";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 type TradingRequestEvent = Extract<
   OrchestrationEvent,
-  {
-    type:
-      | "trading.mission-create-requested"
-      | "trading.mission-control-requested"
-      | "trading.mission-watch-fired";
-  }
+  | { type: "trading.mission-create-requested" }
+  | { type: "trading.mission-control-requested" }
+  | { type: "trading.mission-watch-fired" }
+  | { type: "trading.execution-requested" }
 >;
 
 const HANDLED_EVENT_TYPES: ReadonlySet<string> = new Set([
   "trading.mission-create-requested",
   "trading.mission-control-requested",
   "trading.mission-watch-fired",
+  "trading.execution-requested",
 ]);
 
 /**
@@ -75,6 +83,7 @@ const QUEUE_RETRY_LIMIT = 60;
 export const LOCAL_TRADING_USER_ID = "local";
 
 export interface TradingMissionReactorShape {
+  /** Start the event stream. The server-startup reconcile runs at layer build. */
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   /** Resolves when the queue is idle. For tests, in place of a sleep. */
   readonly drain: Effect.Effect<void>;
@@ -108,6 +117,12 @@ const make = Effect.gen(function* () {
   const watches = yield* TradingWatchService;
   const inbox = yield* TradingEventInbox;
   const crypto = yield* Crypto.Crypto;
+  const guard = yield* TradingExecutionGuard;
+  const execution = yield* HyperliquidExecutionService;
+  const reconciler = yield* HyperliquidReconciler;
+  const budgetReader = yield* TradingBudgetReader;
+  const gateway = yield* HyperliquidGateway;
+  const signerConfig = yield* InterimSignerConfig;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
@@ -272,6 +287,16 @@ const make = Effect.gen(function* () {
     event: Extract<TradingRequestEvent, { type: "trading.mission-control-requested" }>,
   ) {
     const { missionId, threadId, targetStatus } = event.payload;
+
+    // §16.4: a mission blocked under exhaustion cannot resume until the user
+    // explicitly revalidates. `guardResume` fails with `resume_blocked` if the
+    // mission is blocked for cumulative-loss; the surrounding `catchCause`
+    // logs the refusal and the projection keeps the blocked status.
+    const mission = yield* missions.getMission(missionId);
+    const isBlocked =
+      mission.status === "blocked" && mission.blockedReason === "cumulative_loss_limit";
+    yield* guard.guardResume(missionId, isBlocked);
+
     const expectedVersion = yield* missions.getMissionVersion(missionId);
 
     // TradingMissionService.transition runs validateTransition and the row's
@@ -286,19 +311,128 @@ const make = Effect.gen(function* () {
     yield* announceStatus({ missionId, threadId, status: updated.status });
   });
 
-  const process = (event: TradingRequestEvent) =>
-    (event.type === "trading.mission-create-requested"
-      ? processCreateRequested(event)
-      : event.type === "trading.mission-watch-fired"
-        ? processWatchFired(event)
-        : processControlRequested(event)
-    ).pipe(
+  /**
+   * The §17.2 write side. A harness raised `trading.execution.requested`; the
+   * reactor answers it by running preview → guard → submit → reconcile, then
+   * blocking the mission if the post-submit budget is exhausted. A refused
+   * preview or a failed submit is a normal outcome (the surrounding
+   * `catchCause` logs it); the mission's persisted records are the source of
+   * truth, not the request.
+   */
+  const processExecutionRequested = Effect.fn("TradingMissionReactor.execution")(function* (
+    event: Extract<TradingRequestEvent, { type: "trading.execution-requested" }>,
+  ) {
+    const { missionId, threadId, intent, expectedAuthorityVersion, activeHarnessRunId } =
+      event.payload;
+
+    const mission = yield* missions.getMission(missionId);
+    // §10.6: account/position reads use the master-wallet address; the signer
+    // address is recorded on the execution record only.
+    const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+
+    // §18.2 trigger #3: reconcile canonical state before execution so preview
+    // and the budget gate see reconciled truth, not a stale local cache.
+    yield* reconciler.reconcile(
+      { missionId, masterAddress, market: intent.market },
+      "before_execution",
+    );
+
+    // Assemble the §16.3 preview context from reconciled state.
+    const budgetInput = yield* budgetReader.read({
+      missionId,
+      maximumCumulativeLossUsd: mission.authority.maximumCumulativeLossUsd,
+    });
+    const orderBook = yield* gateway.getOrderBook(intent.market);
+    const budget = evaluateLossBudget(budgetInput);
+    // The interim signer IS the approved execution wallet for the POC (Privy
+    // replaces it in PROMPT-06). Resolve its address so preview item 8 can
+    // confirm a wallet is approved before a nonce is spent. If the signer is
+    // not armed or misconfigured, preview rejects on item 8 — no nonce spent.
+    const signerOuter = yield* Effect.option(signerConfig.resolve);
+    const signerInner = signerOuter._tag === "Some" ? signerOuter.value : null;
+    const approvedExecutionWalletAddress =
+      signerInner !== null && signerInner._tag === "Some" ? signerInner.value.address : null;
+
+    // §16.4: block position-increasing actions under exhaustion before the
+    // submit sequence spends a nonce. Cancel/reduce/close pass through.
+    yield* guard.guardAction(intent.actionType, budget);
+
+    yield* execution.submitOrder({
+      intent,
+      masterAddress,
+      previewContext: {
+        mission,
+        currentStrategyVersion: mission.strategyVersion,
+        currentAuthorityVersion: mission.authorityVersion,
+        expectedAuthorityVersion,
+        activeHarnessRunId,
+        approvedExecutionWalletAddress,
+        bbo: orderBook.bestBidOffer,
+        accountObservedAt: budgetInput.observedAt,
+        hasPendingExecution: false,
+        budget: budgetInput,
+        nowMs: budgetInput.observedAt,
+      },
+      allowedSlippageBps: 50,
+    });
+
+    // §18.2 trigger #4: converge local state to canonical exchange state after
+    // the submit landed. Local records are hints until this confirms them.
+    yield* reconciler.reconcile(
+      { missionId, masterAddress, market: intent.market },
+      "after_submission",
+    );
+
+    // §16.4: re-evaluate the budget after the reconciled submit. If the
+    // cumulative-loss ceiling is now exhausted, block the mission so a later
+    // resume must be revalidated. Reduce-only protection stays live
+    // (`isPermittedUnderExhaustion` permits cancel/reduce/close).
+    const postBudgetInput = yield* budgetReader.read({
+      missionId,
+      maximumCumulativeLossUsd: mission.authority.maximumCumulativeLossUsd,
+    });
+    const postBudget = evaluateLossBudget(postBudgetInput);
+    if (postBudget.exhausted) {
+      const expectedVersion = yield* missions.getMissionVersion(missionId);
+      // A version conflict means another transition beat us; the mission state
+      // the projection holds is still authoritative, so log and continue.
+      yield* guard
+        .blockForExhaustion(missionId, expectedVersion)
+        .pipe(
+          Effect.catch(() =>
+            Effect.logWarning("trading execution: could not block exhausted mission", {
+              missionId,
+            }),
+          ),
+        );
+      yield* announceStatus({ missionId, threadId, status: "blocked" });
+    }
+  });
+
+  /**
+   * Run one event. Every failure short of an interrupt is logged and swallowed
+   * so a single refused request cannot crash the queue: the mission's
+   * persisted state is the source of truth, not the request. Interrupts
+   * propagate so a scope shutdown tears the queue down.
+   */
+  const runEvent = (event: TradingRequestEvent) =>
+    Effect.gen(function* () {
+      if (event.type === "trading.mission-create-requested") {
+        yield* processCreateRequested(event);
+      } else if (event.type === "trading.mission-control-requested") {
+        yield* processControlRequested(event);
+      } else if (event.type === "trading.mission-watch-fired") {
+        yield* processWatchFired(event);
+      } else {
+        yield* processExecutionRequested(event);
+      }
+    }).pipe(
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) {
           return Effect.failCause(cause);
         }
-        // A refused control is a normal outcome, not a crash: the projection
-        // keeps the status the domain still holds.
+        // A refused control or execution is a normal outcome, not a crash: the
+        // projection keeps the state the domain still holds.
         return Effect.logWarning("trading mission reactor could not apply a requested intent", {
           eventType: event.type,
           missionId: event.payload.missionId,
@@ -307,7 +441,23 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  const process = (event: TradingRequestEvent) => runEvent(event);
+
   const worker = yield* makeDrainableWorker(process);
+
+  // §18.2 trigger #1: converge every active mission to canonical exchange state
+  // at layer build, so local tables reflect truth before any request runs. Forked
+  // here (not in `start`) so its read/SQL requirements resolve from the services
+  // this layer already captured, keeping `start`'s context narrow (Scope only).
+  yield* Effect.gen(function* () {
+    const active = yield* missions.findActiveMission(LOCAL_TRADING_USER_ID);
+    if (active._tag === "None") return;
+    const mission = active.value;
+    const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+    yield* reconciler
+      .reconcile({ missionId: mission.id, masterAddress, market: mission.market }, "server_startup")
+      .pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.forkScoped);
 
   const start: TradingMissionReactorShape["start"] = Effect.fn("start")(function* () {
     yield* Effect.forkScoped(

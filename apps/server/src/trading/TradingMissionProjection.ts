@@ -21,6 +21,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { ThreadId, TradingMissionId } from "@t3tools/contracts";
 import type { OrchestrationTradingMission } from "@t3tools/contracts";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
@@ -97,10 +98,65 @@ interface ProjectionRow {
   readonly updated_at: string;
 }
 
-const toMission = (row: ProjectionRow): OrchestrationTradingMission =>
+/** Row shape for the most recent non-terminal execution record. */
+interface ExecutionRecordRow {
+  readonly execution_id: string;
+  readonly cloid: string;
+  readonly action_type: string;
+  readonly side: string;
+  readonly market: string;
+  readonly size: number;
+  readonly limit_price: number;
+  readonly time_in_force: string;
+  readonly reduce_only: number;
+  readonly status: string;
+  readonly updated_at: number;
+}
+
+/** Row shape for a fill in the receipt list. */
+interface FillRow {
+  readonly cloid: string | null;
+  readonly order_id: number;
+  readonly market: string;
+  readonly side: string;
+  readonly filled_size: number;
+  readonly avg_fill_price: number;
+  readonly fee_usd: number;
+  readonly traded_at: number;
+}
+
+/** Row shape for the latest position snapshot. */
+interface PositionSnapshotRow {
+  readonly market: string;
+  readonly size: number;
+  readonly entry_price: number | null;
+  readonly unrealised_pnl: number;
+  readonly margin_used: number;
+  readonly protected_size: number;
+  readonly liquidation_price: number | null;
+  readonly observed_at: number;
+}
+
+/** The PROMPT-04 execution surfaces for one mission, read from the 037 tables. */
+interface ExecutionSurfaces {
+  /** The most recent non-terminal execution record, or null. */
+  readonly inFlightExecution: ExecutionRecordRow | null;
+  /** Recent fills, newest first (caller limits the count). */
+  readonly recentFills: ReadonlyArray<FillRow>;
+  /** The latest position snapshot, or null when flat/absent. */
+  readonly position: PositionSnapshotRow | null;
+}
+
+const EMPTY_SURFACES: ExecutionSurfaces = {
+  inFlightExecution: null,
+  recentFills: [],
+  position: null,
+};
+
+const toMission = (row: ProjectionRow, exec: ExecutionSurfaces): OrchestrationTradingMission =>
   ({
-    id: row.mission_id,
-    threadId: row.thread_id,
+    id: TradingMissionId.make(row.mission_id),
+    threadId: ThreadId.make(row.thread_id),
     userId: row.user_id,
     tradingAccountId: row.trading_account_id,
     instruction: row.instruction,
@@ -115,16 +171,50 @@ const toMission = (row: ProjectionRow): OrchestrationTradingMission =>
     watches: decodeWatchesJson(row.watches_json),
     control: decodeControlJson(row.control_json),
     harness: decodeHarnessJson(row.harness_json),
-    // PROMPT-04 execution surfaces. The projection table (036) does not yet
-    // carry these columns; they default to null/empty until a join against the
-    // migration-037 execution tables (or a 036 extension) populates them. The
-    // UI renders the cards only when these are non-null.
-    inFlightExecution: null,
-    recentFills: [],
-    position: null,
+    // PROMPT-04 execution surfaces, joined from the migration-037 tables. The
+    // cards render only when these are non-null/non-empty.
+    inFlightExecution:
+      exec.inFlightExecution === null
+        ? null
+        : {
+            executionId: exec.inFlightExecution.execution_id,
+            cloid: exec.inFlightExecution.cloid,
+            actionType: exec.inFlightExecution.action_type,
+            side: exec.inFlightExecution.side as "buy" | "sell",
+            market: exec.inFlightExecution.market,
+            size: exec.inFlightExecution.size,
+            limitPrice: exec.inFlightExecution.limit_price,
+            timeInForce: exec.inFlightExecution.time_in_force as "ioc" | "gtc",
+            reduceOnly: exec.inFlightExecution.reduce_only !== 0,
+            status: exec.inFlightExecution.status,
+            updatedAt: toIso(exec.inFlightExecution.updated_at),
+          },
+    recentFills: exec.recentFills.map((f) => ({
+      cloid: f.cloid ?? undefined,
+      orderId: f.order_id,
+      market: f.market,
+      side: f.side as "buy" | "sell",
+      filledSize: f.filled_size,
+      avgFillPrice: f.avg_fill_price,
+      feeUsd: f.fee_usd,
+      tradedAt: toIso(f.traded_at),
+    })),
+    position:
+      exec.position === null
+        ? null
+        : {
+            market: exec.position.market,
+            size: exec.position.size,
+            entryPrice: exec.position.entry_price ?? undefined,
+            unrealisedPnl: exec.position.unrealised_pnl,
+            marginUsed: exec.position.margin_used,
+            protectedSize: exec.position.protected_size,
+            liquidationPrice: exec.position.liquidation_price ?? undefined,
+            observedAt: toIso(exec.position.observed_at),
+          },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-  }) as OrchestrationTradingMission;
+  }) satisfies OrchestrationTradingMission;
 
 const makeTradingMissionProjection = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -248,24 +338,70 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       `.pipe(Effect.mapError(sqlFail("refresh:upsert")));
     });
 
+  /**
+   * Read the three PROMPT-04 execution surfaces for one mission from the
+   * migration-037 tables. The 036 projection row carries mission state only;
+   * these joins populate the order-intent / fill / position cards. A mission
+   * with no execution history decodes to empty surfaces.
+   */
+  const readExecutionSurfaces = (
+    missionId: string,
+  ): Effect.Effect<ExecutionSurfaces, PersistenceSqlError> =>
+    Effect.gen(function* () {
+      // The most recent non-terminal execution record (reserved/submitted/accepted).
+      // Rejected records are terminal and not shown as in-flight.
+      const execRows = yield* sql<ExecutionRecordRow>`
+        SELECT execution_id, cloid, action_type, side, market, size, limit_price,
+               time_in_force, reduce_only, status, updated_at
+        FROM trading_execution_records
+        WHERE mission_id = ${missionId} AND status IN ('reserved', 'submitted', 'accepted')
+        ORDER BY updated_at DESC LIMIT 1
+      `.pipe(Effect.mapError(sqlFail("execution")));
+      const inFlightExecution = execRows[0] ?? null;
+
+      // Recent fills, newest first (the receipt list).
+      const recentFills = yield* sql<FillRow>`
+        SELECT cloid, order_id, market, side, filled_size, avg_fill_price, fee_usd, traded_at
+        FROM trading_fills WHERE mission_id = ${missionId}
+        ORDER BY traded_at DESC LIMIT 10
+      `.pipe(Effect.mapError(sqlFail("fills")));
+
+      // The latest position snapshot. Null when the mission has never had one.
+      const positionRows = yield* sql<PositionSnapshotRow>`
+        SELECT market, size, entry_price, unrealised_pnl, margin_used, protected_size,
+               liquidation_price, observed_at
+        FROM trading_position_snapshots WHERE mission_id = ${missionId}
+        ORDER BY observed_at DESC LIMIT 1
+      `.pipe(Effect.mapError(sqlFail("position")));
+      const position = positionRows[0] ?? null;
+
+      return { inFlightExecution, recentFills, position } satisfies ExecutionSurfaces;
+    });
+
   const getByThreadId: TradingMissionProjectionShape["getByThreadId"] = (threadId) =>
-    sql<ProjectionRow>`
-      SELECT * FROM projection_trading_missions WHERE thread_id = ${threadId}
-    `.pipe(
-      Effect.mapError(sqlFail("getByThreadId")),
-      Effect.map((rows) => {
-        const row = rows[0];
-        return row === undefined ? Option.none() : Option.some(toMission(row));
-      }),
-    );
+    Effect.gen(function* () {
+      const rows = yield* sql<ProjectionRow>`
+        SELECT * FROM projection_trading_missions WHERE thread_id = ${threadId}
+      `.pipe(Effect.mapError(sqlFail("getByThreadId")));
+      const row = rows[0];
+      if (row === undefined) return Option.none();
+      const exec = yield* readExecutionSurfaces(row.mission_id);
+      return Option.some(toMission(row, exec));
+    });
 
   const list: TradingMissionProjectionShape["list"] = () =>
-    sql<ProjectionRow>`
-      SELECT * FROM projection_trading_missions ORDER BY created_at DESC, mission_id DESC
-    `.pipe(
-      Effect.mapError(sqlFail("list")),
-      Effect.map((rows) => rows.map(toMission)),
-    );
+    Effect.gen(function* () {
+      const rows = yield* sql<ProjectionRow>`
+        SELECT * FROM projection_trading_missions ORDER BY created_at DESC, mission_id DESC
+      `.pipe(Effect.mapError(sqlFail("list")));
+      const missions = yield* Effect.all(
+        rows.map((row) =>
+          Effect.map(readExecutionSurfaces(row.mission_id), (exec) => toMission(row, exec)),
+        ),
+        { concurrency: "unbounded" },
+      );
+      return missions;
+    });
 
   return { refresh, getByThreadId, list } satisfies TradingMissionProjectionShape;
 });

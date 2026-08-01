@@ -120,6 +120,27 @@ describe("Hyperliquid wire schemas decode recorded testnet responses", () => {
     expect(decoded.assetPositions[0]?.position.coin).toBe("ETH");
   });
 
+  it("decodes an explicit null liquidation price", () => {
+    const decoded = decode(WireClearinghouseStateResponse)({
+      marginSummary: { accountValue: "1000.0", totalMarginUsed: "0" },
+      withdrawable: "1000.0",
+      assetPositions: [
+        {
+          type: "oneWay",
+          position: {
+            coin: "ETH",
+            szi: "0",
+            entryPx: "0",
+            unrealizedPnl: "0",
+            marginUsed: "0",
+            liquidationPx: null,
+          },
+        },
+      ],
+    });
+    expect(decoded.assetPositions[0]?.position.liquidationPx).toBeNull();
+  });
+
   it("decodes the recorded openOrders row (flat, sz = remaining)", () => {
     const decoded = decode(WireOpenOrdersResponse)(openOrdersFixture);
     expect(decoded.length).toBeGreaterThan(0);

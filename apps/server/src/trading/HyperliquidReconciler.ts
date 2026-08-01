@@ -99,7 +99,8 @@ const now = (): Effect.Effect<number> => Clock.currentTimeMillis;
 
 /**
  * Read canonical position + account state via the gateway (master address),
- * returning a `TradingPositionSnapshot` or null when flat.
+ * returning a `TradingPositionSnapshot` or null when flat. Reads the full
+ * account snapshot so the liquidation price surfaces to the position card.
  */
 function readCanonicalPosition(
   input: ReconcileInput,
@@ -107,18 +108,17 @@ function readCanonicalPosition(
 ): Effect.Effect<TradingPositionSnapshot | null, TradingReconciliationError, HyperliquidGateway> {
   return Effect.gen(function* () {
     const gateway = yield* HyperliquidGateway;
-    const position = yield* gateway
-      .getPosition(input.masterAddress as `0x${string}`, input.market)
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new TradingReconciliationError({
-              reason: "account_read_failed",
-              detail: cause instanceof Error ? cause.message : String(cause),
-            }),
-        ),
-      );
-    if (position.size === 0) return null;
+    const snapshot = yield* gateway.getAccountSnapshot(input.masterAddress as `0x${string}`).pipe(
+      Effect.mapError(
+        (cause) =>
+          new TradingReconciliationError({
+            reason: "account_read_failed",
+            detail: cause instanceof Error ? cause.message : String(cause),
+          }),
+      ),
+    );
+    const position = snapshot.positions.find((p) => p.market === input.market);
+    if (position === undefined || position.size === 0) return null;
     return {
       missionId: input.missionId,
       market: input.market,
@@ -129,6 +129,7 @@ function readCanonicalPosition(
       // Protected size is confirmed by the protection path (§17.2 steps 6–8);
       // the reconciler records zero until that path marks it.
       protectedSize: 0,
+      liquidationPrice: position.liquidationPx,
       observedAt,
     } as TradingPositionSnapshot;
   });
@@ -210,6 +211,9 @@ function readCanonicalFills(
             avgFillPrice: Number.parseFloat(f.px),
             feeUsd: Number.parseFloat(f.fee),
             feeToken: f.feeToken ?? "USDC",
+            // §16.2 closedPnl: the realised PnL the exchange attributes to this
+            // fill. Absent on some fills (e.g. entry increases) — treat as 0.
+            closedPnl: f.closedPnl !== undefined ? Number.parseFloat(f.closedPnl) : 0,
             tradedAt: f.time,
             observedAt,
           }) as TradingFill,
@@ -230,7 +234,7 @@ function persistPosition(
       yield* sql`
         UPDATE trading_position_snapshots
         SET size = 0, entry_price = NULL, unrealised_pnl = 0, margin_used = 0,
-            protected_size = 0, observed_at = ${ts}
+            protected_size = 0, liquidation_price = NULL, observed_at = ${ts}
         WHERE mission_id = ${input.missionId} AND market = ${input.market}
       `;
       return;
@@ -238,17 +242,98 @@ function persistPosition(
     yield* sql`
       INSERT INTO trading_position_snapshots (
         mission_id, market, size, entry_price, unrealised_pnl, margin_used,
-        protected_size, observed_at
+        protected_size, liquidation_price, observed_at
       ) VALUES (
         ${position.missionId}, ${position.market}, ${position.size},
         ${position.entryPrice ?? null}, ${position.unrealisedPnl},
-        ${position.marginUsed}, ${position.protectedSize}, ${position.observedAt}
+        ${position.marginUsed}, ${position.protectedSize},
+        ${position.liquidationPrice ?? null}, ${position.observedAt}
       )
       ON CONFLICT(mission_id, market) DO UPDATE SET
         size = ${position.size}, entry_price = ${position.entryPrice ?? null},
         unrealised_pnl = ${position.unrealisedPnl}, margin_used = ${position.marginUsed},
-        protected_size = ${position.protectedSize}, observed_at = ${position.observedAt}
+        protected_size = ${position.protectedSize},
+        liquidation_price = ${position.liquidationPrice ?? null},
+        observed_at = ${position.observedAt}
     `;
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new TradingReconciliationError({
+          reason: "persist_failed",
+          detail: cause instanceof Error ? cause.message : String(cause),
+        }),
+    ),
+  );
+}
+
+/**
+ * Append reconciled fills (idempotent on `fill_id` — re-running a reconcile
+ * never duplicates a fill, never overwrites the realised PnL the exchange
+ * already reported).
+ */
+function persistFills(
+  fills: ReadonlyArray<TradingFill>,
+): Effect.Effect<void, TradingReconciliationError, SqlClient.SqlClient> {
+  return Effect.gen(function* () {
+    if (fills.length === 0) return;
+    const sql = yield* SqlClient.SqlClient;
+    for (const f of fills) {
+      yield* sql`
+        INSERT INTO trading_fills (
+          fill_id, mission_id, execution_id, cloid, order_id, market, side,
+          filled_size, avg_fill_price, fee_usd, fee_token, closed_pnl,
+          traded_at, observed_at
+        ) VALUES (
+          ${f.fillId}, ${f.missionId}, ${f.executionId ?? null}, ${f.cloid ?? null},
+          ${f.orderId}, ${f.market}, ${f.side}, ${f.filledSize}, ${f.avgFillPrice},
+          ${f.feeUsd}, ${f.feeToken}, ${f.closedPnl}, ${f.tradedAt}, ${f.observedAt}
+        )
+        ON CONFLICT(fill_id) DO UPDATE SET
+          closed_pnl = ${f.closedPnl}, fee_usd = ${f.feeUsd}, observed_at = ${f.observedAt}
+      `;
+    }
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new TradingReconciliationError({
+          reason: "persist_failed",
+          detail: cause instanceof Error ? cause.message : String(cause),
+        }),
+    ),
+  );
+}
+
+/**
+ * Replace the mission's open orders with the canonical set. Open orders are
+ * transient, so each reconcile deletes the mission's rows and re-inserts the
+ * canonical snapshot — local rows never survive a canonical read that omits
+ * them.
+ */
+function persistOpenOrders(
+  openOrders: ReadonlyArray<TradingOpenOrderRecord>,
+  input: ReconcileInput,
+): Effect.Effect<void, TradingReconciliationError, SqlClient.SqlClient> {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      DELETE FROM trading_orders WHERE mission_id = ${input.missionId}
+    `;
+    for (const o of openOrders) {
+      yield* sql`
+        INSERT INTO trading_orders (
+          mission_id, cloid, order_id, market, side, limit_price,
+          remaining_size, reduce_only, observed_at
+        ) VALUES (
+          ${o.missionId}, ${o.cloid}, ${o.orderId}, ${o.market}, ${o.side},
+          ${o.limitPrice}, ${o.remainingSize}, ${o.reduceOnly ? 1 : 0}, ${o.observedAt}
+        )
+        ON CONFLICT(mission_id, cloid) DO UPDATE SET
+          order_id = ${o.orderId}, limit_price = ${o.limitPrice},
+          remaining_size = ${o.remainingSize}, reduce_only = ${o.reduceOnly ? 1 : 0},
+          observed_at = ${o.observedAt}
+      `;
+    }
   }).pipe(
     Effect.mapError(
       (cause) =>
@@ -283,9 +368,11 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
       );
 
       yield* persistPosition(position, input);
-      // Fills and open orders are append/replace; their persistence lands with
-      // the projection extension. The reconciled return is what the projection
-      // and loss-budget accounting read.
+      // Fills append idempotently; open orders are replaced with the canonical
+      // set. Local state never outranks Hyperliquid — both reach the 037 tables
+      // here so the projection and loss-budget accounting read reconciled truth.
+      yield* persistFills(fills);
+      yield* persistOpenOrders(openOrders, input);
 
       yield* Effect.logInfo("trading reconciled", { missionId: input.missionId, trigger });
       return { position, openOrders, fills, observedAt } as ReconciledState;

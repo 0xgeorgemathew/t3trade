@@ -117,6 +117,9 @@ function PositionCard({ position }: { position: TradingPositionView }) {
       {position.entryPrice !== undefined && (
         <Field label="Entry" value={String(position.entryPrice)} />
       )}
+      {position.liquidationPrice !== undefined && (
+        <Field label="Liq." value={String(position.liquidationPrice)} />
+      )}
       <Field
         label="Unrealised P&L"
         value={pnl.text}
