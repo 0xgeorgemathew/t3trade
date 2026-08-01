@@ -25,6 +25,7 @@ import {
   WireMetaAndAssetCtxsResponse,
   WireOpenOrdersResponse,
   WireUserFillsResponse,
+  WireUserFeesResponse,
 } from "./wire.ts";
 
 /** POST `type` discriminator + per-call body. */
@@ -54,6 +55,11 @@ export class HyperliquidInfoClient extends Context.Service<
     readonly openOrders: (address: string) => Effect.Effect<WireOpenOrdersResponse, InfoError>;
     /** User fills for a master-wallet address (§18 fills, canonical source). */
     readonly userFills: (address: string) => Effect.Effect<WireUserFillsResponse, InfoError>;
+    /**
+     * User fee schedule for a master-wallet address. The cross (taker) rate
+     * feeds the §16.2 Eq-4 fee reserve.
+     */
+    readonly userFees: (address: string) => Effect.Effect<WireUserFeesResponse, InfoError>;
   }
 >()("@t3tools/hyperliquid/InfoClient/HyperliquidInfoClient") {}
 
@@ -142,6 +148,8 @@ const makeHyperliquidInfoClient = Effect.gen(function* () {
       call("openOrders", { type: "openOrders", user: address }, WireOpenOrdersResponse),
     userFills: (address) =>
       call("userFills", { type: "userFills", user: address }, WireUserFillsResponse),
+    userFees: (address) =>
+      call("userFees", { type: "userFees", user: address }, WireUserFeesResponse),
   });
 });
 

@@ -51,11 +51,14 @@ export interface TradingBudgetReaderShape {
    * Read the §16.2 budget inputs for one mission: realised PnL/fees from
    * fills, open-position risk, and pending-entry risk from reservations.
    * `maximumCumulativeLossUsd` is supplied by the caller (from the mission
-   * authority) since it is policy, not reconciled state.
+   * authority) since it is policy, not reconciled state. `takerFeeRateBps`
+   * threads the live fee rate (read once by the reactor) into the open-position
+   * exit-fee estimate (Eq 3).
    */
   readonly read: (input: {
     readonly missionId: string;
     readonly maximumCumulativeLossUsd: number;
+    readonly takerFeeRateBps: number;
   }) => Effect.Effect<LossBudgetInput, PersistenceSqlReadError>;
 }
 
@@ -126,7 +129,11 @@ export const makeTradingBudgetReader = Effect.gen(function* () {
         weightedEntryPrice: p.entry_price ?? undefined,
         stopPrice: p.stop_price ?? undefined,
         paidFeesUsd: 0,
-        estimatedExitFeeUsd: 0,
+        // Eq 3 exit-fee estimate: the open position pays the taker rate to close.
+        // `weightedEntryPrice` approximates the close notional until the mark is
+        // read directly; the dominant term remains the stop-distance above.
+        estimatedExitFeeUsd:
+          Math.abs(p.size) * (p.entry_price ?? 0) * (input.takerFeeRateBps / 10_000),
         stopSlippageReserveUsd: 0,
       }));
 

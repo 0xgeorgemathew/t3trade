@@ -227,6 +227,19 @@ export type WireUserFill = typeof WireUserFill.Type;
 export const WireUserFillsResponse = Schema.Array(WireUserFill);
 export type WireUserFillsResponse = typeof WireUserFillsResponse.Type;
 
+// -- Info: userFees ------------------------------------------------------------
+
+/**
+ * The `userFees` response. Only the cross (taker) rate is read for the Eq-4 fee
+ * reserve; the rest (daily volume, tiers, discounts) is left permissive since
+ * the POC reserves on a single taker-side rate per side.
+ */
+export const WireUserFeesResponse = Schema.Struct({
+  /** Taker fee rate as a decimal string (e.g. "0.00045" = 4.5 bps). */
+  userCrossRate: Schema.String,
+});
+export type WireUserFeesResponse = typeof WireUserFeesResponse.Type;
+
 // -- WebSocket ----------------------------------------------------------------
 
 /** The subscription payload, shared by subscribe and unsubscribe. */

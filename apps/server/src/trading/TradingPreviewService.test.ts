@@ -49,6 +49,12 @@ const goodMission = (overrides: Partial<TradingMission> = {}): TradingMission =>
       allowPartialReduction: true,
       allowReentry: true,
       allowDirectionReversal: false,
+      riskPolicy: {
+        feeRateSource: "hyperliquid_user_fees",
+        fallbackTakerFeeBpsPerSide: 5,
+        stopSlippageReserveBps: 25,
+        positivePnlExpandsLossBudget: false,
+      },
       validUntil: "revoked",
     },
     strategy: undefined,
@@ -89,6 +95,8 @@ const goodCtx = (now: number, overrides: Partial<PreviewContext> = {}): PreviewC
     pendingEntries: [],
     observedAt: now,
   },
+  takerFeeRateBps: 5,
+  stopSlippageReserveBps: 25,
   nowMs: now,
   ...overrides,
 });

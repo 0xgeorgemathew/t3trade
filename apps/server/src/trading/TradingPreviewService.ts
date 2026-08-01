@@ -92,6 +92,16 @@ export interface PreviewContext {
   readonly hasPendingExecution: boolean;
   /** Current loss-budget snapshot inputs (realised, open, pending). */
   readonly budget: Parameters<typeof evaluateLossBudget>[0];
+  /**
+   * The master wallet's taker fee rate in bps, read from `userFees` (or the
+   * authority fallback when stale). Both the entry and exit side pay this.
+   */
+  readonly takerFeeRateBps: number;
+  /**
+   * The authority's stop-slippage reserve in bps of protected notional. Sourced
+   * from `TradingRiskPolicy.stopSlippageReserveBps`, not hardcoded.
+   */
+  readonly stopSlippageReserveBps: number;
   /** Wall-clock now, for freshness tests. */
   readonly nowMs: number;
 }
@@ -308,13 +318,6 @@ export class TradingPreviewService extends Context.Service<
   }
 >()("t3/trading/TradingPreviewService") {}
 
-/**
- * The §16.1 stop-slippage reserve in bps of protected notional. Mirrors
- * `pocRiskPolicyDefaults.stopSlippageReserveBps`; overridable when the risk
- * policy is threaded into the preview context.
- */
-const STOP_SLIPPAGE_RESERVE_BPS = 25;
-
 /** Pure preview — runs all 17 checks in order, returns the validated preview. */
 export const previewOrder = (
   intent: TradingOrderIntent,
@@ -324,11 +327,21 @@ export const previewOrder = (
     for (const { run } of CHECKS) {
       yield* run(intent, ctx);
     }
-    // Reserve the planned loss at the stop plus a slippage reserve on the
-    // protected notional. The execution service persists this reservation
-    // before signing (§16.3: "reserve before signing").
-    const stopSlippageReserveUsd = intent.size * intent.limitPrice * bps(STOP_SLIPPAGE_RESERVE_BPS);
-    const reservedRiskUsd = intent.stop.plannedLossAtStopUsd + stopSlippageReserveUsd;
+    // Eq 4: reservedRisk = plannedLossAtStop + entryFee + exitFee + slippageReserve.
+    // Both the entry and the stop-out exit pay the taker rate; the slippage
+    // reserve is the authority's bps on the protected notional. The execution
+    // service persists this reservation before signing (§16.3: "reserve before
+    // signing").
+    const notional = intent.size * intent.limitPrice;
+    const rate = bps(ctx.takerFeeRateBps);
+    const estimatedEntryFeeUsd = notional * rate;
+    const estimatedExitFeeUsd = notional * rate;
+    const stopSlippageReserveUsd = notional * bps(ctx.stopSlippageReserveBps);
+    const reservedRiskUsd =
+      intent.stop.plannedLossAtStopUsd +
+      estimatedEntryFeeUsd +
+      estimatedExitFeeUsd +
+      stopSlippageReserveUsd;
     return { intent, reservedRiskUsd } as TradingPreview;
   });
 

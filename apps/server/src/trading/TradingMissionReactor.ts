@@ -346,9 +346,19 @@ const make = Effect.gen(function* () {
     );
 
     // Assemble the §16.3 preview context from reconciled state.
+    // Load the master wallet's taker fee rate once; fall back to the authority's
+    // default when the read fails or is stale. Both the budget reader and the
+    // preview consume the same rate so Eq 3/4 agree.
+    const fallbackFeeBps = mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide;
+    const stopSlippageReserveBps = mission.authority.riskPolicy.stopSlippageReserveBps;
+    const feeRate = yield* gateway.getTakerFeeRateBps(masterAddress).pipe(
+      Effect.map((r) => r.feeBps),
+      Effect.orElseSucceed(() => fallbackFeeBps),
+    );
     const budgetInput = yield* budgetReader.read({
       missionId,
       maximumCumulativeLossUsd: mission.authority.maximumCumulativeLossUsd,
+      takerFeeRateBps: feeRate,
     });
     const orderBook = yield* gateway.getOrderBook(intent.market);
     const budget = evaluateLossBudget(budgetInput);
@@ -385,6 +395,8 @@ const make = Effect.gen(function* () {
         accountObservedAt: budgetInput.observedAt,
         hasPendingExecution: (pendingRows[0]?.count ?? 0) > 0,
         budget: budgetInput,
+        takerFeeRateBps: feeRate,
+        stopSlippageReserveBps,
         nowMs: budgetInput.observedAt,
       },
       allowedSlippageBps: 50,
@@ -409,6 +421,7 @@ const make = Effect.gen(function* () {
     const postBudgetInput = yield* budgetReader.read({
       missionId,
       maximumCumulativeLossUsd: mission.authority.maximumCumulativeLossUsd,
+      takerFeeRateBps: feeRate,
     });
     const postBudget = evaluateLossBudget(postBudgetInput);
     if (postBudget.exhausted) {
