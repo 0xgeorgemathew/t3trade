@@ -253,6 +253,46 @@ describe("previewOrder — §16.3 checklist", () => {
     }),
   );
 
+  it.effect("item 13 (scale-in): rejects when existing + proposed breaches gross notional", () =>
+    Effect.gen(function* () {
+      // Existing 0.7 ETH @ 3750 = $2625 notional; proposed 0.1 ETH @ 3750 = $375.
+      // The $375 order alone is under a $2900 ceiling, but combined ($3000) breaches.
+      const item = yield* rejectionItem(
+        goodIntent({ size: 0.1 }),
+        goodCtx(now, {
+          mission: goodMission({
+            authority: {
+              ...goodMission().authority,
+              maximumGrossNotionalUsd: 2_900,
+              maximumLeverage: 100,
+            },
+          }),
+          budget: {
+            maximumCumulativeLossUsd: 100,
+            closedPnlUsd: 0,
+            netFundingUsd: 0,
+            allPaidTradingFeesUsd: 0,
+            openPositions: [
+              {
+                missionId: "mission_1",
+                direction: "long",
+                size: 0.7,
+                weightedEntryPrice: 3_750,
+                stopPrice: 3_700,
+                paidFeesUsd: 0,
+                estimatedExitFeeUsd: 0,
+                stopSlippageReserveUsd: 0,
+              },
+            ],
+            pendingEntries: [],
+            observedAt: now,
+          },
+        }),
+      );
+      expect(item).toBe("gross_notional_within_authority");
+    }),
+  );
+
   it.effect("item 14: rejects planned loss above the per-position ceiling", () =>
     Effect.gen(function* () {
       const item = yield* rejectionItem(

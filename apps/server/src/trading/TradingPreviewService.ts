@@ -215,24 +215,35 @@ const exchangeMinimumMet: Check = (intent, _ctx) => {
     : reject("exchange_minimum_met", `notional $${notional.toFixed(2)} below the $10 minimum`);
 };
 
+/**
+ * Existing open-position gross notional, from the budget snapshot. A scale-in
+ * onto an existing position must clear the leverage and gross-notional ceilings
+ * against `existing + proposed`, not the proposed order alone.
+ */
+const existingNotional = (ctx: PreviewContext): number =>
+  ctx.budget.openPositions.reduce((sum, p) => sum + p.size * (p.weightedEntryPrice ?? 0), 0);
+
 const leverageWithinLimits: Check = (intent, ctx) => {
-  const notional = intent.size * intent.limitPrice;
-  const leverage = notional / ctx.mission.authority.allocatedCapitalUsd;
+  // Combined leverage: the mission's total notional (existing + proposed) over
+  // allocated capital. Checking the new order alone lets a scale-in bypass the
+  // ceiling by staying under it per-order while breaching it in aggregate.
+  const combined = existingNotional(ctx) + intent.size * intent.limitPrice;
+  const leverage = combined / ctx.mission.authority.allocatedCapitalUsd;
   return leverage <= ctx.mission.authority.maximumLeverage
     ? Effect.void
     : reject(
         "leverage_within_limits",
-        `${leverage.toFixed(2)}x exceeds max ${ctx.mission.authority.maximumLeverage}x`,
+        `${leverage.toFixed(2)}x combined exceeds max ${ctx.mission.authority.maximumLeverage}x`,
       );
 };
 
 const grossNotionalWithinAuthority: Check = (intent, ctx) => {
-  const notional = intent.size * intent.limitPrice;
-  return notional <= ctx.mission.authority.maximumGrossNotionalUsd
+  const combined = existingNotional(ctx) + intent.size * intent.limitPrice;
+  return combined <= ctx.mission.authority.maximumGrossNotionalUsd
     ? Effect.void
     : reject(
         "gross_notional_within_authority",
-        `$${notional.toFixed(2)} exceeds max gross $${ctx.mission.authority.maximumGrossNotionalUsd}`,
+        `$${combined.toFixed(2)} combined exceeds max gross $${ctx.mission.authority.maximumGrossNotionalUsd}`,
       );
 };
 
