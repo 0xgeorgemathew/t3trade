@@ -168,6 +168,7 @@ export function buildOrderAction(
   assetIndex: number,
 ): Record<string, unknown> {
   return {
+    type: "order",
     orders: [
       {
         a: assetIndex,

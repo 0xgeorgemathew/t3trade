@@ -149,7 +149,8 @@ describe("buildOrderAction / buildCancelByCloidAction", () => {
         nowMs: 1_000,
       });
       const action = buildOrderAction(order, 2);
-      expect(Object.keys(action)).toEqual(["orders", "grouping"]);
+      expect(Object.keys(action)).toEqual(["type", "orders", "grouping"]);
+      expect(action.type).toBe("order");
       const leg = (action.orders as unknown[])[0] as Record<string, unknown>;
       // The asset index is threaded in (ETH = 2 on testnet), never copied.
       expect(leg.a).toBe(2);
