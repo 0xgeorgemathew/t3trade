@@ -119,6 +119,12 @@ function readCanonicalPosition(
     );
     const position = snapshot.positions.find((p) => p.market === input.market);
     if (position === undefined || position.size === 0) return null;
+    // The clearinghouse position payload carries no mark price field; the mark
+    // lives on the asset context (metaAndAssetCtxs.markPx). Rather than make a
+    // second network call per reconcile, derive it from the unrealised PnL the
+    // exchange already reports: upnl = (mark - entry) × size for longs, and the
+    // mirror for shorts, so mark = entry + upnl/size (sign carried by size).
+    const markPx = position.entryPrice + position.unrealisedPnl / position.size;
     return {
       missionId: input.missionId,
       market: input.market,
@@ -130,6 +136,7 @@ function readCanonicalPosition(
       // the reconciler records zero until that path marks it.
       protectedSize: 0,
       liquidationPrice: position.liquidationPx,
+      markPx,
       observedAt,
     } as TradingPositionSnapshot;
   });
@@ -234,7 +241,7 @@ function persistPosition(
       yield* sql`
         UPDATE trading_position_snapshots
         SET size = 0, entry_price = NULL, unrealised_pnl = 0, margin_used = 0,
-            protected_size = 0, liquidation_price = NULL, observed_at = ${ts}
+            protected_size = 0, liquidation_price = NULL, mark_px = NULL, observed_at = ${ts}
         WHERE mission_id = ${input.missionId} AND market = ${input.market}
       `;
       return;
@@ -242,18 +249,19 @@ function persistPosition(
     yield* sql`
       INSERT INTO trading_position_snapshots (
         mission_id, market, size, entry_price, unrealised_pnl, margin_used,
-        protected_size, liquidation_price, observed_at
+        protected_size, liquidation_price, mark_px, observed_at
       ) VALUES (
         ${position.missionId}, ${position.market}, ${position.size},
         ${position.entryPrice ?? null}, ${position.unrealisedPnl},
         ${position.marginUsed}, ${position.protectedSize},
-        ${position.liquidationPrice ?? null}, ${position.observedAt}
+        ${position.liquidationPrice ?? null}, ${position.markPx ?? null}, ${position.observedAt}
       )
       ON CONFLICT(mission_id, market) DO UPDATE SET
         size = ${position.size}, entry_price = ${position.entryPrice ?? null},
         unrealised_pnl = ${position.unrealisedPnl}, margin_used = ${position.marginUsed},
         protected_size = ${position.protectedSize},
         liquidation_price = ${position.liquidationPrice ?? null},
+        mark_px = ${position.markPx ?? null},
         observed_at = ${position.observedAt}
     `;
   }).pipe(

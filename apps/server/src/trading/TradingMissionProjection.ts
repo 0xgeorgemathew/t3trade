@@ -134,6 +134,7 @@ interface PositionSnapshotRow {
   readonly margin_used: number;
   readonly protected_size: number;
   readonly liquidation_price: number | null;
+  readonly mark_px: number | null;
   readonly observed_at: number;
 }
 
@@ -210,6 +211,7 @@ const toMission = (row: ProjectionRow, exec: ExecutionSurfaces): OrchestrationTr
             marginUsed: exec.position.margin_used,
             protectedSize: exec.position.protected_size,
             liquidationPrice: exec.position.liquidation_price ?? undefined,
+            markPrice: exec.position.mark_px ?? undefined,
             observedAt: toIso(exec.position.observed_at),
           },
     createdAt: row.created_at,
@@ -359,17 +361,19 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       `.pipe(Effect.mapError(sqlFail("execution")));
       const inFlightExecution = execRows[0] ?? null;
 
-      // Recent fills, newest first (the receipt list).
+      // Recent fills, newest first. Capped at 3 to match the receipt list the
+      // thread card renders — the projection and the UI agree on the same count
+      // rather than the UI silently truncating a larger list.
       const recentFills = yield* sql<FillRow>`
         SELECT cloid, order_id, market, side, filled_size, avg_fill_price, fee_usd, traded_at
         FROM trading_fills WHERE mission_id = ${missionId}
-        ORDER BY traded_at DESC LIMIT 10
+        ORDER BY traded_at DESC LIMIT 3
       `.pipe(Effect.mapError(sqlFail("fills")));
 
       // The latest position snapshot. Null when the mission has never had one.
       const positionRows = yield* sql<PositionSnapshotRow>`
         SELECT market, size, entry_price, unrealised_pnl, margin_used, protected_size,
-               liquidation_price, observed_at
+               liquidation_price, mark_px, observed_at
         FROM trading_position_snapshots WHERE mission_id = ${missionId}
         ORDER BY observed_at DESC LIMIT 1
       `.pipe(Effect.mapError(sqlFail("position")));

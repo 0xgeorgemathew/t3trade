@@ -288,6 +288,11 @@ export const TradingPositionSnapshot = Schema.Struct({
   protectedSize: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   /** Exchange liquidation price (`clearinghouseState.liquidationPx`). */
   liquidationPrice: Schema.optional(Price),
+  /**
+   * Current mark price. Derived from unrealised PnL until the protection layer
+   * reads it from the asset context directly (see HyperliquidReconciler).
+   */
+  markPx: Schema.optional(Price),
   observedAt: UnixMillis,
 });
 export type TradingPositionSnapshot = typeof TradingPositionSnapshot.Type;
