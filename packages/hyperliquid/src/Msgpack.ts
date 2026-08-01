@@ -203,8 +203,10 @@ function encodeInto(out: number[], value: MsgpackValue): void {
 }
 
 /** Encode a Hyperliquid action value to msgpack bytes. */
-export function encodeMsgpack(value: MsgpackValue): Uint8Array {
+export function encodeMsgpack(
+  value: MsgpackValue | Record<string, unknown> | unknown[],
+): Uint8Array {
   const out: number[] = [];
-  encodeInto(out, value);
+  encodeInto(out, value as MsgpackValue);
   return new Uint8Array(out);
 }

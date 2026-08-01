@@ -58,8 +58,12 @@ export interface HyperliquidSignature {
 
 /** Inputs to the action-hash construction. */
 export interface ActionHashInput {
-  /** The action to be hashed. Hash depends on key order. */
-  readonly action: MsgpackValue;
+  /**
+   * The action to be hashed. Hash depends on key order. Accepted as a plain
+   * record/array (the shapes Hyperliquid actions take); the msgpack encoder
+   * normalises internally (drops undefined, widens out-of-int32 ints).
+   */
+  readonly action: Record<string, unknown> | unknown[];
   /** The current timestamp in ms. */
   readonly nonce: number;
   /** Optional vault address used in the action. */
@@ -205,4 +209,17 @@ export function addressFromPrivateKey(privateKey: Uint8Array): `0x${string}` {
  */
 export function packSignature(sig: HyperliquidSignature): Uint8Array {
   return concatBytes(sig.r, sig.s, new Uint8Array([sig.v]));
+}
+
+/**
+ * Sign an L1 action and return the packed signature as a `0x`-prefixed hex
+ * string — the exact shape the exchange expects in the `signature` field of a
+ * POST `/exchange` body. Convenience wrapper over {@link signL1Action} +
+ * {@link packSignature} so callers never handle raw bytes.
+ */
+export function signAndPackL1Action(
+  input: ActionHashInput & { privateKey: Uint8Array; isTestnet?: boolean },
+): `0x${string}` {
+  const signature = signL1Action(input);
+  return `0x${bytesToHex(packSignature(signature))}` as `0x${string}`;
 }

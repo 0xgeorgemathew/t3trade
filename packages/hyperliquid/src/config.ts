@@ -13,6 +13,7 @@ import { Context } from "effect";
 /** Testnet endpoints. Mainnet is out of scope for the POC. */
 export const TESTNET_ENDPOINTS = {
   infoHttpUrl: "https://api.hyperliquid-testnet.xyz/info",
+  exchangeHttpUrl: "https://api.hyperliquid-testnet.xyz/exchange",
   webSocketUrl: "wss://api.hyperliquid-testnet.xyz/ws",
 } as const;
 

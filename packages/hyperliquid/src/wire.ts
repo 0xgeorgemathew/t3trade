@@ -233,3 +233,40 @@ export const WireWsMessage = Schema.Struct({
   data: Schema.Unknown,
 });
 export type WireWsMessage = typeof WireWsMessage.Type;
+
+// ---------------------------------------------------------------------------
+// Exchange (write) wire shapes — POST /exchange
+// ---------------------------------------------------------------------------
+
+/**
+ * One per-order status row in a grouped `order` response (§17.2 step 4).
+ *
+ * Hyperliquid returns one status per order in a batch; T3 records each rather
+ * than assuming batch atomicity. `rsp` is the exchange's verbatim status
+ * string (`ok`, `err`, `queued`, `triggered`).
+ */
+export const WireOrderStatusRow = Schema.Struct({
+  cloid: Schema.optional(Schema.String),
+  oid: Schema.optional(Schema.Number),
+  rsp: Schema.String,
+});
+export type WireOrderStatusRow = typeof WireOrderStatusRow.Type;
+
+/**
+ * The `status` block of an exchange response when the action was accepted.
+ * `resting` and `filled` variants carry the order id; `error` carries a
+ * reason. Kept permissive: the exchange adds fields, and only `statuses` is
+ * load-bearing for the per-order inspection (§17.2 step 4).
+ */
+export const WireExchangeResponse = Schema.Struct({
+  /** "order" | "cancel" | "modify" | … — echoes the action type. */
+  type: Schema.String,
+  /** "ok" | "err" — top-level acceptance. */
+  response: Schema.Struct({
+    type: Schema.String,
+    statuses: Schema.optional(Schema.Array(Schema.Union([Schema.String, WireOrderStatusRow]))),
+  }),
+  /// The exchange sometimes returns a top-level `status` string instead.
+  status: Schema.optional(Schema.String),
+});
+export type WireExchangeResponse = typeof WireExchangeResponse.Type;

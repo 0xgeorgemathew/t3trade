@@ -59,6 +59,10 @@
     "./Msgpack": {
       "types": "./src/Msgpack.ts",
       "import": "./src/Msgpack.ts"
+    },
+    "./ExchangeClient": {
+      "types": "./src/ExchangeClient.ts",
+      "import": "./src/ExchangeClient.ts"
     }
   },
   "scripts": {
