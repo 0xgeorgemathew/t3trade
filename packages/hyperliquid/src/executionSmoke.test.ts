@@ -62,10 +62,9 @@ describeLive("HyperliquidExecutionSmoke — live /exchange", () => {
       Effect.gen(function* () {
         const keyOpt = yield* loadSignerKey;
         if (Option.isNone(keyOpt)) {
-          yield* Effect.logWarning(
-            "[execution-smoke] signer not armed; set T3_TRADES_INTERIM_SIGNER_KEY",
+          return yield* Effect.fail(
+            new Error("live execution gate is enabled but the interim signer is not armed"),
           );
-          return;
         }
         const privateKey = keyOpt.value;
 
