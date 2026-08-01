@@ -28,9 +28,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { HyperliquidExchangeClient, HyperliquidExchangeClientLive } from "./ExchangeClient.ts";
 import { HyperliquidInfoClient, HyperliquidInfoClientLive } from "./InfoClient.ts";
 import { createL1ActionHash, signL1ActionForWire, addressFromPrivateKey } from "./Signing.ts";
-import { deriveCloid } from "./Cloid.ts";
-import { buildOrderAction } from "./OrderMapper.ts";
-import { formatSize, formatPrice } from "./Precision.ts";
+import { buildOrderAction, mapOrder } from "./OrderMapper.ts";
+import type { MarketBestBidOffer } from "@t3tools/trading-contracts/market";
 
 const SECRET_PATH = "../../.t3/secrets/hyperliquid-interim-signer-key.bin";
 
@@ -55,17 +54,12 @@ const infoLayer = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
 
 /**
  * The deterministic cloid the harness uses (§15.5): SHA-256 of the mission +
- * strategy + sequence + actionType, truncated to 16 bytes. Reused across the
- * entry and its retry so the exchange deduplicates on it.
+ * strategy + sequence + actionType, truncated to 16 bytes, 0x-prefixed. Reused
+ * across the entry and its retry so the exchange deduplicates on it. The cloid
+ * is derived inside the test from `mapOrder` (which calls `deriveCloid`); the
+ * asset index + szDecimals are resolved live from market metadata.
  */
 const MISSION = "mission_live_e";
-const CLOID = deriveCloid({
-  missionId: MISSION,
-  strategyVersion: 1,
-  executionSequence: 0,
-  actionType: "open",
-});
-const ASSET_INDEX = 0; // ETH is index 0 on testnet
 
 describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
   it.live(
@@ -81,30 +75,65 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
         const privateKey = keyOpt.value;
         const masterAddress = addressFromPrivateKey(privateKey);
 
-        // Read the live ETH BBO to price a marketable IOC.
+        // Resolve ETH's live szDecimals + asset index from market metadata, the
+        // same source the production path uses (MarketResolver). Hardcoding
+        // szDecimals=3 (the previous value) silently truncates size on markets
+        // whose szDecimals differs and produces a wire size the exchange rejects
+        // or fills at the wrong quantity.
         const info = yield* HyperliquidInfoClient;
+        const [meta, assetCtxs] = yield* info.metaAndAssetCtxs;
+        const ethUniverse = meta.universe.find((u) => u.name === "ETH");
+        if (!ethUniverse) {
+          return yield* Effect.die(new Error("ETH not found in testnet universe"));
+        }
+        const ethAssetIndex = meta.universe.indexOf(ethUniverse);
+        const szDecimals = ethUniverse.szDecimals;
+
+        // Read the live ETH BBO to price a marketable IOC.
         const book = yield* info.l2Book("ETH");
-        const askPx = Number(book.levels[1][0]!.px);
-        // Minimum notional is $10; size up to clear it with margin. 0.01 ETH
-        // at ~$1836 is ~$18 — well above the $10 floor, small capital spend.
-        const size = formatSize(0.01, 3);
-        const limitPx = formatPrice(askPx * 1.001); // ~10bps slippage over ask
+        const bbo: MarketBestBidOffer = {
+          bidPrice: Number(book.levels[0][0]?.px ?? 0),
+          bidSize: Number(book.levels[0][0]?.sz ?? 0),
+          askPrice: Number(book.levels[1][0]?.px ?? 0),
+          askSize: Number(book.levels[1][0]?.sz ?? 0),
+          freshness: { observedAt: book.time, source: "info_api", staleAfterMillis: 2_000 },
+        };
+        const nowMsEntry = yield* Effect.clockWith((c) => c.currentTimeMillis);
 
         // --- 1. ENTRY: marketable IOC buy ---------------------------------
-        const wireOrder = {
-          cloid: CLOID,
-          coin: "ETH" as const,
+        // Use the production order mapper (mapOrder with marketable_ioc) so the
+        // entry exercises the same IOC/slippage/precision path the reactor drives,
+        // not a hand-rolled price. 50 bps is the ratified IOC slippage.
+        const entryIntent = {
+          missionId: MISSION,
+          strategyVersion: 1,
+          executionSequence: 0,
+          actionType: "open" as const,
+          market: "ETH" as const,
           side: "buy" as const,
-          limitPrice: limitPx,
-          size,
-          timeInForce: "ioc" as const,
+          size: 0.01,
+          orderPreference: "marketable_ioc" as const,
+          limitPrice: 0,
+          stop: { stopPrice: 0, plannedLossAtStopUsd: 0 },
           reduceOnly: false,
         };
-        const action = buildOrderAction(wireOrder, ASSET_INDEX);
+        const wireOrder = yield* mapOrder({
+          intent: entryIntent,
+          bbo,
+          szDecimals,
+          allowedSlippageBps: 50,
+          nowMs: nowMsEntry,
+        });
+        const action = buildOrderAction(wireOrder, ethAssetIndex);
         const nonce = yield* Effect.clockWith((c) => c.currentTimeMillis);
         const signature = signL1ActionForWire({ action, nonce, privateKey, isTestnet: true });
         const actionHash = createL1ActionHash({ action, nonce });
-        yield* Effect.logInfo("[execution-live] entry", { cloid: CLOID, actionHash });
+        yield* Effect.logInfo("[execution-live] entry", {
+          cloid: wireOrder.cloid,
+          actionHash,
+          szDecimals,
+          assetIndex: ethAssetIndex,
+        });
 
         const exchange = yield* HyperliquidExchangeClient;
         const entryResp = yield* exchange.submit({ action, nonce, signature });
@@ -139,26 +168,53 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
         // A marketable IOC at the ask should have filled.
         expect(ethPos).toBeDefined();
 
-        // --- 4. CLOSE: reduce-only IOC to flat ----------------------------
-        const closeCloid = deriveCloid({
-          missionId: MISSION,
-          strategyVersion: 1,
-          executionSequence: 1,
-          actionType: "close",
-        });
-        const closeSize = formatSize(Math.abs(Number(ethPos!.position.szi)), 3);
-        const bidPx = Number(book.levels[0][0]!.px);
-        const closeLimit = formatPrice(bidPx * 0.999); // ~10bps under bid
-        const closeOrder = {
-          cloid: closeCloid,
-          coin: "ETH" as const,
-          side: "sell" as const,
-          limitPrice: closeLimit,
-          size: closeSize,
-          timeInForce: "ioc" as const,
-          reduceOnly: true,
+        // --- 4. CLOSE: reduce-only marketable IOC to flat ------------------
+        // Two prior defects fixed here:
+        //  (a) Hardcoded szDecimals=3 — the close size was derived with the wrong
+        //      precision. Now the size is the reconciled position size (already
+        //      in the exchange's unit) and mapOrder truncates it to the market's
+        //      real szDecimals.
+        //  (b) Hand-rolled formatPrice(bidPx * 0.999) on a STALE book captured at
+        //      entry time. A resting-close that does not cross looks like "did not
+        //      flatten" but is not a signing problem. Now the close uses the same
+        //      §15.4 marketable-IOC derivation as the entry (mapOrder with
+        //      orderPreference: "marketable_ioc") against a FRESH BBO read, so the
+        //      sell limit crosses the bid and fills.
+        // The "sell-action signature recovers to a wrong address" symptom from
+        // commit 5dfb4bc14 was a measurement artifact: it recovered against the
+        // bare action hash, not the EIP-712 phantom-agent digest the exchange
+        // actually verifies. Recovery from the EIP-712 digest matches for both
+        // entry and close (verified offline). Signing.ts is correct and unchanged.
+        const closeSize = Math.abs(Number(ethPos!.position.szi));
+        const closeBook = yield* info.l2Book("ETH");
+        const closeBbo: MarketBestBidOffer = {
+          bidPrice: Number(closeBook.levels[0][0]?.px ?? 0),
+          bidSize: Number(closeBook.levels[0][0]?.sz ?? 0),
+          askPrice: Number(closeBook.levels[1][0]?.px ?? 0),
+          askSize: Number(closeBook.levels[1][0]?.sz ?? 0),
+          freshness: { observedAt: closeBook.time, source: "info_api", staleAfterMillis: 2_000 },
         };
-        const closeAction = buildOrderAction(closeOrder, ASSET_INDEX);
+        const nowMsClose = yield* Effect.clockWith((c) => c.currentTimeMillis);
+        const closeWireOrder = yield* mapOrder({
+          intent: {
+            missionId: MISSION,
+            strategyVersion: 1,
+            executionSequence: 1,
+            actionType: "close" as const,
+            market: "ETH" as const,
+            side: "sell" as const,
+            size: closeSize,
+            orderPreference: "marketable_ioc" as const,
+            limitPrice: 0,
+            stop: { stopPrice: 0, plannedLossAtStopUsd: 0 },
+            reduceOnly: true,
+          },
+          bbo: closeBbo,
+          szDecimals,
+          allowedSlippageBps: 50,
+          nowMs: nowMsClose,
+        });
+        const closeAction = buildOrderAction(closeWireOrder, ethAssetIndex);
         const closeNonce = yield* Effect.clockWith((c) => c.currentTimeMillis);
         const closeSig = signL1ActionForWire({
           action: closeAction,
@@ -174,9 +230,15 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
         yield* Effect.logInfo("[execution-live] close response", {
           status: "status" in closeResp ? closeResp.status : undefined,
           type: closeResp.response.type,
+          cloid: closeWireOrder.cloid,
         });
+        expect("status" in closeResp ? closeResp.status : undefined).toBe("ok");
 
-        // Reconcile flat.
+        // Reconcile flat — a hard assertion, not a soft log. A close that does
+        // not flatten is a real failure (the §16.4 guarantee that close/reduce
+        // remain permitted while the budget is exhausted rests on this). If the
+        // book moved and the IOC did not fully cross, that is a defect to fix,
+        // not a caveat to record.
         yield* Effect.sleep("2000 millis");
         const stateAfter = yield* info.clearinghouseState(masterAddress);
         const ethAfter = stateAfter.assetPositions.find(
@@ -184,15 +246,9 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
         );
         yield* Effect.logInfo("[execution-live] position after close", {
           flat: ethAfter === undefined,
+          remainingSzi: ethAfter?.position.szi,
         });
-        // The close may not fully flatten if the book moved; record honestly.
-        if (ethAfter === undefined) {
-          yield* Effect.logInfo("[execution-live] CLOSED TO FLAT");
-        } else {
-          yield* Effect.logWarning("[execution-live] position remains after close", {
-            szi: ethAfter.position.szi,
-          });
-        }
+        expect(ethAfter).toBeUndefined();
       }).pipe(Effect.provide(Layer.mergeAll(exchangeLayer, infoLayer))),
     60_000,
   );
