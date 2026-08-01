@@ -157,11 +157,21 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
       );
       // Submit a cancel-by-cloid per increasing order. A failed cancel does not
       // abort the block — the mission still reads blocked; the reconciler will
-      // catch a still-resting order on the next convergence.
+      // catch a still-resting order on the next convergence. But a silently
+      // swallowed cancel leaves exposure live on a mission reading "blocked",
+      // so log at warn with the cloid and the exchange's reason before
+      // continuing, rather than discarding the failure entirely.
       for (const order of increasing) {
         yield* execution
           .submitCancel({ market: order.market, cloid: order.cloid })
-          .pipe(Effect.catch(() => Effect.void));
+          .pipe(
+            Effect.catchTag("TradingExecutionError", (cause) =>
+              Effect.logWarning(
+                `blockForExhaustion: cancel-by-cloid failed (cloid=${order.cloid}, market=${order.market}); ` +
+                  `mission still transitions to blocked. reason: ${cause.stage}: ${cause.detail ?? ""}`,
+              ),
+            ),
+          );
       }
 
       yield* missions

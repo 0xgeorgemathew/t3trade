@@ -159,11 +159,17 @@ describe("buildOrderAction / buildCancelByCloidAction", () => {
     }),
   );
 
-  it("builds a cancel-by-cloid action", () => {
-    const action = buildCancelByCloidAction("ETH", "deadbeefdeadbeefdeadbeefdeadbeef");
-    expect(Object.keys(action)).toEqual(["cancels"]);
+  it("builds a cancel-by-cloid action with insertion-order keys", () => {
+    // The cancel action mirrors the order action's shape: a discriminating
+    // top-level `type` and legs keyed by the numeric asset index, not the coin
+    // symbol. Key order is hash-critical, so assert the full sequence exactly.
+    const action = buildCancelByCloidAction(2, "deadbeefdeadbeefdeadbeefdeadbeef");
+    expect(Object.keys(action)).toEqual(["type", "cancels"]);
+    expect(action.type).toBe("cancelByCloid");
     const cancel = (action.cancels as unknown[])[0] as Record<string, unknown>;
-    expect(cancel.coin).toBe("ETH");
+    expect(Object.keys(cancel)).toEqual(["asset", "cloid"]);
+    expect(cancel.asset).toBe(2);
+    expect(cancel.coin).toBeUndefined();
     expect(cancel.cloid).toBe("deadbeefdeadbeefdeadbeefdeadbeef");
   });
 });

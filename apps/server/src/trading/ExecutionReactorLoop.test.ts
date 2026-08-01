@@ -430,9 +430,13 @@ layer("TradingExecutionReactorLoop (D1 keystone)", (it) => {
           "exhaustion cancel should submit a signed cancel action",
         );
         const action = recordingExchange.submitted[recordingExchange.submitted.length - 1]!
-          .action as { cancels?: ReadonlyArray<{ coin: string; cloid: string }> };
+          .action as {
+          type?: string;
+          cancels?: ReadonlyArray<{ asset: number; cloid: string }>;
+        };
+        assert.equal(action.type, "cancelByCloid");
         assert.ok(action.cancels !== undefined, "expected a cancels payload");
-        assert.equal(action.cancels![0]!.coin, "ETH");
+        assert.equal(action.cancels![0]!.asset, ethMarket.assetIndex);
         assert.equal(action.cancels![0]!.cloid, cloid);
       }),
   );

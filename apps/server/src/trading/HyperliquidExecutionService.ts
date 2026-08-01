@@ -500,7 +500,12 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
         return yield* new TradingExecutionError({ stage: "signer_not_configured" });
       }
       const signer = signerOpt.value;
-      const action = buildCancelByCloidAction(input.market, input.cloid);
+      // Resolve the asset index from live metadata, mirroring the order path —
+      // a cancel leg is keyed by the numeric asset index, not the coin symbol.
+      const market = yield* gateway
+        .resolveMarket(input.market)
+        .pipe(Effect.mapError(() => new TradingExecutionError({ stage: "market_unresolved" })));
+      const action = buildCancelByCloidAction(market.assetIndex, input.cloid);
       const signed = yield* nonceCoord
         .runWithNonce((nonce) =>
           Effect.gen(function* () {
