@@ -25,6 +25,8 @@ import type {
   WireL2BookResponse,
   WireMetaAndAssetCtxsResponse,
   WireOpenOrdersResponse,
+  WireUserFeesResponse,
+  WireUserFillsResponse,
 } from "./wire.ts";
 
 /** Canned responses for the fake Info client. All optional; unset throws. */
@@ -35,6 +37,8 @@ export interface FakeInfoResponses {
   candleSnapshot?: (req: WireCandleSnapshotRequest) => WireCandleSnapshotResponse;
   clearinghouseState?: (address: string) => WireClearinghouseStateResponse;
   openOrders?: (address: string) => WireOpenOrdersResponse;
+  userFills?: (address: string) => WireUserFillsResponse;
+  userFees?: (address: string) => WireUserFeesResponse;
 }
 
 /**
@@ -66,6 +70,10 @@ export function makeFakeInfoClient(responses: FakeInfoResponses): HyperliquidInf
         : fail("clearinghouseState"),
     openOrders: (address) =>
       responses.openOrders ? Effect.succeed(responses.openOrders(address)) : fail("openOrders"),
+    userFills: (address) =>
+      responses.userFills ? Effect.succeed(responses.userFills(address)) : fail("userFills"),
+    userFees: (address) =>
+      responses.userFees ? Effect.succeed(responses.userFees(address)) : fail("userFees"),
   });
 }
 
@@ -81,6 +89,7 @@ export const fakeInfoClientLayer = (responses: FakeInfoResponses) =>
  */
 export function makeFakeWebSocketClient(
   deliveries: ReadonlyArray<WsDelivery>,
+  reconnects: ReadonlyArray<void> = [],
 ): (typeof HyperliquidWebSocketClient)["Service"] {
   const sameSubscription = (a: WsSubscription, b: WsSubscription) =>
     a.type === b.type && a.coin === b.coin && a.user === b.user && a.interval === b.interval;
@@ -90,6 +99,7 @@ export function makeFakeWebSocketClient(
         Stream.filter((d) => sameSubscription(d.subscription, subscription)),
       ),
     isConnected: Effect.succeed(true),
+    reconnects: Stream.fromIterable(reconnects),
   });
 }
 

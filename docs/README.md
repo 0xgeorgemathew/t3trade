@@ -6,6 +6,7 @@
   - [Connection runtime](./architecture/connection-runtime.md)
   - [Remote environments](./architecture/remote.md)
   - [Server updates](./architecture/server-updates.md)
+  - [Trading execution and reconciliation](./architecture/trading-execution.md)
 - User guides
   - [Background service](./user/background-service.md)
   - [Remote access](./user/remote-access.md)

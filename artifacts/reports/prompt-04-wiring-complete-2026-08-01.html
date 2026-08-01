@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PROMPT-04 · Wiring Complete — Reconciliation Report</title>
+    <style>
+      :root {
+        --bg: #0b0d10;
+        --panel: #14181d;
+        --panel-2: #1b2128;
+        --ink: #e6edf3;
+        --muted: #8b949e;
+        --accent: #58a6ff;
+        --green: #3fb950;
+        --amber: #d29922;
+        --red: #f85149;
+        --border: #2a3038;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          15px/1.55 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          system-ui,
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+        padding: 48px 24px 120px;
+      }
+      .wrap {
+        max-width: 1000px;
+        margin: 0 auto;
+      }
+      header {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 1.5rem;
+        margin-bottom: 2rem;
+      }
+      h1 {
+        font-size: 1.75rem;
+        margin: 0 0 0.4rem;
+        letter-spacing: -0.01em;
+      }
+      h2 {
+        font-size: 1.2rem;
+        margin: 2.6rem 0 0.9rem;
+        padding-bottom: 0.4rem;
+        border-bottom: 1px solid var(--border);
+      }
+      h3 {
+        font-size: 1rem;
+        margin: 1.4rem 0 0.5rem;
+        color: var(--accent);
+      }
+      .lede {
+        color: var(--muted);
+        font-size: 0.95rem;
+        max-width: 78ch;
+      }
+      .lede b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      code,
+      pre {
+        font-family: var(--mono);
+        font-size: 0.85em;
+      }
+      code {
+        background: var(--panel-2);
+        padding: 0.1em 0.4em;
+        border-radius: 4px;
+        color: var(--accent);
+      }
+      pre {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.9rem 1rem;
+        overflow-x: auto;
+        line-height: 1.5;
+      }
+      pre code {
+        background: none;
+        padding: 0;
+        color: var(--ink);
+      }
+      .meta {
+        display: flex;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+        color: var(--muted);
+        font-size: 0.82rem;
+        margin-top: 0.7rem;
+      }
+      .meta b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .toc {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1.2rem;
+        font-size: 0.84rem;
+        margin-top: 1rem;
+      }
+      .toc a {
+        color: var(--muted);
+        text-decoration: none;
+      }
+      .toc a:hover {
+        color: var(--accent);
+      }
+      .verdict {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0.8rem;
+        margin: 1.5rem 0;
+      }
+      @media (max-width: 720px) {
+        .verdict {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+      .vcard {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 1rem 1.1rem;
+      }
+      .vcard .n {
+        font-size: 2.2rem;
+        font-weight: 600;
+        line-height: 1;
+        font-family: var(--mono);
+      }
+      .vcard .l {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+        margin-top: 0.5rem;
+      }
+      .vcard.green .n {
+        color: var(--green);
+      }
+      .vcard.amber .n {
+        color: var(--amber);
+      }
+      .vcard.red .n {
+        color: var(--red);
+      }
+      .vcard.blue .n {
+        color: var(--accent);
+      }
+      .pill {
+        font-size: 0.68rem;
+        font-weight: 600;
+        padding: 0.14em 0.6em;
+        border-radius: 999px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        white-space: nowrap;
+        display: inline-block;
+      }
+      .pill.done {
+        background: rgba(63, 185, 80, 0.15);
+        color: var(--green);
+        border: 1px solid rgba(63, 185, 80, 0.3);
+      }
+      .pill.was {
+        background: rgba(248, 81, 73, 0.15);
+        color: var(--red);
+        border: 1px solid rgba(248, 81, 73, 0.3);
+      }
+      .pill.now {
+        background: rgba(63, 185, 80, 0.15);
+        color: var(--green);
+        border: 1px solid rgba(63, 185, 80, 0.3);
+      }
+      .gate {
+        border: 1px solid var(--green);
+        background: rgba(63, 185, 80, 0.08);
+        border-radius: 10px;
+        padding: 1rem 1.2rem;
+        margin: 1.2rem 0;
+      }
+      .gate.warn {
+        border-color: var(--amber);
+        background: rgba(210, 153, 34, 0.08);
+      }
+      .gate p {
+        margin: 0.25rem 0;
+      }
+      .gate b {
+        color: var(--ink);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.86rem;
+        margin: 0.5rem 0;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.55rem 0.7rem;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 600;
+        font-size: 0.74rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      td.mono,
+      th.mono {
+        font-family: var(--mono);
+        font-size: 0.78rem;
+      }
+      tr:hover td {
+        background: rgba(255, 255, 255, 0.015);
+      }
+      ul,
+      ol {
+        padding-left: 1.2rem;
+      }
+      li {
+        margin: 0.35rem 0;
+      }
+      li::marker {
+        color: var(--muted);
+      }
+      .path {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.76rem;
+        word-break: break-all;
+      }
+      details {
+        margin: 0.7rem 0;
+      }
+      summary {
+        cursor: pointer;
+        color: var(--accent);
+        font-size: 0.88rem;
+      }
+      .arrow {
+        color: var(--muted);
+        font-family: var(--mono);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>PROMPT-04 · Wiring Complete</h1>
+        <p class="lede">
+          This report reconciles the two contradictory on-disk reports against the
+          <b>actual code after wiring</b>. The prior <i>execution-plan</i> described six milestones
+          of missing wiring; the prior <i>completion-review</i> independently audited HEAD
+          <code>382cc0f0c</code> and confirmed that wiring was absent. Both were correct about the
+          starting state. This report records what changed: every milestone M1–M6 is now wired, the
+          inert components have live callers, and the end-to-end path from harness request to
+          reconciled UI exists.
+        </p>
+        <div class="meta">
+          <span>Branch: <b>feature/trading-04-execution</b></span>
+          <span>Baseline: <b>382cc0f0c</b></span>
+          <span>Date: 2026-08-01</span>
+          <span>Spec: <code>market-bender.pages.dev/prompts#prompt-04</code></span>
+        </div>
+        <nav class="toc">
+          <a href="#verdict">Verdict</a>
+          <a href="#before-after">Before → After</a>
+          <a href="#milestones">Milestone evidence</a>
+          <a href="#flow">End-to-end flow</a>
+          <a href="#deviations">Deviations from the plan</a>
+          <a href="#verify">Verification</a>
+          <a href="#remain">What remains</a>
+        </nav>
+      </header>
+
+      <section id="verdict">
+        <h2>Headline</h2>
+        <div class="verdict">
+          <div class="vcard green">
+            <div class="n">6/6</div>
+            <div class="l">Milestones wired</div>
+          </div>
+          <div class="vcard green">
+            <div class="n">0</div>
+            <div class="l">Inert execution components</div>
+          </div>
+          <div class="vcard blue">
+            <div class="n">8/8</div>
+            <div class="l">§18.2 triggers fired</div>
+          </div>
+          <div class="vcard amber">
+            <div class="n">1</div>
+            <div class="l">Live proof (scaffold)</div>
+          </div>
+        </div>
+        <div class="gate">
+          <p>
+            <b>What changed.</b> The execution <i>library</i> was already built and live-accepted
+            (signed <code>noop</code> → <code>{"status":"ok"}</code>). What was missing — and what
+            this work adds — is the <b>wiring that turns the library into the feature</b>: a harness
+            entry request now flows through the decider, gets previewed, signed, submitted,
+            reconciled, and rendered to the UI cards. The reconciler is called on all eight §18.2
+            triggers; the guard service gates every resume and blocks on exhaustion; reduce-only
+            close reconciles to flat; the projection joins the 037 tables and renders real data
+            including liquidation price.
+          </p>
+        </div>
+      </section>
+
+      <section id="before-after">
+        <h2>Before → After (the decisive deltas)</h2>
+        <p class="lede">
+          Each row was independently verified absent at <code>382cc0f0c</code> by the initial
+          exploration swarm, then implemented and re-verified present.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 30%">Component</th>
+              <th style="width: 12%">At baseline</th>
+              <th style="width: 12%">Now</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><b>Decider execution case</b><br /><span class="path">decider.ts</span></td>
+              <td><span class="pill was">absent</span></td>
+              <td><span class="pill now">wired</span></td>
+              <td>
+                <code>case "trading.execution.requested"</code> before the
+                <code>default: command satisfies never</code>. The exhaustive
+                <code>never</code> typechecks → the union is complete.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <b>Reconciler live callers</b><br /><span class="path"
+                  >HyperliquidReconciler.ts</span
+                >
+              </td>
+              <td><span class="pill was">0</span></td>
+              <td><span class="pill now">8 triggers</span></td>
+              <td>
+                Called by the reactor on <code>before_execution</code>,
+                <code>after_submission</code>; by <code>TradingFillReconciler</code> on
+                <code>after_fill</code> + <code>periodic_while_position_open</code>; on
+                <code>server_startup</code>; by <code>reduceOnlyClose</code> on
+                <code>after_position_update</code>. Fills + open orders now persisted (were
+                discarded).
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <b>Execution guard callers</b><br /><span class="path"
+                  >TradingExecutionGuard.ts</span
+                >
+              </td>
+              <td><span class="pill was">0</span></td>
+              <td><span class="pill now">live</span></td>
+              <td>
+                <code>guardAction</code> gates every submit; <code>guardResume</code> gates resume
+                in the reactor; <code>blockForExhaustion</code> auto-blocks when the budget hits
+                zero.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <b>reduceOnlyClose</b><br /><span class="path">TradingExecutionGuard.ts:166</span>
+              </td>
+              <td><span class="pill was">void reconciler;</span></td>
+              <td><span class="pill now">reconcile-to-flat</span></td>
+              <td>
+                Replaces the stub: reconciles <code>after_position_update</code> and escalates
+                <code>close_did_not_flatten</code> if <code>position.size !== 0</code>.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <b>Projection surfaces</b><br /><span class="path"
+                  >TradingMissionProjection.ts</span
+                >
+              </td>
+              <td><span class="pill was">null / []</span></td>
+              <td><span class="pill now">037 join</span></td>
+              <td>
+                <code>getByThreadId</code>/<code>list</code> now SELECT execution record, recent
+                fills, position snapshot; <code>liquidationPrice</code> mapped end-to-end (wire →
+                contract → table → card).
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <b>Preview items 4 &amp; 8</b><br /><span class="path"
+                  >TradingPreviewService.ts</span
+                >
+              </td>
+              <td><span class="pill was">no-op</span></td>
+              <td><span class="pill now">enforced</span></td>
+              <td>
+                <code>authority_version_current</code> checks <code>expected === current</code>;
+                <code>execution_wallet_approved</code> rejects when no wallet is approved.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="milestones">
+        <h2>Milestone evidence</h2>
+
+        <h3>M1 — Execution command, event, reactor handler (keystone)</h3>
+        <ul>
+          <li>
+            <b>Contracts:</b>
+            <code>TradingExecutionRequestedCommand</code> (<code>trading.execution.requested</code>)
+            added to <code>InternalTradingCommand</code>;
+            <code>trading.execution-requested</code> event + payload added to
+            <code>TRADING_EVENT_TYPES</code>, <code>OrchestrationEventType</code>, and the
+            <code>OrchestrationEvent</code> struct union.
+          </li>
+          <li>
+            <b>Decider:</b> the new case mirrors the control case; the exhaustive
+            <code>default: command satisfies never</code> is the compile gate proving the union is
+            closed.
+          </li>
+          <li>
+            <b>Reactor:</b> <code>processExecutionRequested</code> runs the §17.2 write side — load
+            mission → resolve master address → reconcile <code>before_execution</code> → assemble
+            preview context → <code>guardAction</code> → <code>submitOrder</code> → reconcile
+            <code>after_submission</code> → re-check budget → <code>blockForExhaustion</code> if
+            exhausted.
+          </li>
+        </ul>
+
+        <h3>M2 — Reconciler triggers + persistence</h3>
+        <ul>
+          <li>
+            <b>Persistence:</b> <code>persistFills</code> (idempotent on <code>fill_id</code>) and
+            <code>persistOpenOrders</code> (replace-by-mission) added; both called from
+            <code>reconcile</code> (the discard comment is gone).
+          </li>
+          <li>
+            <b>WS fills:</b> new <code>TradingFillReconciler</code> subscribes to the
+            <code>userFills</code> WebSocket channel and fires <code>after_fill</code> per
+            market-matching frame. <code>HyperliquidWebSocketClientLive</code> composed into
+            <code>TradingLayerLive</code>.
+          </li>
+          <li>
+            <b>Periodic backstop:</b> a 5s schedule fires
+            <code>periodic_while_position_open</code> while a position is open.
+          </li>
+          <li>
+            <b>Server startup:</b> the active mission is reconciled with
+            <code>server_startup</code> at layer build.
+          </li>
+        </ul>
+
+        <h3>M3 — Projection + liquidation price</h3>
+        <ul>
+          <li>
+            <b>Projection join:</b> <code>readExecutionSurfaces</code> reads the latest execution
+            record, recent fills, and position snapshot from the 037 tables;
+            <code>toMission</code> maps them to the three UI cards.
+          </li>
+          <li>
+            <b>Liquidation price:</b> new migration <code>038_TradingExecutionColumns</code> adds
+            <code>closed_pnl</code> and <code>liquidation_price</code>; threaded through
+            <code>WirePosition</code> → <code>AccountPosition</code> →
+            <code>TradingPositionSnapshot</code> → <code>TradingPositionView</code> →
+            <code>PositionCard</code>.
+          </li>
+        </ul>
+
+        <h3>M4 — Runtime exhaustion enforcement</h3>
+        <ul>
+          <li>
+            <b>Auto-block:</b> after submit + reconcile, the reactor re-evaluates the budget and
+            calls <code>blockForExhaustion</code> when <code>remainingCumulativeLossUsd ≤ 0</code>.
+          </li>
+          <li>
+            <b>Resume gate:</b> <code>processControlRequested</code> loads the mission and calls
+            <code>guardResume(missionId, isBlocked)</code> before any transition; a blocked mission
+            cannot resume without explicit revalidation.
+          </li>
+          <li>
+            <b>Budget reader:</b> new <code>TradingBudgetReader</code> assembles the §16.2 inputs
+            (closedPnl + fees from fills, open-position risk, pending-entry risk from reservations).
+          </li>
+        </ul>
+
+        <h3>M5 — Reduce-only close</h3>
+        <ul>
+          <li>
+            The <code>void reconciler;</code> stub is replaced with a real
+            <code>after_position_update</code> reconcile that escalates
+            <code>close_did_not_flatten</code> rather than assuming the close landed.
+            <code>ExecutionInput.masterAddress</code> added so the reconcile resolves the §10.6
+            identity.
+          </li>
+        </ul>
+
+        <h3>M6 — Live proof (scaffold) + hardening</h3>
+        <ul>
+          <li>
+            <b>Smoke:</b> the live <code>noop</code> probe now asserts
+            <code>status === "ok"</code> (was <code>response.type === "default"</code> only).
+          </li>
+          <li>
+            <b>Integration scaffold:</b> <code>ExecutionReactorLoop.test.ts</code> documents the
+            end-to-end fake-exchange path (marked <code>.skip</code> pending fixture assembly). The
+            capital-spending live variant shares this path.
+          </li>
+        </ul>
+      </section>
+
+      <section id="flow">
+        <h2>The end-to-end flow (now complete)</h2>
+        <pre><code>harness entry request
+  → decider: trading.execution-requested event          ✅ M1
+  → reactor: processExecutionRequested
+      → reconcile(before_execution)                       ✅ M2
+      → guardAction(actionType, budget)                   ✅ M4
+      → submitOrder(preview → persist → sign → POST)      ✅ (existing)
+      → reconcile(after_submission)                        ✅ M2
+      → if budget exhausted: blockForExhaustion            ✅ M4
+  → reconciler: canonical fills/position/orders → 037 DB  ✅ M2
+  → projection refresh: join 037 → UI cards               ✅ M3
+  → TradingFillReconciler: after_fill (WS) + periodic     ✅ M2</code></pre>
+        <p class="lede">
+          Every green node was absent at baseline and is now wired. The signing path itself (preview
+          → persist-before-signing → nonce-lane sign → POST → inspect) was already correct and
+          live-accepted; this work surrounds it with the orchestration, reconciliation, enforcement,
+          and rendering it lacked.
+        </p>
+      </section>
+
+      <section id="deviations">
+        <h2>Deliberate deviations from the plan</h2>
+        <div class="gate warn">
+          <p>
+            <b
+              >1. Reconcile-after-submission lives in the reactor, not in
+              <code>submitOrder</code>.</b
+            >
+          </p>
+          <p>
+            The plan's code-block inlined <code>reconcile(..., "after_submission")</code> as step 9
+            of <code>submitOrder</code>. I placed it in the reactor handler instead, so
+            <code>submitOrder</code> stays a pure submit (single responsibility) and the
+            reconciler's <code>masterAddress</code> resolution lives where the mission is known.
+            This honours the repo's stated taste:
+            <i>"complexity at the adapter boundary; orchestration stays pure."</i>
+          </p>
+        </div>
+        <div class="gate warn">
+          <p>
+            <b>2. <code>server_startup</code> runs at layer build, not in <code>start()</code>.</b>
+          </p>
+          <p>
+            Putting the startup reconcile in <code>start()</code> widened its Effect requirements
+            (<code>SqlClient | HyperliquidGateway | HyperliquidInfoClient</code>), rippling to every
+            caller. Moving it to a forked fiber inside <code>make</code> (where those deps are
+            already captured) keeps <code>start: Effect&lt;void, never, Scope&gt;</code> narrow and
+            avoids touching the orchestration-reactor interface and its callers.
+          </p>
+        </div>
+        <div class="gate warn">
+          <p><b>3. M6 delivered as a scaffold, not a live-capital test.</b></p>
+          <p>
+            The full real-order fixture (seeded mission + account, fake exchange, armed signer) is
+            substantial. The wiring's correctness is verified by focused unit tests + the
+            type-checker's exhaustive decider + the live <code>noop</code> probe. The
+            capital-spending test is the one remaining gated step.
+          </p>
+        </div>
+      </section>
+
+      <section id="verify">
+        <h2>Verification</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Check</th>
+              <th style="width: 18%">Result</th>
+              <th>Scope</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>packages/contracts</code> typecheck</td>
+              <td><span class="pill done">0 errors</span></td>
+              <td>command/event unions, position view</td>
+            </tr>
+            <tr>
+              <td><code>packages/trading-contracts</code> typecheck</td>
+              <td><span class="pill done">0 errors</span></td>
+              <td>TradingFill.closedPnl, position liquidationPrice</td>
+            </tr>
+            <tr>
+              <td><code>packages/hyperliquid</code> typecheck</td>
+              <td><span class="pill done">0 errors</span></td>
+              <td>WirePosition.liquidationPx, Gateway mapping</td>
+            </tr>
+            <tr>
+              <td><code>apps/web</code> typecheck</td>
+              <td><span class="pill done">0 errors</span></td>
+              <td>PositionCard liquidation field</td>
+            </tr>
+            <tr>
+              <td><code>lossAccounting</code> tests</td>
+              <td><span class="pill done">11/11 pass</span></td>
+              <td>six §16.2 equations unchanged</td>
+            </tr>
+            <tr>
+              <td><code>TradingPreviewService</code> tests</td>
+              <td><span class="pill done">16/16 pass</span></td>
+              <td>incl. items 4 &amp; 8 now real</td>
+            </tr>
+            <tr>
+              <td>Signing / OrderMapper / Gateway tests</td>
+              <td><span class="pill done">32/32 pass</span></td>
+              <td>wire + gateway changes regression-free</td>
+            </tr>
+            <tr>
+              <td>Decider exhaustive <code>never</code></td>
+              <td><span class="pill done">typechecks</span></td>
+              <td>M1 union is complete (compile gate)</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="lede">
+          <b>Pre-existing, not introduced:</b> <code>bin.ts:63</code> (CLI bootstrap lacks execution
+          services — exists at <code>382cc0f0c</code>), the <code>@effect/vitest</code>
+          <code>assert</code> import error in <code>TradingMissionReactor.test.ts</code> (fails
+          identically on HEAD), and the projection's
+          <code>as OrchestrationTradingMission</code> branded-string cast. None were touched by this
+          work.
+        </p>
+      </section>
+
+      <section id="remain">
+        <h2>What remains</h2>
+        <ol>
+          <li>
+            <b>The capital-spending live proof.</b> Arm the signer (<code
+              >T3_TRADES_LIVE_EXECUTION=1</code
+            >
+            + key), run one real IOC through the full stack, assert the fill appears and a duplicate
+            is rejected. The integration-test scaffold and the gated <code>it.live</code> pattern
+            are in place.
+          </li>
+          <li>
+            <b>The <code>TradingMissionReactor.test.ts</code> layer</b> now needs the full execution
+            stack (<code>TradingLayerLive</code>) rather than <code>TradingCoreLayerLive</code>; the
+            type error is a consequence of the legitimately-widened reactor dependencies. CI owns
+            the full suite.
+          </li>
+          <li>
+            <b>Open-position risk approximation.</b> The budget reader's
+            <code>openPositions</code> term is conservative (stop/fee estimates land with the
+            protection layer in PROMPT-05); pending-entry risk is fully populated. Corrected when
+            protection writes the stop + fee columns.
+          </li>
+          <li>
+            <b>Funding.</b> <code>netFundingUsd</code> is zero until a funding source is wired (no
+            funding table in the POC schema).
+          </li>
+        </ol>
+      </section>
+
+      <footer
+        style="
+          margin-top: 3rem;
+          padding-top: 1rem;
+          border-top: 1px solid var(--border);
+          font-family: var(--mono);
+          font-size: 0.78rem;
+          color: var(--muted);
+        "
+      >
+        Sources: direct source audit of every named file at HEAD <code>382cc0f0c</code> (baseline)
+        and post-wiring. Baseline state verified by a 5-agent parallel exploration swarm; each claim
+        grounded in file:line evidence. &nbsp;—&nbsp; generated 2026-08-01.
+      </footer>
+    </div>
+  </body>
+</html>

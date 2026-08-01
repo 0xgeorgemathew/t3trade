@@ -31,6 +31,7 @@ import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSna
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import { orchestrationHttpApiLayer } from "./orchestration/http.ts";
+import { TradingMissionReactor } from "./trading/TradingMissionReactor.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import {
@@ -95,9 +96,17 @@ const makeCliTestServerConfig = (baseDir: string) =>
     } satisfies ServerConfig.ServerConfig["Service"];
   });
 
+// This test exercises the project-CLI server, not trading; stub the reactor so
+// the orchestration layer doesn't pull in the full execution layer.
+const stubTradingReactor = Layer.succeed(TradingMissionReactor, {
+  start: Effect.void,
+  drain: Effect.void,
+} as unknown as TradingMissionReactor["Service"]);
+
 const makeProjectPersistenceLayer = (config: ServerConfig.ServerConfig["Service"]) =>
   Layer.mergeAll(
     OrchestrationLayerLive.pipe(
+      Layer.provideMerge(stubTradingReactor),
       Layer.provideMerge(RepositoryIdentityResolver.layer),
       Layer.provideMerge(SqlitePersistenceLayerLive),
     ),

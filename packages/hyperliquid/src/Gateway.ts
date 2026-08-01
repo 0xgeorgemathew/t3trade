@@ -84,6 +84,15 @@ export class HyperliquidGateway extends Context.Service<
     readonly getOpenOrders: (
       address: EvmAddress,
     ) => Effect.Effect<ReadonlyArray<AgentOpenOrder>, GatewayError>;
+    /**
+     * The master wallet's current taker (cross) fee rate in basis points, plus
+     * the millisecond timestamp the rate was observed. The caller applies a
+     * staleness window; on a stale/unreadable read it falls back to the
+     * authority's `fallbackTakerFeeBpsPerSide`.
+     */
+    readonly getTakerFeeRateBps: (
+      address: EvmAddress,
+    ) => Effect.Effect<{ feeBps: number; observedAt: number }, GatewayError>;
   }
 >()("@t3tools/hyperliquid/Gateway/HyperliquidGateway") {}
 
@@ -203,6 +212,7 @@ function toPosition(
     unrealisedPnl: num(p.unrealizedPnl),
     cumulativeFunding: num(p.cumulativeFunding),
     marginUsed: num(p.marginUsed),
+    liquidationPx: p.liquidationPx != null ? num(p.liquidationPx) : undefined,
   };
 }
 
@@ -394,6 +404,17 @@ const makeHyperliquidGateway = Effect.gen(function* () {
     return wireOrders.map(toOpenOrder);
   });
 
+  const getTakerFeeRateBps = Effect.fn("HyperliquidGateway.getTakerFeeRateBps")(function* (
+    address: EvmAddress,
+  ) {
+    const masterAddress = yield* requireMasterAddress(address);
+    const fees = yield* info.userFees(String(masterAddress));
+    // userCrossRate is a decimal string (e.g. "0.00045"); convert to bps once.
+    const feeBps = Number(fees.userCrossRate) * 10_000;
+    const observedAt = yield* nowMillis;
+    return { feeBps, observedAt };
+  });
+
   return HyperliquidGateway.of({
     resolveMarket,
     getMarketSnapshot,
@@ -402,6 +423,7 @@ const makeHyperliquidGateway = Effect.gen(function* () {
     getAccountSnapshot,
     getPosition,
     getOpenOrders,
+    getTakerFeeRateBps,
   });
 });
 

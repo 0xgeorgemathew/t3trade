@@ -28,6 +28,7 @@ import {
 } from "./market.ts";
 import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./mission.ts";
 import { TradingId } from "./primitives.ts";
+import { TradingOrderIntent } from "./execution.ts";
 import { momentumStrategyAuthoredFields, MomentumStrategyState } from "./strategy.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
 
@@ -43,6 +44,7 @@ export const TRADING_GET_ORDER_BOOK_TOOL = "trading_get_order_book";
 export const TRADING_GET_ACCOUNT_STATE_TOOL = "trading_get_account_state";
 export const TRADING_GET_POSITION_TOOL = "trading_get_position";
 export const TRADING_GET_OPEN_ORDERS_TOOL = "trading_get_open_orders";
+export const TRADING_REQUEST_ENTRY_TOOL = "trading_request_entry";
 
 // -- shared tool rejection ---------------------------------------------------
 
@@ -164,6 +166,26 @@ export type TradingPublishMomentumStrategyResult = typeof TradingPublishMomentum
 const missionBound = {
   missionId: TradingId,
 } as const;
+
+export const TradingRequestEntryInput = Schema.Struct({
+  ...missionBound,
+  intent: TradingOrderIntent,
+  expectedAuthorityVersion: Schema.Number,
+  activeHarnessRunId: TradingId,
+});
+export type TradingRequestEntryInput = typeof TradingRequestEntryInput.Type;
+
+export const TradingRequestEntryResult = Schema.Struct({
+  executionId: TradingId,
+  status: Schema.Literals(["submitted", "accepted", "rejected"]),
+  cloid: Schema.String,
+  orderResults: Schema.Array(Schema.Unknown),
+  budget: Schema.Struct({
+    remainingCumulativeLossUsd: Schema.Number,
+    exhausted: Schema.Boolean,
+  }),
+});
+export type TradingRequestEntryResult = typeof TradingRequestEntryResult.Type;
 
 export const TradingResolveMarketInput = Schema.Struct({
   ...missionBound,

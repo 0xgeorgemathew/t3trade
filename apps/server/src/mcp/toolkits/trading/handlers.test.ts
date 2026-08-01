@@ -21,6 +21,7 @@ import type { OrchestrationCommand } from "@t3tools/contracts";
 import * as Stream from "effect/Stream";
 
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
+import { ServerConfig } from "../../../config.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { runMigrations } from "../../../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../../../persistence/NodeSqliteClient.ts";
@@ -118,6 +119,7 @@ const TradingMcpLayer = McpHttpServer.layer.pipe(
   Layer.provide(recordingEngine),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(Layer.succeed(ServerEnvironment.ServerEnvironment, fakeEnvironment)),
+  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-mcp-" })),
   Layer.provide(NodeServices.layer),
 );
 

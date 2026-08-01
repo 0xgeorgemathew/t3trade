@@ -48,6 +48,14 @@
       "types": "./src/account-snapshot.ts",
       "import": "./src/account-snapshot.ts"
     },
+    "./execution": {
+      "types": "./src/execution.ts",
+      "import": "./src/execution.ts"
+    },
+    "./loss-accounting": {
+      "types": "./src/lossAccounting.ts",
+      "import": "./src/lossAccounting.ts"
+    },
     "./wakeup": {
       "types": "./src/wakeup.ts",
       "import": "./src/wakeup.ts"

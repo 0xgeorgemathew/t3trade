@@ -150,6 +150,8 @@ export const WirePosition = Schema.Struct({
   unrealizedPnl: Schema.String,
   cumulativeFunding: Schema.optional(Schema.String),
   marginUsed: Schema.String,
+  /** Exchange liquidation price; present once leverage creates one. */
+  liquidationPx: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type WirePosition = typeof WirePosition.Type;
 
@@ -197,6 +199,47 @@ export type WireOpenOrder = typeof WireOpenOrder.Type;
 export const WireOpenOrdersResponse = Schema.Array(WireOpenOrder);
 export type WireOpenOrdersResponse = typeof WireOpenOrdersResponse.Type;
 
+// -- Info: userFills ----------------------------------------------------------
+
+/**
+ * A fill row from `userFills`. The exchange returns one row per fill event
+ * with `closedPnl`, `px`, `side`, `fee`, `coin`, and the matching order/cloid.
+ * Kept permissive: only the fields the reconciler reads are typed strictly.
+ */
+export const WireUserFill = Schema.Struct({
+  coin: Schema.String,
+  side: Schema.Literals(["B", "A"]),
+  px: Schema.String,
+  sz: Schema.String,
+  time: Schema.Number,
+  closedPnl: Schema.optional(Schema.String),
+  fee: Schema.String,
+  oid: Schema.Number,
+  cloid: Schema.optional(Schema.String),
+  feeToken: Schema.optional(Schema.String),
+  dir: Schema.optional(Schema.String),
+  crossed: Schema.optional(Schema.Boolean),
+  hash: Schema.optional(Schema.String),
+  startPosition: Schema.optional(Schema.String),
+});
+export type WireUserFill = typeof WireUserFill.Type;
+
+export const WireUserFillsResponse = Schema.Array(WireUserFill);
+export type WireUserFillsResponse = typeof WireUserFillsResponse.Type;
+
+// -- Info: userFees ------------------------------------------------------------
+
+/**
+ * The `userFees` response. Only the cross (taker) rate is read for the Eq-4 fee
+ * reserve; the rest (daily volume, tiers, discounts) is left permissive since
+ * the POC reserves on a single taker-side rate per side.
+ */
+export const WireUserFeesResponse = Schema.Struct({
+  /** Taker fee rate as a decimal string (e.g. "0.00045" = 4.5 bps). */
+  userCrossRate: Schema.String,
+});
+export type WireUserFeesResponse = typeof WireUserFeesResponse.Type;
+
 // -- WebSocket ----------------------------------------------------------------
 
 /** The subscription payload, shared by subscribe and unsubscribe. */
@@ -233,3 +276,47 @@ export const WireWsMessage = Schema.Struct({
   data: Schema.Unknown,
 });
 export type WireWsMessage = typeof WireWsMessage.Type;
+
+// ---------------------------------------------------------------------------
+// Exchange (write) wire shapes — POST /exchange
+// ---------------------------------------------------------------------------
+
+/**
+ * One per-order status row in a grouped `order` response (§17.2 step 4).
+ *
+ * Hyperliquid returns one status per order in a batch; T3 records each rather
+ * than assuming batch atomicity. `rsp` is the exchange's verbatim status
+ * string (`ok`, `err`, `queued`, `triggered`).
+ */
+export const WireOrderStatusRow = Schema.Struct({
+  cloid: Schema.optional(Schema.String),
+  oid: Schema.optional(Schema.Number),
+  rsp: Schema.String,
+});
+export type WireOrderStatusRow = typeof WireOrderStatusRow.Type;
+
+/**
+ * The exchange's `/exchange` response. Kept permissive: the noop returns
+ * `{"status":"ok","response":{"type":"default"}}` (no `statuses`), while an
+ * order returns `{"response":{"type":"ok","statuses":[...]}}`. Only
+ * `response.statuses` is load-bearing for the per-order inspection (§17.2
+ * step 4); everything else is accepted verbatim.
+ */
+export const WireExchangeResponse = Schema.Struct({
+  /** "ok" | "err" — top-level acceptance for some action types (noop). */
+  status: Schema.optional(Schema.String),
+  /** "default" | "ok" | "err" — the response variant. */
+  response: Schema.Union([
+    Schema.Struct({
+      type: Schema.String,
+      statuses: Schema.optional(Schema.Array(Schema.Union([Schema.String, WireOrderStatusRow]))),
+    }),
+    // The noop returns response: {type: "default"} with no statuses.
+    Schema.Struct({
+      type: Schema.String,
+    }),
+  ]),
+  /// "order" | "cancel" | "noop" | … — echoes the action type.
+  type: Schema.optional(Schema.String),
+});
+export type WireExchangeResponse = typeof WireExchangeResponse.Type;

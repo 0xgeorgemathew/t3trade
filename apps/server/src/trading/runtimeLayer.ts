@@ -1,73 +1,71 @@
 /**
  * The trading services the server runtime provides.
  *
- * The SQL-backed services sit on the migration-035/-036 tables; the hyperliquid
- * transport (Info HTTP client + market resolver + read gateway) sits on the
- * server's `HttpClient`.
+ * The SQL-backed services sit on the migration-035/-036/-037 tables; the
+ * Hyperliquid transport and execution services are composed here so callers
+ * receive a complete trading runtime.
  *
  * @module TradingRuntimeLayer
  */
 import * as Layer from "effect/Layer";
 import { FetchHttpClient } from "effect/unstable/http";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import {
+  HyperliquidExchangeClientLive,
   HyperliquidGatewayLive,
   HyperliquidInfoClientLive,
   HyperliquidMarketResolverLive,
+  HyperliquidNonceCoordinatorLive,
   HyperliquidWebSocketClientLive,
 } from "@t3tools/hyperliquid";
+import { HyperliquidExecutionServiceLive } from "./HyperliquidExecutionService.ts";
+import { HyperliquidReconcilerLive } from "./HyperliquidReconciler.ts";
 import { TradingEventInboxLive } from "./TradingEventInbox.ts";
+import { TradingExecutionGuardLive } from "./TradingExecutionGuard.ts";
+import { InterimSignerConfigLive } from "./InterimSignerConfig.ts";
 import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
+import { TradingPreviewServiceLive } from "./TradingPreviewService.ts";
 import { TradingStrategyServiceLive } from "./TradingStrategyService.ts";
 import { TradingTurnCoordinatorLive } from "./TradingTurnCoordinator.ts";
 import { TradingWakeupComposerLive } from "./TradingWakeupComposer.ts";
 import { TradingWatchServiceLive } from "./TradingWatchService.ts";
+import { TradingBudgetReaderLive } from "./TradingBudgetReader.ts";
+import { TradingFillReconcilerLive } from "./TradingFillReconciler.ts";
 
-/**
- * The Hyperliquid read path, composed bottom-up so each service's build-time
- * dependency is provided at the right level:
- *
- *  1. `FetchHttpClient.layer` → provides `HttpClient.HttpClient`.
- *  2. `HyperliquidInfoClientLive` → yields HttpClient at build; provided (1).
- *  3. `HyperliquidMarketResolverLive` → yields InfoClient at build; provided (2).
- *  4. `HyperliquidGatewayLive` → yields InfoClient + Resolver at build; provided (2)+(3).
- *
- * Only `HyperliquidGateway` surfaces from this layer.
- */
-const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(FetchHttpClient.layer));
+const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
+const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
 const resolverWithInfo = HyperliquidMarketResolverLive.pipe(Layer.provide(infoWithHttp));
-
-export const HyperliquidReadLayerLive = HyperliquidGatewayLive.pipe(
+const gatewayWithRead = HyperliquidGatewayLive.pipe(
   Layer.provide(Layer.mergeAll(infoWithHttp, resolverWithInfo)),
 );
 
-/**
- * The WebSocket client layer. It owns a scoped socket, so it is kept separate
- * from the read layer (which is HTTP-only) and provided to the services that
- * consume streams — currently the watch evaluator.
- */
+export const HyperliquidReadLayerLive = Layer.mergeAll(
+  infoWithHttp,
+  resolverWithInfo,
+  gatewayWithRead,
+);
+
 export const HyperliquidWsLayerLive = HyperliquidWebSocketClientLive;
 
 /**
- * The wakeup composer depends on the gateway, mission, and watch services, so
- * it is built with those provided rather than merged flat.
+ * Mission services that do not require the exchange write path. This layer is
+ * kept for the reactor's narrow unit tests.
  */
+export const TradingCoreLayerLive = Layer.mergeAll(
+  TradingMissionProjectionLive,
+  HyperliquidReadLayerLive,
+  TradingMissionServiceLive,
+  TradingStrategyServiceLive,
+);
+
 const composerWithDeps = TradingWakeupComposerLive.pipe(
   Layer.provide(HyperliquidReadLayerLive),
   Layer.provideMerge(TradingMissionServiceLive),
   Layer.provideMerge(TradingWatchServiceLive),
 );
 
-/**
- * The trading services. The turn coordinator and the wakeup composer depend on
- * the mission, strategy, watch, and inbox services, so each is built with those
- * provided rather than merged flat — this keeps `TradingLayerLive` free of
- * unsatisfied requirements for those internal deps. The coordinator also
- * requires `OrchestrationEngineService` (to dispatch the resumed turn); that
- * service is owned by the orchestration layer and provided at the composition
- * site (server.ts / the engine harness), not re-declared here.
- */
 const coordinatorWithDeps = TradingTurnCoordinatorLive.pipe(
   Layer.provideMerge(TradingMissionServiceLive),
   Layer.provideMerge(TradingStrategyServiceLive),
@@ -75,13 +73,40 @@ const coordinatorWithDeps = TradingTurnCoordinatorLive.pipe(
   Layer.provideMerge(composerWithDeps),
 );
 
+const exchangeWithHttp = HyperliquidExchangeClientLive.pipe(Layer.provide(httpWithNode));
+
+/**
+ * The full trading layer. Foundations are built first, then supplied to the
+ * preview/budget consumers and finally to the execution consumers.
+ */
+const TradingFoundation = Layer.mergeAll(
+  TradingCoreLayerLive,
+  InterimSignerConfigLive,
+  exchangeWithHttp,
+  HyperliquidNonceCoordinatorLive(),
+  HyperliquidWebSocketClientLive,
+);
+
+const TradingWithPreview = Layer.mergeAll(TradingPreviewServiceLive, TradingBudgetReaderLive).pipe(
+  Layer.provideMerge(TradingFoundation),
+);
+
+const TradingExecutionCore = Layer.mergeAll(
+  HyperliquidExecutionServiceLive,
+  HyperliquidReconcilerLive,
+).pipe(Layer.provideMerge(TradingWithPreview));
+
+const TradingExecutionLayerLive = Layer.mergeAll(
+  TradingExecutionGuardLive,
+  TradingFillReconcilerLive,
+).pipe(Layer.provideMerge(TradingExecutionCore));
+
 export const TradingLayerLive = Layer.mergeAll(
   TradingMissionServiceLive,
   TradingStrategyServiceLive,
   TradingWatchServiceLive,
   TradingEventInboxLive,
   coordinatorWithDeps,
-  TradingMissionProjectionLive,
-  HyperliquidReadLayerLive,
+  TradingExecutionLayerLive,
   HyperliquidWsLayerLive,
-);
+).pipe(Layer.provideMerge(infoWithHttp));

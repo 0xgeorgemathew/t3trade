@@ -21,6 +21,14 @@ export type TradingMarginMode = typeof TradingMarginMode.Type;
 export const TradingAuthorityValidUntil = Schema.Union([Schema.Literal("revoked"), UnixMillis]);
 export type TradingAuthorityValidUntil = typeof TradingAuthorityValidUntil.Type;
 
+export const TradingRiskPolicy = Schema.Struct({
+  feeRateSource: Schema.Literal("hyperliquid_user_fees"),
+  fallbackTakerFeeBpsPerSide: Schema.Number,
+  stopSlippageReserveBps: Schema.Number,
+  positivePnlExpandsLossBudget: Schema.Literal(false),
+});
+export type TradingRiskPolicy = typeof TradingRiskPolicy.Type;
+
 export const TradingAuthority = Schema.Struct({
   allocatedCapitalUsd: PositiveUsdAmount,
   allowedDirections: Schema.Array(TradingDirection),
@@ -37,17 +45,29 @@ export const TradingAuthority = Schema.Struct({
   allowReentry: Schema.Boolean,
   allowDirectionReversal: Schema.Boolean,
 
+  /**
+   * The fee/slippage policy the budget reserve and preview apply. Defaults to
+   * `pocRiskPolicyDefaults` when the mission creator does not override it.
+   */
+  riskPolicy: TradingRiskPolicy,
+
   validUntil: TradingAuthorityValidUntil,
 });
 export type TradingAuthority = typeof TradingAuthority.Type;
 
-export const TradingRiskPolicy = Schema.Struct({
-  feeRateSource: Schema.Literal("hyperliquid_user_fees"),
-  fallbackTakerFeeBpsPerSide: Schema.Number,
-  stopSlippageReserveBps: Schema.Number,
-  positivePnlExpandsLossBudget: Schema.Literal(false),
-});
-export type TradingRiskPolicy = typeof TradingRiskPolicy.Type;
+/**
+ * POC risk-policy defaults - spec §10.4.
+ *
+ * Taker fee rate sourced from Hyperliquid `userFees`, falling back to 5 bps per
+ * side when the read is stale/unreadable. Stop-slippage reserve is 25 bps of
+ * protected notional. Positive PnL does not expand the loss budget (§16.2).
+ */
+export const pocRiskPolicyDefaults: TradingRiskPolicy = {
+  feeRateSource: "hyperliquid_user_fees",
+  fallbackTakerFeeBpsPerSide: 5,
+  stopSlippageReserveBps: 25,
+  positivePnlExpandsLossBudget: false,
+};
 
 /**
  * POC authority defaults - spec §10.4.
@@ -76,12 +96,7 @@ export const pocAuthorityDefaults = (allocatedCapitalUsd: number): TradingAuthor
   // power the user must grant explicitly via an authority patch.
   allowDirectionReversal: false,
 
+  riskPolicy: pocRiskPolicyDefaults,
+
   validUntil: "revoked",
 });
-
-export const pocRiskPolicyDefaults: TradingRiskPolicy = {
-  feeRateSource: "hyperliquid_user_fees",
-  fallbackTakerFeeBpsPerSide: 5,
-  stopSlippageReserveBps: 25,
-  positivePnlExpandsLossBudget: false,
-};

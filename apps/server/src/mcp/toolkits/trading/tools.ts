@@ -29,6 +29,8 @@ import {
   TradingRegisterWatchInput,
   TradingRegisterWatchResult,
   TradingResolveMarketInput,
+  TradingRequestEntryInput,
+  TradingRequestEntryResult,
   TradingScheduleReassessmentInput,
   TradingScheduleReassessmentResult,
   TradingToolRejectedError,
@@ -257,6 +259,20 @@ export const TradingCancelWatchTool = Tool.make("trading_cancel_watch", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
+export const TradingRequestEntryTool = Tool.make("trading_request_entry", {
+  description:
+    "Submit one execution intent for the bound mission. The server validates the authority version, harness run, mandatory stop information, budget, and exchange freshness before signing.",
+  parameters: TradingRequestEntryInput,
+  success: TradingRequestEntryResult,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Request trading entry")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
 export const TradingToolkit = Toolkit.make(
   TradingGetMissionTool,
   TradingPublishMomentumStrategyTool,
@@ -271,4 +287,5 @@ export const TradingToolkit = Toolkit.make(
   TradingScheduleReassessmentTool,
   TradingListWatchesTool,
   TradingCancelWatchTool,
+  TradingRequestEntryTool,
 );

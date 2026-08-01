@@ -40,6 +40,10 @@ import { TradingLayerLive } from "./runtimeLayer.ts";
 const THREAD_ID = ThreadId.make("thread-trading-reactor");
 const MISSION_ID = TradingMissionId.make("mission-trading-reactor");
 
+// The reactor now runs the §17.2 write side (preview → submit → reconcile) and
+// the §18.2 startup reconcile, so its `make` depends on the execution services
+// (guard, execution, reconciler, budget reader, signer). Provide the full
+// trading layer rather than just the core mission layer.
 const TestLayer = TradingMissionReactorLive.pipe(
   Layer.provideMerge(TradingLayerLive),
   Layer.provideMerge(OrchestrationEngineLive),

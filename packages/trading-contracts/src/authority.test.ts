@@ -27,6 +27,12 @@ describe("pocAuthorityDefaults (§10.4 worked example)", () => {
       allowPartialReduction: true,
       allowReentry: true,
       allowDirectionReversal: false,
+      riskPolicy: {
+        feeRateSource: "hyperliquid_user_fees",
+        fallbackTakerFeeBpsPerSide: 5,
+        stopSlippageReserveBps: 25,
+        positivePnlExpandsLossBudget: false,
+      },
       validUntil: "revoked",
     });
   });

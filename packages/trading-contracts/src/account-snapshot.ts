@@ -36,6 +36,8 @@ export const AccountPosition = Schema.Struct({
   cumulativeFunding: Schema.Number,
   /** Margin allocated to this position in USD. */
   marginUsed: UsdAmount,
+  /** Exchange liquidation price, when the exchange reports one. */
+  liquidationPx: Schema.optional(Price),
 });
 export type AccountPosition = typeof AccountPosition.Type;
 
