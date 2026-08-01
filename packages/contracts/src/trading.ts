@@ -37,6 +37,58 @@ import {
 export const TradingMissionId = Schema.String.pipe(Schema.brand("TradingMissionId"));
 export type TradingMissionId = typeof TradingMissionId.Type;
 
+// -- execution read-model views (PROMPT-04 Step 10) --------------------------
+
+/**
+ * The order-intent card: a single in-flight execution record the UI shows while
+ * an order is being signed/submitted/inspected. Null once the execution settles.
+ */
+export const TradingExecutionView = Schema.Struct({
+  executionId: Schema.String,
+  cloid: Schema.String,
+  actionType: Schema.String,
+  side: Schema.Literals(["buy", "sell"]),
+  market: Schema.String,
+  size: Schema.Number,
+  limitPrice: Schema.Number,
+  timeInForce: Schema.Literals(["ioc", "gtc"]),
+  reduceOnly: Schema.Boolean,
+  status: Schema.String,
+  updatedAt: IsoDateTime,
+});
+export type TradingExecutionView = typeof TradingExecutionView.Type;
+
+/**
+ * A fill receipt: one reconciled fill the UI shows per execution (timestamp,
+ * order id/cloid, average fill, fees).
+ */
+export const TradingFillView = Schema.Struct({
+  cloid: Schema.optional(Schema.String),
+  orderId: Schema.Number,
+  market: Schema.String,
+  side: Schema.Literals(["buy", "sell"]),
+  filledSize: Schema.Number,
+  avgFillPrice: Schema.Number,
+  feeUsd: Schema.Number,
+  tradedAt: IsoDateTime,
+});
+export type TradingFillView = typeof TradingFillView.Type;
+
+/**
+ * The live position card: entry, mark (unrealised PnL), size, stop
+ * (protectedSize), from reconciled projections. Null when flat.
+ */
+export const TradingPositionView = Schema.Struct({
+  market: Schema.String,
+  size: Schema.Number,
+  entryPrice: Schema.optional(Schema.Number),
+  unrealisedPnl: Schema.Number,
+  marginUsed: Schema.Number,
+  protectedSize: Schema.Number,
+  observedAt: IsoDateTime,
+});
+export type TradingPositionView = typeof TradingPositionView.Type;
+
 // -- read model --------------------------------------------------------------
 
 /**
@@ -65,6 +117,15 @@ export const OrchestrationTradingMission = Schema.Struct({
 
   control: TradingMissionControl,
   harness: TradingHarnessBinding,
+
+  // PROMPT-04 execution surfaces. Optional so a mission without execution
+  // history still decodes — the UI renders the cards only when present.
+  /** The order-intent card while an execution is in flight (§10). */
+  inFlightExecution: Schema.NullOr(TradingExecutionView),
+  /** Recent fill receipts (§10), newest first. */
+  recentFills: Schema.Array(TradingFillView),
+  /** The live position card from reconciled projections (§10). Null when flat. */
+  position: Schema.NullOr(TradingPositionView),
 
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

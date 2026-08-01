@@ -115,6 +115,13 @@ const toMission = (row: ProjectionRow): OrchestrationTradingMission =>
     watches: decodeWatchesJson(row.watches_json),
     control: decodeControlJson(row.control_json),
     harness: decodeHarnessJson(row.harness_json),
+    // PROMPT-04 execution surfaces. The projection table (036) does not yet
+    // carry these columns; they default to null/empty until a join against the
+    // migration-037 execution tables (or a 036 extension) populates them. The
+    // UI renders the cards only when these are non-null.
+    inFlightExecution: null,
+    recentFills: [],
+    position: null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }) as OrchestrationTradingMission;
