@@ -1,0 +1,821 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PROMPT-04 · Completion Review — Execution &amp; Reconciliation</title>
+    <style>
+      :root {
+        --bg: #0b0d10;
+        --panel: #14181d;
+        --panel-2: #1b2128;
+        --ink: #e6edf3;
+        --muted: #8b949e;
+        --accent: #58a6ff;
+        --green: #3fb950;
+        --amber: #d29922;
+        --red: #f85149;
+        --border: #2a3038;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          15px/1.55 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          system-ui,
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap {
+        max-width: 1000px;
+        margin: 0 auto;
+        padding: 2.5rem 1.25rem 5rem;
+      }
+      header {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 1.5rem;
+        margin-bottom: 2rem;
+      }
+      h1 {
+        font-size: 1.75rem;
+        margin: 0 0 0.4rem;
+        letter-spacing: -0.01em;
+      }
+      h2 {
+        font-size: 1.2rem;
+        margin: 2.6rem 0 0.9rem;
+        padding-bottom: 0.4rem;
+        border-bottom: 1px solid var(--border);
+      }
+      h3 {
+        font-size: 1rem;
+        margin: 1.4rem 0 0.5rem;
+        color: var(--accent);
+      }
+      .lede {
+        color: var(--muted);
+        font-size: 0.95rem;
+        max-width: 78ch;
+      }
+      code,
+      pre {
+        font-family: var(--mono);
+        font-size: 0.85em;
+      }
+      code {
+        background: var(--panel-2);
+        padding: 0.1em 0.4em;
+        border-radius: 4px;
+        color: var(--accent);
+      }
+      pre {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.9rem 1rem;
+        overflow-x: auto;
+        line-height: 1.5;
+      }
+      pre code {
+        background: none;
+        padding: 0;
+        color: var(--ink);
+      }
+      .meta {
+        display: flex;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+        color: var(--muted);
+        font-size: 0.82rem;
+        margin-top: 0.7rem;
+      }
+      .meta b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      /* verdict band */
+      .verdict {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0.8rem;
+        margin: 1.5rem 0;
+      }
+      @media (max-width: 720px) {
+        .verdict {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+      .vcard {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 1rem 1.1rem;
+      }
+      .vcard .n {
+        font-size: 2.2rem;
+        font-weight: 600;
+        line-height: 1;
+        font-family: var(--mono);
+      }
+      .vcard .l {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+        margin-top: 0.5rem;
+      }
+      .vcard.green .n {
+        color: var(--green);
+      }
+      .vcard.amber .n {
+        color: var(--amber);
+      }
+      .vcard.red .n {
+        color: var(--red);
+      }
+      .vcard.blue .n {
+        color: var(--accent);
+      }
+
+      /* pills */
+      .pill {
+        font-size: 0.68rem;
+        font-weight: 600;
+        padding: 0.14em 0.6em;
+        border-radius: 999px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        white-space: nowrap;
+        display: inline-block;
+      }
+      .pill.done {
+        background: rgba(63, 185, 80, 0.15);
+        color: var(--green);
+        border: 1px solid rgba(63, 185, 80, 0.3);
+      }
+      .pill.live {
+        background: rgba(88, 166, 255, 0.15);
+        color: var(--accent);
+        border: 1px solid rgba(88, 166, 255, 0.3);
+      }
+      .pill.gap {
+        background: rgba(248, 81, 73, 0.15);
+        color: var(--red);
+        border: 1px solid rgba(248, 81, 73, 0.3);
+      }
+      .pill.partial {
+        background: rgba(210, 153, 34, 0.15);
+        color: var(--amber);
+        border: 1px solid rgba(210, 153, 34, 0.3);
+      }
+      .pill.next {
+        background: rgba(139, 148, 158, 0.15);
+        color: var(--muted);
+        border: 1px solid rgba(139, 148, 158, 0.3);
+      }
+
+      .gate {
+        border: 1px solid var(--amber);
+        background: rgba(210, 153, 34, 0.08);
+        border-radius: 10px;
+        padding: 1rem 1.2rem;
+        margin: 1.2rem 0;
+      }
+      .gate.bad {
+        border-color: var(--red);
+        background: rgba(248, 81, 73, 0.08);
+      }
+      .gate.ok {
+        border-color: var(--green);
+        background: rgba(63, 185, 80, 0.08);
+      }
+      .gate p {
+        margin: 0.25rem 0;
+      }
+      .gate ul {
+        margin: 0.4rem 0 0;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.86rem;
+        margin: 0.5rem 0;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.55rem 0.7rem;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 600;
+        font-size: 0.74rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      td.mono,
+      th.mono {
+        font-family: var(--mono);
+        font-size: 0.78rem;
+      }
+      tr:hover td {
+        background: rgba(255, 255, 255, 0.015);
+      }
+
+      .toc {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1.2rem;
+        font-size: 0.84rem;
+        margin-top: 1rem;
+      }
+      .toc a {
+        color: var(--muted);
+        text-decoration: none;
+      }
+      .toc a:hover {
+        color: var(--accent);
+      }
+
+      ul,
+      ol {
+        padding-left: 1.2rem;
+      }
+      li {
+        margin: 0.35rem 0;
+      }
+      li::marker {
+        color: var(--muted);
+      }
+      .path {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.76rem;
+        word-break: break-all;
+      }
+      .evi {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.74rem;
+        margin-top: 0.2rem;
+      }
+
+      details {
+        margin: 0.7rem 0;
+      }
+      summary {
+        cursor: pointer;
+        color: var(--accent);
+        font-size: 0.88rem;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>PROMPT-04 · Completion Review</h1>
+        <p class="lede">
+          Independent audit of the Execution &amp; Reconciliation phase against the original
+          <code>market-bender.pages.dev/prompts#prompt-04</code> spec. The prior on-disk report
+          (<code>prompt-04-session-report-2026-08-01.html</code>) was a
+          <b>mid-session narrative</b>: it lists 5 items as remaining, and later commits on the same
+          branch attempted them. This review verifies the <i>actual</i> state of the code at
+          <code>382cc0f0c</code> and measures it against all 11 implementation steps and 5
+          acceptance criteria.
+        </p>
+        <div class="meta">
+          <span>Branch: <b>feature/trading-04-execution</b></span>
+          <span>HEAD: <b>382cc0f0c</b></span>
+          <span>Baseline: <b>0940e4cb1</b></span>
+          <span>13 commits on branch</span>
+          <span>Date: 2026-08-01</span>
+        </div>
+        <nav class="toc">
+          <a href="#verdict">Verdict</a>
+          <a href="#steps">11-step audit</a>
+          <a href="#accept">Acceptance criteria</a>
+          <a href="#flow">End-to-end flow</a>
+          <a href="#inert">Inert components</a>
+          <a href="#remain">What remains</a>
+          <a href="#recs">Recommendations</a>
+        </nav>
+      </header>
+
+      <section id="verdict">
+        <h2>Headline verdict</h2>
+        <div class="verdict">
+          <div class="vcard green">
+            <div class="n">7/11</div>
+            <div class="l">Steps complete &amp; wired</div>
+          </div>
+          <div class="vcard amber">
+            <div class="n">2/11</div>
+            <div class="l">Built but inert</div>
+          </div>
+          <div class="vcard red">
+            <div class="n">2/11</div>
+            <div class="l">Not wired</div>
+          </div>
+          <div class="vcard blue">
+            <div class="n">1/5</div>
+            <div class="l">Acceptance criteria fully met</div>
+          </div>
+        </div>
+        <div class="gate ok">
+          <p>
+            <b>What is genuinely done and proven:</b> the byte-critical foundation — execution
+            contracts, nonce lane, deterministic cloid, msgpack + EIP-712 signing, exchange client,
+            order mapper, the six loss-budget equations, the 17-item preview checklist, and the six
+            §18 tables. The signing path is <b>live-accepted by the Hyperliquid testnet</b> (a
+            signed <code>noop</code> returned <code>{"status":"ok"}</code>). Risk is reserved before
+            signing; retries reuse a deterministic cloid + idempotency key.
+          </p>
+        </div>
+        <div class="gate bad">
+          <p><b>What is NOT done — and is load-bearing for the phase's stated purpose:</b></p>
+          <ul>
+            <li>
+              <b>No end-to-end flow.</b> The decider emits only 4 trading commands (mission
+              lifecycle). There is <b>no</b> <code>trading_place_order</code> /
+              <code>trading.execution.requested</code> command or event, and the reactor never calls
+              <code>submitOrder</code>. A harness entry request cannot reach the exchange through T3
+              orchestration today.
+            </li>
+            <li>
+              <b>Reconciliation is dead code.</b> <code>HyperliquidReconciler</code> reads canonical
+              fills/position/orders correctly, but <b>none</b> of its 8 §18.2 triggers is ever
+              fired. <code>submitOrder</code> does not reconcile after submission;
+              <code>reduceOnlyClose</code> stubs it with <code>void reconciler;</code>
+            </li>
+            <li>
+              <b>UI cards render nothing.</b> The three cards exist and are correctly wired to the
+              projection, but the projection hard-codes them to <code>null</code>/<code>[]</code>.
+              No join reads the migration-037 tables.
+            </li>
+            <li>
+              <b>Exhaustion enforcement is unwired at runtime.</b> The policy is correct and
+              enforced at preview, but the guard service (<code>guardResume</code>,
+              <code>blockForExhaustion</code>) has zero live callers — a blocked mission can be
+              resumed without revalidation.
+            </li>
+          </ul>
+          <p style="margin-top: 0.6rem">
+            <b>Net:</b> PROMPT-04 delivers a correct, tested, live-proven <i>execution library</i>,
+            but not yet an <i>execution feature</i>. The wiring that turns the library into the
+            phase's promised behavior is the remaining work.
+          </p>
+        </div>
+      </section>
+
+      <section id="steps">
+        <h2>Step-by-step audit (11 implementation steps)</h2>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 34%">Step</th>
+              <th style="width: 14%">Status</th>
+              <th>Evidence &amp; notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <b>1. Contracts &amp; Config</b><br /><span class="path"
+                  >execution.ts · InterimSignerConfig.ts</span
+                >
+              </td>
+              <td><span class="pill done">complete</span></td>
+              <td>
+                All §14.4–18 records present as Schema structs (<code>TradingOrderIntent</code>,
+                <code>TradingWireOrder</code>, <code>TradingExecutionRecord</code>,
+                <code>TradingFill</code>, <code>TradingPositionSnapshot</code>,
+                <code>TradingRiskReservation</code>, <code>TradingLossBudget</code>). Signer is
+                server-only, fail-closed, env+file fallback, key held as raw bytes, never logged,
+                provably excluded from all client bundles (apps/web, desktop, mobile, marketing).
+                <span class="evi">execution.ts:88-411 · InterimSignerConfig.ts:56-196</span>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <b>2. Nonce Coordinator</b><br /><span class="path">NonceCoordinator.ts</span>
+              </td>
+              <td><span class="pill done">complete</span></td>
+              <td>
+                Single <code>Semaphore(1)</code> lane, monotonic nonces
+                (<code>max(now,last+1)</code>), Unix-ms fast-forward, recovery-hint seeding,
+                success-only commit. 50-concurrent → 50-distinct test passes. Minor: persist sink
+                defaults to no-op (no durable consumer wired), but the primitive is correct.
+                <span class="evi">NonceCoordinator.ts:94-134 · test :65-90</span>
+              </td>
+            </tr>
+            <tr>
+              <td><b>3. Deterministic Cloid</b><br /><span class="path">Cloid.ts</span></td>
+              <td><span class="pill done">complete</span></td>
+              <td>
+                SHA-256(missionId ‖ strategyVersion ‖ executionSequence ‖ actionType), first 16
+                bytes, bare 32-char hex. 25,000-input (5,000 seqs × 5 actions) collision-free test
+                passes. Field-separator boundary tested. Consumed by <code>OrderMapper</code>.
+                <span class="evi">Cloid.ts:54-65 · test :59-73</span>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <b>4. Preview &amp; Validation</b><br /><span class="path"
+                  >TradingPreviewService.ts</span
+                >
+              </td>
+              <td><span class="pill partial">mostly</span></td>
+              <td>
+                All 17 §16.3 items encoded as an ordered, short-circuiting validator. Risk
+                <b>reserved before signing</b> (persisted in
+                <code>HyperliquidExecutionService.ts:333-350</code>). 15 of 17 items have rejection
+                tests. <b>Gap:</b> items 4 (<code>authority_version_current</code>) and 8
+                (<code>execution_wallet_approved</code>) are pass-through
+                <code>return Effect.void</code> no-ops — the checklist claims enforcement it does
+                not perform. <span class="evi">TradingPreviewService.ts:129-132,151-154</span>
+              </td>
+            </tr>
+            <tr>
+              <td><b>5. Order Mapping</b><br /><span class="path">OrderMapper.ts</span></td>
+              <td><span class="pill done">complete</span></td>
+              <td>
+                IOC buy = best ask + slippage, sell = best bid − slippage; GTC resting;
+                cancel-by-cloid. 2s BBO-freshness gate, szDecimals truncation, 5-sig-fig price
+                rounding, min-notional check. Stale-BBO rejection tested against fixtures. Minor:
+                missing-bid and positive min-notional boundary not independently tested.
+                <span class="evi">OrderMapper.ts:88-137 · test :34-117</span>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <b>6. Submission Flow</b><br /><span class="path"
+                  >HyperliquidExecutionService.ts</span
+                >
+              </td>
+              <td><span class="pill partial">partial</span></td>
+              <td>
+                §17.2 phases 1–8 present and ordered: resolve signer → market+BBO → preview → map →
+                <b>persist record + reservation before signing</b> → nonce-lane sign → POST →
+                inspect every per-order status → update record. <b>Gap:</b> step 9 ("query canonical
+                state → reconcile") is absent — <code>submitOrder</code> returns after updating the
+                record without reconciling. Idempotency key is deterministic; cloid reuse relies on
+                <code>mapOrder</code> determinism (verified).
+                <span class="evi">HyperliquidExecutionService.ts:244-402</span>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <b>7. Reconciliation</b><br /><span class="path">HyperliquidReconciler.ts</span>
+              </td>
+              <td><span class="pill gap">not wired</span></td>
+              <td>
+                The reconciler is a correct leaf primitive (reads position/orders/fills via master
+                address in parallel; persists position snapshot).
+                <b>But all 8 §18.2 triggers are dead:</b> zero call sites in source.
+                <code>submitOrder</code> never reconciles; no fill handler, no
+                reconnect/startup/periodic hook. Only 1 of 3 reconciled entities (position) reaches
+                the DB; fills/orders persistence deferred. <b>No unit tests.</b>
+                <span class="evi"
+                  >HyperliquidReconciler.ts:50-59,263-295 · <code>void reconciler;</code> at
+                  TradingExecutionGuard.ts:166</span
+                >
+              </td>
+            </tr>
+            <tr>
+              <td><b>8. Loss Accounting</b><br /><span class="path">lossAccounting.ts</span></td>
+              <td><span class="pill done">complete</span></td>
+              <td>
+                All six §16.2 equations as pure functions. Paid fees enter only via Eq 1 (no
+                structural double-count). 11 tests; 4 core equations run 200 iterations each.
+                <b>Minor gaps:</b> <code>paidFeesUsd</code> field is vestigial (unused/untested); no
+                "fallback fee reserve" construct exists (only a fee-<i>rate</i> fallback in
+                <code>authority.ts</code>).
+                <span class="evi">lossAccounting.ts:38-139 · test 11 blocks</span>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <b>9. Exhaustion Enforcement</b><br /><span class="path"
+                  >TradingExecutionGuard.ts</span
+                >
+              </td>
+              <td><span class="pill partial">partial</span></td>
+              <td>
+                Pure policy <code>isPermittedUnderExhaustion</code> correct (allows
+                cancel/reduce/close, blocks the rest). <b>Live at preview</b> (inline check). But
+                the guard service is dead code: <code>guardAction</code>,
+                <code>blockForExhaustion</code>, <code>guardResume</code>,
+                <code>reduceOnlyClose</code> have <b>zero non-test callers</b>. No auto-block when
+                budget hits zero; reactor resumes blocked missions without revalidation (req. d
+                unmet at runtime).
+                <span class="evi">TradingExecutionGuard.ts:96-167 · reactor :109-125</span>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <b>10. Position Reduction</b><br /><span class="path"
+                  >TradingExecutionGuard.reduceOnlyClose</span
+                >
+              </td>
+              <td><span class="pill gap">stub</span></td>
+              <td>
+                <code>reduceOnlyClose</code> routes the close order through
+                <code>submitOrder</code> (good), but the reconcile-to-flat step is a deliberate
+                no-op: <code>void reconciler;</code> with a comment admitting "Full wiring lands
+                with the reactor integration." Never called by any live path regardless.
+                <span class="evi">TradingExecutionGuard.ts:147-167</span>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <b>11. UI Rendering</b><br /><span class="path"
+                  >MissionThreadPanel.tsx · TradingMissionProjection.ts</span
+                >
+              </td>
+              <td><span class="pill gap">inert</span></td>
+              <td>
+                Three cards (<code>OrderIntentCard</code>, <code>FillReceipt</code>,
+                <code>PositionCard</code>) exist and read from the projection (dumb client — correct
+                architecture).
+                <b>But the projection hard-codes them to <code>null</code>/<code>[]</code></b
+                >; no join reads the 037 tables.
+                <b>Liquidation field absent end-to-end</b> (contract, table, card). Order-intent
+                card lacks validation status. No UI tests.
+                <span class="evi"
+                  >TradingMissionProjection.ts:118-124 · MissionThreadPanel.tsx:74-128</span
+                >
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="accept">
+        <h2>Acceptance criteria (5)</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Criterion (from the prompt)</th>
+              <th style="width: 14%">Status</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>The testnet accepts a validated and signed entry request</td>
+              <td><span class="pill live">proven</span></td>
+              <td>
+                Live signed <code>noop</code> returned <code>{"status":"ok"}</code>. A real order
+                uses the identical, byte-correct signing path (uint256 chainId, 32-byte padded
+                address, <code>{r,s,v:27|28}</code> object form). Note: the smoke test asserts
+                <code>response.type==="default"</code>, not <code>status==="ok"</code> directly —
+                minor. <span class="evi">executionSmoke.test.ts:72-88</span>
+              </td>
+            </tr>
+            <tr>
+              <td>Fills and positions return through the T3 orchestration layer</td>
+              <td><span class="pill gap">not met</span></td>
+              <td>
+                The reconciler can read them, but it is never invoked, and the projection never
+                surfaces them. No orchestration path exists from a fill event to the UI. This is the
+                core unmet criterion.
+              </td>
+            </tr>
+            <tr>
+              <td>Retries cannot duplicate the order</td>
+              <td><span class="pill done">met</span></td>
+              <td>
+                Deterministic cloid (SHA-256, first 16 bytes) + deterministic
+                <code>idempotency_key</code> (<code>idem_${missionId}_${seq}_${actionType}</code>) +
+                <code>ON CONFLICT(idempotency_key) DO UPDATE</code> on the persisted record +
+                exchange cloid dedup.
+                <span class="evi"
+                  >HyperliquidExecutionService.ts:312 · 037_TradingExecution.ts:31</span
+                >
+              </td>
+            </tr>
+            <tr>
+              <td>Loss-budget exhaustion blocks exposure while keeping protection live</td>
+              <td><span class="pill partial">partial</span></td>
+              <td>
+                Exposure is blocked at <i>preview</i> (inline <code>evaluateLossBudget</code> +
+                <code>isPermittedUnderExhaustion</code>). Protection (reduce-only) is permitted by
+                the policy. But runtime enforcement is incomplete: no auto-<code
+                  >blockForExhaustion</code
+                >
+                trigger, and the reactor does not call <code>guardResume</code> — so the "block" is
+                advisory at the submission gate, not a mission-state transition.
+              </td>
+            </tr>
+            <tr>
+              <td>The six cumulative-loss property equations hold under property tests</td>
+              <td><span class="pill done">met</span></td>
+              <td>
+                11 tests; equations 1–6 each tested at 200 iterations with a seeded PRNG.
+                <span class="evi">lossAccounting.test.ts</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="flow">
+        <h2>The missing end-to-end flow (the decisive gap)</h2>
+        <p class="lede">
+          This is the single most important finding. PROMPT-04's purpose is to "turn the resumed
+          harness's typed entry requests into validated, signed, idempotent orders." That sentence
+          describes a flow <i>from the harness to the exchange</i>. The flow does not exist yet.
+        </p>
+
+        <h3>What the spec promises</h3>
+        <pre><code>harness entry request
+  → decider: trading.execution.requested event
+  → reactor: TradingExecutionGuard.guardAction
+  → HyperliquidExecutionService.submitOrder  (preview → map → persist → sign → POST → inspect)
+  → HyperliquidReconciler.reconcile          (canonical fills/position/orders → DB)
+  → projection refresh                       (→ UI cards render real data)</code></pre>
+
+        <h3>What actually exists</h3>
+        <pre><code>harness entry request
+  → ✗ no decider command/event for execution
+  → reactor handles ONLY mission create/pause/resume/revoke/status/strategy
+  → HyperliquidExecutionService.submitOrder is callable only by a direct Effect call
+  → the sole in-repo caller is TradingExecutionGuard.reduceOnlyClose
+  → reduceOnlyClose has NO caller, and stubs the reconcile step
+  → projection hard-codes execution surfaces to null/[]  → UI cards never render</code></pre>
+
+        <div class="gate">
+          <p>
+            <b>The decider is the seam.</b>
+            <code>apps/server/src/orchestration/decider.ts:1266</code> ends with
+            <code>default: command satisfies never</code> — adding execution commands is a compile
+            error until the decider is extended. This is an intentional, type-safe boundary. The
+            prior report explicitly defers <code>trading_place_order</code> /
+            <code>trading_resume_mission</code> to PROMPT-05, but that deferral is
+            <b>not visible in the prompt text itself</b> — it is a scoping decision made during the
+            session.
+          </p>
+        </div>
+      </section>
+
+      <section id="inert">
+        <h2>Inert components — built, layered, never called</h2>
+        <p class="lede">
+          Three services are correctly constructed and composed into
+          <code>TradingLayerLive</code> (<code>runtimeLayer.ts:87-92</code>), so they are
+          instantiated at runtime — but no live code path invokes them. They are the difference
+          between "the library works" and "the feature works."
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Component</th>
+              <th class="mono">File</th>
+              <th>Live callers (excl. tests/layer)</th>
+              <th>Impact</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>HyperliquidReconciler</code></td>
+              <td class="mono">HyperliquidReconciler.ts</td>
+              <td>
+                <span class="pill gap">0</span> — <code>void reconciler;</code> in the one place
+                that should call it
+              </td>
+              <td>No convergence to canonical state after submissions/fills/disconnects</td>
+            </tr>
+            <tr>
+              <td><code>TradingExecutionGuard</code> (guard/block/resume/reduceOnlyClose)</td>
+              <td class="mono">TradingExecutionGuard.ts</td>
+              <td><span class="pill gap">0</span></td>
+              <td>No runtime exhaustion state transitions; blocked missions resume unchecked</td>
+            </tr>
+            <tr>
+              <td><code>HyperliquidExecutionService.submitOrder</code></td>
+              <td class="mono">HyperliquidExecutionService.ts</td>
+              <td>
+                <span class="pill gap">1 (dead)</span> — only <code>reduceOnlyClose</code>, itself
+                uncalled
+              </td>
+              <td>No path from decider/reactor to a signed order</td>
+            </tr>
+          </tbody>
+        </table>
+        <p style="margin-top: 0.8rem">
+          <b>Note:</b> the live-gated signing path (<code>executionSmoke.test.ts</code>)
+          <i>does</i> exercise <code>signL1ActionForWire</code> +
+          <code>exchange.submit</code> directly — that is the live-accepted proof. The inertness is
+          about the <i>orchestration</i> path, not the crypto.
+        </p>
+      </section>
+
+      <section id="remain">
+        <h2>What remains (prioritized)</h2>
+        <ol>
+          <li>
+            <b>Wire the execution command/event into the decider</b> (the compile-enforced
+            <code>never</code> seam). Add <code>trading.execution.requested</code> (or
+            <code>trading_place_order</code>) and a reactor handler that calls
+            <code>guardAction</code> → <code>submitOrder</code>.
+            <i>This unblocks the end-to-end flow and acceptance criterion #2.</i>
+          </li>
+          <li>
+            <b>Fire the reconciler from <code>submitOrder</code></b> on the
+            <code>after_submission</code> trigger, and add the <code>after_fill</code> /
+            <code>websocket_reconnect</code> / <code>periodic_while_position_open</code> hooks.
+            Persist fills + open orders, not just the position snapshot.
+            <i>Add the missing unit tests.</i>
+          </li>
+          <li>
+            <b>Extend the projection</b> (<code>TradingMissionProjection.refresh</code> + a 036
+            column extension or a join to the 037 tables) so the three UI cards render real data.
+            Add <code>liquidationPrice</code> to the position contract/table/card.
+          </li>
+          <li>
+            <b>Wire runtime exhaustion enforcement:</b> call <code>blockForExhaustion</code> when
+            the budget hits zero, and gate mission resume through <code>guardResume</code> in the
+            reactor.
+          </li>
+          <li>
+            <b>Finish <code>reduceOnlyClose</code></b> — replace <code>void reconciler;</code> with
+            a real reconcile-to-flat, and give it a caller.
+          </li>
+          <li>
+            <b>Fill the two preview no-ops</b> (items 4 &amp; 8) or explicitly document why they are
+            enforced elsewhere (and remove them from the checklist if so).
+          </li>
+          <li>
+            <b>Minor hardening:</b> assert <code>status==="ok"</code> in the smoke test; test the
+            no-double-count invariant for <code>paidFeesUsd</code>; add a positive min-notional
+            boundary test; add a dedicated file-fallback test for <code>InterimSignerConfig</code>.
+          </li>
+        </ol>
+      </section>
+
+      <section id="recs">
+        <h2>Recommendations</h2>
+        <ul>
+          <li>
+            <b>Scope honesty.</b> The prior report's "done" framing for Steps 7, 9, 10, 11
+            overstates reality: components exist but are not wired. Treat the decider/reactor
+            integration as <i>part of PROMPT-04</i>, not a deferred PROMPT-05 concern, unless the
+            owner explicitly confirms the deferral — the prompt text does not contain it.
+          </li>
+          <li>
+            <b>The signing path is the real milestone.</b> The live-accepted <code>noop</code> is a
+            genuine, hard-won result (the two bug fixes — uint256 domain separator and
+            <code>{r,s,v}</code> wire form — are correct and implicitly pinned by the recovery-based
+            test). This is the riskiest part of the phase and it is sound.
+          </li>
+          <li>
+            <b>Reconciler is the next highest-risk item.</b> "Local state must never outrank the
+            exchange" is a core invariant; today local state <i>is</i> the only state, because
+            reconciliation never runs. Wire it before any live order beyond the smoke probe.
+          </li>
+          <li>
+            <b>Do not run a real order through the current path</b> until reconcile-after-submission
+            is wired — the position/fill cards will lie to the UI, and a retry-after-disconnect has
+            no convergence guarantee.
+          </li>
+        </ul>
+      </section>
+
+      <footer
+        style="
+          margin-top: 3rem;
+          padding-top: 1rem;
+          border-top: 1px solid var(--border);
+          font-family: var(--mono);
+          font-size: 0.78rem;
+          color: var(--muted);
+        "
+      >
+        Sources: git log <code>0940e4cb1..382cc0f0c</code> · spec at
+        <code>market-bender.pages.dev/prompts#prompt-04</code> ·
+        <code>docs/architecture/trading-execution.md</code> · direct source audit of all named
+        files. &nbsp;—&nbsp; generated 2026-08-01. Independent review; every claim is grounded in
+        file:line evidence in the named sources.
+      </footer>
+    </div>
+  </body>
+</html>

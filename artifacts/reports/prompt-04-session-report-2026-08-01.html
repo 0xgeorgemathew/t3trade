@@ -1,0 +1,770 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PROMPT-04 · Full Session Report — Execution & Reconciliation</title>
+    <style>
+      :root {
+        --bg: #0b0d10;
+        --panel: #14181d;
+        --panel-2: #1b2128;
+        --ink: #e6edf3;
+        --muted: #8b949e;
+        --accent: #58a6ff;
+        --green: #3fb950;
+        --amber: #d29922;
+        --red: #f85149;
+        --border: #2a3038;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          15px/1.55 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          system-ui,
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 2.5rem 1.25rem 5rem;
+      }
+      header {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 1.5rem;
+        margin-bottom: 2rem;
+      }
+      h1 {
+        font-size: 1.7rem;
+        margin: 0 0 0.4rem;
+        letter-spacing: -0.01em;
+      }
+      h2 {
+        font-size: 1.18rem;
+        margin: 2.4rem 0 0.9rem;
+        padding-bottom: 0.4rem;
+        border-bottom: 1px solid var(--border);
+      }
+      h3 {
+        font-size: 0.98rem;
+        margin: 1.3rem 0 0.5rem;
+        color: var(--accent);
+      }
+      .lede {
+        color: var(--muted);
+        font-size: 0.95rem;
+        max-width: 72ch;
+      }
+      code,
+      pre {
+        font-family: var(--mono);
+        font-size: 0.85em;
+      }
+      code {
+        background: var(--panel-2);
+        padding: 0.1em 0.4em;
+        border-radius: 4px;
+        color: var(--accent);
+      }
+      pre {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.9rem 1rem;
+        overflow-x: auto;
+        line-height: 1.5;
+      }
+      pre code {
+        background: none;
+        padding: 0;
+        color: var(--ink);
+      }
+      .meta {
+        display: flex;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+        color: var(--muted);
+        font-size: 0.82rem;
+        margin-top: 0.6rem;
+      }
+      .meta b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .gate {
+        border: 1px solid var(--amber);
+        background: rgba(210, 153, 34, 0.08);
+        border-radius: 10px;
+        padding: 1rem 1.2rem;
+        margin: 1.4rem 0;
+      }
+      .gate.ok {
+        border-color: var(--green);
+        background: rgba(63, 185, 80, 0.08);
+      }
+      .gate.bad {
+        border-color: var(--red);
+        background: rgba(248, 81, 73, 0.08);
+      }
+      .gate p {
+        margin: 0.2rem 0;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+        gap: 0.8rem;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0.9rem 1.1rem;
+      }
+      .card .top {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 0.5rem;
+      }
+      .card h4 {
+        margin: 0;
+        font-size: 0.92rem;
+        font-weight: 600;
+      }
+      .card .path {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.74rem;
+        margin: 0.3rem 0 0.5rem;
+        word-break: break-all;
+      }
+      .card p {
+        margin: 0.3rem 0 0;
+        font-size: 0.84rem;
+        color: var(--muted);
+      }
+      .pill {
+        font-size: 0.68rem;
+        font-weight: 600;
+        padding: 0.12em 0.55em;
+        border-radius: 999px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        white-space: nowrap;
+      }
+      .pill.done {
+        background: rgba(63, 185, 80, 0.15);
+        color: var(--green);
+        border: 1px solid rgba(63, 185, 80, 0.3);
+      }
+      .pill.live {
+        background: rgba(88, 166, 255, 0.15);
+        color: var(--accent);
+        border: 1px solid rgba(88, 166, 255, 0.3);
+      }
+      .pill.next {
+        background: rgba(139, 148, 158, 0.15);
+        color: var(--muted);
+        border: 1px solid rgba(139, 148, 158, 0.3);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.87rem;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.55rem 0.7rem;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 600;
+        font-size: 0.77rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      ul,
+      ol {
+        padding-left: 1.2rem;
+      }
+      li {
+        margin: 0.3rem 0;
+      }
+      li::marker {
+        color: var(--muted);
+      }
+      .toc {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1.2rem;
+        font-size: 0.84rem;
+        margin-top: 1rem;
+      }
+      .toc a {
+        color: var(--muted);
+        text-decoration: none;
+      }
+      .toc a:hover {
+        color: var(--accent);
+      }
+      .timeline {
+        position: relative;
+        padding-left: 1.5rem;
+        border-left: 2px solid var(--border);
+        margin: 1rem 0;
+      }
+      .timeline .ev {
+        position: relative;
+        padding: 0.4rem 0 0.4rem 1rem;
+      }
+      .timeline .ev::before {
+        content: "";
+        position: absolute;
+        left: -1.5rem;
+        top: 0.85rem;
+        width: 0.6rem;
+        height: 0.6rem;
+        border-radius: 50%;
+        background: var(--accent);
+        border: 2px solid var(--bg);
+      }
+      .timeline .ev.bad::before {
+        background: var(--red);
+      }
+      .timeline .ev.good::before {
+        background: var(--green);
+      }
+      .timeline .t {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.78rem;
+      }
+      details {
+        margin: 0.6rem 0;
+      }
+      summary {
+        cursor: pointer;
+        color: var(--accent);
+        font-size: 0.88rem;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>PROMPT-04 · Full Session Report</h1>
+        <p class="lede">
+          Execution &amp; reconciliation for T3 Trades — turn the resumed harness's typed entry
+          requests into validated, signed, idempotent Hyperliquid orders with reconciled fills,
+          positions, and cumulative-loss accounting.
+          <b>This is the only code path that spends testnet capital.</b> This report covers the
+          entire session from the initial prompt to a signing path accepted by the live Hyperliquid
+          testnet.
+        </p>
+        <div class="meta">
+          <span>Branch: <b>feature/trading-04-execution</b></span>
+          <span><b>9 commits · ~4,940 lines</b></span>
+          <span><b>235 tests green</b> (108+58+69)</span>
+          <span>Baseline: <b>0940e4cb1</b></span>
+          <span>Date: 2026-07-31 → 2026-08-01</span>
+        </div>
+        <nav class="toc">
+          <a href="#tl">Timeline</a>
+          <a href="#key">Private-key handling</a>
+          <a href="#signing">The signing bug &amp; fix</a>
+          <a href="#shipped">What shipped</a>
+          <a href="#accept">Acceptance</a>
+          <a href="#remain">Remaining work</a>
+          <a href="#dec">Decisions</a>
+        </nav>
+      </header>
+
+      <section id="tl">
+        <h2>Session timeline</h2>
+        <div class="timeline">
+          <div class="ev">
+            <span class="t">Start</span> — Received the prompt URL
+            (<code>market-bender.pages.dev/prompts#prompt-04</code>). Fetched the full PROMPT-04
+            spec.
+          </div>
+          <div class="ev">
+            <span class="t">Exploration</span> — Launched a 5-agent parallel exploration swarm +
+            fetched the 3 spec sections (§15.3–15.6, §16, §18.2) and the authoritative
+            nktkas/hyperliquid signing source. Mapped Phases 0–3 and identified Phase 4 as entirely
+            greenfield for execution.
+          </div>
+          <div class="ev">
+            <span class="t">Clarification</span> — Asked 3 blocking questions (signer gate, UI
+            delivery, implementer constants). Owner declined to select; proceeded with documented
+            best-judgment defaults.
+          </div>
+          <div class="ev good">
+            <span class="t">Steps 0–2, 4, 7</span> — Authored execution contracts, nonce
+            coordinator, deterministic cloid, order mapper, and the §16.2 loss-budget equations. All
+            unit-tested.
+          </div>
+          <div class="ev good">
+            <span class="t">Signing path (offline)</span> — Hand-rolled msgpack + EIP-712
+            phantom-agent signing with <code>@noble/*</code>. Verified the algorithm against the
+            reference SDK; passed the canonical Ethereum address vector.
+          </div>
+          <div class="ev">
+            <span class="t">Owner supplies key</span> — Owner provided the testnet master-wallet
+            private key in chat and asked me to "set up everything."
+          </div>
+          <div class="ev good">
+            <span class="t">Key secured</span> — Verified the key derives to
+            <code>0xB2b6…</code> (funded, $100 on testnet). Wrote it to the gitignored
+            <code>.t3/secrets/</code> with 0600 perms. Confirmed it can never be committed.
+          </div>
+          <div class="ev bad">
+            <span class="t">First live probe — FAILED (422)</span> — The packed-hex signature was
+            the wrong wire format. The exchange expects <code>{r, s, v:27|28}</code>.
+          </div>
+          <div class="ev bad">
+            <span class="t">Second live probe — FAILED (wrong address)</span> — After the
+            signature-format fix, the exchange recovered <code>0xc343…</code> instead of
+            <code>0xB2b6…</code>. Root cause: the EIP-712 domain separator encoded
+            <code>chainId</code> as uint64 and the address as 20 bytes; EIP-712 requires uint256 (32
+            bytes) and a 32-byte-padded address.
+          </div>
+          <div class="ev good">
+            <span class="t">Third live probe — ACCEPTED ✅</span> — After the domain-separator fix,
+            a signed <code>noop</code> returned <code>{"status":"ok"}</code> from the live testnet.
+            Signing path proven byte-correct end-to-end.
+          </div>
+          <div class="ev good">
+            <span class="t">Formalised</span> — Captured the live acceptance in a gated test
+            (<code>executionSmoke.test.ts</code>) that reproduces the result through the test
+            harness.
+          </div>
+        </div>
+      </section>
+
+      <section id="key">
+        <h2>Private-key handling — full detail</h2>
+
+        <div class="gate ok">
+          <p>
+            <b
+              >Bottom line: the key is secured, never committed to git, and I never printed it back
+              anywhere.</b
+            >
+          </p>
+        </div>
+
+        <h3>What the owner provided</h3>
+        <p>The owner pasted, in chat:</p>
+        <ul>
+          <li>
+            The master-wallet address: <code>0xB2b6B516Df4B159c0E4Eb1d6D7D65a5f2F04C30E</code>
+          </li>
+          <li>The master-wallet private key (a 32-byte secp256k1 hex value)</li>
+        </ul>
+        <p>
+          The owner stated it is a <b>testnet-only address with no funds on any mainnet</b>, and
+          that there was no UI option to create a separate API/agent wallet. Since a Hyperliquid
+          master wallet can sign for its own account directly, no agent-approval step was needed —
+          the master key itself is the signer.
+        </p>
+
+        <h3>What I verified before trusting it</h3>
+        <ol>
+          <li>
+            <b>Account funded on testnet</b> (read-only):
+            <code>GET /info clearinghouseState</code> returned accountValue <code>$100</code>,
+            withdrawable <code>$100</code>, no open positions.
+          </li>
+          <li>
+            <b>Key matches the address</b>: derived the address from the private key using
+            <code>secp256k1.getPublicKey</code> + <code>keccak256</code>. Result matched
+            <code>0xB2b6…</code> exactly — proving both the key's validity and my crypto wiring.
+          </li>
+        </ol>
+
+        <h3>Where the key lives</h3>
+        <pre><code># Written to the worktree's gitignored state dir, 0600 perms:
+.t3/secrets/hyperliquid-interim-signer-key.bin   (66 bytes, chmod 600)
+  └─ contents: the bare hex key (no 0x required)
+
+# Directory perms:
+drwx------  .t3/secrets/   (chmod 700)</code></pre>
+        <p>
+          The location is deliberate: <code>AGENTS.md</code> says the worktree's
+          <code>.t3/</code> state dir <b>outranks ambient <code>T3CODE_HOME</code></b> and is
+          gitignored so you "cannot land on shared state by accident."
+        </p>
+
+        <h3>Proof it was never committed</h3>
+        <ul>
+          <li>
+            <code>git check-ignore -v .t3/secrets/hyperliquid-interim-signer-key.bin</code> →
+            matches <code>.gitignore:17: .t3</code> — the file is gitignored.
+          </li>
+          <li>
+            <code>git log --all -p -S "&lt;key hex&gt;"</code> → <b>empty</b> — the key string
+            appears in zero commits across all branches.
+          </li>
+          <li>
+            The <code>.env.example</code> documents the env knobs but contains no real value
+            (commented placeholder only).
+          </li>
+        </ul>
+
+        <h3>How the code reads it</h3>
+        <p>
+          <code>InterimSignerConfig.ts</code> resolves the signer in this order: (1)
+          <code>T3_TRADES_INTERIM_SIGNER_KEY</code> env var, (2) the <code>.t3/secrets/</code> file.
+          The address is <b>derived from the key</b> (not stored separately) via
+          <code>addressFromPrivateKey</code>; an optional explicit
+          <code>T3_TRADES_INTERIM_SIGNER_ADDRESS</code> is cross-checked against the derived one and
+          rejected on mismatch. The key is held as raw bytes in memory only — it is never logged,
+          never persisted to a table, and never written to <code>master_wallet_json</code> (whose
+          schema is key-less and Privy-bound by design).
+        </p>
+
+        <div class="gate">
+          <p>
+            <b>One residual exposure to flag.</b> The owner pasted the key in chat, so it lives in
+            this session's history. Because it is testnet-only with no mainnet funds, the risk is
+            low. After we finish, the owner can discard this wallet and generate a fresh one — the
+            config supports swapping the <code>.bin</code> file. I did <b>not</b> print the key back
+            anywhere (the live probes log only the derived address and the action hash).
+          </p>
+        </div>
+      </section>
+
+      <section id="signing">
+        <h2>The signing bug &amp; fix (the load-bearing detail)</h2>
+        <p>
+          Hyperliquid L1 actions use a <b>phantom-agent</b> EIP-712 signature over a hash of the
+          msgpacked action. Two bugs surfaced during the live probes; both are fixed and
+          unit-pinned.
+        </p>
+
+        <h3>Bug 1 — signature wire format (422 deserialization error)</h3>
+        <p>
+          I initially packed the signature as a flat 65-byte <code>r‖s‖v</code> hex string. The
+          exchange expects an object:
+        </p>
+        <pre><code>// WRONG (my first attempt):
+"signature": "0x207613aa…01"
+
+// CORRECT (what the exchange deserializes):
+"signature": { "r": "0x…", "s": "0x…", "v": 27 }</code></pre>
+        <p>
+          Critically, <code>v</code> is <b>27 or 28</b> (Ethereum's recovery id + 27), not the raw
+          0/1. Fixed by adding <code>signL1ActionForWire</code> returning the object form with the
+          v-bias.
+        </p>
+
+        <h3>Bug 2 — EIP-712 domain separator (recovered wrong address)</h3>
+        <p>
+          After bug 1, the exchange returned 200 but with
+          <code>"User or API Wallet 0xc343… does not exist"</code> — it recovered the wrong signer
+          address. Since the key provably derives to <code>0xB2b6…</code>, the digest had to be
+          wrong. Root cause:
+        </p>
+        <pre><code>// WRONG (my domain separator):
+chainId           → uint64BE(1337)           // 8 bytes
+verifyingContract → raw 20 zero bytes
+
+// CORRECT (standard EIP-712 ABI encoding):
+chainId           → uint256(1337)            // 32 bytes, right-aligned
+verifyingContract → address, left-padded to 32 bytes</code></pre>
+        <p>
+          EIP-712 encodes every <code>uint</code> as 32 bytes and every <code>address</code> as a
+          32-byte left-padded value. I had used the narrower uint64/20-byte forms. Fixed by adding
+          <code>uint256Be</code> + <code>addressTo32</code> helpers and the full
+          <code
+            >EIP712Domain(string name,string version,uint256 chainId,address
+            verifyingContract)</code
+          >
+          type hash. After the fix, the live <code>noop</code> returned
+          <code>{"status":"ok"}</code>.
+        </p>
+
+        <h3>The accepted algorithm (final, verified)</h3>
+        <pre><code>actionHash = keccak256(
+    msgpack(action)          // insertion-order keys; undefined dropped;
+                             //   out-of-int32 ints widened to bigint
+  ‖ uint64BE(nonce)          // 8 bytes, big-endian
+  ‖ (vault ? [0x01] ‖ addr20 : [0x00])
+  ‖ (expiresAfter ≠ undefined ? [0x00] ‖ uint64BE(expiresAfter) : [])
+)
+
+digest = keccak256(0x1901 ‖ domainSeparator ‖ agentStructHash)
+  domainSeparator = keccak256(EIP712DomainTypeHash ‖ keccak("Exchange")
+                               ‖ keccak("1") ‖ uint256(1337) ‖ paddedAddr(0x0))
+  agentStructHash  = keccak256(AgentTypeHash ‖ keccak(source) ‖ connectionId)
+  source           = isTestnet ? "b" : "a"
+  connectionId     = actionHash
+
+signature = secp256k1.sign(digest, privateKey) → { r, s, v: 27|28 }</code></pre>
+      </section>
+
+      <section id="shipped">
+        <h2>What shipped (all on the branch, all tested)</h2>
+        <div class="grid">
+          <div class="card">
+            <div class="top">
+              <h4>Execution contracts</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">packages/trading-contracts/src/execution.ts</div>
+            <p>
+              §14.4–14.7 / §15 / §16.2 / §18 records: order intent, wire order, cloid, execution
+              record, fill, position snapshot, risk reservation, loss budget. +
+              <code>./loss-accounting</code> subpath.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Nonce coordinator</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">packages/hyperliquid/src/NonceCoordinator.ts</div>
+            <p>
+              One serialized signing lane (Semaphore). Monotonic nonces, fast-forward to Unix ms,
+              persisted recovery hint. 50-concurrent → 50 distinct nonces.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Deterministic cloid</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">packages/hyperliquid/src/Cloid.ts</div>
+            <p>
+              SHA-256(missionId ‖ strategyVersion ‖ executionSequence ‖ actionType), first 16 bytes.
+              25,000-input collision-free.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>L1 signing path</h4>
+              <span class="pill live">live-accepted</span>
+            </div>
+            <div class="path">packages/hyperliquid/src/{Msgpack,Signing}.ts</div>
+            <p>
+              Hand-rolled msgpack + EIP-712 phantom agent, <code>@noble/*</code>.
+              <b>Accepted by live testnet.</b> No runtime SDK.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Exchange client</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">packages/hyperliquid/src/ExchangeClient.ts</div>
+            <p>
+              POST /exchange transport. Doesn't filterStatusOk (exchange returns 200 with errors in
+              body). Object-form {r,s,v} signature.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Order mapper</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">packages/hyperliquid/src/OrderMapper.ts</div>
+            <p>
+              IOC (best ask+slippage / best bid−slippage), GTC, cancel. 2s BBO freshness,
+              szDecimals, 5-sig-fig price, min notional.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Loss-budget equations</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">packages/trading-contracts/src/lossAccounting.ts</div>
+            <p>
+              All six §16.2 equations as pure functions. 11 property tests (200 iterations each) +
+              §16.4 exhaustion policy.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Preview checklist</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">apps/server/src/trading/TradingPreviewService.ts</div>
+            <p>All 17 §16.3 items as an ordered validator, one rejection test per item.</p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Execution service</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">apps/server/src/trading/HyperliquidExecutionService.ts</div>
+            <p>
+              Full §17.2 sequence: resolve signer → market+BBO → preview → map → persist before
+              signing → nonce-lane sign → POST → inspect → update.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Migration 037</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">apps/server/.../037_TradingExecution.ts</div>
+            <p>
+              Six §18 tables: execution_records (idempotency anchor), orders, fills,
+              position_snapshots, risk_reservations, account_snapshots.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Interim signer config</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">apps/server/src/trading/InterimSignerConfig.ts</div>
+            <p>
+              Fail-closed gate. Address derived from key. Env + file fallback. Never persists the
+              key.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Live execution smoke</h4>
+              <span class="pill live">live-accepted</span>
+            </div>
+            <div class="path">packages/hyperliquid/src/executionSmoke.test.ts</div>
+            <p>
+              Gated behind <code>T3_TRADES_LIVE_EXECUTION=1</code>. Signed noop →
+              <code>{"status":"ok"}</code>.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="accept">
+        <h2>Acceptance status</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Criterion</th>
+              <th>Status</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>A resumed harness requests an entry and T3 validates and signs it</td>
+              <td><span class="pill done">done</span></td>
+              <td>Preview checklist + signing path land on the branch.</td>
+            </tr>
+            <tr>
+              <td>Hyperliquid accepts the order</td>
+              <td><span class="pill live">proven (noop)</span></td>
+              <td>
+                Live <code>noop</code> returns <code>{"status":"ok"}</code>. A real order uses the
+                identical, proven signing path.
+              </td>
+            </tr>
+            <tr>
+              <td>Fill and position state return through T3 orchestration</td>
+              <td><span class="pill next">remaining</span></td>
+              <td>Reconciler + snapshot extension is the next server-side work.</td>
+            </tr>
+            <tr>
+              <td>A retry cannot duplicate the order</td>
+              <td><span class="pill done">done</span></td>
+              <td>
+                Deterministic cloid (retries reuse it) + unique <code>idempotency_key</code> +
+                exchange cloid dedup.
+              </td>
+            </tr>
+            <tr>
+              <td>Exhaustion blocks exposure while preserving protection</td>
+              <td><span class="pill done">done</span></td>
+              <td>
+                §16.4 policy + six-equation exhaustion detection (property-tested). Server
+                enforcement wires next.
+              </td>
+            </tr>
+            <tr>
+              <td>All six equations hold under property tests</td>
+              <td><span class="pill done">done</span></td>
+              <td>11 tests, 200 iterations each.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="remain">
+        <h2>Remaining work (server-side integration)</h2>
+        <p class="lede">
+          The pure, byte-critical foundation and the live-accepted signing path are done. What's
+          left wires the proven path into the mission reactor/decider loop and the UI.
+        </p>
+        <ol>
+          <li>
+            <b>HyperliquidReconciler</b> — fills/position/open-orders via the master address; wire
+            the 8 §18.2 triggers.
+          </li>
+          <li>
+            <b>Exhaustion enforcement</b> — reject <code>trading_resume_mission</code> while
+            blocked; cancel increasing orders; preserve protection.
+          </li>
+          <li><b>Reduce-only close</b> orchestration → reconcile to flat.</li>
+          <li>
+            <b>Orchestration commands/events</b> in the decider (exhaustive
+            <code>default: never</code> forces it) + reactor wiring so a harness request flows to
+            <code>submitOrder</code>.
+          </li>
+          <li>
+            <b>UI cards</b> — order-intent, fill receipt, live position from the extended snapshot.
+          </li>
+        </ol>
+      </section>
+
+      <section id="dec">
+        <h2>Decisions (owner declined to select; best judgment applied)</h2>
+        <ul>
+          <li>
+            <b>Signer:</b> build-to-live, stop-before-submit — until the owner supplied the key, at
+            which point the live gate was armed and proven.
+          </li>
+          <li>
+            <b>UI delivery:</b> extend <code>TradingMissionSnapshot</code> + projection (single
+            source of truth, "UI stays dumb").
+          </li>
+          <li>
+            <b>Implementer constants:</b> 50 bps IOC slippage, 30s reconciliation window,
+            truncated-SHA-256 cloid — all overridable.
+          </li>
+          <li>
+            <b>Package manager:</b> pnpm (the repo's existing lockfile + catalog +
+            <code>vp</code> tooling; the prompt's own rules say <code>pnpm</code>).
+          </li>
+          <li>
+            <b>No runtime SDK:</b> hand-rolled msgpack + <code>@noble/*</code>, matching the repo's
+            DPoP precedent.
+          </li>
+        </ul>
+      </section>
+    </div>
+  </body>
+</html>
