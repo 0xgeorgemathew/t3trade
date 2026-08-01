@@ -85,6 +85,7 @@ export const fakeInfoClientLayer = (responses: FakeInfoResponses) =>
  */
 export function makeFakeWebSocketClient(
   deliveries: ReadonlyArray<WsDelivery>,
+  reconnects: ReadonlyArray<void> = [],
 ): (typeof HyperliquidWebSocketClient)["Service"] {
   const sameSubscription = (a: WsSubscription, b: WsSubscription) =>
     a.type === b.type && a.coin === b.coin && a.user === b.user && a.interval === b.interval;
@@ -94,6 +95,7 @@ export function makeFakeWebSocketClient(
         Stream.filter((d) => sameSubscription(d.subscription, subscription)),
       ),
     isConnected: Effect.succeed(true),
+    reconnects: Stream.fromIterable(reconnects),
   });
 }
 

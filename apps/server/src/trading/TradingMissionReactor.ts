@@ -467,17 +467,34 @@ const make = Effect.gen(function* () {
   // here (not in `start`) so its read/SQL requirements resolve from the services
   // this layer already captured, keeping `start`'s context narrow (Scope only).
   yield* Effect.gen(function* () {
-    const active = yield* missions.findActiveMission(LOCAL_TRADING_USER_ID);
-    if (active._tag === "None") return;
-    const mission = active.value;
-    const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-    yield* reconciler
-      .reconcile({ missionId: mission.id, masterAddress, market: mission.market }, "server_startup")
-      .pipe(Effect.catch(() => Effect.void));
+    // Poll until an active mission exists, then start following it. The original
+    // build-time check only followed a mission that already existed at layer
+    // build; a mission created later never got a fill/reconnect subscription.
+    // The poll is cheap (one indexed read every 5s) and stops once a mission is
+    // found — `follow` then owns its own lifetime under this scope.
     const fillReconciler = yield* TradingFillReconciler;
-    yield* fillReconciler
-      .follow({ missionId: mission.id, masterAddress, market: mission.market })
-      .pipe(Effect.forkScoped);
+    let started = false;
+    while (!started) {
+      const active = yield* missions
+        .findActiveMission(LOCAL_TRADING_USER_ID)
+        .pipe(Effect.catch(() => Effect.succeed(Option.none())));
+      if (active._tag === "None") {
+        yield* Effect.sleep("5 seconds");
+        continue;
+      }
+      const mission = active.value;
+      const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+      yield* reconciler
+        .reconcile(
+          { missionId: mission.id, masterAddress, market: mission.market },
+          "server_startup",
+        )
+        .pipe(Effect.catch(() => Effect.void));
+      yield* fillReconciler
+        .follow({ missionId: mission.id, masterAddress, market: mission.market })
+        .pipe(Effect.forkScoped);
+      started = true;
+    }
   }).pipe(Effect.forkScoped);
 
   const start: TradingMissionReactorShape["start"] = Effect.fn("start")(function* () {

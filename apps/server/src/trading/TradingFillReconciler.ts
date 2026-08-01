@@ -3,15 +3,15 @@
  *
  * The reconciler's `reconcile` is called on `after_submission` and
  * `before_execution` by the mission reactor. This service owns the remaining
- * live triggers that depend on a fill arriving or time passing:
+ * live triggers that depend on a fill arriving, a reconnect, or time passing:
  *
  *   - `after_fill` (§18.2 #5): subscribe to the Hyperliquid `userFills`
  *     WebSocket channel for the master wallet, and reconcile on each frame.
+ *   - `websocket_reconnect` (§18.2 #2): the WS client resubscribes on reconnect
+ *     (§13); this service re-reads canonical state from the Info API rather
+ *     than trusting replayed WS data.
  *   - `periodic_while_position_open` (§18.2 #8): a schedule that reconciles
  *     while a position exists, as a backstop for any frame the socket missed.
- *
- * The WS client resubscribes on reconnect (§13); the periodic loop's next tick
- * after a gap serves as the `websocket_reconnect` convergence.
  *
  * It is single-mission for the POC (one master wallet, one market) — the same
  * scope the mission reactor and interim signer already assume.
@@ -92,14 +92,21 @@ const make = Effect.gen(function* () {
       );
       yield* Effect.forkScoped(consumeFills);
 
+      // §18.2 #2: on each WS reconnect the socket has already resubscribed, but
+      // replayed frames cannot be trusted against canonical state — re-read via
+      // the Info API. The reconciler is idempotent so a redundant read is safe.
+      const consumeReconnects = Stream.runForEach(ws.reconnects, () =>
+        reconciler.reconcile(input, "websocket_reconnect").pipe(Effect.catch(() => Effect.void)),
+      );
+      yield* Effect.forkScoped(consumeReconnects);
+
       // §18.2 #8: periodic backstop while a position is open. Every 5s, if the
       // canonical position is non-flat, reconcile. Closes the gap if the WS
-      // socket dropped frames or a fill arrived out-of-band; the first
-      // successful reconcile after a disconnect doubles as #2's convergence.
+      // socket dropped frames or a fill arrived out-of-band.
       const periodic = Effect.gen(function* () {
         const snapshot = yield* gateway
           .getAccountSnapshot(input.masterAddress as `0x${string}`)
-          .pipe(Effect.catch(() => Effect.succeed(null)));
+          .pipe(Effect.orElseSucceed(() => null));
         if (snapshot === null) return;
         const open = snapshot.positions.some((p) => p.market === input.market && p.size !== 0);
         if (!open) return;

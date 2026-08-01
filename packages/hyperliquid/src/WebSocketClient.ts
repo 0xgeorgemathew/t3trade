@@ -109,6 +109,13 @@ export class HyperliquidWebSocketClient extends Context.Service<
     ) => Stream.Stream<WsDelivery, HyperliquidRequestError, Scope>;
     /** True when the socket is open and accepting messages. */
     readonly isConnected: Effect.Effect<boolean>;
+    /**
+     * Emits once per successful reconnect (§18.2 trigger #2). The socket owns
+     * resubscription; this signal lets a consumer re-read canonical state from
+     * the Info API rather than trusting replayed WS data. Completes only when
+     * the layer's scope closes.
+     */
+    readonly reconnects: Stream.Stream<void>;
   }
 >()("@t3tools/hyperliquid/WebSocketClient/HyperliquidWebSocketClient") {}
 
@@ -119,6 +126,13 @@ const makeHyperliquidWebSocketClient = Effect.gen(function* () {
   // with the layer so a dropped scope does not leak the queue.
   const inbound = yield* Effect.acquireRelease(
     PubSub.bounded<WsDelivery>({ capacity: 256 }),
+    PubSub.shutdown,
+  );
+  // A second PubSub signals each successful reconnect (§18.2 trigger #2) so the
+  // fill reconciler can re-read canonical state. Bounded at 1: only the most
+  // recent reconnect matters, and a consumer that lags must not wedge the socket.
+  const reconnectSignal = yield* Effect.acquireRelease(
+    PubSub.bounded<void>({ capacity: 1 }),
     PubSub.shutdown,
   );
 
@@ -196,11 +210,18 @@ const makeHyperliquidWebSocketClient = Effect.gen(function* () {
     socket = ws;
 
     ws.onopen = () => {
+      const isReconnect = wasOpen;
       open = true;
       wasOpen = true;
       // Resubscribe everything that was active before the (re)connect.
       for (const entry of active.values()) {
         ws.send(encodeSubscribe(entry.sub));
+      }
+      if (isReconnect) {
+        // §18.2 trigger #2: a reconnect happened. The socket has resubscribed;
+        // consumers re-read canonical state from the Info API. Fire-and-forget:
+        // a slow consumer must not block the socket loop.
+        Effect.runFork(PubSub.publish(reconnectSignal, undefined));
       }
     };
 
@@ -298,6 +319,7 @@ const makeHyperliquidWebSocketClient = Effect.gen(function* () {
         ),
       ),
     isConnected: Effect.sync(() => open),
+    reconnects: Stream.fromPubSub(reconnectSignal),
   });
 });
 
