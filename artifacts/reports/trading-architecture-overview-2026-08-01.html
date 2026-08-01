@@ -1,0 +1,1829 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>T3 Trades — Trading, Harnesses &amp; MCP — Architecture Overview</title>
+    <style>
+      :root {
+        --bg: #0b0d10;
+        --panel: #14181d;
+        --panel-2: #1b2128;
+        --ink: #e6edf3;
+        --muted: #8b949e;
+        --accent: #58a6ff;
+        --green: #3fb950;
+        --amber: #d29922;
+        --red: #f85149;
+        --violet: #bc8cff;
+        --border: #2a3038;
+        --clay: #d29922;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          15px/1.55 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          system-ui,
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 2.5rem 1.25rem 5rem;
+      }
+      header {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 1.5rem;
+        margin-bottom: 2rem;
+      }
+      h1 {
+        font-size: 1.75rem;
+        margin: 0 0 0.4rem;
+        letter-spacing: -0.01em;
+        line-height: 1.25;
+      }
+      h2 {
+        font-size: 1.2rem;
+        margin: 2.8rem 0 0.9rem;
+        padding-bottom: 0.4rem;
+        border-bottom: 1px solid var(--border);
+      }
+      h3 {
+        font-size: 1rem;
+        margin: 1.5rem 0 0.5rem;
+        color: var(--accent);
+      }
+      h4 {
+        font-size: 0.92rem;
+        margin: 1.2rem 0 0.4rem;
+        color: var(--ink);
+      }
+      .lede {
+        color: var(--muted);
+        font-size: 0.96rem;
+        max-width: 82ch;
+      }
+      p {
+        margin: 0.55rem 0;
+      }
+      code,
+      pre {
+        font-family: var(--mono);
+        font-size: 0.85em;
+      }
+      code {
+        background: var(--panel-2);
+        padding: 0.1em 0.4em;
+        border-radius: 4px;
+        color: var(--accent);
+      }
+      pre {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.9rem 1rem;
+        overflow-x: auto;
+        line-height: 1.5;
+      }
+      pre code {
+        background: none;
+        padding: 0;
+        color: var(--ink);
+      }
+      .meta {
+        display: flex;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+        color: var(--muted);
+        font-size: 0.82rem;
+        margin-top: 0.7rem;
+      }
+      .meta b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .toc {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1.2rem;
+        font-size: 0.84rem;
+        margin-top: 1rem;
+      }
+      .toc a {
+        color: var(--muted);
+        text-decoration: none;
+      }
+      .toc a:hover {
+        color: var(--accent);
+      }
+      /* verdict/stat cards */
+      .verdict {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0.8rem;
+        margin: 1.5rem 0;
+      }
+      @media (max-width: 720px) {
+        .verdict {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+      .vcard {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 1rem 1.1rem;
+      }
+      .vcard .n {
+        font-size: 1.7rem;
+        font-weight: 600;
+        line-height: 1;
+        font-family: var(--mono);
+      }
+      .vcard .l {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+        margin-top: 0.5rem;
+      }
+      .vcard.green .n {
+        color: var(--green);
+      }
+      .vcard.amber .n {
+        color: var(--amber);
+      }
+      .vcard.red .n {
+        color: var(--red);
+      }
+      .vcard.blue .n {
+        color: var(--accent);
+      }
+      .vcard.violet .n {
+        color: var(--violet);
+      }
+      /* status pills */
+      .pill {
+        font-size: 0.68rem;
+        font-weight: 600;
+        padding: 0.14em 0.6em;
+        border-radius: 999px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        white-space: nowrap;
+        display: inline-block;
+      }
+      .pill.done {
+        background: rgba(63, 185, 80, 0.15);
+        color: var(--green);
+        border: 1px solid rgba(63, 185, 80, 0.3);
+      }
+      .pill.live {
+        background: rgba(88, 166, 255, 0.15);
+        color: var(--accent);
+        border: 1px solid rgba(88, 166, 255, 0.3);
+      }
+      .pill.gap {
+        background: rgba(248, 81, 73, 0.15);
+        color: var(--red);
+        border: 1px solid rgba(248, 81, 73, 0.3);
+      }
+      .pill.partial {
+        background: rgba(210, 153, 34, 0.15);
+        color: var(--amber);
+        border: 1px solid rgba(210, 153, 34, 0.3);
+      }
+      .pill.next {
+        background: rgba(139, 148, 158, 0.15);
+        color: var(--muted);
+        border: 1px solid rgba(139, 148, 158, 0.3);
+      }
+      .pill.violet {
+        background: rgba(188, 140, 255, 0.15);
+        color: var(--violet);
+        border: 1px solid rgba(188, 140, 255, 0.3);
+      }
+      /* callout gates */
+      .gate {
+        border: 1px solid var(--amber);
+        background: rgba(210, 153, 34, 0.08);
+        border-radius: 10px;
+        padding: 1rem 1.2rem;
+        margin: 1.2rem 0;
+      }
+      .gate.bad {
+        border-color: var(--red);
+        background: rgba(248, 81, 73, 0.08);
+      }
+      .gate.ok {
+        border-color: var(--green);
+        background: rgba(63, 185, 80, 0.08);
+      }
+      .gate.blue {
+        border-color: var(--accent);
+        background: rgba(88, 166, 255, 0.08);
+      }
+      .gate p {
+        margin: 0.25rem 0;
+      }
+      .gate ul {
+        margin: 0.4rem 0 0;
+      }
+      .gate .h {
+        font-weight: 600;
+        display: block;
+        margin-bottom: 0.3rem;
+      }
+      /* tables */
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.86rem;
+        margin: 0.5rem 0;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.55rem 0.7rem;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 600;
+        font-size: 0.74rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      td.mono,
+      th.mono {
+        font-family: var(--mono);
+        font-size: 0.78rem;
+      }
+      tr:hover td {
+        background: rgba(255, 255, 255, 0.015);
+      }
+      ul,
+      ol {
+        padding-left: 1.2rem;
+      }
+      li {
+        margin: 0.35rem 0;
+      }
+      li::marker {
+        color: var(--muted);
+      }
+      .path {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.76rem;
+        word-break: break-all;
+      }
+      .evi {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.74rem;
+        margin-top: 0.2rem;
+      }
+      details {
+        margin: 0.7rem 0;
+      }
+      summary {
+        cursor: pointer;
+        color: var(--accent);
+        font-size: 0.88rem;
+      }
+      details[open] summary {
+        color: var(--ink);
+      }
+      /* tabs */
+      .tabs {
+        margin: 1rem 0 0.2rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        border-bottom: 1px solid var(--border);
+      }
+      .tabs button {
+        appearance: none;
+        background: none;
+        border: 0;
+        color: var(--muted);
+        font: inherit;
+        font-size: 0.82rem;
+        padding: 0.55rem 0.9rem;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+      }
+      .tabs button:hover {
+        color: var(--ink);
+      }
+      .tabs button[aria-selected="true"] {
+        color: var(--accent);
+        border-bottom-color: var(--accent);
+      }
+      .panel {
+        display: none;
+        padding: 1rem 0 0;
+      }
+      .panel.active {
+        display: block;
+      }
+      .trow {
+        display: grid;
+        grid-template-columns: 1.3fr 0.7fr 0.7fr 2fr;
+        gap: 0;
+        font-size: 0.82rem;
+      }
+      .trow > div {
+        padding: 0.5rem 0.6rem;
+        border-bottom: 1px solid var(--border);
+      }
+      .trow.head > div {
+        color: var(--muted);
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        font-weight: 600;
+      }
+      .trow .tn {
+        font-family: var(--mono);
+        color: var(--accent);
+        font-size: 0.78rem;
+      }
+      .trow .ann {
+        font-family: var(--mono);
+        font-size: 0.7rem;
+        color: var(--muted);
+      }
+      @media (max-width: 720px) {
+        .trow {
+          grid-template-columns: 1fr;
+        }
+        .trow > div {
+          border-bottom: 0;
+        }
+        .trow .tn {
+          margin-top: 0.3rem;
+        }
+      }
+      /* flow steps */
+      .flow {
+        display: grid;
+        gap: 0.6rem;
+        margin: 1.2rem 0;
+      }
+      .step {
+        display: grid;
+        grid-template-columns: 2.4rem 1fr;
+        gap: 0.8rem;
+        align-items: start;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0.9rem 1rem;
+      }
+      .step .k {
+        font-family: var(--mono);
+        font-size: 0.95rem;
+        color: var(--accent);
+        font-weight: 600;
+        width: 2.4rem;
+        height: 2.4rem;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--panel-2);
+      }
+      .step .t {
+        font-size: 0.9rem;
+      }
+      .step .t b {
+        color: var(--ink);
+      }
+      .step .t .path {
+        margin-top: 0.3rem;
+        display: block;
+      }
+      .step.side {
+        border-left: 3px solid var(--amber);
+      }
+      .step.pure {
+        border-left: 3px solid var(--accent);
+      }
+      .step.fx {
+        border-left: 3px solid var(--violet);
+      }
+      .step.term {
+        border-left: 3px solid var(--green);
+      }
+      /* legend */
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.8rem 1.4rem;
+        font-size: 0.78rem;
+        color: var(--muted);
+        margin: 0.5rem 0 0;
+      }
+      .legend span {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      .legend i {
+        width: 0.7rem;
+        height: 0.7rem;
+        border-radius: 2px;
+        display: inline-block;
+      }
+      /* svg figure */
+      figure {
+        margin: 1.4rem 0;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 1.2rem;
+        overflow-x: auto;
+      }
+      figure svg {
+        display: block;
+        margin: 0 auto;
+        max-width: 100%;
+        height: auto;
+      }
+      figcaption {
+        color: var(--muted);
+        font-size: 0.78rem;
+        margin-top: 0.7rem;
+        text-align: center;
+        font-family: var(--mono);
+      }
+      .kv {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 0.3rem 1rem;
+        font-size: 0.85rem;
+        margin: 0.5rem 0;
+      }
+      .kv dt {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.76rem;
+      }
+      .kv dd {
+        margin: 0;
+      }
+      .grid2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.2rem;
+        margin: 1rem 0;
+      }
+      @media (max-width: 720px) {
+        .grid2 {
+          grid-template-columns: 1fr;
+        }
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 1rem 1.1rem;
+      }
+      .card h4 {
+        margin-top: 0;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+        .tabs button,
+        .step {
+          transition: none !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>
+          T3 Trades — Trading, Harnesses &amp; MCP
+          <span style="color: var(--muted); font-weight: 400">· Architecture Overview</span>
+        </h1>
+        <p class="lede">
+          How the Hyperliquid trading overlay works inside this fork of T3 Code, how the
+          coding-agent
+          <em>harnesses</em> are turned into trading agents, the toolset each harness can call, the
+          MCP layer that carries those calls, and a precise map of where upstream T3 Code stops and
+          where our changes begin. Grounded in source as of <b>feature/trading-04-execution</b>.
+        </p>
+        <div class="meta">
+          <span>Branch: <b>feature/trading-04-execution</b></span>
+          <span>Baseline: <b>upstream-base/2026-07-29-a8e05cbb</b></span>
+          <span>Exchange: <b>Hyperliquid testnet</b></span>
+          <span>Date: 2026-08-01</span>
+        </div>
+        <nav class="toc">
+          <a href="#big">1 · Big picture</a>
+          <a href="#trading">2 · How trading works</a>
+          <a href="#harness">3 · Harness interaction</a>
+          <a href="#tools">4 · Tools exposed</a>
+          <a href="#mcp">5 · MCP layer</a>
+          <a href="#flow">6 · End-to-end flow</a>
+          <a href="#upstream">7 · Upstream vs fork</a>
+          <a href="#gaps">8 · Boundaries &amp; gaps</a>
+        </nav>
+      </header>
+
+      <!-- ============================ 1 ============================ -->
+      <section id="big">
+        <h2>1 · The big picture</h2>
+
+        <p class="lede">
+          Upstream <b>T3 Code</b> is an open-source GUI that supervises
+          <em>coding agents</em> (Codex, Claude, Cursor, Grok, OpenCode) against a git workspace,
+          with desktop/web/mobile clients. This fork — <b>T3 Trades</b> — keeps every bit of that
+          and adds a <b>Hyperliquid trading overlay</b> on top. The clever move: it does
+          <em>not</em> build a second server. It reuses the existing event-sourced orchestration
+          engine, so a trading mission is just a new aggregate type flowing through the same decider
+          → projector → reactor pipeline that already handles chat threads.
+        </p>
+
+        <div class="verdict">
+          <div class="vcard blue">
+            <div class="n">5</div>
+            <div class="l">Coding-agent providers reused</div>
+          </div>
+          <div class="vcard violet">
+            <div class="n">14</div>
+            <div class="l">Trading MCP tools exposed</div>
+          </div>
+          <div class="vcard green">
+            <div class="n">1</div>
+            <div class="l">Shared event-sourced engine</div>
+          </div>
+          <div class="vcard amber">
+            <div class="n">9</div>
+            <div class="l">Trading event types added</div>
+          </div>
+        </div>
+
+        <p>The headline architectural idea, and the thing that makes the whole system coherent:</p>
+
+        <div class="gate ok">
+          <span class="h">The wake loop is the product.</span>
+          When a market watch fires, the server <em>resumes the same provider session</em> (e.g. the
+          same Claude conversation) and hands it a fresh, bounded market snapshot. The coding agent
+          wakes up, reads the situation, decides, and calls a trading tool — which flows back
+          through the event engine, signs server-side, and submits to Hyperliquid. A coding-agent
+          harness becomes a trading agent without being replaced.
+        </div>
+
+        <figure>
+          <svg
+            viewBox="0 0 900 470"
+            xmlns="http://www.w3.org/2000/svg"
+            font-family="ui-monospace,monospace"
+            font-size="11"
+          >
+            <defs>
+              <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L7,3 L0,6 z" fill="#8b949e" />
+              </marker>
+              <marker id="arrA" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L7,3 L0,6 z" fill="#58a6ff" />
+              </marker>
+            </defs>
+            <!-- Clients -->
+            <rect x="10" y="10" width="180" height="60" rx="8" fill="#14181d" stroke="#2a3038" />
+            <text x="100" y="34" text-anchor="middle" fill="#e6edf3" font-weight="600">
+              Desktop / Web / Mobile
+            </text>
+            <text x="100" y="52" text-anchor="middle" fill="#8b949e">RPC over WebSocket</text>
+            <line x1="100" y1="70" x2="100" y2="120" stroke="#8b949e" marker-end="url(#arr)" />
+
+            <!-- Provider harness -->
+            <rect x="250" y="10" width="200" height="90" rx="8" fill="#14181d" stroke="#2a3038" />
+            <text x="350" y="30" text-anchor="middle" fill="#bc8cff" font-weight="600">
+              Provider harness
+            </text>
+            <text x="350" y="48" text-anchor="middle" fill="#8b949e">Codex / Claude / Cursor</text>
+            <text x="350" y="64" text-anchor="middle" fill="#8b949e">Grok / OpenCode</text>
+            <text x="350" y="84" text-anchor="middle" fill="#58a6ff" font-size="10">
+              subprocess + stdin/stdout
+            </text>
+
+            <!-- MCP -->
+            <rect x="250" y="140" width="200" height="60" rx="8" fill="#14181d" stroke="#bc8cff" />
+            <text x="350" y="162" text-anchor="middle" fill="#bc8cff" font-weight="600">
+              MCP server “t3-code”
+            </text>
+            <text x="350" y="180" text-anchor="middle" fill="#8b949e">
+              /mcp · bearer token · 2 toolkits
+            </text>
+            <line
+              x1="350"
+              y1="100"
+              x2="350"
+              y2="140"
+              stroke="#bc8cff"
+              stroke-width="1.4"
+              marker-end="url(#arrA)"
+            />
+            <text x="358" y="124" fill="#bc8cff" font-size="10">tool calls</text>
+
+            <!-- Orchestration engine -->
+            <rect x="490" y="10" width="190" height="220" rx="8" fill="#14181d" stroke="#58a6ff" />
+            <text x="585" y="32" text-anchor="middle" fill="#58a6ff" font-weight="600">
+              Orchestration engine
+            </text>
+            <text x="585" y="48" text-anchor="middle" fill="#8b949e">(event-sourced)</text>
+            <rect x="505" y="62" width="160" height="32" rx="5" fill="#1b2128" stroke="#2a3038" />
+            <text x="585" y="82" text-anchor="middle" fill="#e6edf3">decider (pure)</text>
+            <rect x="505" y="102" width="160" height="32" rx="5" fill="#1b2128" stroke="#2a3038" />
+            <text x="585" y="122" text-anchor="middle" fill="#e6edf3">projector → read model</text>
+            <rect x="505" y="142" width="160" height="32" rx="5" fill="#1b2128" stroke="#2a3038" />
+            <text x="585" y="162" text-anchor="middle" fill="#e6edf3">event store + receipts</text>
+            <rect x="505" y="182" width="160" height="32" rx="5" fill="#1b2128" stroke="#2a3038" />
+            <text x="585" y="202" text-anchor="middle" fill="#e6edf3">reactors (queue-backed)</text>
+            <line
+              x1="450"
+              y1="170"
+              x2="490"
+              y2="120"
+              stroke="#58a6ff"
+              stroke-width="1.4"
+              marker-end="url(#arrA)"
+            />
+            <text x="462" y="140" fill="#58a6ff" font-size="10">dispatch</text>
+            <line x1="490" y1="160" x2="450" y2="180" stroke="#8b949e" marker-end="url(#arr)" />
+            <text x="452" y="194" fill="#8b949e" font-size="10">events</text>
+
+            <!-- Trading reactor + services -->
+            <rect x="710" y="10" width="180" height="220" rx="8" fill="#14181d" stroke="#3fb950" />
+            <text x="800" y="32" text-anchor="middle" fill="#3fb950" font-weight="600">
+              Trading overlay
+            </text>
+            <text x="800" y="48" text-anchor="middle" fill="#8b949e">(this fork)</text>
+            <rect x="722" y="62" width="156" height="28" rx="5" fill="#1b2128" stroke="#2a3038" />
+            <text x="800" y="80" text-anchor="middle" fill="#e6edf3">TradingMissionReactor</text>
+            <rect x="722" y="98" width="156" height="28" rx="5" fill="#1b2128" stroke="#2a3038" />
+            <text x="800" y="116" text-anchor="middle" fill="#e6edf3">WatchEvaluator</text>
+            <rect x="722" y="134" width="156" height="28" rx="5" fill="#1b2128" stroke="#2a3038" />
+            <text x="800" y="152" text-anchor="middle" fill="#e6edf3">
+              ExecutionService · Guard
+            </text>
+            <rect x="722" y="170" width="156" height="28" rx="5" fill="#1b2128" stroke="#2a3038" />
+            <text x="800" y="188" text-anchor="middle" fill="#e6edf3">
+              Reconciler · Wake composer
+            </text>
+            <line
+              x1="680"
+              y1="200"
+              x2="710"
+              y2="180"
+              stroke="#3fb950"
+              stroke-width="1.4"
+              marker-end="url(#arrA)"
+            />
+            <line x1="710" y1="120" x2="680" y2="140" stroke="#8b949e" marker-end="url(#arr)" />
+            <text x="685" y="118" fill="#3fb950" font-size="10">consumes</text>
+            <text x="685" y="156" fill="#8b949e" font-size="10">status-set</text>
+
+            <!-- Wake arrow back to harness -->
+            <path
+              d="M 250 55 C 180 55, 160 250, 250 250"
+              fill="none"
+              stroke="#bc8cff"
+              stroke-width="1.4"
+              stroke-dasharray="4 3"
+              marker-end="url(#arrA)"
+            />
+            <text x="160" y="170" fill="#bc8cff" font-size="10" transform="rotate(-90 160 170)">
+              resume turn + wakeup snapshot
+            </text>
+
+            <!-- Hyperliquid -->
+            <rect x="490" y="270" width="400" height="80" rx="8" fill="#14181d" stroke="#d29922" />
+            <text x="690" y="294" text-anchor="middle" fill="#d29922" font-weight="600">
+              Hyperliquid testnet
+            </text>
+            <text x="690" y="312" text-anchor="middle" fill="#8b949e">
+              /info (reads) · /exchange (signed writes) · wss (fills, candles)
+            </text>
+            <text x="690" y="330" text-anchor="middle" fill="#8b949e">
+              EIP-712 phantom-agent signing · @noble/curves
+            </text>
+            <line
+              x1="800"
+              y1="230"
+              x2="760"
+              y2="270"
+              stroke="#d29922"
+              stroke-width="1.4"
+              marker-end="url(#arrA)"
+            />
+
+            <!-- Persistence -->
+            <rect x="10" y="270" width="430" height="80" rx="8" fill="#14181d" stroke="#2a3038" />
+            <text x="225" y="294" text-anchor="middle" fill="#e6edf3" font-weight="600">
+              SQLite · migrations 035–039 + projection
+            </text>
+            <text x="225" y="312" text-anchor="middle" fill="#8b949e">
+              trading_missions · harness_runs · event_inbox
+            </text>
+            <text x="225" y="330" text-anchor="middle" fill="#8b949e">
+              execution_records · fills · position_snapshots · risk_reservations
+            </text>
+            <line x1="490" y1="200" x2="300" y2="270" stroke="#8b949e" marker-end="url(#arr)" />
+            <line x1="710" y1="200" x2="350" y2="270" stroke="#8b949e" marker-end="url(#arr)" />
+          </svg>
+          <figcaption>
+            Component map. Dashed violet = the wake loop that turns a coding agent into a trading
+            agent.
+          </figcaption>
+        </figure>
+
+        <div class="legend">
+          <span><i style="background: #58a6ff"></i> shared event engine (upstream)</span>
+          <span><i style="background: #3fb950"></i> trading overlay (fork)</span>
+          <span><i style="background: #bc8cff"></i> MCP + harness boundary</span>
+          <span><i style="background: #d29922"></i> external exchange</span>
+        </div>
+      </section>
+
+      <!-- ============================ 2 ============================ -->
+      <section id="trading">
+        <h2>2 · How the trading system works</h2>
+
+        <p class="lede">
+          All trading code lives in <span class="path">apps/server/src/trading/</span> (21 source
+          files) plus two new workspace packages:
+          <span class="path">packages/trading-contracts/</span> (Effect schemas) and
+          <span class="path">packages/hyperliquid/</span> (the exchange transport + signing).
+          Everything is Effect-TS. The design rule, stated repeatedly in the source:
+          <em
+            >Hyperliquid is canonical; local tables are hints until canonical state confirms
+            them.</em
+          >
+        </p>
+
+        <h3>The execution reactor — the closed loop</h3>
+        <p>
+          <b><code>TradingMissionReactor</code></b>
+          <span class="path">apps/server/src/trading/TradingMissionReactor.ts:93</span>
+          is the loop. It subscribes to the orchestration engine's domain-event stream, filters to
+          four
+          <code>*-requested</code> event types, and enqueues each onto a
+          <code>DrainableWorker</code> (an in-process <code>TxQueue</code> +
+          <code>Effect.forever</code> take-loop — no external broker). Each event routes to one
+          handler:
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Event</th>
+              <th>Handler</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mono">trading.mission-create-requested</td>
+              <td>processCreateRequested</td>
+              <td>
+                Persists mission, sets status <code>initializing</code>, kicks the first harness
+                run.
+              </td>
+            </tr>
+            <tr>
+              <td class="mono">trading.mission-control-requested</td>
+              <td>processControlRequested</td>
+              <td>
+                Pause / resume / revoke. Applies resume-exhaustion gate, reconciles, transitions
+                state.
+              </td>
+            </tr>
+            <tr>
+              <td class="mono">trading.mission-watch-fired</td>
+              <td>processWatchFired</td>
+              <td>
+                Closes the wake loop — turns a fired watch into
+                <code>coordinator.requestRun()</code>.
+              </td>
+            </tr>
+            <tr>
+              <td class="mono">trading.execution-requested</td>
+              <td>processExecutionRequested</td>
+              <td>
+                The §17.2 write side: reconcile → budget → guard → submit → reconcile → re-budget.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          The reactor is started by <code>OrchestrationReactor</code> alongside
+          <code>WatchEvaluator</code>; both are forked fibers scoped to server lifetime. Every
+          non-interrupt failure is caught (<code>Effect.catchCause</code>) so a refused request can
+          never crash the queue — the mission's persisted records remain the source of truth, not
+          the request.
+        </p>
+
+        <h3>Three execution-side services</h3>
+        <div class="grid2">
+          <div class="card">
+            <h4>
+              <code>HyperliquidExecutionService</code> <span class="pill gap">spends capital</span>
+            </h4>
+            <p class="path">apps/server/src/trading/HyperliquidExecutionService.ts:273</p>
+            <p>
+              The <em>only</em> code path that spends testnet capital. Ten-step submit sequence:
+              resolve signer → market+book → preview → map order → persist record
+              <em>before</em> signing → reserve risk → sign in nonce lane → POST
+              <code>/exchange</code> → inspect every per-order status → update record.
+            </p>
+          </div>
+          <div class="card">
+            <h4>
+              <code>HyperliquidRe reconciler</code> <span class="pill live">convergence</span>
+            </h4>
+            <p class="path">apps/server/src/trading/HyperliquidReconciler.ts:83</p>
+            <p>
+              Pulls canonical position / open orders / fills from Hyperliquid and upserts the local
+              migration-037 tables. Fires on 8 triggers: server-startup, ws-reconnect,
+              before-execution, after-submission, after-fill, after-position-update, before-resume,
+              periodic-while-open.
+            </p>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="card">
+            <h4><code>TradingExecutionGuard</code> <span class="pill partial">exhaustion</span></h4>
+            <p class="path">apps/server/src/trading/TradingExecutionGuard.ts</p>
+            <p>
+              The §16.4 cumulative-loss gate. Pre-submit: blocks new entries when budget exhausted.
+              Reduce-only path: closes existing positions regardless of exhaustion.
+            </p>
+          </div>
+          <div class="card">
+            <h4><code>TradingBudgetReader</code> <span class="pill next">reads</span></h4>
+            <p class="path">apps/server/src/trading/TradingBudgetReader.ts:59</p>
+            <p>
+              Assembles the <code>LossBudgetInput</code> from the 037 tables: realised PnL + fees
+              from <code>trading_fills</code>, open-position risk from snapshots, pending-entry risk
+              from reservations. Feeds the pure <code>evaluateLossBudget</code> six-equation math.
+            </p>
+          </div>
+        </div>
+
+        <h3>The wake path — resuming the harness</h3>
+        <p>
+          When a watch fires, <b><code>TradingTurnCoordinator.requestRun()</code></b>
+          <span class="path">apps/server/src/trading/TradingTurnCoordinator.ts:300</span>
+          runs seven pre-run checks (mission active, provider binding present, instance available,
+          lease acquirable, inbox claimable, strategy present, cause valid), acquires a decision
+          lease via a partial unique index on <code>trading_harness_runs</code>, then forks a
+          background wake fiber. That fiber calls
+          <b><code>TradingWakeupComposer.compose()</code></b> to fetch a fresh market + account
+          snapshot, serializes a bounded <code>TradingHarnessWakeup</code> JSON, and dispatches a
+          normal <code>thread.turn.start</code> with that JSON as the resumed turn's message text.
+        </p>
+        <div class="gate">
+          <span class="h">One active run per mission — enforced by SQL.</span>
+          The partial unique index
+          <code>idx_trading_harness_runs_one_active_per_mission</code> means a unique-violation =
+          "queued behind active run". The coordinator retries every 5s up to 60 times, forked
+          detached so it never stalls the reactor queue.
+        </div>
+      </section>
+
+      <!-- ============================ 3 ============================ -->
+      <section id="harness">
+        <h2>3 · How harnesses interact with everything</h2>
+
+        <p class="lede">
+          "Harness" means three different things in this repo. The dominant one is the
+          <b>trading harness</b> — a durable binding between a provider/agent session and a trading
+          mission. The other two are pure test scaffolding and a mobile screenshot script. They
+          share nothing.
+        </p>
+
+        <details>
+          <summary>Clarify the three meanings of "harness"</summary>
+          <table>
+            <thead>
+              <tr>
+                <th>Meaning</th>
+                <th>Where</th>
+                <th>Role</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><b>Trading harness</b> (the product concept)</td>
+                <td class="mono">TradingHarnessBinding in trading-contracts/mission.ts:21</td>
+                <td>
+                  A provider/agent runtime bound to a mission. Durable across turns; a
+                  <em>TradingHarnessRun</em> is one temporary turn holding the decision lease.
+                </td>
+              </tr>
+              <tr>
+                <td><b>Test harnesses</b></td>
+                <td class="mono">
+                  apps/server/integration/OrchestrationEngineHarness.integration.ts
+                </td>
+                <td>
+                  Assembles a real server runtime in a temp dir for integration tests. Also
+                  <code>TestProviderAdapterHarness</code>, <code>VcsDriverContractHarness</code>. No
+                  runtime role.
+                </td>
+              </tr>
+              <tr>
+                <td><b>Screenshot harness</b></td>
+                <td class="mono">scripts/mobile-showcase.ts</td>
+                <td>
+                  Builds the app, boots simulators, captures App Store screenshots. Unrelated to
+                  agents.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </details>
+
+        <h3>The trading-harness binding</h3>
+        <p>
+          A harness binding record (<span class="path"
+            >packages/trading-contracts/src/mission.ts:21</span
+          >) is:
+        </p>
+        <pre><code>{
+  provider,              // "claude" | "codex" | "cursor" | "grok" | "opencode"
+  providerInstanceId,
+  providerSessionId?,    // set when a live session exists
+  resumeCursor?,         // how to resume the conversation
+  threadId,              // the authority for per-call mission resolution
+  model?,
+  status                 // active | paused | revoked
+}</code></pre>
+        <p>
+          Two wallets are referenced by design and never conflated: the
+          <b>master wallet</b> (funded, the identity for all reads) and the
+          <b>execution wallet</b> (the interim signer). Passing the execution-wallet address for
+          account reads is a flagged programming error (<code>execution_wallet_as_identity</code>).
+        </p>
+
+        <h3>How a harness connects to the trading system</h3>
+        <p>Three connections, in increasing order of side-effect:</p>
+        <ol>
+          <li>
+            <b>Reads</b> — the harness calls <code>trading_get_*</code> tools; handlers resolve the
+            master-wallet address from the bound mission and delegate to
+            <code>HyperliquidGateway</code>. The harness never supplies an address.
+          </li>
+          <li>
+            <b>Writes (orchestration)</b> — <code>publish_momentum_strategy</code>,
+            <code>register_watch</code>, <code>cancel_watch</code>,
+            <code>request_entry</code> dispatch orchestration <em>commands</em> via
+            <code>OrchestrationEngineService.dispatch</code>. This puts events on the ordered WS
+            push path so the UI updates without polling.
+          </li>
+          <li>
+            <b>Execution (signing)</b> — the <code>trading.execution-requested</code> event is
+            consumed by the reactor, which validates authority/budget/freshness, then signs and
+            submits server-side. The harness is <em>not</em> trusted to sign.
+          </li>
+        </ol>
+
+        <div class="gate blue">
+          <span class="h">Why the agent never signs.</span>
+          The agent runs in a subprocess we spawn. If we handed it the private key, any
+          prompt-injection or tool-misuse could spend capital directly. Instead the agent expresses
+          an <em>intent</em>
+          (<code>TradingOrderIntent</code>); the server validates it against the mission's authority
+          version, the loss budget, the exchange freshness windows, and the §16.3 17-item preview
+          checklist before the signer is ever invoked. The agent's leverage is bounded to "ask".
+        </div>
+
+        <h3>Provider-by-provider injection</h3>
+        <p>
+          Every adapter reads the per-thread MCP credential via
+          <code>McpProviderSession.readMcpProviderSession</code> and injects it as an MCP client
+          config named <code>t3-code</code>. Each provider's wire shape differs:
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Provider</th>
+              <th>How <code>t3-code</code> is injected</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Claude</td>
+              <td class="mono">
+                mcpServers["t3-code"] = {"type":"http","url","headers":{Authorization}}
+              </td>
+              <td class="path">ClaudeAdapter.ts:3549</td>
+            </tr>
+            <tr>
+              <td>Codex</td>
+              <td class="mono">-c mcp_servers.t3-code.url=… + T3_MCP_BEARER_TOKEN env</td>
+              <td class="path">CodexAdapter.ts:1414</td>
+            </tr>
+            <tr>
+              <td>Cursor</td>
+              <td class="mono">mcpServers:[{type:"http",name:"t3-code",url,headers:[…]}] (ACP)</td>
+              <td class="path">CursorAdapter.ts:542</td>
+            </tr>
+            <tr>
+              <td>Grok</td>
+              <td class="mono">ACP shape, same as Cursor</td>
+              <td class="path">GrokAdapter.ts:580</td>
+            </tr>
+            <tr>
+              <td>OpenCode</td>
+              <td class="mono">client.mcp.add({name:"t3-code",config:{type:"remote",…}})</td>
+              <td class="path">OpenCodeAdapter.ts:1218</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ============================ 4 ============================ ============================ -->
+      <section id="tools">
+        <h2>4 · The tools exposed to harnesses</h2>
+        <p class="lede">
+          Twenty-eight MCP tools across two toolkits. The trading toolkit is 14 tools; the
+          preview/browser toolkit is another 14. All trading tool input/result schemas live in
+          <span class="path">packages/trading-contracts/src/tools.ts</span> and are
+          <em>imported, never redeclared</em>, by the server. All share the failure type
+          <code>TradingToolRejectedError</code>; every input carries <code>missionId</code>; account
+          reads take only <code>missionId</code> (the address is resolved server-side).
+        </p>
+
+        <div class="tabs" role="tablist" aria-label="Trading tool groups">
+          <button role="tab" aria-selected="true" data-tab="mission">Mission (2)</button>
+          <button role="tab" aria-selected="false" data-tab="reads">
+            Market &amp; account reads (7)
+          </button>
+          <button role="tab" aria-selected="false" data-tab="watches">Watches (4)</button>
+          <button role="tab" aria-selected="false" data-tab="exec">Execution (1)</button>
+          <button role="tab" aria-selected="false" data-tab="preview">Preview toolkit (14)</button>
+        </div>
+
+        <div class="panel active" id="t-mission">
+          <div class="trow head">
+            <div>Tool</div>
+            <div>Mode</div>
+            <div>Annotations</div>
+            <div>Behavior</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">trading_get_mission</span></div>
+            <div>read</div>
+            <div class="ann">RO · idempotent</div>
+            <div>Mission + authority + strategy + watches + control + harness binding.</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">trading_publish_momentum_strategy</span></div>
+            <div>write</div>
+            <div class="ann">RW · not-idempotent</div>
+            <div>
+              Publish a versioned momentum strategy; announces
+              <code>trading.mission.strategy-published</code>.
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" id="t-reads">
+          <div class="trow head">
+            <div>Tool</div>
+            <div>Mode</div>
+            <div>Annotations</div>
+            <div>Behavior</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">trading_resolve_market</span></div>
+            <div>read</div>
+            <div class="ann">RO · OpenWorld</div>
+            <div>assetIndex, szDecimals, maxLeverage, available.</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">trading_get_market_snapshot</span></div>
+            <div>read</div>
+            <div class="ann">RO · OpenWorld</div>
+            <div>Mark, mid, oracle, funding, OI, vol, BBO, 24h change — with freshness stamps.</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">trading_get_market_history</span></div>
+            <div>read</div>
+            <div class="ann">RO · OpenWorld</div>
+            <div>Candles: 1m/3m/5m/15m/1h, ≤500 bars, bounded window.</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">trading_get_order_book</span></div>
+            <div>read</div>
+            <div class="ann">RO · OpenWorld</div>
+            <div>L2 book, ≤20 levels/side, 2s freshness.</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">trading_get_account_state</span></div>
+            <div>read</div>
+            <div class="ann">RO · OpenWorld</div>
+            <div>Account value, margin used, withdrawable, positions.</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">trading_get_position</span></div>
+            <div>read</div>
+            <div class="ann">RO · OpenWorld</div>
+            <div>Signed size, entry, unrealised PnL, funding, margin — zero row if flat.</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">trading_get_open_orders</span></div>
+            <div>read</div>
+            <div class="ann">RO · OpenWorld</div>
+            <div>Resting orders with cloid, side, price, remaining size.</div>
+          </div>
+        </div>
+
+        <div class="panel" id="t-watches">
+          <div class="trow head">
+            <div>Tool</div>
+            <div>Mode</div>
+            <div>Annotations</div>
+            <div>Behavior</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">trading_register_watch</span></div>
+            <div>write</div>
+            <div class="ann">RW</div>
+            <div>
+              Register a <code>price_cross</code> / condition watch; announces watch-registered.
+            </div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">trading_schedule_reassessment</span></div>
+            <div>write</div>
+            <div class="ann">RW</div>
+            <div>Register a <code>scheduled_reassessment</code> watch for a future time.</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">trading_list_watches</span></div>
+            <div>read</div>
+            <div class="ann">RO · idempotent</div>
+            <div>List the mission's watches.</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">trading_cancel_watch</span></div>
+            <div>write</div>
+            <div class="ann">RW</div>
+            <div>Cancel a watch; announces watch-cancelled.</div>
+          </div>
+        </div>
+
+        <div class="panel" id="t-exec">
+          <div class="trow head">
+            <div>Tool</div>
+            <div>Mode</div>
+            <div>Annotations</div>
+            <div>Behavior</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">trading_request_entry</span></div>
+            <div>write</div>
+            <div class="ann"><b>Destructive</b> · idempotent · OpenWorld</div>
+            <div>
+              Submit one execution intent. Server validates authority version, harness run,
+              mandatory stop, budget, freshness — then dispatches
+              <code>trading.execution.requested</code>. Returns
+              <code>{executionId, status, cloid, orderResults[], budget}</code>.
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" id="t-preview">
+          <p class="lede" style="margin-top: 0">
+            The <b>preview toolkit</b> is upstream's collaborative-browser automation surface — also
+            injected to every harness. It exists independently of trading and bridges to a
+            CDP-controlled browser tab via <code>PreviewAutomationBroker</code>.
+          </p>
+          <div class="trow head">
+            <div>Tool</div>
+            <div>Group</div>
+            <div></div>
+            <div>Behavior</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">preview_status</span></div>
+            <div>meta</div>
+            <div></div>
+            <div>Report tab automation capability.</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">preview_open / navigate / resize / set_appearance</span></div>
+            <div>tab</div>
+            <div></div>
+            <div>Init/move/style the collaborative browser tab.</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">preview_snapshot</span></div>
+            <div>inspect</div>
+            <div></div>
+            <div>A11y tree + PNG screenshot (multipart result).</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">preview_click / type / press / scroll</span></div>
+            <div>interact</div>
+            <div></div>
+            <div>Drive the page.</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">preview_evaluate / wait_for</span></div>
+            <div>inspect</div>
+            <div></div>
+            <div>Eval JS (≤64 KB result) / wait for conditions.</div>
+          </div>
+          <div class="trow">
+            <div><span class="tn">preview_recording_start / stop</span></div>
+            <div>record</div>
+            <div></div>
+            <div>Start/stop tab recording.</div>
+          </div>
+        </div>
+
+        <div class="gate">
+          <span class="h">Capability is per session; authorization is per call.</span>
+          <code>McpSessionRegistry.issue</code> hard-codes
+          <code>capabilities: new Set(["preview","trading"])</code>
+          for every session. But each trading call additionally resolves the mission from the
+          credential's
+          <code>threadId</code> via <code>resolveBoundCall</code> — so a harness can only touch the
+          mission its thread is bound to, never one named in an argument.
+        </div>
+      </section>
+
+      <!-- ============================ 5 ============================ -->
+      <section id="mcp">
+        <h2>5 · The MCP layer</h2>
+
+        <p class="lede">
+          One first-party HTTP MCP server, exposed to every agent harness as <code>t3-code</code>,
+          plus one pinned third-party stdio server (<code>xcodebuildmcp</code>) for iOS testing. The
+          first-party server is built on Effect's <code>McpServer</code> from
+          <code>effect/unstable/ai</code> — <em>not</em> on
+          <code>@modelcontextprotocol/sdk</code> (that package appears only transitively, via the
+          Claude agent SDK).
+        </p>
+
+        <div class="grid2">
+          <div class="card">
+            <h4>First-party server <span class="pill violet">product-native</span></h4>
+            <dl class="kv">
+              <dt>name</dt>
+              <dd>"T3 Code"</dd>
+              <dt>path</dt>
+              <dd><code>POST /mcp</code> (HTTP transport, not stdio)</dd>
+              <dt>impl</dt>
+              <dd><code>McpServer.layerHttp</code> from <code>effect/unstable/ai</code></dd>
+              <dt>auth</dt>
+              <dd>
+                per-session bearer token (hashed, looked up in <code>McpSessionRegistry</code>)
+              </dd>
+              <dt>mount</dt>
+              <dd><span class="path">apps/server/src/mcp/McpHttpServer.ts:225</span></dd>
+              <dt>surface</dt>
+              <dd>tools only — no resources, no prompts</dd>
+            </dl>
+          </div>
+          <div class="card">
+            <h4>Third-party server <span class="pill next">pinned</span></h4>
+            <dl class="kv">
+              <dt>name</dt>
+              <dd><code>xcodebuildmcp</code> v2.6.2</dd>
+              <dt>transport</dt>
+              <dd>stdio, launched on demand by the agent client</dd>
+              <dt>config</dt>
+              <dd>
+                <span class="path">.mcp.json</span> + <span class="path">.codex/config.toml</span>
+              </dd>
+              <dt>used by</dt>
+              <dd>iOS-debugger / test-t3-mobile skills</dd>
+              <dt>tools</dt>
+              <dd><code>snapshot_ui</code>, semantic taps, build/run (its own)</dd>
+            </dl>
+          </div>
+        </div>
+
+        <h3>The two bridges to trading</h3>
+        <ol>
+          <li>
+            <b>Read bridge</b> — read-only trading tools call <code>HyperliquidGateway</code> and
+            the trading services <em>directly inside the MCP handler effect</em>. Synchronous,
+            scoped to the request.
+          </li>
+          <li>
+            <b>Write/execution bridge</b> — <code>trading_request_entry</code> does
+            <em>not</em> place an order. It dispatches a command onto the orchestration engine,
+            which becomes a persisted event, which the reactor consumes off the MCP thread to do the
+            actual signing + submit.
+            <span class="path">apps/server/src/mcp/toolkits/trading/handlers.ts:238</span>
+          </li>
+        </ol>
+
+        <h3>Credential lifecycle</h3>
+        <pre><code>ProviderService.prepareMcpSession(threadId, providerInstanceId)
+  → McpSessionRegistry.issue(...)        // mints 32-byte token, hashes it, grants {preview,trading}
+  → McpProviderSession.setMcpProviderSession(threadId, ...)
+  → adapter reads it &amp; injects as "t3-code" into the spawned CLI
+  ... every turn: touchActiveMcpThread keeps liveness ...
+  shutdown: McpSessionRegistry.revokeAll()</code></pre>
+        <p class="evi">
+          apps/server/src/provider/Layers/ProviderService.ts:217 · McpSessionRegistry.ts:120
+        </p>
+
+        <h3>What is <em>not</em> here</h3>
+        <ul>
+          <li>
+            No <code>cloudflare-worker-mcp</code>, no <code>agents-mcp</code>, no
+            <code>fastmcp</code>.
+          </li>
+          <li>
+            No direct <code>@modelcontextprotocol/sdk</code> dependency in any package.json
+            (transitive only).
+          </li>
+          <li>No per-harness MCP server — one shared server, capability-scoped per session.</li>
+          <li>No <code>.zed/</code> config; nothing MCP-related in <code>.zcode/</code>.</li>
+        </ul>
+      </section>
+
+      <!-- ============================ 6 ============================ -->
+      <section id="flow">
+        <h2>6 · End-to-end trade flow</h2>
+        <p class="lede">
+          From a harness tool call to a signed Hyperliquid order to a UI card. Each step is coloured
+          by which world it lives in: <span class="pill live">pure engine</span>,
+          <span class="pill violet">effectful trading</span>,
+          <span class="pill partial">side-effect / exchange</span>,
+          <span class="pill done">settled</span>.
+        </p>
+
+        <div class="flow">
+          <div class="step pure">
+            <div class="k">1</div>
+            <div class="t">
+              <b>Harness calls <code>trading_request_entry</code></b> over HTTP
+              <code>POST /mcp</code> with the bearer token. Carries
+              <code>{missionId, intent, expectedAuthorityVersion, activeHarnessRunId}</code>.
+              <span class="path">apps/server/src/mcp/toolkits/trading/handlers.ts:238</span>
+              <span class="pill live" style="margin-left: 0.5rem">MCP boundary</span>
+            </div>
+          </div>
+          <div class="step pure">
+            <div class="k">2</div>
+            <div class="t">
+              <b>Handler dispatches <code>trading.execution.requested</code></b> via
+              <code>OrchestrationEngineService.dispatch</code>. Bearer token → scope → mission
+              resolved from <code>threadId</code>.
+              <span class="path">handlers.ts:245</span>
+            </div>
+          </div>
+          <div class="step pure">
+            <div class="k">3</div>
+            <div class="t">
+              <b>Decider emits <code>trading.execution-requested</code> event</b> inside a SQL
+              transaction with the event append + projection. The decider is pure; the exhaustive
+              <code>default: command satisfies never</code> makes a missing case a compile error.
+              <span class="path">apps/server/src/orchestration/decider.ts:1339</span>
+            </div>
+          </div>
+          <div class="step fx">
+            <div class="k">4</div>
+            <div class="t">
+              <b>Reactor consumes the event</b> off the <code>DrainableWorker</code> queue. Resolves
+              mission + master-wallet address.
+              <span class="path">TradingMissionReactor.ts:330 · processExecutionRequested</span>
+              <span class="pill violet" style="margin-left: 0.5rem">trading overlay</span>
+            </div>
+          </div>
+          <div class="step fx">
+            <div class="k">5</div>
+            <div class="t">
+              <b>Reconcile-before</b> —
+              <code>reconciler.reconcile(..., "before_execution")</code> pulls canonical
+              position/orders/fills and upserts local tables. <em>Hyperliquid is canonical.</em>
+              <span class="path">TradingMissionReactor.ts:343</span>
+            </div>
+          </div>
+          <div class="step fx">
+            <div class="k">6</div>
+            <div class="t">
+              <b>Budget + guard</b> — <code>budgetReader.read()</code> →
+              <code>evaluateLossBudget</code> (six equations).
+              <code>guard.guardAction(actionType, budget)</code> enforces §16.4 exhaustion.
+              Reduce-only close branches separately.
+              <span class="path">TradingMissionReactor.ts:349–372</span>
+            </div>
+          </div>
+          <div class="step side">
+            <div class="k">7</div>
+            <div class="t">
+              <b>Submit sequence</b> — resolve signer (fail-closed) → market+book → preview (17-item
+              checklist) → map order → <b>persist execution record before signing</b> → reserve risk
+              → sign in nonce lane → POST <code>/exchange</code> → inspect every per-order status.
+              <span class="path">HyperliquidExecutionService.ts:273</span>
+              <span class="pill partial" style="margin-left: 0.5rem">spends capital</span>
+            </div>
+          </div>
+          <div class="step fx">
+            <div class="k">8</div>
+            <div class="t">
+              <b>Reconcile-after</b> — <code>reconcile(..., "after_submission")</code> converges
+              local state to canonical. Re-reads budget; if exhausted, transitions to
+              <code>blocked</code> / <code>cumulative_loss_limit</code>.
+              <span class="path">TradingMissionReactor.ts:398–426</span>
+            </div>
+          </div>
+          <div class="step term">
+            <div class="k">9</div>
+            <div class="t">
+              <b>Projection + UI</b> — <code>announceStatus</code> dispatches
+              <code>trading.mission.status-set</code> → projector rebuilds the
+              <code>projection_trading_missions</code> row joining the three execution surfaces
+              (in-flight execution, recent fills, position snapshot). WS pushes the snapshot to
+              clients.
+              <span class="path">TradingMissionProjection.ts:347 · ws.ts:1233</span>
+              <span class="pill done" style="margin-left: 0.5rem">settled</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="gate ok">
+          <span class="h">Where pure stops and side-effects begin.</span>
+          The decider + projector are pure (deterministic, no I/O beyond the event append).
+          Everything from
+          <code>HyperliquidExecutionService</code> onward is the effectful world. The seam is
+          <code
+            >TradingExecutionRequestedCommand → trading.execution-requested event (pure, persisted)
+            → TradingMissionReactor.processExecutionRequested (effectful)</code
+          >.
+        </div>
+      </section>
+
+      <!-- ============================ 7 ============================ -->
+      <section id="upstream">
+        <h2>7 · Upstream T3 Code vs this fork</h2>
+
+        <p class="lede">
+          Upstream is <b>T3 Code</b> (<code>pingdotgg/t3code</code>) pinned at immutable tag
+          <code>upstream-base/2026-07-29-a8e05cbb</code> (v0.0.31). The push remote is
+          <code>DISABLE</code>d — we only pull. Every divergence is recorded in the 61 KB
+          <span class="path">docs/upstream/PATCH_LEDGER.md</span>, and every phase ends with a
+          <code>docs(upstream): record the PROMPT-NN upstream seams</code> commit.
+        </p>
+
+        <h3>How upstream was handling it</h3>
+        <p>
+          Upstream is purely a coding-agent GUI. Its harness/provider layer (all under
+          <span class="path">apps/server/src/provider/</span>) is:
+        </p>
+        <ul>
+          <li>
+            <b>Drivers</b> — one per agent (<code>CodexDriver</code>, <code>ClaudeDriver</code>, …),
+            the process-spawning layer.
+          </li>
+          <li>
+            <b>Adapters</b> — protocol translation per agent, implementing
+            <code>ProviderAdapterShape</code>.
+          </li>
+          <li>
+            <b>Registries + session directory</b> — <code>ProviderAdapterRegistry</code>,
+            <code>ProviderInstanceRegistry</code>, <code>ProviderSessionDirectory</code> (thread →
+            session/resumeCursor).
+          </li>
+          <li>
+            <b>ProviderServiceLive</b> — cross-provider orchestration; routes validated RPC to
+            adapters, exposes a unified <code>ProviderRuntimeEvent</code> stream.
+          </li>
+          <li>
+            <b>Orchestration</b> — decide/project event loop, queue-based reactors
+            (<code>ProviderRuntimeIngestion</code>, <code>ProviderCommandReactor</code>,
+            <code>CheckpointReactor</code>).
+          </li>
+          <li>
+            <b>MCP</b> — a first-party <code>t3-code</code> server with a single
+            <code>preview</code> capability/toolkit.
+          </li>
+        </ul>
+        <p>
+          Upstream had no concept of trading, no mission aggregate, no exchange integration, and a
+          single MCP capability. The fork's strategy was deliberately <b>additive</b>: preserve
+          upstream services, extend via new product-owned packages, touch upstream-owned files only
+          at well-documented seams.
+        </p>
+
+        <h3>What we changed — by phase</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Phase</th>
+              <th>Theme</th>
+              <th>Key additions / seams</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><b>PROMPT-00</b><br /><span class="pill next">fork base</span></td>
+              <td>Fork &amp; branding</td>
+              <td>
+                Branded "T3 Trades"; bundle IDs, product name, build metadata. README rebrand
+                deferred.
+              </td>
+            </tr>
+            <tr>
+              <td><b>PROMPT-01</b><br /><span class="pill done">domain</span></td>
+              <td>Trading domain</td>
+              <td>
+                Migration 035 (TradingDomain). <code>@t3tools/trading-contracts</code> as workspace
+                dep.
+              </td>
+            </tr>
+            <tr>
+              <td><b>PROMPT-01B</b><br /><span class="pill live">wiring</span></td>
+              <td>MCP toolkit + orchestration</td>
+              <td>
+                <b>Seam:</b> widened <code>McpCapability</code> from <code>"preview"</code> to
+                <code>"preview" | "trading"</code>. Registered trading toolkit, added trading
+                commands/events to orchestration, decider case, <code>TradingMissionReactor</code>,
+                <code>/settings/trading</code> route, mission read-model (migration 036).
+              </td>
+            </tr>
+            <tr>
+              <td><b>PROMPT-02</b><br /><span class="pill done">reads</span></td>
+              <td>Market-data read path</td>
+              <td>
+                <code>packages/hyperliquid/</code> read transport (InfoClient, WebSocketClient,
+                MarketResolver, Gateway). Seven read-only MCP tools. <b>Correction pass</b> after
+                live testnet verification falsified the wire layer (candle/book shapes, a WS
+                envelope decode that silently dropped every frame).
+              </td>
+            </tr>
+            <tr>
+              <td><b>PROMPT-03</b><br /><span class="pill violet">wake</span></td>
+              <td>Watches &amp; harness wake-up</td>
+              <td>
+                The central proof: server survives a turn end, evaluates persisted watches, resumes
+                the same provider session with a fresh snapshot. Watch registry/evaluator/inbox,
+                turn coordinator + decision lease, thread-derived harness binding (replacing
+                hardcoded <code>provider:"claude"</code>). Migration 037.
+              </td>
+            </tr>
+            <tr>
+              <td><b>PROMPT-04</b><br /><span class="pill gap">capital</span></td>
+              <td>Execution &amp; reconciliation</td>
+              <td>
+                Hand-rolled Hyperliquid L1 phantom-agent EIP-712 signing (<b>no viem/ethers</b> —
+                <code>@noble/curves</code> + <code>@noble/hashes</code> + custom msgpack).
+                Deterministic 16-byte cloid, nonce lane, §16.2 six-equation loss budget, §16.3
+                17-item preview checklist, §18.2 eight reconciliation triggers, exhaustion guard,
+                reduce-only close, thread execution cards.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>The upstream seams (PROMPT-04)</h3>
+        <p>
+          Upstream-owned files edited to wire execution — every one is recorded in the patch ledger:
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Seam</th>
+              <th>File</th>
+              <th>Change</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Build-time env</td>
+              <td class="mono">.env.example</td>
+              <td>
+                Added <code>T3_TRADES_INTERIM_SIGNER_KEY</code> / <code>..._ADDRESS</code> knobs
+                (fail-closed signer).
+              </td>
+            </tr>
+            <tr>
+              <td>Hyperliquid deps</td>
+              <td class="mono">packages/hyperliquid/package.json</td>
+              <td>Added <code>@noble/curves</code> + <code>@noble/hashes</code>; new subpaths.</td>
+            </tr>
+            <tr>
+              <td>trading-contracts</td>
+              <td class="mono">packages/trading-contracts/package.json</td>
+              <td>Added <code>./execution</code> subpath/export/test.</td>
+            </tr>
+            <tr>
+              <td>Server dep</td>
+              <td class="mono">apps/server/package.json</td>
+              <td><code>@t3tools/hyperliquid</code> moved dev → runtime dependencies.</td>
+            </tr>
+            <tr>
+              <td>Migration registry</td>
+              <td class="mono">persistence/Migrations.ts</td>
+              <td>Entry <code>[37, "TradingExecution", …]</code>.</td>
+            </tr>
+            <tr>
+              <td>Orchestration contracts</td>
+              <td class="mono">contracts/src/trading.ts</td>
+              <td>Three optional execution views on the mission snapshot.</td>
+            </tr>
+            <tr>
+              <td>Integration harness</td>
+              <td class="mono">OrchestrationEngineHarness.integration.ts</td>
+              <td>Switched to <code>TradingCoreLayerLive</code> (reactor-only).</td>
+            </tr>
+            <tr>
+              <td>CLI test scope</td>
+              <td class="mono">apps/server/src/bin.test.ts</td>
+              <td>
+                Stubs <code>TradingMissionReactor</code> so CLI test avoids the execution layer.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="gate">
+          <span class="h">Why this matters for syncs.</span>
+          Because every touched upstream file is logged, a future
+          <code>git merge upstream/main</code>
+          produces a predictable, bounded conflict set. Fork-owned additions (new files under
+          <code>packages/</code>, <code>apps/server/src/trading/</code>) cannot conflict at all. The
+          <span class="path">docs/upstream/SYNC_RUNBOOK.md</span> documents the
+          <code>--no-ff</code> procedure.
+        </div>
+
+        <h3>The key architectural move</h3>
+        <div class="gate ok">
+          The fork made the server <b>trading-aware by reusing the existing event-sourced loop</b>.
+          Trading missions are a new <code>OrchestrationAggregateKind: "mission"</code> flowing
+          through the same decider/projector/reactor pipeline as chat threads. The wake path reuses
+          upstream's <code>ProviderSessionDirectory</code> + <code>resumeCursor</code> recovery to
+          resume a coding-agent session with a market snapshot when a watch fires.
+          <b>A coding-agent harness becomes a trading-agent harness without being replaced.</b>
+        </div>
+      </section>
+
+      <!-- ============================ 8 ============================ -->
+      <section id="gaps">
+        <h2>8 · Boundaries, invariants &amp; gaps</h2>
+
+        <div class="grid2">
+          <div class="card">
+            <h4>The two wallets <span class="pill live">identity rule</span></h4>
+            <p>
+              <b>Master wallet</b> — funded, the identity for all reads
+              (account/position/orders/fills). <b>Execution wallet</b> — the interim signer,
+              recorded on the execution record only.
+            </p>
+            <p>
+              Passing the execution-wallet address for account reads raises
+              <code>HyperliquidIdentityError{reason:"execution_wallet_as_identity"}</code>.
+            </p>
+            <p class="path">packages/hyperliquid/src/Gateway.ts:241 · errors.ts:48</p>
+          </div>
+          <div class="card">
+            <h4>The interim signer <span class="pill gap">fail-closed</span></h4>
+            <p>
+              Loaded from env <code>T3_TRADES_INTERIM_SIGNER_KEY</code> or repo file
+              <code>.t3/secrets/hyperliquid-interim-signer-key.bin</code>. 32-byte secp256k1. If
+              absent or malformed, the execution service refuses — no order is signed.
+            </p>
+            <p class="path">apps/server/src/trading/InterimSignerConfig.ts</p>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="card">
+            <h4>Nonce safety <span class="pill violet">serialized</span></h4>
+            <p>
+              One <code>Semaphore(1)</code> lane per execution wallet. Monotonic ms-nonces
+              fast-forwarded to wall clock, committed only on success.
+              <code>NonceRecoveryHint</code> for restart rehydration.
+            </p>
+            <p class="path">packages/hyperliquid/src/NonceCoordinator.ts:56</p>
+          </div>
+          <div class="card">
+            <h4>Checkpoint decoupling <span class="pill next">separate</span></h4>
+            <p>
+              The git-checkpoint reactor subscribes to <code>thread.*</code> events only — never
+              <code>trading.*</code>. It protects the harness's <em>file edits</em>, not exchange
+              orders. Trading ↔ checkpoint interact only indirectly, through the bound thread.
+            </p>
+          </div>
+        </div>
+
+        <h3>Known gaps &amp; honest status</h3>
+        <div class="gate bad">
+          <span class="h">End-to-end loop not yet covered by an executed integration test.</span>
+          <code>ExecutionReactorLoop.test.ts:29</code> is <code>it.skip</code> — a scaffold whose
+          fixture is in progress. Correctness currently rests on focused unit tests, the decider's
+          <code>command satisfies never</code> exhaustiveness check, and a live
+          <code>noop</code> signing smoke probe (<code>executionSmoke.test.ts</code>) that proves
+          the signing path is byte-correct against the real exchange without spending capital.
+        </div>
+
+        <ul>
+          <li>
+            <b><code>netFundingUsd = 0</code></b> in the budget — no funding table yet
+            (TradingBudgetReader caveat).
+          </li>
+          <li>
+            <b>Open-position stop/fee fields are 0</b> until the PROMPT-05 protection layer writes
+            them.
+          </li>
+          <li><b>No modify-order</b> action builder — only place and cancel-by-cloid.</li>
+          <li>
+            <b>Control commands</b> restricted to <code>pause/resume/revoke</code>;
+            <code>cancel_entries/reduce_position/close_position/close_and_revoke</code> have no
+            command path today — close/reduce arrives as
+            <code>trading.execution.requested</code> with <code>actionType:"close"|"reduce"</code> +
+            <code>reduceOnly</code>.
+          </li>
+          <li>
+            <b>README mismatch</b> — the root README still reads as upstream T3 Code; the fork's
+            identity lives in <code>docs/</code>, not the root README.
+          </li>
+        </ul>
+
+        <h3>Verification guidance (from AGENTS.md)</h3>
+        <div class="gate blue">
+          <ul style="margin: 0">
+            <li>Wait on receipts and worker <code>drain()</code>, never on sleeps or polling.</li>
+            <li>
+              Targeted <code>test</code> / typecheck for the scope changed — no repo-wide checks (CI
+              owns those).
+            </li>
+            <li>Backend behavior changes ship with focused tests for that behavior.</li>
+            <li>A test that needs a timeout to pass is wrong.</li>
+          </ul>
+        </div>
+      </section>
+
+      <footer
+        style="
+          margin-top: 3rem;
+          padding-top: 1rem;
+          border-top: 1px solid var(--border);
+          font-family: var(--mono);
+          font-size: 0.78rem;
+          color: var(--muted);
+        "
+      >
+        Sources: apps/server/src/trading/* · apps/server/src/mcp/toolkits/trading/* ·
+        apps/server/src/orchestration/decider.ts · packages/trading-contracts/src/* ·
+        packages/hyperliquid/src/* · packages/contracts/src/trading.ts ·
+        docs/upstream/PATCH_LEDGER.md · docs/architecture/trading-execution.md &nbsp;—&nbsp;
+        generated 2026-08-01. Sibling of the prompt-04 report series.
+      </footer>
+    </div>
+
+    <script>
+      // Tab switching — vanilla, minimal, accessible
+      document.querySelectorAll(".tabs button").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var group = btn.closest("section").querySelector(".tabs");
+          group.querySelectorAll("button").forEach(function (b) {
+            b.setAttribute("aria-selected", b === btn ? "true" : "false");
+          });
+          var target = btn.getAttribute("data-tab");
+          var section = btn.closest("section");
+          section.querySelectorAll(".panel").forEach(function (p) {
+            var match = p.id === "t-" + target;
+            p.classList.toggle("active", match);
+            if (match) p.setAttribute("tabindex", "0");
+          });
+        });
+      });
+    </script>
+  </body>
+</html>

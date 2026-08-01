@@ -213,6 +213,15 @@ export const TradingExecutionRecord = Schema.Struct({
   timeInForce: TradingOrderTimeInForce,
   reduceOnly: Schema.Boolean,
 
+  /**
+   * The intent's stop, persisted so the budget reader can thread it into
+   * `openPositionRisk` once the entry fills and the reservation is released.
+   * Optional because legacy rows (and reduce-only/close records) may not
+   * carry one; the columns are nullable.
+   */
+  stopPrice: Schema.optional(Price),
+  plannedLossAtStopUsd: Schema.optional(UsdAmount),
+
   /** The interim execution-wallet address that signed the action. */
   signerAddress: EvmAddress,
 

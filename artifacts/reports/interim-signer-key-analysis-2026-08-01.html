@@ -1,0 +1,2777 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Interim Signer Key · Usage Analysis — T3 Trades</title>
+    <style>
+      /* ============================================================
+     DESIGN SYSTEM — written from scratch for this report.
+     No external CSS, no frameworks. Pure, self-contained.
+     ============================================================ */
+
+      :root {
+        /* Surface palette — deep "terminal/trading desk" blacks with cool accents */
+        --bg-0: #05070d;
+        --bg-1: #0a0e1a;
+        --bg-2: #0f1424;
+        --bg-3: #161d33;
+        --bg-card: #0c1120;
+        --bg-card-2: #11182b;
+        --bg-code: #070b15;
+
+        /* Lines / borders */
+        --line: #1d2540;
+        --line-soft: #141a2e;
+        --line-strong: #2a3556;
+
+        /* Text */
+        --text: #e7ecf7;
+        --text-2: #a8b2cc;
+        --text-3: #6b7596;
+        --text-dim: #4a5274;
+
+        /* Accents — function over decoration */
+        --accent: #5eead4; /* primary teal — "data flowing"   */
+        --accent-2: #818cf8; /* indigo — "signing / crypto"     */
+        --accent-3: #f59e0b; /* amber — "warn / attention"      */
+        --danger: #f87171; /* red   — "secrets / fail-closed" */
+        --green: #4ade80; /* success / ok status             */
+
+        /* Effects */
+        --glow-teal: 0 0 0 1px rgba(94, 234, 212, 0.22), 0 0 24px -6px rgba(94, 234, 212, 0.45);
+        --glow-indigo: 0 0 0 1px rgba(129, 140, 248, 0.22), 0 0 24px -6px rgba(129, 140, 248, 0.45);
+        --glow-danger: 0 0 0 1px rgba(248, 113, 113, 0.3), 0 0 24px -4px rgba(248, 113, 113, 0.45);
+
+        /* Typography */
+        --mono:
+          ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, Consolas,
+          monospace;
+        --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+
+        /* Layout */
+        --maxw: 1180px;
+        --radius: 14px;
+        --radius-sm: 8px;
+        --ease: cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+        -webkit-text-size-adjust: 100%;
+      }
+
+      body {
+        margin: 0;
+        font-family: var(--sans);
+        font-size: 15.5px;
+        line-height: 1.65;
+        color: var(--text);
+        background: var(--bg-0);
+        background-image:
+          radial-gradient(1100px 620px at 80% -8%, rgba(129, 140, 248, 0.1), transparent 60%),
+          radial-gradient(900px 560px at 4% 4%, rgba(94, 234, 212, 0.08), transparent 55%),
+          linear-gradient(180deg, #05070d 0%, #060912 100%);
+        background-attachment: fixed;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+        overflow-x: hidden;
+      }
+
+      /* Subtle scanline / grid texture */
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background-image:
+          linear-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.012) 1px, transparent 1px);
+        background-size: 44px 44px;
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      /* ============================================================
+     LAYOUT
+     ============================================================ */
+      .wrap {
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 0 24px;
+        position: relative;
+        z-index: 1;
+      }
+
+      /* ============================================================
+     HERO
+     ============================================================ */
+      .hero {
+        position: relative;
+        padding: 88px 0 56px;
+        border-bottom: 1px solid var(--line);
+        overflow: hidden;
+      }
+      .hero::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        bottom: -1px;
+        transform: translateX(-50%);
+        width: 60%;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, var(--accent), transparent);
+        opacity: 0.6;
+      }
+      .hero .wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 22px;
+      }
+
+      .pill-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 13px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        border: 1px solid var(--line-strong);
+        background: rgba(255, 255, 255, 0.025);
+        color: var(--text-2);
+      }
+      .pill.testnet {
+        color: var(--accent);
+        border-color: rgba(94, 234, 212, 0.35);
+        background: rgba(94, 234, 212, 0.07);
+      }
+      .pill.scope {
+        color: var(--accent-2);
+        border-color: rgba(129, 140, 248, 0.35);
+        background: rgba(129, 140, 248, 0.07);
+      }
+      .pill.secret {
+        color: var(--danger);
+        border-color: rgba(248, 113, 113, 0.35);
+        background: rgba(248, 113, 113, 0.06);
+      }
+
+      .pill .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+        box-shadow: 0 0 8px currentColor;
+        animation: pulse 2.2s var(--ease) infinite;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        50% {
+          opacity: 0.4;
+          transform: scale(0.8);
+        }
+      }
+
+      h1.title {
+        font-size: clamp(32px, 5vw, 52px);
+        line-height: 1.08;
+        letter-spacing: -0.025em;
+        margin: 0;
+        font-weight: 700;
+      }
+      h1.title .accent {
+        background: linear-gradient(120deg, var(--accent) 10%, var(--accent-2) 90%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+      .subtitle {
+        font-size: 18px;
+        color: var(--text-2);
+        max-width: 720px;
+        margin: 0;
+        line-height: 1.55;
+      }
+
+      /* The animated key glyph */
+      .key-glyph {
+        position: absolute;
+        right: -40px;
+        top: 60px;
+        width: 340px;
+        height: 340px;
+        opacity: 0.5;
+        pointer-events: none;
+      }
+      @media (max-width: 900px) {
+        .key-glyph {
+          display: none;
+        }
+      }
+
+      /* ============================================================
+     TESTNET BANNER
+     ============================================================ */
+      .safety-banner {
+        margin: 32px 0 0;
+        padding: 16px 20px;
+        border-radius: var(--radius);
+        border: 1px solid rgba(94, 234, 212, 0.3);
+        background: linear-gradient(90deg, rgba(94, 234, 212, 0.08), rgba(94, 234, 212, 0.02));
+        display: flex;
+        align-items: flex-start;
+        gap: 14px;
+        box-shadow: var(--glow-teal);
+      }
+      .safety-banner .icon {
+        flex-shrink: 0;
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: rgba(94, 234, 212, 0.15);
+        color: var(--accent);
+      }
+      .safety-banner strong {
+        color: var(--accent);
+      }
+      .safety-banner p {
+        margin: 4px 0 0;
+        font-size: 14px;
+        color: var(--text-2);
+      }
+
+      /* ============================================================
+     TABLE OF CONTENTS
+     ============================================================ */
+      nav.toc {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(5, 7, 13, 0.82);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        border-bottom: 1px solid var(--line);
+      }
+      nav.toc .wrap {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 10px 24px;
+        overflow-x: auto;
+        scrollbar-width: thin;
+      }
+      nav.toc a {
+        color: var(--text-3);
+        text-decoration: none;
+        font-size: 13px;
+        font-weight: 500;
+        padding: 7px 12px;
+        border-radius: var(--radius-sm);
+        white-space: nowrap;
+        transition: all 0.18s var(--ease);
+        flex-shrink: 0;
+      }
+      nav.toc a:hover {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.04);
+      }
+      nav.toc a.active {
+        color: var(--accent);
+        background: rgba(94, 234, 212, 0.08);
+      }
+
+      /* ============================================================
+     SECTIONS
+     ============================================================ */
+      section.block {
+        padding: 72px 0;
+        border-bottom: 1px solid var(--line-soft);
+        scroll-margin-top: 56px;
+      }
+      section.block:last-of-type {
+        border-bottom: none;
+      }
+
+      .eyebrow {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin: 0 0 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .eyebrow::before {
+        content: "";
+        width: 22px;
+        height: 1px;
+        background: var(--accent);
+        display: inline-block;
+      }
+      h2.h {
+        font-size: clamp(26px, 3.2vw, 34px);
+        letter-spacing: -0.02em;
+        margin: 0 0 14px;
+        font-weight: 700;
+        line-height: 1.2;
+      }
+      h3.h3 {
+        font-size: 19px;
+        margin: 28px 0 12px;
+        font-weight: 600;
+        color: var(--text);
+        letter-spacing: -0.01em;
+      }
+      .lede {
+        color: var(--text-2);
+        font-size: 16px;
+        max-width: 760px;
+        margin: 0 0 28px;
+      }
+      p {
+        margin: 0 0 14px;
+      }
+      p.body {
+        color: var(--text-2);
+      }
+      strong.k {
+        color: var(--text);
+        font-weight: 600;
+      }
+      code.inline {
+        font-family: var(--mono);
+        font-size: 0.88em;
+        background: var(--bg-3);
+        color: var(--accent);
+        padding: 2px 7px;
+        border-radius: 5px;
+        border: 1px solid var(--line);
+      }
+      a.ref {
+        color: var(--accent-2);
+        text-decoration: none;
+        border-bottom: 1px dotted rgba(129, 140, 248, 0.5);
+      }
+      a.ref:hover {
+        border-bottom-style: solid;
+      }
+
+      /* ============================================================
+     CARDS
+     ============================================================ */
+      .grid {
+        display: grid;
+        gap: 18px;
+      }
+      .grid-2 {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .grid-3 {
+        grid-template-columns: repeat(3, 1fr);
+      }
+      @media (max-width: 820px) {
+        .grid-2,
+        .grid-3 {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .card {
+        background: linear-gradient(180deg, var(--bg-card), var(--bg-card-2));
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 22px 24px;
+        transition:
+          transform 0.25s var(--ease),
+          border-color 0.25s var(--ease),
+          box-shadow 0.25s var(--ease);
+        position: relative;
+        overflow: hidden;
+      }
+      .card:hover {
+        transform: translateY(-2px);
+        border-color: var(--line-strong);
+      }
+      .card .card-label {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--text-3);
+        margin: 0 0 8px;
+      }
+      .card .card-title {
+        font-size: 17px;
+        font-weight: 600;
+        margin: 0 0 6px;
+        color: var(--text);
+      }
+      .card .card-body {
+        font-size: 14px;
+        color: var(--text-2);
+        margin: 0;
+      }
+      .card.accent-teal {
+        border-color: rgba(94, 234, 212, 0.28);
+      }
+      .card.accent-teal:hover {
+        box-shadow: var(--glow-teal);
+      }
+      .card.accent-indigo {
+        border-color: rgba(129, 140, 248, 0.28);
+      }
+      .card.accent-indigo:hover {
+        box-shadow: var(--glow-indigo);
+      }
+      .card.accent-danger {
+        border-color: rgba(248, 113, 113, 0.28);
+      }
+      .card.accent-danger:hover {
+        box-shadow: var(--glow-danger);
+      }
+
+      /* Stat tiles */
+      .stat-row {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+        margin: 24px 0;
+      }
+      @media (max-width: 760px) {
+        .stat-row {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+      .stat {
+        background: var(--bg-card);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        padding: 16px 18px;
+      }
+      .stat .num {
+        font-family: var(--mono);
+        font-size: 22px;
+        font-weight: 700;
+        color: var(--accent);
+        letter-spacing: -0.02em;
+        line-height: 1;
+      }
+      .stat .lbl {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--text-3);
+        margin-top: 6px;
+        font-weight: 600;
+      }
+
+      /* ============================================================
+     CODE BLOCKS
+     ============================================================ */
+      .code-block {
+        position: relative;
+        background: var(--bg-code);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        margin: 16px 0;
+        overflow: hidden;
+      }
+      .code-block .code-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 9px 14px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.015);
+      }
+      .code-block .code-file {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--text-3);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .code-block .code-file::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent-3);
+      }
+      .code-block .copy-btn {
+        background: transparent;
+        border: 1px solid var(--line-strong);
+        color: var(--text-3);
+        font-size: 11px;
+        font-family: var(--mono);
+        padding: 4px 10px;
+        border-radius: 5px;
+        cursor: pointer;
+        transition: all 0.15s var(--ease);
+      }
+      .code-block .copy-btn:hover {
+        color: var(--accent);
+        border-color: var(--accent);
+      }
+      .code-block pre {
+        margin: 0;
+        padding: 16px 18px;
+        overflow-x: auto;
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.65;
+        color: var(--text);
+      }
+      .code-block pre::-webkit-scrollbar {
+        height: 8px;
+      }
+      .code-block pre::-webkit-scrollbar-thumb {
+        background: var(--line-strong);
+        border-radius: 4px;
+      }
+
+      /* token colors */
+      .tok-c {
+        color: #5b6685;
+        font-style: italic;
+      } /* comment */
+      .tok-k {
+        color: var(--accent-2);
+      } /* keyword */
+      .tok-s {
+        color: var(--green);
+      } /* string  */
+      .tok-n {
+        color: var(--accent-3);
+      } /* number  */
+      .tok-f {
+        color: var(--accent);
+      } /* function*/
+      .tok-p {
+        color: var(--text-3);
+      } /* punct   */
+      .tok-t {
+        color: #f0abfc;
+      } /* type    */
+      .tok-redact {
+        color: var(--danger);
+        background: rgba(248, 113, 113, 0.08);
+        padding: 0 4px;
+        border-radius: 3px;
+        user-select: none;
+        cursor: help;
+      }
+
+      /* ============================================================
+     ACCORDION
+     ============================================================ */
+      .accordion {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        overflow: hidden;
+      }
+      .acc-item {
+        border-bottom: 1px solid var(--line);
+      }
+      .acc-item:last-child {
+        border-bottom: none;
+      }
+      .acc-header {
+        width: 100%;
+        background: var(--bg-card);
+        border: none;
+        color: var(--text);
+        text-align: left;
+        padding: 16px 20px;
+        font-size: 15px;
+        font-weight: 600;
+        font-family: var(--sans);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        transition: background 0.18s var(--ease);
+      }
+      .acc-header:hover {
+        background: var(--bg-card-2);
+      }
+      .acc-header .chev {
+        margin-left: auto;
+        color: var(--accent);
+        transition: transform 0.3s var(--ease);
+        flex-shrink: 0;
+      }
+      .acc-item.open .acc-header .chev {
+        transform: rotate(180deg);
+      }
+      .acc-header .badge {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        padding: 3px 8px;
+        border-radius: 4px;
+        background: rgba(94, 234, 212, 0.12);
+        color: var(--accent);
+        border: 1px solid rgba(94, 234, 212, 0.25);
+      }
+      .acc-body {
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.4s var(--ease);
+        background: var(--bg-code);
+      }
+      .acc-item.open .acc-body {
+        max-height: 2400px;
+      }
+      .acc-body-inner {
+        padding: 0 20px 18px;
+      }
+
+      /* ============================================================
+     EXECUTION PIPELINE (animated)
+     ============================================================ */
+      .pipeline {
+        margin: 36px 0;
+        position: relative;
+      }
+      .pipe-track {
+        position: relative;
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        gap: 6px;
+      }
+      @media (max-width: 900px) {
+        .pipe-track {
+          grid-template-columns: 1fr;
+          gap: 10px;
+        }
+      }
+      .pipe-step {
+        position: relative;
+        background: var(--bg-card);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        padding: 16px 12px;
+        text-align: center;
+        transition: all 0.3s var(--ease);
+        z-index: 2;
+      }
+      .pipe-step .step-num {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--text-dim);
+        margin-bottom: 6px;
+        font-weight: 700;
+      }
+      .pipe-step .step-ico {
+        width: 36px;
+        height: 36px;
+        margin: 0 auto 8px;
+        border-radius: 9px;
+        display: grid;
+        place-items: center;
+        background: rgba(94, 234, 212, 0.08);
+        border: 1px solid rgba(94, 234, 212, 0.2);
+        color: var(--accent);
+      }
+      .pipe-step .step-title {
+        font-size: 12.5px;
+        font-weight: 600;
+        color: var(--text);
+        line-height: 1.25;
+      }
+      .pipe-step .step-file {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--text-dim);
+        margin-top: 4px;
+        word-break: break-all;
+      }
+      .pipe-step.active {
+        border-color: var(--accent);
+        box-shadow: var(--glow-teal);
+        transform: translateY(-2px);
+      }
+      .pipe-step.active .step-ico {
+        background: rgba(94, 234, 212, 0.18);
+        animation: glowPulse 1.6s var(--ease) infinite;
+      }
+      @keyframes glowPulse {
+        0%,
+        100% {
+          box-shadow: 0 0 0 0 rgba(94, 234, 212, 0.4);
+        }
+        50% {
+          box-shadow: 0 0 0 8px rgba(94, 234, 212, 0);
+        }
+      }
+
+      /* the connecting flow line */
+      .pipe-flow-line {
+        position: absolute;
+        top: 50%;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background: var(--line);
+        z-index: 1;
+        transform: translateY(-50%);
+      }
+      @media (max-width: 900px) {
+        .pipe-flow-line {
+          display: none;
+        }
+      }
+      .pipe-flow-line::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        height: 100%;
+        width: 0;
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+        box-shadow: 0 0 12px var(--accent);
+        animation: flowFill 8s var(--ease) infinite;
+      }
+      @keyframes flowFill {
+        0% {
+          width: 0%;
+          opacity: 0.3;
+        }
+        50% {
+          width: 100%;
+          opacity: 1;
+        }
+        100% {
+          width: 100%;
+          opacity: 0.3;
+        }
+      }
+
+      /* ============================================================
+     WALLET ARCHITECTURE DIAGRAM
+     ============================================================ */
+      .wallet-diagram {
+        margin: 32px 0;
+        background: var(--bg-card);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 30px;
+        position: relative;
+        overflow: hidden;
+      }
+      .wallet-diagram::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(
+          600px 300px at 50% 0%,
+          rgba(129, 140, 248, 0.06),
+          transparent 70%
+        );
+        pointer-events: none;
+      }
+      .wallet-roles {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 18px;
+        position: relative;
+      }
+      @media (max-width: 820px) {
+        .wallet-roles {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .wallet-card {
+        background: var(--bg-code);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 20px;
+        position: relative;
+        transition: all 0.3s var(--ease);
+      }
+      .wallet-card.master {
+        border-color: rgba(129, 140, 248, 0.3);
+      }
+      .wallet-card.api {
+        border-color: rgba(245, 158, 11, 0.3);
+      }
+      .wallet-card.interim {
+        border-color: rgba(94, 234, 212, 0.3);
+      }
+      .wallet-card.master:hover {
+        box-shadow: var(--glow-indigo);
+      }
+      .wallet-card.api:hover {
+        box-shadow:
+          0 0 0 1px rgba(245, 158, 11, 0.3),
+          0 0 24px -6px rgba(245, 158, 11, 0.4);
+      }
+      .wallet-card.interim:hover {
+        box-shadow: var(--glow-teal);
+      }
+
+      .wallet-card .wc-tag {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--text-3);
+        margin-bottom: 8px;
+      }
+      .wallet-card.master .wc-tag {
+        color: var(--accent-2);
+      }
+      .wallet-card.api .wc-tag {
+        color: var(--accent-3);
+      }
+      .wallet-card.interim .wc-tag {
+        color: var(--accent);
+      }
+      .wallet-card .wc-name {
+        font-size: 16px;
+        font-weight: 700;
+        margin: 0 0 10px;
+        color: var(--text);
+      }
+      .wallet-card .wc-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 12px;
+        padding: 6px 0;
+        border-bottom: 1px dashed var(--line);
+      }
+      .wallet-card .wc-row:last-of-type {
+        border-bottom: none;
+      }
+      .wallet-card .wc-row .k {
+        color: var(--text-3);
+      }
+      .wallet-card .wc-row .v {
+        color: var(--text-2);
+        font-family: var(--mono);
+      }
+      .wallet-card .wc-status {
+        margin-top: 12px;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 5px 10px;
+        border-radius: 5px;
+        display: inline-block;
+      }
+      .wallet-card.master .wc-status {
+        background: rgba(129, 140, 248, 0.1);
+        color: var(--accent-2);
+      }
+      .wallet-card.api .wc-status {
+        background: rgba(245, 158, 11, 0.1);
+        color: var(--accent-3);
+      }
+      .wallet-card.interim .wc-status {
+        background: rgba(94, 234, 212, 0.1);
+        color: var(--accent);
+      }
+
+      .collapse-note {
+        margin-top: 22px;
+        padding: 14px 18px;
+        background: rgba(94, 234, 212, 0.04);
+        border: 1px dashed rgba(94, 234, 212, 0.3);
+        border-radius: var(--radius-sm);
+        font-size: 14px;
+        color: var(--text-2);
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+      }
+      .collapse-note .arrow {
+        color: var(--accent);
+        font-size: 20px;
+        line-height: 1;
+      }
+
+      /* ============================================================
+     TABS
+     ============================================================ */
+      .tabs {
+        margin: 24px 0;
+      }
+      .tab-nav {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+        border-bottom: 1px solid var(--line);
+      }
+      .tab-btn {
+        background: transparent;
+        border: 1px solid transparent;
+        border-bottom: none;
+        color: var(--text-3);
+        padding: 10px 18px;
+        font-size: 13.5px;
+        font-weight: 600;
+        font-family: var(--sans);
+        cursor: pointer;
+        border-radius: 8px 8px 0 0;
+        transition: all 0.18s var(--ease);
+        margin-bottom: -1px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .tab-btn .tdot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+        opacity: 0.5;
+      }
+      .tab-btn:hover {
+        color: var(--text);
+      }
+      .tab-btn.active {
+        color: var(--accent);
+        background: var(--bg-code);
+        border-color: var(--line);
+      }
+      .tab-btn.active .tdot {
+        opacity: 1;
+        box-shadow: 0 0 8px currentColor;
+      }
+      .tab-panel {
+        display: none;
+        padding-top: 20px;
+      }
+      .tab-panel.active {
+        display: block;
+        animation: fadeIn 0.4s var(--ease);
+      }
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      /* ============================================================
+     REAL-LIFE EXAMPLE: WIRE BUILDER
+     ============================================================ */
+      .wireflow {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 16px;
+        margin: 24px 0;
+      }
+      .wire-step {
+        background: var(--bg-card);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 20px 22px;
+        position: relative;
+        transition: border-color 0.2s var(--ease);
+      }
+      .wire-step:hover {
+        border-color: var(--line-strong);
+      }
+      .wire-step .ws-head {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .wire-step .ws-num {
+        width: 28px;
+        height: 28px;
+        flex-shrink: 0;
+        border-radius: 8px;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        color: #05070d;
+        display: grid;
+        place-items: center;
+        font-weight: 800;
+        font-size: 13px;
+        font-family: var(--mono);
+      }
+      .wire-step .ws-title {
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--text);
+        margin: 0;
+      }
+      .wire-step .ws-meta {
+        font-size: 12px;
+        color: var(--text-3);
+        margin-left: auto;
+        font-family: var(--mono);
+      }
+
+      .kv-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        margin: 8px 0;
+      }
+      .kv-table td {
+        padding: 6px 10px;
+        border-bottom: 1px solid var(--line-soft);
+        vertical-align: top;
+      }
+      .kv-table td:first-child {
+        color: var(--text-3);
+        width: 38%;
+      }
+      .kv-table td:last-child {
+        color: var(--text);
+        word-break: break-all;
+      }
+      .kv-table tr:hover td {
+        background: rgba(255, 255, 255, 0.015);
+      }
+
+      /* HTTP request mockup */
+      .http-mock {
+        background: var(--bg-code);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        font-family: var(--mono);
+        font-size: 12.5px;
+        overflow: hidden;
+      }
+      .http-mock .hm-bar {
+        display: flex;
+        gap: 6px;
+        padding: 8px 12px;
+        background: rgba(255, 255, 255, 0.02);
+        border-bottom: 1px solid var(--line);
+      }
+      .http-mock .hm-bar i {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        display: inline-block;
+      }
+      .http-mock .hm-bar .r {
+        background: #ff5f56;
+      }
+      .http-mock .hm-bar .y {
+        background: #ffbd2e;
+      }
+      .http-mock .hm-bar .g {
+        background: #27c93f;
+      }
+      .http-mock .hm-bar .url {
+        margin-left: 10px;
+        color: var(--text-3);
+        font-size: 11px;
+      }
+      .http-mock pre {
+        margin: 0;
+        padding: 14px 16px;
+        overflow-x: auto;
+        line-height: 1.7;
+      }
+
+      /* ============================================================
+     TIMELINE / lifecycle
+     ============================================================ */
+      .timeline {
+        position: relative;
+        padding-left: 28px;
+        margin: 24px 0;
+      }
+      .timeline::before {
+        content: "";
+        position: absolute;
+        left: 8px;
+        top: 6px;
+        bottom: 6px;
+        width: 2px;
+        background: linear-gradient(180deg, var(--accent), var(--accent-2), transparent);
+      }
+      .tl-item {
+        position: relative;
+        padding: 0 0 24px 8px;
+      }
+      .tl-item::before {
+        content: "";
+        position: absolute;
+        left: -24px;
+        top: 4px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: var(--bg-0);
+        border: 2px solid var(--accent);
+        box-shadow: 0 0 0 3px rgba(94, 234, 212, 0.15);
+      }
+      .tl-item .tl-title {
+        font-size: 14px;
+        font-weight: 600;
+        margin: 0 0 4px;
+      }
+      .tl-item .tl-body {
+        font-size: 13.5px;
+        color: var(--text-2);
+        margin: 0;
+      }
+      .tl-item .tl-meta {
+        font-size: 11.5px;
+        color: var(--text-dim);
+        font-family: var(--mono);
+        margin-top: 3px;
+      }
+
+      /* ============================================================
+     FOOTER
+     ============================================================ */
+      footer.foot {
+        padding: 48px 0 64px;
+        border-top: 1px solid var(--line);
+        margin-top: 40px;
+      }
+      footer.foot .wrap {
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+        flex-wrap: wrap;
+        color: var(--text-3);
+        font-size: 13px;
+      }
+      footer.foot a {
+        color: var(--accent-2);
+        text-decoration: none;
+      }
+
+      /* ============================================================
+     UTILITY
+     ============================================================ */
+      .badge-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .micro-badge {
+        font-family: var(--mono);
+        font-size: 11px;
+        padding: 2px 7px;
+        border-radius: 4px;
+        background: var(--bg-3);
+        color: var(--text-2);
+        border: 1px solid var(--line);
+      }
+
+      .reveal {
+        opacity: 0;
+        transform: translateY(20px);
+        transition:
+          opacity 0.7s var(--ease),
+          transform 0.7s var(--ease);
+      }
+      .reveal.in {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.001ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.001ms !important;
+          scroll-behavior: auto !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- ============================================================
+     HERO
+     ============================================================ -->
+    <header class="hero">
+      <svg
+        class="key-glyph"
+        viewBox="0 0 200 200"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-hidden="true"
+      >
+        <defs>
+          <linearGradient id="kg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#5eead4" />
+            <stop offset="100%" stop-color="#818cf8" />
+          </linearGradient>
+          <filter id="glow">
+            <feGaussianBlur stdDeviation="2.5" result="b" />
+            <feMerge>
+              <feMergeNode in="b" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+        <circle cx="100" cy="100" r="86" stroke="url(#kg)" stroke-width="1" opacity="0.4" />
+        <circle
+          cx="100"
+          cy="100"
+          r="66"
+          stroke="url(#kg)"
+          stroke-width="1"
+          opacity="0.25"
+          stroke-dasharray="3 5"
+        />
+        <circle cx="100" cy="100" r="46" stroke="url(#kg)" stroke-width="1" opacity="0.15" />
+        <g filter="url(#glow)" stroke="url(#kg)" stroke-width="1.6" fill="none">
+          <!-- abstract key shape -->
+          <circle cx="80" cy="100" r="22" />
+          <path d="M102 100 L150 100 M138 100 L138 114 M150 100 L150 116" />
+        </g>
+        <g font-family="ui-monospace,monospace" font-size="7" fill="#5eead4" opacity="0.6">
+          <text x="62" y="60">0x</text>
+          <text x="20" y="150">secp256k1</text>
+          <text x="120" y="150">keccak256</text>
+        </g>
+      </svg>
+
+      <div class="wrap">
+        <div class="pill-row">
+          <span class="pill testnet"><span class="dot"></span>TESTNET ONLY</span>
+          <span class="pill scope">PROMPT-04 · EXECUTION</span>
+          <span class="pill secret"><span class="dot"></span>SECRET MATERIAL HANDLED</span>
+        </div>
+        <h1 class="title">
+          The Interim Signer Key<br /><span class="accent">Anatomy of a Testnet Trade</span>
+        </h1>
+        <p class="subtitle">
+          A technical analysis of how
+          <code class="inline">.t3/secrets/hyperliquid-interim-signer-key.bin</code> is loaded,
+          parsed, and used to sign Hyperliquid L1 actions inside the T3 trade execution harness —
+          grounded line-by-line in the source on branch
+          <code class="inline">feature/trading-04-execution</code>.
+        </p>
+
+        <div class="safety-banner">
+          <div class="icon" aria-hidden="true">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            </svg>
+          </div>
+          <div>
+            <strong>This report describes TESTNET ONLY.</strong>
+            <p>
+              Every endpoint, key, signature, and trade value in this document refers to
+              <code class="inline">api.hyperliquid-testnet.xyz</code> and operates exclusively on
+              testnet funds. Real secret bytes are never rendered — all key material below is
+              redacted or fabricated for illustration. This is the <em>only</em> code path in the
+              repo that spends testnet capital, and it fails closed when the key is absent.
+            </p>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- ============================================================
+     TOC
+     ============================================================ -->
+    <nav class="toc">
+      <div class="wrap" id="tocList">
+        <a href="#key">01 · The Key File</a>
+        <a href="#wallets">02 · Wallet Architecture</a>
+        <a href="#flow">03 · Execution Flow</a>
+        <a href="#signing">04 · Signing Internals</a>
+        <a href="#wire">05 · Wire Example</a>
+        <a href="#safety">06 · Safety &amp; Scope</a>
+      </div>
+    </nav>
+
+    <main>
+      <!-- ============================================================
+     SECTION 01 — THE KEY FILE
+     ============================================================ -->
+      <section class="block" id="key">
+        <div class="wrap">
+          <p class="eyebrow">01 · The Key File</p>
+          <h2 class="h">
+            What actually lives at
+            <code class="inline">.t3/secrets/hyperliquid-interim-signer-key.bin</code>?
+          </h2>
+          <p class="lede">
+            Despite the <code class="inline">.bin</code> extension, the file is
+            <strong class="k">not binary</strong>. It is 66 bytes of
+            <strong class="k">ASCII hex text</strong> — a <code class="inline">0x</code>-prefixed,
+            64-character hex string that decodes to a 32-byte secp256k1 EVM private key. This
+            section traces exactly how it is discovered, read, and decoded into an in-memory signer.
+          </p>
+
+          <div class="stat-row">
+            <div class="stat">
+              <div class="num">66 B</div>
+              <div class="lbl">File size</div>
+            </div>
+            <div class="stat">
+              <div class="num">ASCII</div>
+              <div class="lbl">Hex text, not raw bytes</div>
+            </div>
+            <div class="stat">
+              <div class="num">32 B</div>
+              <div class="lbl">secp256k1 private key</div>
+            </div>
+            <div class="stat">
+              <div class="num">600</div>
+              <div class="lbl">File mode (owner-only)</div>
+            </div>
+          </div>
+
+          <div class="grid grid-2">
+            <div class="card accent-teal">
+              <p class="card-label">Discovery · fs layout</p>
+              <p class="card-title">The only secret in the directory</p>
+              <p class="card-body">
+                <code class="inline">hyperliquid-interim-signer-key.bin</code> is the sole occupant
+                of <code class="inline">.t3/secrets/</code>. The directory itself is derived in
+                <code class="inline">apps/server/src/config.ts</code> as
+                <code class="inline">&lt;stateDir&gt;/secrets</code>, where
+                <code class="inline">stateDir</code> resolves to
+                <code class="inline">.t3/dev</code> in dev mode and
+                <code class="inline">.t3/userdata</code> in production. The well-known filename
+                constant is <code class="inline">INTERIM_SIGNER_SECRET_NAME</code>.
+              </p>
+            </div>
+            <div class="card accent-indigo">
+              <p class="card-label">Format · read contract</p>
+              <p class="card-title">UTF-8 text → hex decode</p>
+              <p class="card-body">
+                The loader (<code class="inline">readFileText</code>) opens the file with
+                <code class="inline">fs.readFile(path, "utf8")</code> — <em>not</em> a binary buffer
+                read. The text is trimmed, an optional <code class="inline">0x</code> prefix is
+                normalised, and <code class="inline">hexToBytes</code> splits the remaining 64 chars
+                into 32 byte pairs. This is deliberately distinct from the generic
+                <code class="inline">ServerSecretStore</code>, which treats
+                <code class="inline">.bin</code> files as opaque raw bytes.
+              </p>
+            </div>
+          </div>
+
+          <h3 class="h3">The loader pipeline</h3>
+          <p class="body">
+            Resolution lives entirely in
+            <code class="inline">apps/server/src/trading/InterimSignerConfig.ts</code>. Two sources
+            are tried in order; <strong class="k">both absent ⇒ fail-closed</strong> (every signable
+            action is rejected with <code class="inline">interim_signer_not_configured</code>).
+          </p>
+
+          <div class="timeline">
+            <div class="tl-item">
+              <p class="tl-title">1. Try the environment variable first</p>
+              <p class="tl-body">
+                Reads <code class="inline">T3_TRADES_INTERIM_SIGNER_KEY</code> and trims it. If
+                present, this wins.
+              </p>
+              <p class="tl-meta">InterimSignerConfig.ts:136 · resolveInterimSignerFromEnv</p>
+            </div>
+            <div class="tl-item">
+              <p class="tl-title">2. Fall back to the secret file</p>
+              <p class="tl-body">
+                Builds <code class="inline">${secretsDir}/hyperliquid-interim-signer-key.bin</code>,
+                reads as UTF-8 text. Any IO error collapses to
+                <code class="inline">Option.none()</code> — the harness keeps running, just unarmed.
+              </p>
+              <p class="tl-meta">InterimSignerConfig.ts:150–166 · resolveInterimSignerFromFile</p>
+            </div>
+            <div class="tl-item">
+              <p class="tl-title">3. Validate against the hex-private-key regex</p>
+              <p class="tl-body">
+                After normalisation, the value must match
+                <code class="inline">/^0x[0-9a-fA-F]{64}$/</code>. Anything else →
+                <code class="inline">invalid_private_key</code>.
+              </p>
+              <p class="tl-meta">InterimSignerConfig.ts:75,100 · HEX_PRIV_RE, buildSigner</p>
+            </div>
+            <div class="tl-item">
+              <p class="tl-title">4. Derive the address &amp; cross-check</p>
+              <p class="tl-body">
+                The 20-byte EVM address is <em>derived</em> from the key (no DB lookup). If
+                <code class="inline">T3_TRADES_INTERIM_SIGNER_ADDRESS</code> is also set, it must
+                match the derived address or the gate rejects with
+                <code class="inline">address_mismatch</code>.
+              </p>
+              <p class="tl-meta">InterimSignerConfig.ts:110–119 · addressFromPrivateKey</p>
+            </div>
+            <div class="tl-item">
+              <p class="tl-title">
+                5. Hand off an <code class="inline">InterimSigner</code> in memory
+              </p>
+              <p class="tl-body">
+                Returns
+                <code class="inline">{ address: string, privateKeyBytes: Uint8Array(32) }</code>.
+                The module docstring is explicit:
+                <em>“held as raw bytes in memory and never persisted by this module.”</em>
+              </p>
+              <p class="tl-meta">InterimSignerConfig.ts:56–61 · InterimSigner schema</p>
+            </div>
+          </div>
+
+          <div class="code-block">
+            <div class="code-head">
+              <div class="code-file">
+                apps/server/src/trading/InterimSignerConfig.ts — resolution
+              </div>
+              <button class="copy-btn" onclick="copyCode(this)">copy</button>
+            </div>
+            <pre><span class="tok-c">// Env first, file as fallback. Both absent ⇒ Option.none() ⇒ fail-closed.</span>
+<span class="tok-k">const</span> <span class="tok-f">keyRaw</span> <span class="tok-p">=</span> <span class="tok-f">env</span><span class="tok-p">.</span><span class="tok-f">T3_TRADES_INTERIM_SIGNER_KEY</span><span class="tok-p">?.</span><span class="tok-f">trim</span><span class="tok-p">();</span>
+<span class="tok-k">const</span> <span class="tok-f">fromEnv</span> <span class="tok-p">=</span> <span class="tok-f">resolveInterimSignerFromEnv</span><span class="tok-p">(</span><span class="tok-f">env</span><span class="tok-p">);</span>
+<span class="tok-k">const</span> <span class="tok-f">fromFile</span> <span class="tok-p">=</span> <span class="tok-f">keyRaw</span> <span class="tok-p">===</span> <span class="tok-k">undefined</span>
+  <span class="tok-p">?</span> <span class="tok-f">resolveInterimSignerFromFile</span><span class="tok-p">(</span><span class="tok-f">readFile</span><span class="tok-p">,</span> <span class="tok-f">secretsDir</span><span class="tok-p">,</span> <span class="tok-f">explicitAddress</span><span class="tok-p">)</span>
+  <span class="tok-p">:</span> <span class="tok-f">Option</span><span class="tok-p">.</span><span class="tok-f">none</span><span class="tok-p">();</span>
+
+<span class="tok-k">return</span> <span class="tok-f">fromEnv</span><span class="tok-p">.</span><span class="tok-f">pipe</span><span class="tok-p">(</span>
+  <span class="tok-f">Option</span><span class="tok-p">.</span><span class="tok-f">orElse</span><span class="tok-p">(()</span> <span class="tok-p">=&gt;</span> <span class="tok-f">fromFile</span><span class="tok-p">)</span>
+<span class="tok-p">);</span>
+
+<span class="tok-c">// File path: ${secretsDir}/hyperliquid-interim-signer-key.bin</span>
+<span class="tok-k">const</span> <span class="tok-f">path</span> <span class="tok-p">=</span> <span class="tok-s">`</span><span class="tok-p">${</span><span class="tok-f">secretsDir</span><span class="tok-p">}</span><span class="tok-s">/</span><span class="tok-p">${</span><span class="tok-f">INTERIM_SIGNER_SECRET_NAME</span><span class="tok-p">}</span><span class="tok-s">.bin`</span><span class="tok-p">;</span>   <span class="tok-c">// = ".../hyperliquid-interim-signer-key.bin"</span></pre>
+          </div>
+
+          <div class="card accent-danger" style="margin-top: 24px">
+            <p class="card-label">Redaction policy</p>
+            <p class="card-title">No real bytes are ever shown in this report</p>
+            <p class="card-body">
+              The actual key in the live checkout is armed and would authorise real testnet orders.
+              Throughout this document, every literal value is either redacted (<span
+                class="tok-redact"
+                title="redacted — actual 32-byte hex elided"
+                >0xREDACTED…</span
+              >), or replaced with a clearly-fabricated placeholder (<code class="inline"
+                >0xTEST…0000</code
+              >). The analysis is exact; the bytes are illustrative.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+     SECTION 02 — WALLET ARCHITECTURE
+     ============================================================ -->
+      <section class="block" id="wallets">
+        <div class="wrap">
+          <p class="eyebrow">02 · Wallet Architecture</p>
+          <h2 class="h">Master, API Wallet, and the Interim Signer</h2>
+          <p class="lede">
+            The domain model defines <strong class="k">three</strong> wallet roles. The crucial fact
+            for the current POC: roles B and C are <em>collapsed onto a single key</em> — the master
+            account’s own key. There is no on-chain <code class="inline">approveAgent</code> step
+            anywhere in this repo.
+          </p>
+
+          <div class="wallet-diagram">
+            <div class="wallet-roles">
+              <!-- MASTER -->
+              <div class="wallet-card master">
+                <div class="wc-tag">A · Master Wallet</div>
+                <h4 class="wc-name">Funds holder · account identity</h4>
+                <div class="wc-row">
+                  <span class="k">Generated by</span><span class="v">Privy (external)</span>
+                </div>
+                <div class="wc-row">
+                  <span class="k">Priv key in repo</span><span class="v">never</span>
+                </div>
+                <div class="wc-row">
+                  <span class="k">Address stored</span><span class="v">master_wallet_json</span>
+                </div>
+                <div class="wc-row">
+                  <span class="k">Used for</span><span class="v">all reads</span>
+                </div>
+                <div class="wc-status">READ-ONLY IDENTITY</div>
+                <p class="card-body" style="font-size: 12.5px; margin-top: 12px">
+                  Queryable via <code class="inline">clearinghouseState</code>,
+                  <code class="inline">openOrders</code>, <code class="inline">userFills</code>. Its
+                  address is the canonical account identity for every reconciliation read. It never
+                  signs anything in this codebase.
+                </p>
+              </div>
+
+              <!-- API / EXECUTION WALLET -->
+              <div class="wallet-card api">
+                <div class="wc-tag">B · API / Execution Wallet</div>
+                <h4 class="wc-name">Hyperliquid “agent” · schema only</h4>
+                <div class="wc-row">
+                  <span class="k">Generated by</span><span class="v">Privy (PROMPT-06)</span>
+                </div>
+                <div class="wc-row">
+                  <span class="k">Priv key in repo</span><span class="v">never</span>
+                </div>
+                <div class="wc-row">
+                  <span class="k">Address stored</span><span class="v">execution_wallet_json</span>
+                </div>
+                <div class="wc-row">
+                  <span class="k">Status</span><span class="v">awaiting_approval → approved</span>
+                </div>
+                <div class="wc-status">NOT YET WIRED</div>
+                <p class="card-body" style="font-size: 12.5px; margin-top: 12px">
+                  The <code class="inline">TradingExecutionWallet</code> contract models the
+                  Hyperliquid agent concept with a
+                  <code class="inline">hyperliquidAgentName</code> and an approval lifecycle.
+                  <strong>No code performs the on-chain approval</strong> in the POC. Reserved for
+                  PROMPT-06.
+                </p>
+              </div>
+
+              <!-- INTERIM SIGNER -->
+              <div class="wallet-card interim">
+                <div class="wc-tag">C · Interim Signer</div>
+                <h4 class="wc-name">The live signing key</h4>
+                <div class="wc-row">
+                  <span class="k">Generated by</span><span class="v">owner-supplied</span>
+                </div>
+                <div class="wc-row">
+                  <span class="k">Priv key in repo</span><span class="v">memory only</span>
+                </div>
+                <div class="wc-row">
+                  <span class="k">Sourced from</span><span class="v">env or .bin file</span>
+                </div>
+                <div class="wc-row">
+                  <span class="k">Used for</span><span class="v">every L1 action sign</span>
+                </div>
+                <div class="wc-status">ARMED · ACTIVE</div>
+                <p class="card-body" style="font-size: 12.5px; margin-top: 12px">
+                  The 32-byte key loaded from
+                  <code class="inline">.t3/secrets/hyperliquid-interim-signer-key.bin</code>.
+                  “Interim” = <em>temporary in time</em> (placeholder until Privy lands),
+                  <strong>not</strong> ephemeral per session. It is reused for every order.
+                </p>
+              </div>
+            </div>
+
+            <div class="collapse-note">
+              <span class="arrow" aria-hidden="true">⮕</span>
+              <div>
+                <strong class="k">The POC collapse:</strong> on testnet, a master wallet can sign
+                for its own account directly. So the interim signer <em>is</em> the master’s own key
+                <em>is</em> the approved execution wallet. The reactor makes this explicit at
+                <code class="inline">TradingMissionReactor.ts:361</code>:
+                <em>“The interim signer IS the approved execution wallet for the POC.”</em>
+                No <code class="inline">approveAgent</code> action is sent; the three-role model is
+                staged for PROMPT-06 separation.
+              </div>
+            </div>
+          </div>
+
+          <h3 class="h3">Read / write split</h3>
+          <p class="body">
+            The two paths never share a key, even when collapsed to the same identity:
+          </p>
+
+          <div class="grid grid-2">
+            <div class="card">
+              <p class="card-label">Read path · canonical truth</p>
+              <p class="card-title">
+                Master wallet address → <code class="inline">POST /info</code>
+              </p>
+              <p class="card-body">
+                Identity-only. The InfoClient is asked
+                <code class="inline">{ type:"clearinghouseState", user: masterAddress }</code>,
+                <code class="inline">openOrders</code>, <code class="inline">userFills</code>. No
+                signing, no nonce, no key material.
+              </p>
+              <div class="badge-row">
+                <span class="micro-badge">HyperliquidReconciler.ts:111</span>
+                <span class="micro-badge">InfoClient.ts:135</span>
+              </div>
+            </div>
+            <div class="card accent-teal">
+              <p class="card-label">Write path · the only capital spender</p>
+              <p class="card-title">
+                Interim signer key → <code class="inline">POST /exchange</code>
+              </p>
+              <p class="card-body">
+                The interim signer’s <code class="inline">privateKeyBytes</code> signs each L1
+                action inside the serialized nonce lane. The signer address is recorded as
+                <code class="inline">signer_address</code> on each execution record.
+              </p>
+              <div class="badge-row">
+                <span class="micro-badge">HyperliquidExecutionService.ts:419</span>
+                <span class="micro-badge">ExchangeClient.ts:44</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+     SECTION 03 — EXECUTION FLOW
+     ============================================================ -->
+      <section class="block" id="flow">
+        <div class="wrap">
+          <p class="eyebrow">03 · Execution Flow</p>
+          <h2 class="h">From trade command to signed HTTP request</h2>
+          <p class="lede">
+            The path is event-sourced: a typed MCP command becomes a persisted event, a reactor
+            picks it up, runs the preview checklist, and only then calls the execution service that
+            builds, signs, and POSTs the order. The interim signer key is resolved
+            <em>inside</em> the execution service — fail-closed if absent.
+          </p>
+
+          <div class="pipeline">
+            <div class="pipe-track">
+              <div class="pipe-flow-line"></div>
+
+              <div class="pipe-step" data-step="1">
+                <div class="step-num">01</div>
+                <div class="step-ico">
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M9 11l3 3L22 4" />
+                    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                  </svg>
+                </div>
+                <div class="step-title">MCP tool call</div>
+                <div class="step-file">trading_request_entry</div>
+              </div>
+
+              <div class="pipe-step" data-step="2">
+                <div class="step-num">02</div>
+                <div class="step-ico">
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <polyline points="4 17 10 11 4 5" />
+                    <line x1="12" y1="19" x2="20" y2="19" />
+                  </svg>
+                </div>
+                <div class="step-title">Dispatch command</div>
+                <div class="step-file">handlers.ts:247</div>
+              </div>
+
+              <div class="pipe-step" data-step="3">
+                <div class="step-num">03</div>
+                <div class="step-ico">
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M12 1v6m0 10v6" />
+                  </svg>
+                </div>
+                <div class="step-title">Decider → event</div>
+                <div class="step-file">decider.ts:1348</div>
+              </div>
+
+              <div class="pipe-step" data-step="4">
+                <div class="step-num">04</div>
+                <div class="step-ico">
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M3 12h4l3-9 4 18 3-9h4" />
+                  </svg>
+                </div>
+                <div class="step-title">Reactor runs</div>
+                <div class="step-file">TradingMissionReactor.ts:395</div>
+              </div>
+
+              <div class="pipe-step" data-step="5">
+                <div class="step-num">05</div>
+                <div class="step-ico">
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <rect x="3" y="11" width="18" height="11" rx="2" />
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  </svg>
+                </div>
+                <div class="step-title">Resolve signer</div>
+                <div class="step-file">InterimSignerConfig.ts</div>
+              </div>
+
+              <div class="pipe-step" data-step="6">
+                <div class="step-num">06</div>
+                <div class="step-ico">
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+                  </svg>
+                </div>
+                <div class="step-title">Sign in nonce lane</div>
+                <div class="step-file">Signing.ts:266</div>
+              </div>
+
+              <div class="pipe-step" data-step="7">
+                <div class="step-num">07</div>
+                <div class="step-ico">
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+                  </svg>
+                </div>
+                <div class="step-title">POST /exchange</div>
+                <div class="step-file">ExchangeClient.ts:44</div>
+              </div>
+            </div>
+          </div>
+
+          <p class="body" style="text-align: center; color: var(--text-3); font-size: 13px">
+            ↑ The animated flow line shows the signing lane — steps 5–7 are serialized by a
+            single-permit semaphore to guarantee strictly-monotonic nonces.
+          </p>
+
+          <h3 class="h3">Step detail (click to expand)</h3>
+
+          <div class="accordion" id="flowAcc">
+            <div class="acc-item">
+              <button class="acc-header" onclick="toggleAcc(this)">
+                <span class="badge">STEP 1–2</span>
+                Harness invokes the MCP tool &amp; dispatches a command
+                <svg
+                  class="chev"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.2"
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+              <div class="acc-body">
+                <div class="acc-body-inner">
+                  <p class="body">
+                    The resumed harness calls <code class="inline">trading_request_entry</code> with
+                    a <code class="inline">TradingRequestEntryInput</code> carrying a
+                    <code class="inline">TradingOrderIntent</code>. The handler authorises the call
+                    via <code class="inline">resolveBoundCall</code>, then dispatches an
+                    orchestration <em>command</em> (not a direct function call):
+                  </p>
+                  <div class="code-block">
+                    <div class="code-head">
+                      <div class="code-file">
+                        apps/server/src/mcp/toolkits/trading/handlers.ts:238–267
+                      </div>
+                    </div>
+                    <pre><span class="tok-f">yield*</span> <span class="tok-f">engine</span><span class="tok-p">.</span><span class="tok-f">dispatch</span><span class="tok-p">({</span>
+  <span class="tok-k">type</span><span class="tok-p">:</span> <span class="tok-s">"trading.execution.requested"</span><span class="tok-p">,</span>
+  <span class="tok-f">commandId</span><span class="tok-p">,</span> <span class="tok-f">threadId</span><span class="tok-p">,</span> <span class="tok-f">missionId</span><span class="tok-p">,</span>
+  <span class="tok-f">intent</span><span class="tok-p">:</span> <span class="tok-f">input</span><span class="tok-p">.</span><span class="tok-f">intent</span><span class="tok-p">,</span>
+  <span class="tok-c">// ... authority + harness run id</span>
+<span class="tok-p">});</span></pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="acc-item">
+              <button class="acc-header" onclick="toggleAcc(this)">
+                <span class="badge">STEP 3–4</span>
+                Decider persists the event; reactor consumes it
+                <svg
+                  class="chev"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.2"
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+              <div class="acc-body">
+                <div class="acc-body-inner">
+                  <p class="body">
+                    The pure decider (<code class="inline">decider.ts:1339</code>) translates the
+                    command into a persisted
+                    <code class="inline">trading.execution-requested</code> event. The reactor
+                    (<code class="inline">TradingMissionReactor.ts:330</code>) then: reconciles
+                    canonical state <em>before</em>
+                    execution, assembles the preview context, enforces the §16.4 exhaustion rule,
+                    and finally calls
+                    <code class="inline">execution.submitOrder(executionInput)</code> at line 395.
+                  </p>
+                  <p class="body">
+                    It is also here (line 361) that the reactor resolves the interim signer address
+                    and passes it into the preview context as
+                    <code class="inline">approvedExecutionWalletAddress</code> — a local null-check,
+                    not an on-chain verification.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div class="acc-item">
+              <button class="acc-header" onclick="toggleAcc(this)">
+                <span class="badge">STEP 5</span>
+                Execution service resolves the interim signer (fail-closed)
+                <svg
+                  class="chev"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.2"
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+              <div class="acc-body">
+                <div class="acc-body-inner">
+                  <p class="body">
+                    <code class="inline">HyperliquidExecutionService.submitOrder</code> (line 265)
+                    is the first place the key materialises. It calls
+                    <code class="inline">signerConfig.resolve</code> (lines 281–289). If the result
+                    is <code class="inline">Option.none()</code> the entire submit aborts with
+                    <code class="inline">interim_signer_not_configured</code> — no nonce is spent,
+                    no record written.
+                  </p>
+                  <div class="code-block">
+                    <div class="code-head">
+                      <div class="code-file">
+                        apps/server/src/trading/HyperliquidExecutionService.ts:281–289
+                      </div>
+                    </div>
+                    <pre><span class="tok-k">const</span> <span class="tok-f">signerOption</span> <span class="tok-p">=</span> <span class="tok-f">yield*</span> <span class="tok-f">signerConfig</span><span class="tok-p">.</span><span class="tok-f">resolve</span><span class="tok-p">;</span>
+<span class="tok-k">if</span> <span class="tok-p">(</span><span class="tok-f">Option</span><span class="tok-p">.</span><span class="tok-f">isNone</span><span class="tok-p">(</span><span class="tok-f">signerOption</span><span class="tok-p">)) {</span>
+  <span class="tok-k">return</span> <span class="tok-f">Effect</span><span class="tok-p">.</span><span class="tok-f">fail</span><span class="tok-p">(</span><span class="tok-k">new</span> <span class="tok-t">InterimSignerError</span><span class="tok-p">({</span> <span class="tok-f">reason</span><span class="tok-p">:</span> <span class="tok-s">"interim_signer_not_configured"</span> <span class="tok-p">}));</span>
+<span class="tok-p">}</span>
+<span class="tok-k">const</span> <span class="tok-f">signer</span> <span class="tok-p">=</span> <span class="tok-f">signerOption</span><span class="tok-p">.</span><span class="tok-f">value</span><span class="tok-p">;</span>  <span class="tok-c">// { address, privateKeyBytes }</span></pre>
+                  </div>
+                  <p class="body">
+                    After resolving the signer, the service also resolves market metadata + BBO
+                    (<code class="inline">gateway.resolveMarket</code>,
+                    <code class="inline">gateway.getOrderBook</code>), runs the §16.3 preview
+                    checklist, maps the order via <code class="inline">mapOrder</code>, and
+                    <strong>persists the execution record + reservation before signing</strong>
+                    (lines 335–415).
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div class="acc-item">
+              <button class="acc-header" onclick="toggleAcc(this)">
+                <span class="badge">STEP 6</span>
+                Build the action &amp; sign inside the nonce lane
+                <svg
+                  class="chev"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.2"
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+              <div class="acc-body">
+                <div class="acc-body-inner">
+                  <p class="body">
+                    The action struct is built by
+                    <code class="inline">buildOrderAction(wireOrder, assetIndex)</code> at
+                    <code class="inline">OrderMapper.ts:166</code>. Signing then runs inside a
+                    serialized single-permit lane so nonces are strictly monotonic:
+                  </p>
+                  <div class="code-block">
+                    <div class="code-head">
+                      <div class="code-file">
+                        apps/server/src/trading/HyperliquidExecutionService.ts:417–439
+                      </div>
+                    </div>
+                    <pre><span class="tok-k">const</span> <span class="tok-f">action</span> <span class="tok-p">=</span> <span class="tok-f">buildOrderAction</span><span class="tok-p">(</span><span class="tok-f">wireOrder</span><span class="tok-p">,</span> <span class="tok-f">market</span><span class="tok-p">.</span><span class="tok-f">assetIndex</span><span class="tok-p">);</span>
+
+<span class="tok-k">const</span> <span class="tok-f">signed</span> <span class="tok-p">=</span> <span class="tok-f">yield*</span> <span class="tok-f">nonceCoord</span><span class="tok-p">.</span><span class="tok-f">runWithNonce</span><span class="tok-p">((</span><span class="tok-f">nonce</span><span class="tok-p">)</span> <span class="tok-p">=&gt;</span>
+  <span class="tok-f">Effect</span><span class="tok-p">.</span><span class="tok-f">gen</span><span class="tok-p">(</span><span class="tok-k">function</span><span class="tok-p">* () {</span>
+    <span class="tok-k">const</span> <span class="tok-f">signature</span> <span class="tok-p">=</span> <span class="tok-f">signL1ActionForWire</span><span class="tok-p">({</span>
+      <span class="tok-f">action</span><span class="tok-p">,</span>
+      <span class="tok-f">nonce</span><span class="tok-p">,</span>
+      <span class="tok-f">privateKey</span><span class="tok-p">:</span> <span class="tok-f">signer</span><span class="tok-p">.</span><span class="tok-f">privateKeyBytes</span><span class="tok-p">,</span>  <span class="tok-c">// ← the 32 bytes from the .bin file</span>
+      <span class="tok-f">isTestnet</span><span class="tok-p">:</span> <span class="tok-k">true</span><span class="tok-p">,</span>                 <span class="tok-c">// ← hardcoded testnet</span>
+    <span class="tok-p">});</span>
+    <span class="tok-k">return</span> <span class="tok-p">{</span> <span class="tok-f">action</span><span class="tok-p">,</span> <span class="tok-f">nonce</span><span class="tok-p">,</span> <span class="tok-f">signature</span> <span class="tok-p">}</span> <span class="tok-k">satisfies</span> <span class="tok-t">SignedAction</span><span class="tok-p">;</span>
+  <span class="tok-p">})</span>
+<span class="tok-p">);</span></pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="acc-item">
+              <button class="acc-header" onclick="toggleAcc(this)">
+                <span class="badge">STEP 7</span>
+                Assemble the POST body &amp; send to <code class="inline">/exchange</code>
+                <svg
+                  class="chev"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.2"
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+              <div class="acc-body">
+                <div class="acc-body-inner">
+                  <p class="body">
+                    <code class="inline">exchange.submit(signed)</code> POSTs the body via Effect’s
+                    <code class="inline">HttpClient</code> (FetchHttpClient). Note the field name is
+                    <code class="inline">signature</code>, not <code class="inline">sig</code>. The
+                    exchange returns HTTP 200 even on logical errors, so the client inspects
+                    per-order <code class="inline">statuses</code> rather than the HTTP status:
+                  </p>
+                  <div class="code-block">
+                    <div class="code-head">
+                      <div class="code-file">packages/hyperliquid/src/ExchangeClient.ts:44–89</div>
+                    </div>
+                    <pre><span class="tok-k">const</span> <span class="tok-f">body</span> <span class="tok-p">= {</span>
+  <span class="tok-f">action</span><span class="tok-p">:</span>    <span class="tok-f">signed</span><span class="tok-p">.</span><span class="tok-f">action</span><span class="tok-p">,</span>
+  <span class="tok-f">signature</span><span class="tok-p">:</span> <span class="tok-f">signed</span><span class="tok-p">.</span><span class="tok-f">signature</span><span class="tok-p">,</span>   <span class="tok-c">// { r: "0x...", s: "0x...", v: 27|28 }</span>
+  <span class="tok-f">nonce</span><span class="tok-p">:</span>     <span class="tok-f">signed</span><span class="tok-p">.</span><span class="tok-f">nonce</span><span class="tok-p">,</span>       <span class="tok-c">// ms-precision Unix timestamp</span>
+<span class="tok-p">};</span>
+
+<span class="tok-k">const</span> <span class="tok-f">req</span> <span class="tok-p">=</span> <span class="tok-f">HttpClientRequest</span><span class="tok-p">.</span><span class="tok-f">post</span><span class="tok-p">(</span><span class="tok-f">url</span><span class="tok-p">)</span>
+  <span class="tok-p">.</span><span class="tok-f">pipe</span><span class="tok-p">(</span><span class="tok-f">HttpClientRequest</span><span class="tok-p">.</span><span class="tok-f">bodyJson</span><span class="tok-p">(</span><span class="tok-f">body</span><span class="tok-p">));</span>
+<span class="tok-c">// url = "https://api.hyperliquid-testnet.xyz/exchange"</span></pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+     SECTION 04 — SIGNING INTERNALS
+     ============================================================ -->
+      <section class="block" id="signing">
+        <div class="wrap">
+          <p class="eyebrow">04 · Signing Internals</p>
+          <h2 class="h">EIP-712 phantom-agent over an action hash</h2>
+          <p class="lede">
+            No ethers, no viem, no Hyperliquid SDK. The signing path is hand-rolled with
+            <code class="inline">@noble/curves</code> (secp256k1) and
+            <code class="inline">@noble/hashes</code> (keccak256 from sha3). The scheme is
+            Hyperliquid’s <strong class="k">phantom-agent</strong> EIP-712: the action is hashed,
+            then signed as a synthetic typed-data struct — not the action itself.
+          </p>
+
+          <div class="grid grid-3">
+            <div class="card">
+              <p class="card-label">Crypto deps</p>
+              <p class="card-title">@noble only</p>
+              <p class="card-body">
+                <code class="inline">@noble/curves</code> 1.9.1 · secp256k1<br />
+                <code class="inline">@noble/hashes</code> 1.8.0 · keccak_256
+              </p>
+              <div class="badge-row">
+                <span class="micro-badge">no ethers</span>
+                <span class="micro-badge">no viem</span>
+                <span class="micro-badge">no hl SDK</span>
+              </div>
+            </div>
+            <div class="card accent-indigo">
+              <p class="card-label">Chain ID</p>
+              <p class="card-title">1337 (not Arbitrum)</p>
+              <p class="card-body">
+                The EIP-712 domain uses <code class="inline">chainId: 1337</code> and a zero
+                <code class="inline">verifyingContract</code>. This is Hyperliquid’s L1 convention —
+                never Arbitrum 42161/421614.
+              </p>
+            </div>
+            <div class="card accent-teal">
+              <p class="card-label">Source byte</p>
+              <p class="card-title">"b" for testnet</p>
+              <p class="card-body">
+                The phantom agent’s <code class="inline">source</code> field is
+                <code class="inline">isTestnet ? "b" : "a"</code>. Hardcoded
+                <code class="inline">isTestnet: true</code> at the call site ⇒ source is always
+                <code class="inline">"b"</code> here.
+              </p>
+            </div>
+          </div>
+
+          <h3 class="h3">The digest, end to end</h3>
+
+          <div class="code-block">
+            <div class="code-head">
+              <div class="code-file">
+                packages/hyperliquid/src/Signing.ts — phantom-agent digest
+              </div>
+              <button class="copy-btn" onclick="copyCode(this)">copy</button>
+            </div>
+            <pre><span class="tok-c">// 1. ACTION HASH — the "connectionId" of the phantom agent</span>
+<span class="tok-c">//    keccak256( msgpack(action) ‖ uint64BE(nonce) ‖ vaultMarker ‖ expiresMarker )</span>
+<span class="tok-k">const</span> <span class="tok-f">actionHash</span> <span class="tok-p">=</span> <span class="tok-f">createL1ActionHash</span><span class="tok-p">({</span>
+  <span class="tok-f">action</span><span class="tok-p">,</span> <span class="tok-f">nonce</span><span class="tok-p">,</span>
+  <span class="tok-c">// vaultAddress: undefined, expiresAfter: undefined (unused here)</span>
+<span class="tok-p">});</span>
+
+<span class="tok-c">// 2. EIP-712 DOMAIN (chainId 1337, zero verifyingContract)</span>
+<span class="tok-k">const</span> <span class="tok-f">DOMAIN</span> <span class="tok-p">= {</span> <span class="tok-f">name</span><span class="tok-p">:</span> <span class="tok-s">"Exchange"</span><span class="tok-p">,</span> <span class="tok-f">version</span><span class="tok-p">:</span> <span class="tok-s">"1"</span><span class="tok-p">,</span> <span class="tok-f">chainId</span><span class="tok-p">:</span> <span class="tok-n">1337</span><span class="tok-p">,</span> <span class="tok-f">verifyingContract</span><span class="tok-p">:</span> <span class="tok-s">"0x000…000"</span> <span class="tok-p">};</span>
+
+<span class="tok-c">// 3. PHANTOM AGENT STRUCT  Agent(string source, bytes32 connectionId)</span>
+<span class="tok-k">const</span> <span class="tok-f">structHash</span> <span class="tok-p">=</span> <span class="tok-f">keccak256</span><span class="tok-p">(</span>
+  <span class="tok-f">AGENT_TYPE_HASH</span>          <span class="tok-c">// keccak256("Agent(string source,bytes32 connectionId)")</span>
+  <span class="tok-p">‖</span> <span class="tok-f">keccak256</span><span class="tok-p">(</span><span class="tok-f">source</span><span class="tok-p">)</span>           <span class="tok-c">// source = "b"   (testnet)</span>
+  <span class="tok-p">‖</span> <span class="tok-f">actionHash</span>              <span class="tok-c">// the connectionId (32 bytes)</span>
+<span class="tok-p">);</span>
+
+<span class="tok-c">// 4. FINAL DIGEST  =  keccak256( 0x1901 ‖ DOMAIN_SEPARATOR ‖ structHash )</span>
+<span class="tok-k">const</span> <span class="tok-f">digest</span> <span class="tok-p">=</span> <span class="tok-f">keccak256</span><span class="tok-p">(</span><span class="tok-s">0x1901</span> <span class="tok-p">‖</span> <span class="tok-f">DOMAIN_SEPARATOR</span> <span class="tok-p">‖</span> <span class="tok-f">structHash</span><span class="tok-p">);</span>
+
+<span class="tok-c">// 5. SIGN with the 32 bytes from the .bin file</span>
+<span class="tok-k">const</span> <span class="tok-f">raw</span> <span class="tok-p">=</span> <span class="tok-f">secp256k1</span><span class="tok-p">.</span><span class="tok-f">sign</span><span class="tok-p">(</span><span class="tok-f">digest</span><span class="tok-p">,</span> <span class="tok-f">privateKey</span><span class="tok-p">);</span>   <span class="tok-c">// { r: Uint8Array(32), s: Uint8Array(32), v: 0|1 }</span>
+
+<span class="tok-c">// 6. BIAS v to Ethereum convention and hex-encode for the wire</span>
+<span class="tok-k">return</span> <span class="tok-p">{</span>
+  <span class="tok-f">r</span><span class="tok-p">:</span> <span class="tok-s">"0x"</span> <span class="tok-p">+</span> <span class="tok-f">bytesToHex</span><span class="tok-p">(</span><span class="tok-f">raw</span><span class="tok-p">.</span><span class="tok-f">r</span><span class="tok-p">),</span>
+  <span class="tok-f">s</span><span class="tok-p">:</span> <span class="tok-s">"0x"</span> <span class="tok-p">+</span> <span class="tok-f">bytesToHex</span><span class="tok-p">(</span><span class="tok-f">raw</span><span class="tok-p">.</span><span class="tok-f">s</span><span class="tok-p">),</span>
+  <span class="tok-f">v</span><span class="tok-p">:</span> <span class="tok-f">raw</span><span class="tok-p">.</span><span class="tok-f">v</span> <span class="tok-p">===</span> <span class="tok-n">0</span> <span class="tok-p">?</span> <span class="tok-n">27</span> <span class="tok-p">:</span> <span class="tok-n">28</span><span class="tok-p">,</span>            <span class="tok-c">// Ethereum recovery id</span>
+<span class="tok-p">};</span></pre>
+          </div>
+
+          <h3 class="h3">Critical invariants (load-bearing)</h3>
+
+          <div class="tabs">
+            <div class="tab-nav">
+              <button class="tab-btn active" data-tab="t1">
+                <span class="tdot"></span>Msgpack key order
+              </button>
+              <button class="tab-btn" data-tab="t2">
+                <span class="tdot"></span>undefined dropped
+              </button>
+              <button class="tab-btn" data-tab="t3">
+                <span class="tdot"></span>int32 → bigint
+              </button>
+              <button class="tab-btn" data-tab="t4"><span class="tdot"></span>Nonce lane</button>
+            </div>
+
+            <div class="tab-panel active" id="t1">
+              <p class="body">
+                <strong class="k">Object key insertion order is part of the hash.</strong> The
+                custom msgpack encoder preserves the order keys were added to the object literal —
+                reordering fields changes the hash and invalidates the signature. The Hyperliquid
+                backend rejects any signature computed over a reordered struct.
+              </p>
+              <div class="code-block">
+                <div class="code-head">
+                  <div class="code-file">Msgpack.ts:36–54 — ordered encode</div>
+                </div>
+                <pre><span class="tok-c">// insertion order is significant — do not sort keys</span>
+<span class="tok-k">for</span> <span class="tok-p">(</span><span class="tok-k">const</span> <span class="tok-p">[</span><span class="tok-f">key</span><span class="tok-p">,</span> <span class="tok-f">value</span><span class="tok-p">]</span> <span class="tok-k">of</span> <span class="tok-f">Object</span><span class="tok-p">.</span><span class="tok-f">entries</span><span class="tok-p">(</span><span class="tok-f">obj</span><span class="tok-p">)) {</span> <span class="tok-c">// ← order from the literal</span>
+  <span class="tok-f">encodeStr</span><span class="tok-p">(</span><span class="tok-f">key</span><span class="tok-p">);</span>
+  <span class="tok-f">encode</span><span class="tok-p">(</span><span class="tok-f">value</span><span class="tok-p">);</span>
+<span class="tok-p">}</span></pre>
+              </div>
+            </div>
+
+            <div class="tab-panel" id="t2">
+              <p class="body">
+                <strong class="k">Optional fields are dropped, not null-encoded.</strong> An
+                <code class="inline">undefined</code> entry is skipped entirely. This is why the
+                action struct intentionally omits fields rather than setting them to
+                <code class="inline">null</code> — a stray <code class="inline">null</code> would
+                change the msgpack output and break the signature.
+              </p>
+            </div>
+
+            <div class="tab-panel" id="t3">
+              <p class="body">
+                <strong class="k">Integers that overflow int32 are widened to bigint.</strong>
+                Nonces are millisecond timestamps (~13 digits) — far above int32. The encoder
+                detects this and emits them as msgpack bigint (uint64) rather than truncating.
+                Getting this wrong silently breaks every signature after the year 1970+~24d.
+              </p>
+            </div>
+
+            <div class="tab-panel" id="t4">
+              <p class="body">
+                <strong class="k">Signing is serialized by a single-permit semaphore.</strong> The
+                <code class="inline">NonceCoordinator</code> guarantees strictly-monotonic nonces
+                even under concurrent execution requests: the “assign nonce → sign → submit”
+                critical section runs one at a time per wallet. The nonce itself is
+                <code class="inline">Clock.currentTimeMillis</code> (Effect’s testable clock),
+                fast-forwarded past the last issued value if wall clock has drifted backwards.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+     SECTION 05 — REAL-LIFE WIRE EXAMPLE
+     ============================================================ -->
+      <section class="block" id="wire">
+        <div class="wrap">
+          <p class="eyebrow">05 · Wire Example</p>
+          <h2 class="h">A complete testnet order, built from the ground up</h2>
+          <p class="lede">
+            A concrete walk-through of a single testnet market order — the intent, the mapped wire
+            order, the action struct, the action hash inputs, the signed signature object, and the
+            final HTTPS POST.
+            <strong class="k">All values are fabricated placeholders</strong> for illustration; real
+            signatures would be deterministic only over the exact bytes below.
+          </p>
+
+          <div class="wireflow">
+            <!-- 1 -->
+            <div class="wire-step">
+              <div class="ws-head">
+                <div class="ws-num">1</div>
+                <p class="ws-title">
+                  Harness emits a <code class="inline">TradingOrderIntent</code>
+                </p>
+                <span class="ws-meta">trading-contracts/execution.ts:88</span>
+              </div>
+              <table class="kv-table">
+                <tr>
+                  <td>missionId</td>
+                  <td>mis_8f3a…b21</td>
+                </tr>
+                <tr>
+                  <td>market</td>
+                  <td>@ETH (perp)</td>
+                </tr>
+                <tr>
+                  <td>actionType</td>
+                  <td>"scale_in"</td>
+                </tr>
+                <tr>
+                  <td>side</td>
+                  <td>"buy"</td>
+                </tr>
+                <tr>
+                  <td>size</td>
+                  <td>0.05 (5 × 10⁻² ETH)</td>
+                </tr>
+                <tr>
+                  <td>orderPreference</td>
+                  <td>"limit_ioc"</td>
+                </tr>
+                <tr>
+                  <td>limitPrice</td>
+                  <td>"3512.4" (USDC, 5 sig figs)</td>
+                </tr>
+                <tr>
+                  <td>reduceOnly</td>
+                  <td>false</td>
+                </tr>
+              </table>
+            </div>
+
+            <!-- 2 -->
+            <div class="wire-step">
+              <div class="ws-head">
+                <div class="ws-num">2</div>
+                <p class="ws-title">
+                  OrderMapper normalises → <code class="inline">TradingWireOrder</code>
+                </p>
+                <span class="ws-meta">OrderMapper.ts:109–155</span>
+              </div>
+              <p class="body" style="font-size: 13px">
+                Sizes are truncated to <code class="inline">szDecimals</code>, prices to 5
+                significant figures with trailing zeros stripped, and a 32-hex-char
+                <code class="inline">cloid</code> is minted.
+              </p>
+              <table class="kv-table">
+                <tr>
+                  <td>cloid</td>
+                  <td>0x9d4f…c2a1 (32 hex chars, no 0x on wire)</td>
+                </tr>
+                <tr>
+                  <td>coin</td>
+                  <td>"ETH"</td>
+                </tr>
+                <tr>
+                  <td>side</td>
+                  <td>"buy"</td>
+                </tr>
+                <tr>
+                  <td>limitPrice</td>
+                  <td>"3512.4"</td>
+                </tr>
+                <tr>
+                  <td>size</td>
+                  <td>"0.05"</td>
+                </tr>
+                <tr>
+                  <td>timeInForce</td>
+                  <td>"ioc" → tif: "Ioc"</td>
+                </tr>
+                <tr>
+                  <td>reduceOnly</td>
+                  <td>false</td>
+                </tr>
+              </table>
+            </div>
+
+            <!-- 3 -->
+            <div class="wire-step">
+              <div class="ws-head">
+                <div class="ws-num">3</div>
+                <p class="ws-title">buildOrderAction → the action struct (msgpack input)</p>
+                <span class="ws-meta">OrderMapper.ts:166–184</span>
+              </div>
+              <div class="code-block" style="margin: 8px 0 0">
+                <div class="code-head">
+                  <div class="code-file">action object — insertion order matters</div>
+                </div>
+                <pre><span class="tok-p">{</span>
+  <span class="tok-s">"orders"</span><span class="tok-p">: [{</span>
+    <span class="tok-s">"a"</span><span class="tok-p">:</span>    <span class="tok-n">1</span><span class="tok-p">,</span>            <span class="tok-c">// ETH universe index, resolved at runtime</span>
+    <span class="tok-s">"b"</span><span class="tok-p">:</span>    <span class="tok-k">true</span><span class="tok-p">,</span>         <span class="tok-c">// isBuy  (side === "buy")</span>
+    <span class="tok-s">"p"</span><span class="tok-p">:</span>    <span class="tok-s">"3512.4"</span><span class="tok-p">,</span>     <span class="tok-c">// limit price (string)</span>
+    <span class="tok-s">"s"</span><span class="tok-p">:</span>    <span class="tok-s">"0.05"</span><span class="tok-p">,</span>       <span class="tok-c">// size (string)</span>
+    <span class="tok-s">"r"</span><span class="tok-p">:</span>    <span class="tok-k">false</span><span class="tok-p">,</span>        <span class="tok-c">// reduceOnly</span>
+    <span class="tok-s">"t"</span><span class="tok-p">:</span>    <span class="tok-p">{</span> <span class="tok-s">"limit"</span><span class="tok-p">:</span> <span class="tok-p">{</span> <span class="tok-s">"tif"</span><span class="tok-p">:</span> <span class="tok-s">"Ioc"</span> <span class="tok-p">} },</span>  <span class="tok-c">// immediate-or-cancel</span>
+    <span class="tok-s">"cloid"</span><span class="tok-p">:</span> <span class="tok-s">"9d4f...c2a1"</span>  <span class="tok-c">// 32 hex chars, no 0x prefix</span>
+  <span class="tok-p">}],</span>
+  <span class="tok-s">"grouping"</span><span class="tok-p">:</span> <span class="tok-s">"na"</span>
+<span class="tok-p">}</span></pre>
+              </div>
+            </div>
+
+            <!-- 4 -->
+            <div class="wire-step">
+              <div class="ws-head">
+                <div class="ws-num">4</div>
+                <p class="ws-title">Action hash + phantom-agent digest</p>
+                <span class="ws-meta">Signing.ts:88–192</span>
+              </div>
+              <table class="kv-table">
+                <tr>
+                  <td>nonce</td>
+                  <td>1754020800123 (ms Unix timestamp)</td>
+                </tr>
+                <tr>
+                  <td>source (testnet)</td>
+                  <td>"b"</td>
+                </tr>
+                <tr>
+                  <td>chainId</td>
+                  <td>1337</td>
+                </tr>
+                <tr>
+                  <td>msgpack(action)</td>
+                  <td>
+                    <span class="tok-redact" title="redacted — would expose the exact hash input"
+                      >0xREDACTED…</span
+                    >
+                    (insertion-ordered)
+                  </td>
+                </tr>
+                <tr>
+                  <td>actionHash (connectionId)</td>
+                  <td>
+                    <span class="tok-redact" title="redacted — keccak256(msgpack ‖ nonce ‖ 0x00)"
+                      >0xREDACTED…</span
+                    >
+                  </td>
+                </tr>
+                <tr>
+                  <td>final digest</td>
+                  <td>
+                    <span
+                      class="tok-redact"
+                      title="redacted — keccak256(0x1901 ‖ domainSep ‖ structHash)"
+                      >0xREDACTED…</span
+                    >
+                  </td>
+                </tr>
+              </table>
+            </div>
+
+            <!-- 5 -->
+            <div class="wire-step">
+              <div class="ws-head">
+                <div class="ws-num">5</div>
+                <p class="ws-title">secp256k1 sign → wire signature</p>
+                <span class="ws-meta">Signing.ts:203–276 · signL1ActionForWire</span>
+              </div>
+              <p class="body" style="font-size: 13px">
+                Signed with the 32 bytes from
+                <code class="inline">.t3/secrets/hyperliquid-interim-signer-key.bin</code>. Recovery
+                id is biased to Ethereum convention (0→27, 1→28).
+              </p>
+              <div class="code-block" style="margin: 8px 0 0">
+                <div class="code-head">
+                  <div class="code-file">signature object — the value of the “signature” field</div>
+                </div>
+                <pre><span class="tok-p">{</span>
+  <span class="tok-s">"r"</span><span class="tok-p">:</span> <span class="tok-redact" title="redacted — first half of the ECDSA signature over the digest">"0xTEST_R_HALF_32_BYTES_HEX_PLACEHOLDER_00"</span><span class="tok-p">,</span>
+  <span class="tok-s">"s"</span><span class="tok-p">:</span> <span class="tok-redact" title="redacted — second half of the ECDSA signature">"0xTEST_S_HALF_32_BYTES_HEX_PLACEHOLDER_00"</span><span class="tok-p">,</span>
+  <span class="tok-s">"v"</span><span class="tok-p">:</span> <span class="tok-n">27</span>            <span class="tok-c">// ← Ethereum recovery id (27 or 28)</span>
+<span class="tok-p">}</span></pre>
+              </div>
+            </div>
+
+            <!-- 6 -->
+            <div class="wire-step">
+              <div class="ws-head">
+                <div class="ws-num">6</div>
+                <p class="ws-title">Final HTTPS POST to the testnet exchange</p>
+                <span class="ws-meta">ExchangeClient.ts:44–89</span>
+              </div>
+              <div class="http-mock">
+                <div class="hm-bar">
+                  <i class="r"></i><i class="y"></i><i class="g"></i>
+                  <span class="url">POST https://api.hyperliquid-testnet.xyz/exchange</span>
+                </div>
+                <pre><span class="tok-c">POST /exchange HTTP/1.1</span>
+<span class="tok-c">Host: api.hyperliquid-testnet.xyz</span>
+<span class="tok-c">Content-Type: application/json</span>
+
+<span class="tok-p">{</span>
+  <span class="tok-s">"action"</span><span class="tok-p">: {</span>
+    <span class="tok-s">"orders"</span><span class="tok-p">: [{</span>
+      <span class="tok-s">"a"</span><span class="tok-p">:</span> <span class="tok-n">1</span><span class="tok-p">,</span> <span class="tok-s">"b"</span><span class="tok-p">:</span> <span class="tok-k">true</span><span class="tok-p">,</span> <span class="tok-s">"p"</span><span class="tok-p">:</span> <span class="tok-s">"3512.4"</span><span class="tok-p">,</span> <span class="tok-s">"s"</span><span class="tok-p">:</span> <span class="tok-s">"0.05"</span><span class="tok-p">,</span>
+      <span class="tok-s">"r"</span><span class="tok-p">:</span> <span class="tok-k">false</span><span class="tok-p">,</span> <span class="tok-s">"t"</span><span class="tok-p">:</span> <span class="tok-p">{</span> <span class="tok-s">"limit"</span><span class="tok-p">:</span> <span class="tok-p">{</span> <span class="tok-s">"tif"</span><span class="tok-p">:</span> <span class="tok-s">"Ioc"</span> <span class="tok-p">} },</span>
+      <span class="tok-s">"cloid"</span><span class="tok-p">:</span> <span class="tok-s">"9d4f...c2a1"</span>
+    <span class="tok-p">}],</span>
+    <span class="tok-s">"grouping"</span><span class="tok-p">:</span> <span class="tok-s">"na"</span>
+  <span class="tok-p">},</span>
+  <span class="tok-s">"signature"</span><span class="tok-p">: {</span>
+    <span class="tok-s">"r"</span><span class="tok-p">:</span> <span class="tok-redact" title="redacted">"0xTEST_R..."</span><span class="tok-p">,</span>
+    <span class="tok-s">"s"</span><span class="tok-p">:</span> <span class="tok-redact" title="redacted">"0xTEST_S..."</span><span class="tok-p">,</span>
+    <span class="tok-s">"v"</span><span class="tok-p">:</span> <span class="tok-n">27</span>
+  <span class="tok-p">},</span>
+  <span class="tok-s">"nonce"</span><span class="tok-p">:</span> <span class="tok-n">1754020800123</span>
+<span class="tok-p">}</span></pre>
+              </div>
+              <table class="kv-table" style="margin-top: 12px">
+                <tr>
+                  <td>signer of record</td>
+                  <td>
+                    <span
+                      class="tok-redact"
+                      title="redacted — derived address of the interim signer"
+                      >0xTEST…0000</span
+                    >
+                    (written to execution_records.signer_address)
+                  </td>
+                </tr>
+                <tr>
+                  <td>master account (reads)</td>
+                  <td>
+                    <span class="tok-redact" title="redacted — master wallet address"
+                      >0xTEST…0000</span
+                    >
+                    — same key in the POC collapse
+                  </td>
+                </tr>
+                <tr>
+                  <td>expected response</td>
+                  <td>
+                    <code class="inline"
+                      >{ "status":"ok", "response":{ "type":"order", "statuses":[{ "rsp":"ok",
+                      "oid":… }] } }</code
+                    >
+                  </td>
+                </tr>
+              </table>
+            </div>
+          </div>
+
+          <div class="card accent-teal">
+            <p class="card-label">Live evidence from the smoke test</p>
+            <p class="card-title">The signing path is accepted by the real testnet</p>
+            <p class="card-body">
+              The gated <code class="inline">executionSmoke.test.ts</code> signs a
+              <code class="inline">{ type:"noop" }</code>
+              action with the armed wallet and asserts the response from
+              <code class="inline">api.hyperliquid-testnet.xyz/exchange</code> is
+              <code class="inline">{ "status":"ok", "response":{ "type":"default" } }</code> —
+              proving the phantom-agent digest, the msgpack hashing, and the secp256k1 signature are
+              all byte-correct against the live Hyperliquid backend.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+     SECTION 06 — SAFETY & SCOPE
+     ============================================================ -->
+      <section class="block" id="safety">
+        <div class="wrap">
+          <p class="eyebrow">06 · Safety &amp; Scope</p>
+          <h2 class="h">What this key does — and does not — do today</h2>
+          <p class="lede">
+            Strictly the current scope of <code class="inline">feature/trading-04-execution</code>.
+            Future work (PROMPT-06 Privy integration, mainnet, agent-approval) is explicitly out of
+            scope and called out only to mark the boundary.
+          </p>
+
+          <div class="grid grid-2">
+            <div class="card accent-teal">
+              <p class="card-label">In scope now</p>
+              <p class="card-title">What the key authorises</p>
+              <ul
+                style="margin: 8px 0 0; padding-left: 18px; color: var(--text-2); font-size: 14px"
+              >
+                <li>
+                  Signing testnet L1 <code class="inline">order</code> actions (open, scale-in,
+                  reduce, close).
+                </li>
+                <li>The <code class="inline">noop</code> action in the gated smoke test.</li>
+                <li>
+                  Recording its own derived address as <code class="inline">signer_address</code> on
+                  each execution record.
+                </li>
+                <li>
+                  Being the “approved execution wallet” for the local preview null-check (POC
+                  collapse).
+                </li>
+              </ul>
+            </div>
+            <div class="card accent-danger">
+              <p class="card-label">Out of scope / deferred</p>
+              <p class="card-title">What the key does NOT do</p>
+              <ul
+                style="margin: 8px 0 0; padding-left: 18px; color: var(--text-2); font-size: 14px"
+              >
+                <li>
+                  <strong>No mainnet</strong> — only
+                  <code class="inline">api.hyperliquid-testnet.xyz</code> is configured.
+                </li>
+                <li>
+                  <strong>No <code class="inline">approveAgent</code></strong> — the on-chain
+                  agent-approval action is not implemented.
+                </li>
+                <li>
+                  <strong>No cancel on the wire</strong> — the
+                  <code class="inline">buildCancelByCloidAction</code> builder exists but has zero
+                  call sites.
+                </li>
+                <li>
+                  <strong>No Privy</strong> — the interim key is a manual stand-in until PROMPT-06.
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <h3 class="h3">Fail-closed guarantees</h3>
+
+          <div class="grid grid-3">
+            <div class="card">
+              <p class="card-title">Key absent</p>
+              <p class="card-body">
+                Both env var and file missing ⇒ <code class="inline">Option.none()</code> ⇒ every
+                signable action rejected with
+                <code class="inline">interim_signer_not_configured</code>. No nonce spent.
+              </p>
+            </div>
+            <div class="card">
+              <p class="card-title">Malformed key</p>
+              <p class="card-body">
+                Fails the <code class="inline">/^0x[0-9a-fA-F]{64}$/</code> regex ⇒
+                <code class="inline">invalid_private_key</code>. The harness stays up, just unarmed.
+              </p>
+            </div>
+            <div class="card">
+              <p class="card-title">Address mismatch</p>
+              <p class="card-body">
+                If <code class="inline">T3_TRADES_INTERIM_SIGNER_ADDRESS</code> is set and disagrees
+                with the derived address ⇒ <code class="inline">address_mismatch</code> rejection.
+              </p>
+            </div>
+          </div>
+
+          <div class="card accent-indigo" style="margin-top: 22px">
+            <p class="card-label">Operational hygiene</p>
+            <p class="card-title">How the key is protected at rest</p>
+            <ul style="margin: 8px 0 0; padding-left: 18px; color: var(--text-2); font-size: 14px">
+              <li>File mode <code class="inline">600</code> — owner read/write only.</li>
+              <li>
+                Directory mode <code class="inline">700</code> on
+                <code class="inline">.t3/secrets/</code>.
+              </li>
+              <li>
+                Held as <code class="inline">Uint8Array(32)</code> in memory; never logged, never
+                persisted by the signer module.
+              </li>
+              <li>
+                Never written into
+                <code class="inline">trading_accounts.master_wallet_json</code> or
+                <code class="inline">execution_wallet_json</code> (both schemas are key-less by
+                design).
+              </li>
+              <li>
+                Loaded via the dedicated <code class="inline">InterimSignerConfig</code> reader,
+                deliberately bypassing the generic
+                <code class="inline">ServerSecretStore</code> raw-byte path.
+              </li>
+            </ul>
+          </div>
+
+          <h3 class="h3">Key file:index</h3>
+          <div class="grid grid-2">
+            <div class="card">
+              <table class="kv-table">
+                <tr>
+                  <td>Secret name const</td>
+                  <td>InterimSignerConfig.ts:79</td>
+                </tr>
+                <tr>
+                  <td>Resolution (env+file)</td>
+                  <td>InterimSignerConfig.ts:172–185</td>
+                </tr>
+                <tr>
+                  <td>InterimSigner schema</td>
+                  <td>InterimSignerConfig.ts:56–61</td>
+                </tr>
+                <tr>
+                  <td>Submit sequence</td>
+                  <td>HyperliquidExecutionService.ts:265–474</td>
+                </tr>
+                <tr>
+                  <td>Sign call site</td>
+                  <td>HyperliquidExecutionService.ts:419–429</td>
+                </tr>
+              </table>
+            </div>
+            <div class="card">
+              <table class="kv-table">
+                <tr>
+                  <td>Phantom-agent digest</td>
+                  <td>Signing.ts:88–192</td>
+                </tr>
+                <tr>
+                  <td>secp256k1.sign</td>
+                  <td>Signing.ts:203–222</td>
+                </tr>
+                <tr>
+                  <td>Wire v-bias</td>
+                  <td>Signing.ts:252–276</td>
+                </tr>
+                <tr>
+                  <td>POST /exchange</td>
+                  <td>ExchangeClient.ts:44–89</td>
+                </tr>
+                <tr>
+                  <td>Testnet endpoints</td>
+                  <td>config.ts:14–18</td>
+                </tr>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="wrap">
+        <div>
+          <strong style="color: var(--text)">Interim Signer Key · Usage Analysis</strong><br />
+          Generated 2026-08-01 · branch <code class="inline">feature/trading-04-execution</code> ·
+          PROMPT-04<br />
+          All endpoints &amp; values are <strong style="color: var(--accent)">TESTNET ONLY</strong>.
+        </div>
+        <div style="text-align: right">
+          Self-contained HTML report<br />
+          No external CSS/JS. Vanilla only.<br />
+          <span style="color: var(--text-dim)">Real key bytes redacted throughout.</span>
+        </div>
+      </div>
+    </footer>
+
+    <script>
+      /* ============================================================
+     Vanilla JS — interactivity. No frameworks.
+     ============================================================ */
+
+      /* --- Accordion --- */
+      function toggleAcc(btn) {
+        const item = btn.closest(".acc-item");
+        const wasOpen = item.classList.contains("open");
+        // close siblings in the same accordion for a clean single-open feel
+        item
+          .closest(".accordion")
+          .querySelectorAll(".acc-item.open")
+          .forEach((i) => i.classList.remove("open"));
+        if (!wasOpen) item.classList.add("open");
+      }
+
+      /* --- Tabs --- */
+      document.querySelectorAll(".tab-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const tabId = btn.dataset.tab;
+          const tabs = btn.closest(".tabs");
+          tabs.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+          tabs.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+          btn.classList.add("active");
+          document.getElementById(tabId).classList.add("active");
+        });
+      });
+
+      /* --- Copy code --- */
+      function copyCode(btn) {
+        const pre = btn.closest(".code-block").querySelector("pre");
+        const text = pre.innerText;
+        navigator.clipboard
+          .writeText(text)
+          .then(() => {
+            const orig = btn.textContent;
+            btn.textContent = "copied ✓";
+            btn.style.color = "var(--accent)";
+            setTimeout(() => {
+              btn.textContent = orig;
+              btn.style.color = "";
+            }, 1400);
+          })
+          .catch(() => {
+            btn.textContent = "copy failed";
+            setTimeout(() => {
+              btn.textContent = "copy";
+            }, 1400);
+          });
+      }
+
+      /* --- TOC active link on scroll --- */
+      const tocLinks = document.querySelectorAll("#tocList a");
+      const sections = document.querySelectorAll("section.block");
+      function syncToc() {
+        let activeId = null;
+        const offset = 120;
+        for (const sec of sections) {
+          if (sec.getBoundingClientRect().top - offset <= 0) {
+            activeId = sec.id;
+          }
+        }
+        tocLinks.forEach((l) => {
+          l.classList.toggle("active", l.getAttribute("href") === "#" + activeId);
+        });
+      }
+      window.addEventListener("scroll", syncToc, { passive: true });
+      syncToc();
+
+      /* --- Pipeline step rotation (highlights each step in turn) --- */
+      const pipeSteps = document.querySelectorAll(".pipe-step");
+      let pipeIdx = 0;
+      function rotatePipe() {
+        pipeSteps.forEach((s) => s.classList.remove("active"));
+        const step = pipeSteps[pipeIdx];
+        if (step) {
+          step.classList.add("active");
+          pipeIdx = (pipeIdx + 1) % pipeSteps.length;
+        }
+      }
+      rotatePipe();
+      const pipeInterval = setInterval(rotatePipe, 1500);
+
+      /* Pause pipeline animation when off-screen (perf) */
+      const pipeEl = document.querySelector(".pipeline");
+      if (pipeEl && "IntersectionObserver" in window) {
+        const io = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((e) => {
+              if (!e.isIntersecting) {
+                clearInterval(pipeInterval);
+              }
+            });
+          },
+          { threshold: 0 },
+        );
+        io.observe(pipeEl);
+      }
+
+      /* --- Reveal on scroll --- */
+      const revealEls = document.querySelectorAll(".reveal");
+      if ("IntersectionObserver" in window && revealEls.length) {
+        const rio = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((e) => {
+              if (e.isIntersecting) {
+                e.target.classList.add("in");
+                rio.unobserve(e.target);
+              }
+            });
+          },
+          { threshold: 0.1 },
+        );
+        revealEls.forEach((el) => rio.observe(el));
+      } else {
+        revealEls.forEach((el) => el.classList.add("in"));
+      }
+    </script>
+  </body>
+</html>

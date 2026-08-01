@@ -119,14 +119,16 @@ function persistExecutionRecord(
       INSERT INTO trading_execution_records (
         execution_id, mission_id, strategy_version, execution_sequence, action_type,
         cloid, idempotency_key, market, side, size, limit_price, time_in_force,
-        reduce_only, signer_address, status, order_results_json, created_at, updated_at
+        reduce_only, signer_address, status, order_results_json, created_at, updated_at,
+        stop_price, planned_loss_at_stop_usd
       ) VALUES (
         ${record.executionId}, ${record.missionId}, ${record.strategyVersion},
         ${record.executionSequence}, ${record.actionType}, ${record.cloid},
         ${record.idempotencyKey}, ${record.market}, ${record.side}, ${record.size},
         ${record.limitPrice}, ${record.timeInForce}, ${record.reduceOnly ? 1 : 0},
         ${record.signerAddress}, ${record.status}, ${encodeOrderResultsJson(record.orderResults)},
-        ${record.createdAt}, ${record.updatedAt}
+        ${record.createdAt}, ${record.updatedAt},
+        ${record.stopPrice ?? null}, ${record.plannedLossAtStopUsd ?? null}
       )
       ON CONFLICT(idempotency_key) DO UPDATE SET updated_at = ${record.updatedAt}
     `;
@@ -358,6 +360,8 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
         orderResults: [],
         createdAt: nowMs,
         updatedAt: nowMs,
+        stopPrice: intent.stop.stopPrice,
+        plannedLossAtStopUsd: intent.stop.plannedLossAtStopUsd,
       };
       yield* persistExecutionRecord(record);
 
