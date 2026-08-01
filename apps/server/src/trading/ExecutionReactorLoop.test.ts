@@ -43,6 +43,7 @@ import type {
   OrderBook,
   ResolvedMarket,
 } from "@t3tools/trading-contracts/market";
+import { isPermittedUnderExhaustion } from "@t3tools/trading-contracts/loss-accounting";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
@@ -377,5 +378,62 @@ layer("TradingExecutionReactorLoop (D1 keystone)", (it) => {
         `close should submit a second action, got ${recordingExchange.submitted.length}`,
       );
     }),
+  );
+
+  it.effect(
+    "§16.4 exhaustion: budget-exhausted blocks open, permits reduce/close; cancel-by-cloid records a cancel action",
+    () =>
+      // This proves the §16.4 control matrix at the boundaries the reactor
+      // drives: the guard's permit predicate (blockForExhaustion's gate) and
+      // the execution service's cancel path (what blockForExhaustion calls per
+      // increasing order). The full mission-status transition is exercised in
+      // TradingExecutionGuard.test.ts + TradingMissionReactor.test.ts.
+      Effect.gen(function* () {
+        yield* migrated;
+        recordingExchange.submitted.length = 0;
+
+        // Seed a resting increasing order so the exhaustion cancel has a target.
+        const sql = yield* SqlClient.SqlClient;
+        const cloid = "b".repeat(32);
+        yield* sql`
+          INSERT INTO trading_execution_records (
+            execution_id, mission_id, strategy_version, execution_sequence, action_type,
+            cloid, idempotency_key, market, side, size, limit_price, time_in_force,
+            reduce_only, signer_address, status, order_results_json, created_at, updated_at
+          ) VALUES (
+            'exec_resting', ${MISSION}, 1, 0, 'open',
+            ${cloid}, 'idem_resting', 'ETH', 'buy', 0.5, 3001, 'ioc',
+            0, ${SIGNER_ADDR}, 'accepted', '[]', 1000, 1000
+          )
+        `;
+        yield* sql`
+          INSERT INTO trading_orders (mission_id, cloid, order_id, market, side, limit_price, remaining_size, reduce_only, observed_at)
+          VALUES (${MISSION}, ${cloid}, 999, 'ETH', 'buy', 3001, 0.5, 0, 1000)
+        `;
+
+        // §16.4: under exhaustion, guardAction blocks open/scale_in and permits
+        // cancel/reduce/close. This is the permit matrix the reactor enforces
+        // before spending a nonce.
+        assert.ok(!isPermittedUnderExhaustion("open"), "open blocked under exhaustion");
+        assert.ok(!isPermittedUnderExhaustion("scale_in"), "scale_in blocked under exhaustion");
+        assert.ok(isPermittedUnderExhaustion("close"), "close permitted under exhaustion");
+        assert.ok(isPermittedUnderExhaustion("reduce"), "reduce permitted under exhaustion");
+
+        // §16.4 item 1: the exhaustion cancel submits a cancel-by-cloid for the
+        // resting increasing order. The execution service's submitCancel is what
+        // blockForExhaustion calls per increasing order.
+        const execution = yield* HyperliquidExecutionService;
+        yield* execution.submitCancel({ market: "ETH", cloid });
+
+        assert.ok(
+          recordingExchange.submitted.length >= 1,
+          "exhaustion cancel should submit a signed cancel action",
+        );
+        const action = recordingExchange.submitted[recordingExchange.submitted.length - 1]!
+          .action as { cancels?: ReadonlyArray<{ coin: string; cloid: string }> };
+        assert.ok(action.cancels !== undefined, "expected a cancels payload");
+        assert.equal(action.cancels![0]!.coin, "ETH");
+        assert.equal(action.cancels![0]!.cloid, cloid);
+      }),
   );
 });
