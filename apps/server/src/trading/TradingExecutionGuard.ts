@@ -64,13 +64,20 @@ export class TradingExecutionGuard extends Context.Service<
 
     /**
      * Block a mission under §16.4. Transitions the mission to `blocked` with
-     * reason `cumulative_loss_limit`. The reactor + decider honour this by
-     * rejecting `trading_resume_mission` while blocked.
+     * reason `cumulative_loss_limit`, AND cancels any mission-owned
+     * position-increasing resting orders so the exchange does not keep filling
+     * against an exhausted budget while the mission reads "blocked". The reactor
+     * + decider honour this by rejecting `trading_resume_mission` while blocked.
      */
     readonly blockForExhaustion: (
       missionId: string,
       expectedVersion: number,
-    ) => Effect.Effect<void, TradingExhaustionError>;
+      masterAddress: string,
+    ) => Effect.Effect<
+      void,
+      TradingExhaustionError,
+      SqlClient.SqlClient | HyperliquidGateway | HyperliquidInfoClient
+    >;
 
     /**
      * Reject a harness resume while the mission is blocked (§16.4: no
@@ -117,8 +124,46 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
   const blockForExhaustion = (
     missionId: string,
     expectedVersion: number,
-  ): Effect.Effect<void, TradingExhaustionError> =>
+    masterAddress: string,
+  ): Effect.Effect<
+    void,
+    TradingExhaustionError,
+    SqlClient.SqlClient | HyperliquidGateway | HyperliquidInfoClient
+  > =>
     Effect.gen(function* () {
+      // §16.4 item 1: cancel mission-owned position-increasing resting orders.
+      // Identify "increasing" from the execution record's action_type (not
+      // trading_orders.reduce_only — the reconciler hardcodes that to false;
+      // PROMPT-05 fixes the column). An action not in the permitted-under-
+      // exhaustion set {cancel, reduce, close} is position-increasing.
+      //
+      // Protection preservation is vacuous until PROMPT-05 places protection
+      // orders; this cancel path only targets increasing orders today.
+      const sql = yield* SqlClient.SqlClient;
+      const increasing = yield* sql<{ readonly cloid: string; readonly market: string }>`
+        SELECT DISTINCT o.cloid, o.market
+        FROM trading_orders o
+        JOIN trading_execution_records e ON e.cloid = o.cloid
+        WHERE o.mission_id = ${missionId}
+          AND e.action_type NOT IN ('cancel', 'reduce', 'close')
+      `.pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingExhaustionError({
+              reason: "budget_exhausted",
+              detail: `read open orders failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+            }),
+        ),
+      );
+      // Submit a cancel-by-cloid per increasing order. A failed cancel does not
+      // abort the block — the mission still reads blocked; the reconciler will
+      // catch a still-resting order on the next convergence.
+      for (const order of increasing) {
+        yield* execution
+          .submitCancel({ market: order.market, cloid: order.cloid })
+          .pipe(Effect.catch(() => Effect.void));
+      }
+
       yield* missions
         .transition({
           missionId,
@@ -135,6 +180,15 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
               }),
           ),
         );
+
+      // Reconcile so local order rows reflect the cancels before the reactor
+      // announces the blocked status.
+      yield* reconciler
+        .reconcile(
+          { missionId, masterAddress: masterAddress as `0x${string}`, market: "ETH" },
+          "after_position_update",
+        )
+        .pipe(Effect.catch(() => Effect.void));
     });
 
   const guardResume = (

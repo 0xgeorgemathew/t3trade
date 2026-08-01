@@ -27,6 +27,7 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
+  buildCancelByCloidAction,
   buildOrderAction,
   mapOrder,
   HyperliquidOrderMapperError,
@@ -90,6 +91,15 @@ export class HyperliquidExecutionService extends Context.Service<
     readonly submitOrder: (
       input: ExecutionInput,
     ) => Effect.Effect<TradingExecutionRecord, TradingExecutionError, SqlClient.SqlClient>;
+    /**
+     * Cancel a resting order by its client order id (§16.4 exhaustion cancel).
+     * Signs and submits a cancel-by-cloid through the nonce lane. Returns void;
+     * the caller reconciles to confirm the cancel landed.
+     */
+    readonly submitCancel: (input: {
+      readonly market: string;
+      readonly cloid: string;
+    }) => Effect.Effect<void, TradingExecutionError>;
   }
 >()("t3/trading/HyperliquidExecutionService") {}
 
@@ -474,7 +484,56 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       return { ...persistedRecord, status: finalStatus, orderResults, updatedAt };
     });
 
-  return HyperliquidExecutionService.of({ submitOrder });
+  // §16.4 exhaustion cancel: sign and submit a cancel-by-cloid for one resting
+  // order. Reuses the same signer + nonce lane as submitOrder so cancels
+  // serialize with orders and never race a nonce. The caller (guard) reconciles
+  // after to confirm the cancel landed.
+  const submitCancel: HyperliquidExecutionService["Service"]["submitCancel"] = (input) =>
+    Effect.gen(function* () {
+      const signerOpt = yield* signerConfig.resolve.pipe(
+        Effect.mapError(
+          (e: InterimSignerError) =>
+            new TradingExecutionError({ stage: "signer_not_configured", detail: e.reason }),
+        ),
+      );
+      if (signerOpt._tag === "None") {
+        return yield* new TradingExecutionError({ stage: "signer_not_configured" });
+      }
+      const signer = signerOpt.value;
+      const action = buildCancelByCloidAction(input.market, input.cloid);
+      const signed = yield* nonceCoord
+        .runWithNonce((nonce) =>
+          Effect.gen(function* () {
+            const signature = signL1ActionForWire({
+              action,
+              nonce,
+              privateKey: signer.privateKeyBytes,
+              isTestnet: true,
+            });
+            return { action, nonce, signature } satisfies SignedAction;
+          }),
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new TradingExecutionError({
+                stage: "sign_failed",
+                detail: cause instanceof Error ? cause.message : String(cause),
+              }),
+          ),
+        );
+      yield* exchange.submit(signed).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingExecutionError({
+              stage: "submit_failed",
+              detail: cause instanceof Error ? cause.message : String(cause),
+            }),
+        ),
+      );
+    });
+
+  return HyperliquidExecutionService.of({ submitOrder, submitCancel });
 });
 
 export const HyperliquidExecutionServiceLive = Layer.effect(

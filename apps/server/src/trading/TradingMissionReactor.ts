@@ -428,7 +428,7 @@ const make = Effect.gen(function* () {
       const expectedVersion = yield* missions.getMissionVersion(missionId);
       // A version conflict means another transition beat us; the mission state
       // the projection holds is still authoritative, so log and continue.
-      yield* guard.blockForExhaustion(missionId, expectedVersion).pipe(
+      yield* guard.blockForExhaustion(missionId, expectedVersion, masterAddress).pipe(
         Effect.catch(() =>
           Effect.logWarning("trading execution: could not block exhausted mission", {
             missionId,
