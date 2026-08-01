@@ -95,28 +95,35 @@ export const makeTradingBudgetReader = Effect.gen(function* () {
       const allPaidTradingFeesUsd = fills.reduce((sum, f) => sum + f.fee_usd, 0);
 
       // Open-position risk. The stop price is threaded from the mission's
-      // latest execution record that carries one (Task 1 column). Without a
-      // stop, `openPositionRisk` cannot compute a directional loss-to-stop, so
-      // we pass `undefined` and the contract floors the term at zero — we do
-      // NOT fabricate a stop (a fabricated 0 made longs book the full notional
-      // as risk, exhausting the budget instantly).
+      // latest non-terminal execution record for this market that carries one
+      // (Task 1 column). Without a stop, `openPositionRisk` cannot compute a
+      // directional loss-to-stop, so we pass `undefined` and the contract
+      // contributes 0 from the stop-distance term (it does NOT substitute a
+      // $0 stop — that would book `entry × size` for a long and exhaust the
+      // budget instantly). The fee and slippage terms still count; only the
+      // directional term is dropped when the stop is unknown.
       //
-      // The exit-fee and slippage-reserve terms are still zero here. Task 5
-      // wires the fee read; PROMPT-05's protection layer writes the exact
-      // per-position reserve. Until then open risk is approximate (the
-      // dominant blocking term is the pending-entry risk below, which is
-      // fully populated).
+      // The slippage-reserve term is still zero here. Task 5 wires the fee
+      // read; PROMPT-05's protection layer writes the exact per-position
+      // reserve. Until then open risk is approximate (the dominant blocking
+      // term is the pending-entry risk below, which is fully populated).
       const positions = yield* sql<PositionBudgetRow>`
-        SELECT p.market, p.size, p.entry_price, p.observed_at, s.stop_price
+        SELECT
+          p.market,
+          p.size,
+          p.entry_price,
+          p.observed_at,
+          (
+            SELECT e.stop_price
+            FROM trading_execution_records e
+            WHERE e.mission_id = p.mission_id
+              AND e.market = p.market
+              AND e.stop_price IS NOT NULL
+              AND e.status NOT IN ('rejected', 'cancelled', 'failed')
+            ORDER BY e.updated_at DESC
+            LIMIT 1
+          ) AS stop_price
         FROM trading_position_snapshots p
-        LEFT JOIN (
-          SELECT mission_id, stop_price
-          FROM trading_execution_records
-          WHERE mission_id = ${input.missionId}
-            AND stop_price IS NOT NULL
-          ORDER BY updated_at DESC
-          LIMIT 1
-        ) s ON s.mission_id = p.mission_id
         WHERE p.mission_id = ${input.missionId} AND p.size != 0
       `.pipe(Effect.mapError(sqlFail("positions")));
       const latestPositionObservedAt = positions

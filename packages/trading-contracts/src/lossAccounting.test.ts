@@ -90,24 +90,59 @@ describe("openPositionRisk (§16.2 eq 3)", () => {
     }
   });
 
-  it("documents the missing-stop hazard: an undefined stop floors to 0 (caller must supply it)", () => {
-    // The contract uses `stopPrice ?? 0`. A long with no stop therefore computes
-    // stopDistance = entry - 0 = the full notional, which would exhaust the
-    // budget instantly. This is BY DESIGN — the caller (TradingBudgetReader,
-    // Task 2) is responsible for threading the real stop or leaving the position
-    // out. This test pins the behavior so a future "fix" does not silently
-    // change the contract's missing-stop semantics.
+  it("a missing stop contributes no directional loss — only fees + slippage (not entry × size)", () => {
+    // A long with no stop must NOT book entry × size as its risk. The directional
+    // loss-to-stop is unknown, so the term contributes 0; only the independent
+    // fee and slippage terms remain. The previous contract substituted a $0
+    // stop, which for a long computed entry - 0 = the full notional and
+    // exhausted the budget instantly. That behavior was a defect, not a
+    // guarantee.
     const rng = makeRng(11);
     const longNoStop = pos(rng, {
       direction: "long",
+      size: 1,
       weightedEntryPrice: 3_000,
       stopPrice: undefined,
     });
-    const stopDistance = (longNoStop.weightedEntryPrice ?? 0) - 0;
-    expect(openPositionRisk(longNoStop)).toBeCloseTo(
-      stopDistance * longNoStop.size +
-        longNoStop.estimatedExitFeeUsd +
-        longNoStop.stopSlippageReserveUsd,
+    const result = openPositionRisk(longNoStop);
+    // Exactly the fee + slippage terms — never 3000 (entry × size).
+    expect(result).toBeCloseTo(
+      longNoStop.estimatedExitFeeUsd + longNoStop.stopSlippageReserveUsd,
+      6,
+    );
+    expect(result).not.toBe(3_000);
+    expect(result).toBeLessThan(longNoStop.weightedEntryPrice! * longNoStop.size);
+  });
+
+  it("a missing stop contributes no directional loss for a short either (symmetric)", () => {
+    const rng = makeRng(12);
+    const shortNoStop = pos(rng, {
+      direction: "short",
+      size: 1,
+      weightedEntryPrice: 3_000,
+      stopPrice: undefined,
+    });
+    const result = openPositionRisk(shortNoStop);
+    expect(result).toBeCloseTo(
+      shortNoStop.estimatedExitFeeUsd + shortNoStop.stopSlippageReserveUsd,
+      6,
+    );
+    expect(result).not.toBe(3_000);
+  });
+
+  it("a missing weightedEntryPrice also contributes no directional loss (unknown entry)", () => {
+    // The unknown-input rule is symmetric: either price missing → no directional
+    // term. A position reconciled before its entry price settled must not
+    // fabricate a loss-to-stop.
+    const rng = makeRng(13);
+    const longNoEntry = pos(rng, {
+      direction: "long",
+      size: 1,
+      weightedEntryPrice: undefined,
+      stopPrice: 2_900,
+    });
+    expect(openPositionRisk(longNoEntry)).toBeCloseTo(
+      longNoEntry.estimatedExitFeeUsd + longNoEntry.stopSlippageReserveUsd,
       6,
     );
   });

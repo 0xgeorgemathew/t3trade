@@ -34,15 +34,26 @@ const max0 = (n: number): number => (n > 0 ? n : 0);
  * `max(0, estimatedLossFromWeightedEntryToStopUsd) + estimatedUnpaidExitFeeUsd
  * + stopSlippageReserveUsd`. The loss-to-stop is floored at zero (a position
  * already in profit contributes no directional loss to the budget).
+ *
+ * Missing-input semantics: when `stopPrice` or `weightedEntryPrice` is
+ * `undefined`, the directional loss-to-stop is unknown, not zero-priced. The
+ * stop-distance term contributes 0 rather than treating a missing stop as $0
+ * (which for a long books the full notional `entry × size` against the budget
+ * and exhausts it instantly). The fee and slippage terms are independent of
+ * the stop and always count. PROMPT-05's protection layer makes the stop
+ * always present; until then a missing stop is reported honestly as "no
+ * directional risk reserved," never as "maximum risk."
  */
 export function openPositionRisk(input: TradingOpenPositionRiskInput): number {
-  // Estimated loss from the weighted entry to the stop, derived by the caller
-  // from the reconciled entry/stop. Floored at zero so an in-profit position
-  // does not add negative risk (which would inflate the budget).
-  const stopDistance =
-    input.direction === "long"
-      ? (input.weightedEntryPrice ?? 0) - (input.stopPrice ?? 0)
-      : (input.stopPrice ?? 0) - (input.weightedEntryPrice ?? 0);
+  // A missing stop or entry means the directional loss-to-stop is unknown.
+  // Contribute nothing from this term rather than substituting a price: a
+  // long with no stop must not book `entry - 0 = entry` as its risk.
+  const hasBothPrices = input.weightedEntryPrice !== undefined && input.stopPrice !== undefined;
+  const stopDistance = !hasBothPrices
+    ? 0
+    : input.direction === "long"
+      ? input.weightedEntryPrice - input.stopPrice
+      : input.stopPrice - input.weightedEntryPrice;
   const estimatedLossToStop = stopDistance > 0 ? stopDistance * input.size : 0;
 
   return max0(estimatedLossToStop) + input.estimatedExitFeeUsd + input.stopSlippageReserveUsd;

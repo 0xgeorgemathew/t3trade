@@ -23,6 +23,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import { TradingBudgetReader, makeTradingBudgetReader } from "./TradingBudgetReader.ts";
+import { evaluateLossBudget, openPositionRisk } from "@t3tools/trading-contracts/loss-accounting";
 
 /**
  * The reader only depends on SqlClient, so we can build it directly off the
@@ -115,7 +116,7 @@ layer("TradingBudgetReader — stop-aware open-position risk", (it) => {
     }),
   );
 
-  it.effect("passes stopPrice undefined and does not explode for a long with no stop record", () =>
+  it.effect("a long with no stop record reserves only fee terms, never entry × size", () =>
     Effect.gen(function* () {
       yield* migrated;
       const sql = yield* SqlClient.SqlClient;
@@ -124,7 +125,7 @@ layer("TradingBudgetReader — stop-aware open-position risk", (it) => {
       yield* sql`
         INSERT INTO trading_position_snapshots
           (mission_id, market, size, entry_price, unrealised_pnl, margin_used, protected_size, observed_at)
-        VALUES ('mission_1', 'ETH', 1, 3000, 0, 0, 0, 1_700_000_000_000)
+          VALUES ('mission_1', 'ETH', 1, 3000, 0, 0, 0, 1_700_000_000_000)
       `;
       // An execution record WITHOUT stop_price (e.g. a cancel record) — the
       // LEFT JOIN must not fabricate a stop.
@@ -141,11 +142,28 @@ layer("TradingBudgetReader — stop-aware open-position risk", (it) => {
 
       const result = yield* read();
 
-      // The reader must NOT explode (the historic bug fabricated a 0 stop and
-      // booked the full notional as risk). stopPrice is undefined.
+      // stopPrice is genuinely undefined (a legal input — stop_price is optional
+      // on the contract, and every record written before migration 040 has NULL).
       assert.equal(result.openPositions.length, 1);
-      assert.equal(result.openPositions[0]!.direction, "long");
-      assert.equal(result.openPositions[0]!.stopPrice, undefined);
+      const position = result.openPositions[0]!;
+      assert.equal(position.direction, "long");
+      assert.equal(position.stopPrice, undefined);
+
+      // The real assertion: feed the reader's output through the contract and
+      // confirm the open-position risk is bounded by the fee terms — NOT the
+      // 3000 USD notional the previous "fabricate a 0 stop" path produced.
+      const risk = openPositionRisk(position);
+      const notional = position.weightedEntryPrice! * position.size;
+      assert.equal(risk, position.estimatedExitFeeUsd + position.stopSlippageReserveUsd);
+      assert.notEqual(risk, notional);
+      assert.isBelow(risk, notional);
+
+      // And end-to-end through evaluateLossBudget: with a 100 USD ceiling and no
+      // other activity, the budget is NOT exhausted by this one missing-stop
+      // position. The previous defect exhausted it instantly (3000 > 100).
+      const budget = evaluateLossBudget({ ...result, maximumCumulativeLossUsd: 100 });
+      assert.isBelow(budget.openPositionRiskUsd, notional);
+      assert.equal(budget.exhausted, false);
     }),
   );
 
