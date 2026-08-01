@@ -9,6 +9,7 @@
  */
 import * as Layer from "effect/Layer";
 import { FetchHttpClient } from "effect/unstable/http";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import {
   HyperliquidExchangeClientLive,
@@ -18,6 +19,8 @@ import {
   HyperliquidNonceCoordinatorLive,
 } from "@t3tools/hyperliquid";
 import { HyperliquidExecutionServiceLive } from "./HyperliquidExecutionService.ts";
+import { HyperliquidReconcilerLive } from "./HyperliquidReconciler.ts";
+import { TradingExecutionGuardLive } from "./TradingExecutionGuard.ts";
 import { InterimSignerConfigLive } from "./InterimSignerConfig.ts";
 import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
@@ -35,7 +38,11 @@ import { TradingStrategyServiceLive } from "./TradingStrategyService.ts";
  *
  * Only `HyperliquidGateway` surfaces from this layer.
  */
-const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(FetchHttpClient.layer));
+// FetchHttpClient needs NodeServices; bake it in so the trading layer is
+// self-contained and doesn't leak HttpClient requirements to consumers.
+const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
+
+const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
 const resolverWithInfo = HyperliquidMarketResolverLive.pipe(Layer.provide(infoWithHttp));
 
 export const HyperliquidReadLayerLive = HyperliquidGatewayLive.pipe(
@@ -48,7 +55,7 @@ export const HyperliquidReadLayerLive = HyperliquidGatewayLive.pipe(
  * wallet (in-memory for the POC; a persisted recovery hint lands with the
  * restart-recovery work).
  */
-const exchangeWithHttp = HyperliquidExchangeClientLive.pipe(Layer.provide(FetchHttpClient.layer));
+const exchangeWithHttp = HyperliquidExchangeClientLive.pipe(Layer.provide(httpWithNode));
 
 /**
  * The core trading layer: mission/strategy/projection + the read path. This
@@ -80,4 +87,6 @@ const TradingFoundation = Layer.mergeAll(
 export const TradingLayerLive = TradingFoundation.pipe(
   Layer.provideMerge(TradingPreviewServiceLive),
   Layer.provideMerge(HyperliquidExecutionServiceLive),
+  Layer.provideMerge(HyperliquidReconcilerLive),
+  Layer.provideMerge(TradingExecutionGuardLive),
 );

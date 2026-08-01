@@ -197,6 +197,34 @@ export type WireOpenOrder = typeof WireOpenOrder.Type;
 export const WireOpenOrdersResponse = Schema.Array(WireOpenOrder);
 export type WireOpenOrdersResponse = typeof WireOpenOrdersResponse.Type;
 
+// -- Info: userFills ----------------------------------------------------------
+
+/**
+ * A fill row from `userFills`. The exchange returns one row per fill event
+ * with `closedPnl`, `px`, `side`, `fee`, `coin`, and the matching order/cloid.
+ * Kept permissive: only the fields the reconciler reads are typed strictly.
+ */
+export const WireUserFill = Schema.Struct({
+  coin: Schema.String,
+  side: Schema.Literals(["B", "A"]),
+  px: Schema.String,
+  sz: Schema.String,
+  time: Schema.Number,
+  closedPnl: Schema.optional(Schema.String),
+  fee: Schema.String,
+  oid: Schema.Number,
+  cloid: Schema.optional(Schema.String),
+  feeToken: Schema.optional(Schema.String),
+  dir: Schema.optional(Schema.String),
+  crossed: Schema.optional(Schema.Boolean),
+  hash: Schema.optional(Schema.String),
+  startPosition: Schema.optional(Schema.String),
+});
+export type WireUserFill = typeof WireUserFill.Type;
+
+export const WireUserFillsResponse = Schema.Array(WireUserFill);
+export type WireUserFillsResponse = typeof WireUserFillsResponse.Type;
+
 // -- WebSocket ----------------------------------------------------------------
 
 /** The subscription payload, shared by subscribe and unsubscribe. */
