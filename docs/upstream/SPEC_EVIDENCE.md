@@ -24,13 +24,21 @@ land without an upstream sync, and vice versa.
 
 ## Current pin
 
-| Field                                  | Value                                                                                                                                                                                                                                    |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Spec revision                          | `market-bender@3c1c2256` — the 2026-07-30 reconciliation (PROMPT-01 ratified as built; phases resequenced 04 execution → 05 protection → 06 Privy signer swap; PROMPT-02 re-scoped as the testnet lab; no-runtime-SDK decision recorded) |
-| Upstream commit of original seam audit | `55dd01612efc51e19de479da5a0e348cbe2521e3` (the spec's published audit pin, 2026-07-28)                                                                                                                                                  |
-| Seams re-verified at                   | `a8e05cbb92633a1351529f2bc402071f615e5051` (= the accepted baseline, see `BASELINE.md`)                                                                                                                                                  |
-| Pinned by                              | PROMPT-00 · Fork and integration baseline; updated at PROMPT-01 close-out                                                                                                                                                                |
-| Pinned on                              | 2026-07-30                                                                                                                                                                                                                               |
+| Field                                  | Value                                                                                                                                                                                                                    |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Spec revision                          | `market-bender@67d3650` — the 2026-08-01 Phase D close-out (testnet lab verified live, account mode recorded; execution prototype ratified as canonical UI intent). Supersedes the 2026-07-30 `3c1c2256` reconciliation. |
+| Upstream commit of original seam audit | `55dd01612efc51e19de479da5a0e348cbe2521e3` (the spec's published audit pin, 2026-07-28)                                                                                                                                  |
+| Seams re-verified at                   | `a8e05cbb92633a1351529f2bc402071f615e5051` (= the accepted baseline, see `BASELINE.md`)                                                                                                                                  |
+| Pinned by                              | PROMPT-04 close-out                                                                                                                                                                                                      |
+| Pinned on                              | 2026-08-01                                                                                                                                                                                                               |
+
+## Per-phase evidence
+
+| Phase | Spec revision at close-out | t3code commit | Evidence                                                                                                                                                                                                                                                                                       |
+| ----- | -------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 02    | `3c1c2256` (2026-07-30)    | baseline      | Market-data + strategy contracts, watch evaluator, harness wake — merged as fork PR #4.                                                                                                                                                                                                        |
+| 03    | `3c1c2256` (2026-07-30)    | baseline      | Watches + harness wake-up closed loop, §11.1 state machine — merged as fork PR #6 (2026-07-31).                                                                                                                                                                                                |
+| 04    | `67d3650` (2026-08-01)     | this branch   | Execution + reconciliation: signed idempotent orders, reconciled fills/positions, §16.2 loss budget, §16.4 exhaustion, Eq-4 fee reserve. Live testnet proof (Gate E) recorded separately. Deferrals: §17.2 steps 6–8 and `protected` status → PROMPT-05; approved-wallet registry → PROMPT-06. |
 
 ## Updating this file
 

@@ -9,9 +9,90 @@ follows the exact order in the handoff prompt; no reordering.
 
 ## Handoff to PROMPT-05
 
-Phase 4 hands PROMPT-05 the validated signing path, the deterministic cloid,
-reconciled fill and position reads, and the reservation ledger that
-protection and position management will resize.
+Phase 4 ships the validated signing path, the deterministic cloid, reconciled
+fill/position/order reads, the cumulative-loss budget, and the reservation
+ledger that protection and position management will resize. PROMPT-05 adds
+exchange-native stop/TP placement, the `protected` execution status,
+protection reconciliation, and deterministic user controls on top of these.
+
+### Service surfaces PROMPT-05 builds on
+
+- **`HyperliquidExecutionService`** — `submitOrder(input)` runs the full §17.2
+  sequence (preview → persist → sign → submit → inspect → reconcile).
+  `submitCancel({ market, cloid })` signs and submits a cancel-by-cloid through
+  the nonce lane (used by the exhaustion guard; reuse for protection cancels).
+- **`HyperliquidReconciler.reconcile(input, trigger)`** — the single convergence
+  entry point. Reads canonical position/orders/fills in parallel, persists
+  snapshots, releases reservations on terminal execution records. PROMPT-05's
+  protection reconciliation extends the trigger set and adds a `protected_size`
+  confirmation step.
+- **`TradingExecutionGuard`** — `guardAction` (exhaustion gate),
+  `blockForExhaustion` (block + cancel increasing orders), `reduceOnlyClose`,
+  `guardResume`. PROMPT-05's `trading_control_*` tools add deterministic
+  pause/resume/revoke on top of these primitives.
+- **`TradingPreviewService.previewOrder`** — the 17-item checklist + Eq-4
+  reservation. PROMPT-05 adds protection-placement validation.
+- **`TradingBudgetReader.read`** — assembles the §16.2 budget snapshot. Takes
+  `takerFeeRateBps` (loaded once by the reactor) so the open-position exit-fee
+  estimate is live.
+
+### Reservation-ledger semantics (the release lifecycle)
+
+A reservation (`trading_risk_reservations`) is created in `submitOrder` step 2,
+**before** signing, with `status='reserved'` and the preview's `reservedRiskUsd`
+(the full Eq-4 value: planned loss + entry fee + exit fee + slippage reserve).
+It is released (`status='released'`) by the reconciler when the tied execution
+record reaches a terminal status (`filled`, `rejected`, `cancelled`, `failed`).
+A unique index on `execution_id` guarantees one reservation per execution.
+PROMPT-05 resizes reservations when protection modifies the planned loss.
+
+### Caveats PROMPT-05 inherits
+
+- **`openPositionRiskUsd` is approximate.** The exit-fee uses `weightedEntryPrice`
+  as the close-notional proxy until the mark is read directly; the slippage
+  reserve is zero on open positions (the protection layer writes the exact
+  per-position reserve). The dominant blocking term is correct; the open
+  reserve tightens in PROMPT-05.
+- **`netFundingUsd = 0`.** Funding is not tracked per-fill in the POC schema.
+  Until a funding source is wired, the realised mission result omits funding.
+- **`trading_orders.reduce_only` is hardcoded `false`** by the reconciler
+  (`HyperliquidReconciler.ts:173`). The exhaustion cancel identifies
+  position-increasing orders by joining to the execution record's
+  `action_type`, NOT the order row's `reduce_only`. PROMPT-05 fixes the column.
+- **`protectedSize = 0`** until the protection path (§17.2 steps 6–8) confirms
+  an exchange-native reduce-only stop is in place. The reconciler records zero
+  until that path marks it.
+- **Preview item 8 (`execution_wallet_approved`)** is an armed-signer null check
+  until PROMPT-06's approved-wallet registry. The signer-to-wallet match is
+  enforced at sign time, not preview.
+
+### Nonce-lane design
+
+`HyperliquidNonceCoordinator` serializes all signed actions (orders AND cancels)
+through a single permit, so a cancel never races an order for a nonce. It
+fast-forwards past spent nonces on startup (queried from the exchange),
+persists a recovery hint, and restarts cleanly. The lane is the only path to
+the exchange — there is no bypass.
+
+### Cloid collision reasoning
+
+The deterministic cloid is `trunc(SHA-256(missionId ‖ strategyVersion ‖
+executionSequence ‖ actionType), 16 bytes)`, hex-encoded to 32 chars. A retry
+reuses the same inputs, so the same cloid — and the exchange deduplicates on
+cloid. Collisions across missions are astronomically unlikely (16 bytes of
+SHA-256); within a mission the `(executionSequence, actionType)` tuple is
+unique per execution. The local write deduplicates on `idempotency_key`
+(derived from the same inputs), so retry idempotency holds on both sides.
+
+### Migrations this phase added
+
+- **038** — the six §18 tables (execution records, orders, fills, position
+  snapshots, risk reservations, event inbox).
+- **039** — additive columns (`trading_fills.closed_pnl`,
+  `trading_position_snapshots.liquidation_price`, the reservations unique index).
+- **040** — `trading_execution_records.stop_price` /
+  `planned_loss_at_stop_usd` (threaded from the intent's stop; was previously
+  dropped at persist time) and `trading_position_snapshots.mark_px`.
 
 ## Baseline (Phases 0–3)
 
