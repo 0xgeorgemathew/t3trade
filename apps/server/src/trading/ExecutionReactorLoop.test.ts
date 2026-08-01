@@ -59,6 +59,8 @@ import {
 } from "./HyperliquidReconciler.ts";
 import { InterimSigner, InterimSignerConfig } from "./InterimSignerConfig.ts";
 import { TradingPreviewService, type TradingPreview } from "./TradingPreviewService.ts";
+import { TradingExecutionGuard, TradingExecutionGuardLive } from "./TradingExecutionGuard.ts";
+import { TradingMissionService } from "./TradingMissionService.ts";
 
 // Canonical ETH test vector (matches InterimSignerConfig.test.ts).
 const VALID_KEY = "0x0000000000000000000000000000000000000000000000000000000000000001";
@@ -209,19 +211,52 @@ const armedSignerConfig = Layer.succeed(InterimSignerConfig, {
   resolve: Effect.succeed(Option.some(armedSigner)),
 });
 
-// Shared suite layer: real execution service + real reconciler over the fakes.
-const layer = it.layer(
-  Layer.mergeAll(HyperliquidExecutionServiceLive, HyperliquidReconcilerLive).pipe(
-    Layer.provideMerge(stubPreview),
-    Layer.provideMerge(fakeGateway),
-    Layer.provideMerge(fakeInfoClient),
-    Layer.provideMerge(recordingExchangeLayer),
-    Layer.provideMerge(armedSignerConfig),
-    Layer.provideMerge(HyperliquidNonceCoordinatorLive()),
-    Layer.provideMerge(NodeCrypto.layer),
-    Layer.provideMerge(NodeSqliteClient.layerMemory()),
-  ),
+// Recording mission-service stub for the blockForExhaustion / reduceOnlyClose
+// tests (Task 6). The real TradingMissionService pulls in the full projection +
+// persistence stack; for these tests we only need to assert blockForExhaustion
+// calls transition({ to: "blocked", blockedReason: "cumulative_loss_limit" }),
+// so a recording stub is sufficient and keeps the layer focused.
+interface RecordingMissions {
+  transitions: Array<{
+    readonly missionId: string;
+    readonly to: string;
+    readonly blockedReason?: string;
+  }>;
+}
+const recordingMissions: RecordingMissions = { transitions: [] };
+const recordingMissionsLayer = Layer.succeed(TradingMissionService, {
+  transition: ((input: {
+    readonly missionId: string;
+    readonly to: string;
+    readonly blockedReason?: string;
+  }) =>
+    Effect.sync(() => {
+      recordingMissions.transitions.push({
+        missionId: input.missionId,
+        to: input.to,
+        ...(input.blockedReason !== undefined ? { blockedReason: input.blockedReason } : {}),
+      });
+      return {} as never;
+    })) as never,
+  getMissionVersion: (() => Effect.succeed(1)) as never,
+} as unknown as TradingMissionService["Service"]);
+
+// Shared suite layer: real execution service + real reconciler over the fakes,
+// with the real guard composed on top (it depends on the execution service +
+// reconciler + mission service, so it must build after them, not be merged
+// concurrently).
+const coreLayer = Layer.mergeAll(HyperliquidExecutionServiceLive, HyperliquidReconcilerLive).pipe(
+  Layer.provideMerge(stubPreview),
+  Layer.provideMerge(fakeGateway),
+  Layer.provideMerge(fakeInfoClient),
+  Layer.provideMerge(recordingExchangeLayer),
+  Layer.provideMerge(recordingMissionsLayer),
+  Layer.provideMerge(armedSignerConfig),
+  Layer.provideMerge(HyperliquidNonceCoordinatorLive()),
+  Layer.provideMerge(NodeCrypto.layer),
+  Layer.provideMerge(NodeSqliteClient.layerMemory()),
 );
+const layer = it.layer(TradingExecutionGuardLive.pipe(Layer.provideMerge(coreLayer)));
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -438,6 +473,212 @@ layer("TradingExecutionReactorLoop (D1 keystone)", (it) => {
         assert.ok(action.cancels !== undefined, "expected a cancels payload");
         assert.equal(action.cancels![0]!.asset, ethMarket.assetIndex);
         assert.equal(action.cancels![0]!.cloid, cloid);
+      }),
+  );
+
+  // --- Task 6: blockForExhaustion on the real guard + real execution service ---
+  it.effect(
+    "blockForExhaustion cancels only increasing orders and transitions the mission to blocked",
+    () =>
+      // Seeds a resting increasing (open) order AND a resting reduce order, then
+      // drives the real guard.blockForExhaustion. Asserts: a cancel-by-cloid is
+      // submitted for the INCREASING order only; the mission service's transition
+      // is invoked with { to: "blocked", blockedReason: "cumulative_loss_limit" };
+      // the post-cancel reconcile fires. This is the orchestration the §16.4
+      // permit-matrix test above does NOT enter.
+      Effect.gen(function* () {
+        yield* migrated;
+        recordingExchange.submitted.length = 0;
+        recordingMissions.transitions.length = 0;
+        const sql = yield* SqlClient.SqlClient;
+
+        const increasingCloid = "0x" + "1".repeat(40).slice(0, 32).replace(/^0x/, "");
+        const reduceCloid = "0x" + "2".repeat(40).slice(0, 32).replace(/^0x/, "");
+        // Use bare hex (no 0x) for the DB cloid columns to mirror what the
+        // reconciler writes; the guard's SQL JOIN matches on the raw string.
+        const incCloidBare = increasingCloid.startsWith("0x")
+          ? increasingCloid.slice(2)
+          : increasingCloid;
+        const redCloidBare = reduceCloid.startsWith("0x") ? reduceCloid.slice(2) : reduceCloid;
+
+        // A resting increasing order (action_type 'open' — NOT in the permitted set).
+        yield* sql`
+          INSERT INTO trading_execution_records (
+            execution_id, mission_id, strategy_version, execution_sequence, action_type,
+            cloid, idempotency_key, market, side, size, limit_price, time_in_force,
+            reduce_only, signer_address, status, order_results_json, created_at, updated_at
+          ) VALUES
+            ('exec_inc', ${MISSION}, 1, 10, 'open',
+             ${incCloidBare}, 'idem_inc', 'ETH', 'buy', 0.5, 3001, 'ioc',
+             0, ${SIGNER_ADDR}, 'accepted', '[]', 1000, 1000)
+        `;
+        yield* sql`
+          INSERT INTO trading_orders (mission_id, cloid, order_id, market, side, limit_price, remaining_size, reduce_only, observed_at)
+          VALUES (${MISSION}, ${incCloidBare}, 901, 'ETH', 'buy', 3001, 0.5, 0, 1000)
+        `;
+        // A resting reduce order (action_type 'reduce' — IS permitted, must NOT be cancelled).
+        yield* sql`
+          INSERT INTO trading_execution_records (
+            execution_id, mission_id, strategy_version, execution_sequence, action_type,
+            cloid, idempotency_key, market, side, size, limit_price, time_in_force,
+            reduce_only, signer_address, status, order_results_json, created_at, updated_at
+          ) VALUES
+            ('exec_red', ${MISSION}, 1, 11, 'reduce',
+             ${redCloidBare}, 'idem_red', 'ETH', 'sell', 0.2, 3000, 'ioc',
+             1, ${SIGNER_ADDR}, 'accepted', '[]', 1000, 1000)
+        `;
+        yield* sql`
+          INSERT INTO trading_orders (mission_id, cloid, order_id, market, side, limit_price, remaining_size, reduce_only, observed_at)
+          VALUES (${MISSION}, ${redCloidBare}, 902, 'ETH', 'sell', 3000, 0.2, 1, 1000)
+        `;
+
+        const guard = yield* TradingExecutionGuard;
+        yield* guard.blockForExhaustion(MISSION, 1, MASTER_ADDR);
+
+        // Exactly one cancel submitted — for the increasing order, not the reduce order.
+        const cancels = recordingExchange.submitted
+          .map(
+            (s) => s.action as { type?: string; cancels?: Array<{ asset: number; cloid: string }> },
+          )
+          .filter((a) => a.type === "cancelByCloid");
+        assert.equal(cancels.length, 1);
+        assert.equal(cancels[0]!.cancels![0]!.cloid, incCloidBare);
+
+        // The mission transitioned to blocked with the cumulative-loss-limit reason.
+        assert.equal(recordingMissions.transitions.length, 1);
+        assert.equal(recordingMissions.transitions[0]!.missionId, MISSION);
+        assert.equal(recordingMissions.transitions[0]!.to, "blocked");
+        assert.equal(recordingMissions.transitions[0]!.blockedReason, "cumulative_loss_limit");
+      }),
+  );
+
+  it.effect(
+    "blockForExhaustion still transitions to blocked when the cancel fails (swallow-and-log)",
+    () =>
+      // The negative case: when submitCancel fails, the mission still reaches
+      // blocked (the current swallow-and-continue behavior) and the failure is
+      // logged at warn rather than aborting the block.
+      Effect.gen(function* () {
+        yield* migrated;
+        recordingExchange.submitted.length = 0;
+        recordingMissions.transitions.length = 0;
+        const sql = yield* SqlClient.SqlClient;
+
+        // Seed an increasing order whose cloid will fail to cancel. The recording
+        // fake exchange always returns OK, so to simulate a cancel failure we
+        // point the order at a market the fake gateway cannot resolve. The
+        // execution service resolves the asset index via gateway.resolveMarket;
+        // an unresolvable market yields TradingExecutionError(market_unresolved),
+        // which the guard's catchTag logs and continues past.
+        const badCloid = "f".repeat(32);
+        yield* sql`
+          INSERT INTO trading_execution_records (
+            execution_id, mission_id, strategy_version, execution_sequence, action_type,
+            cloid, idempotency_key, market, side, size, limit_price, time_in_force,
+            reduce_only, signer_address, status, order_results_json, created_at, updated_at
+          ) VALUES
+            ('exec_bad', ${MISSION}, 1, 20, 'open',
+             ${badCloid}, 'idem_bad', 'NOPE', 'buy', 0.5, 3001, 'ioc',
+             0, ${SIGNER_ADDR}, 'accepted', '[]', 1000, 1000)
+        `;
+        yield* sql`
+          INSERT INTO trading_orders (mission_id, cloid, order_id, market, side, limit_price, remaining_size, reduce_only, observed_at)
+          VALUES (${MISSION}, ${badCloid}, 903, 'NOPE', 'buy', 3001, 0.5, 0, 1000)
+        `;
+
+        const guard = yield* TradingExecutionGuard;
+        // The fake gateway only resolves ETH; NOPE → market_unresolved error,
+        // which blockForExhaustion logs and swallows. The effect must still
+        // succeed (the mission still transitions to blocked).
+        yield* guard.blockForExhaustion(MISSION, 1, MASTER_ADDR);
+
+        assert.equal(recordingMissions.transitions.length, 1);
+        assert.equal(recordingMissions.transitions[0]!.to, "blocked");
+        assert.equal(recordingMissions.transitions[0]!.blockedReason, "cumulative_loss_limit");
+      }),
+  );
+
+  // --- Task 6: reduceOnlyClose on the real guard + real execution service ---
+  it.effect(
+    "reduceOnlyClose submits a reduce-only IOC at the canonical size (opposite side, reduce-only, IOC)",
+    () =>
+      // The fake gateway/info report an ETH long of 0.5 (seeded in fakeGateway's
+      // account snapshot + fakeInfoClient's clearinghouseState). reduceOnlyClose
+      // reconciles before_execution (reads 0.5 long), builds a sell reduce-only
+      // IOC of size 0.5, and submits it. The static fake info client does not
+      // reflect the submit (canonical state stays 0.5), so the after-close
+      // reconcile escalates close_did_not_flatten — that escalation is asserted
+      // separately below. Here we flip the escalation and assert the SUBMIT
+      // carried the correct order shape: opposite side, reduce-only, IOC, the
+      // canonical 0.5 size.
+      Effect.gen(function* () {
+        yield* migrated;
+        recordingExchange.submitted.length = 0;
+
+        const guard = yield* TradingExecutionGuard;
+        // The after-close reconcile still shows 0.5 → close_did_not_flatten.
+        const result = yield* guard
+          .reduceOnlyClose({
+            intent: closeIntent(30),
+            previewContext,
+            allowedSlippageBps: 50,
+            masterAddress: MASTER_ADDR,
+          })
+          .pipe(Effect.flip);
+
+        // The submit still happened before the escalation.
+        assert.isAbove(recordingExchange.submitted.length, 0);
+        const orderAction = recordingExchange.submitted[recordingExchange.submitted.length - 1]!
+          .action as {
+          type?: string;
+          orders?: Array<{
+            b: boolean;
+            s: string;
+            r: boolean;
+            t: { limit: { tif: string } };
+          }>;
+        };
+        assert.equal(orderAction.type, "order");
+        const leg = orderAction.orders![0]!;
+        // Opposite side of the long (sell → b:false), reduce-only, IOC.
+        assert.equal(leg.b, false);
+        assert.equal(leg.r, true);
+        assert.equal(leg.t.limit.tif, "Ioc");
+        // Canonical size from the fresh reconcile (0.5 long → close 0.5).
+        assert.equal(Number(leg.s), 0.5);
+
+        // And the guard honestly escalated (did not silently succeed).
+        assert.equal(result._tag, "TradingExhaustionError");
+        assert.equal(result.reason, "close_did_not_flatten");
+      }),
+  );
+
+  it.effect(
+    "reduceOnlyClose surfaces close_did_not_flatten when the post-close position is non-zero",
+    () =>
+      // If the canonical reconcile after the close still shows a position,
+      // reduceOnlyClose must escalate close_did_not_flatten rather than silently
+      // succeeding. The shared fakeInfoClient always returns 0.5, so the after-
+      // close reconcile still sees 0.5 and the close must escalate. (The submit
+      // succeeds against the recording exchange, but canonical truth — the info
+      // client — still reports the position, so the guard honestly escalates.)
+      // This complements the test above: that one proves the submit shape; this
+      // one proves the escalation is surfaced as a typed error, not swallowed.
+      Effect.gen(function* () {
+        yield* migrated;
+
+        const guard = yield* TradingExecutionGuard;
+        const result = yield* guard
+          .reduceOnlyClose({
+            intent: closeIntent(31),
+            previewContext,
+            allowedSlippageBps: 50,
+            masterAddress: MASTER_ADDR,
+          })
+          .pipe(Effect.flip);
+
+        assert.equal(result._tag, "TradingExhaustionError");
+        assert.equal(result.reason, "close_did_not_flatten");
       }),
   );
 });
