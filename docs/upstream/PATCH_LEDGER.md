@@ -227,12 +227,6 @@ The following were scoped out of this phase and are tracked for a future pass:
 - **Lifecycle rail, versioned plan card, armed card (web)** — Step 8 surfaces. The plan's Research/Plan/Armed/Entered/Managing/Closed vocabulary does not exist in `TradingMissionStatus` (10 statuses today); either a UI-side mapping or a contract change is needed. `MissionThreadPanel.tsx:44` has `pending = true` hardcoded.
 - **Mobile equivalents** — React Native versions of the above in `apps/mobile/src/features/threads/`; shared label/format helpers to move to `packages/client-runtime`.
 
-## Future entries
-
-Add a new `## PROMPT-NN · <phase name>` section per phase that touches
-upstream-owned files, so `SYNC_RUNBOOK.md` batches can be checked against
-this ledger for expected conflicts.
-
 ## PROMPT-04 · Trading execution and reconciliation
 
 Fork-owned additions (`packages/trading-contracts/src/execution.ts`,
@@ -251,5 +245,14 @@ on sync, so they are not listed. Only upstream-owned edits appear below.
 | 2026-08-01 | Server dependency       | `apps/server/package.json`                                                         | `@t3tools/hyperliquid` moved from `devDependencies` to `dependencies` (Signing/ExchangeClient/Reconciler are now runtime imports, not test-only).                                                                                                                                            |
 | 2026-08-01 | Migration registry      | `apps/server/src/persistence/Migrations.ts`                                        | Added the `Migration0038`/`Migration0039`/`Migration0040` imports and the `[38, "TradingExecution", …]`, `[39, "TradingExecutionColumns", …]`, `[40, "TradingExecutionStopAndMark", …]` entries for the six §18 execution tables, the additive execution columns, and the stop/mark columns. |
 | 2026-08-01 | Orchestration contracts | `packages/contracts/src/trading.ts`                                                | `OrchestrationTradingMission` gained three optional execution views (`inFlightExecution`, `recentFills`, `position`) for the Step 10 thread cards.                                                                                                                                           |
+| 2026-08-01 | Decider case            | `apps/server/src/orchestration/decider.ts`                                         | Added the `trading.execution.requested` case (~:1339) emitting `trading.execution-requested`. A named INTEGRATION_MAP high-conflict seam.                                                                                                                                                    |
+| 2026-08-01 | Orchestration events    | `packages/contracts/src/orchestration.ts`                                          | Added the `trading.execution-requested` event literal + union member + `TradingExecutionRequestedPayload`.                                                                                                                                                                                   |
+| 2026-08-01 | MCP trading tools       | `apps/server/src/mcp/toolkits/trading/{tools,handlers}.ts`                         | Added the `trading_request_entry` tool definition and handler that dispatches the execution command.                                                                                                                                                                                         |
 | 2026-08-01 | Integration harness     | `apps/server/integration/OrchestrationEngineHarness.integration.ts`                | Uses `TradingCoreLayerLive` (reactor-only) instead of the full `TradingLayerLive`; the harness exercises the engine, not trading execution.                                                                                                                                                  |
 | 2026-08-01 | CLI test scope          | `apps/server/src/bin.test.ts`                                                      | Stubs `TradingMissionReactor` so the project-CLI test doesn't pull in the full execution layer.                                                                                                                                                                                              |
+
+## Future entries
+
+Add a new `## PROMPT-NN · <phase name>` section per phase that touches
+upstream-owned files, so `SYNC_RUNBOOK.md` batches can be checked against
+this ledger for expected conflicts.
