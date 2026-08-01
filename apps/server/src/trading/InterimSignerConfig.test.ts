@@ -3,38 +3,61 @@ import { describe, expect, it } from "@effect/vitest";
 
 import { resolveInterimSignerFromEnv } from "./InterimSignerConfig.ts";
 
-const VALID_KEY = "0x4f3edf983ac636a65a842ce7c78d9aa706d3b113bfce4c2e6e2c2f3a3a3b3a3a";
-const VALID_ADDR = "0xAb1234567890aBc1234567890aBc1234567890aB";
+/**
+ * Canonical Ethereum test vector: private key = 32 bytes of 0x01 derives to
+ * 0x7e5f4552091a69125d5dfcb7b8c2659029395bdf. Used so the address-derivation
+ * inside the config is pinned without the owner's real key.
+ */
+const VALID_KEY = "0x0000000000000000000000000000000000000000000000000000000000000001";
+const DERIVED_ADDR = "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf";
 
 describe("resolveInterimSignerFromEnv", () => {
-  it.effect("returns none when neither env var is set (fail-closed gate)", () =>
+  it.effect("returns none when the key env var is unset (fail-closed gate)", () =>
     Effect.gen(function* () {
       const none = yield* resolveInterimSignerFromEnv({});
-      const keyOnly = yield* resolveInterimSignerFromEnv({
-        T3_TRADES_INTERIM_SIGNER_KEY: VALID_KEY,
-      });
       const addrOnly = yield* resolveInterimSignerFromEnv({
-        T3_TRADES_INTERIM_SIGNER_ADDRESS: VALID_ADDR,
+        T3_TRADES_INTERIM_SIGNER_ADDRESS: DERIVED_ADDR,
       });
       expect(none).toEqual(Option.none());
-      expect(keyOnly).toEqual(Option.none());
       expect(addrOnly).toEqual(Option.none());
     }),
   );
 
-  it.effect("loads the signer when both env vars are present and well-formed", () =>
+  it.effect("derives the address from the key alone", () =>
     Effect.gen(function* () {
       const result = yield* resolveInterimSignerFromEnv({
         T3_TRADES_INTERIM_SIGNER_KEY: VALID_KEY,
-        T3_TRADES_INTERIM_SIGNER_ADDRESS: VALID_ADDR,
+      });
+      expect(Option.isSome(result)).toBe(true);
+      if (Option.isSome(result)) {
+        expect(result.value.address).toBe(DERIVED_ADDR);
+        expect(result.value.privateKeyBytes).toBeInstanceOf(Uint8Array);
+        expect(result.value.privateKeyBytes.length).toBe(32);
+      }
+    }),
+  );
+
+  it.effect("accepts an explicit address that matches the derived one", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveInterimSignerFromEnv({
+        T3_TRADES_INTERIM_SIGNER_KEY: VALID_KEY,
+        T3_TRADES_INTERIM_SIGNER_ADDRESS: "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf",
       });
       expect(Option.isSome(result)).toBe(true);
       if (Option.isSome(result)) {
         // Address is lowercased for consistent comparison.
-        expect(result.value.address).toBe(VALID_ADDR.toLowerCase());
-        expect(result.value.privateKeyBytes).toBeInstanceOf(Uint8Array);
-        expect(result.value.privateKeyBytes.length).toBe(32);
+        expect(result.value.address).toBe(DERIVED_ADDR);
       }
+    }),
+  );
+
+  it.effect("rejects an explicit address that does not match the key", () =>
+    Effect.gen(function* () {
+      const error = yield* resolveInterimSignerFromEnv({
+        T3_TRADES_INTERIM_SIGNER_KEY: VALID_KEY,
+        T3_TRADES_INTERIM_SIGNER_ADDRESS: "0x1111111111111111111111111111111111111111",
+      }).pipe(Effect.flip);
+      expect(error.reason).toBe("address_mismatch");
     }),
   );
 
@@ -42,19 +65,8 @@ describe("resolveInterimSignerFromEnv", () => {
     Effect.gen(function* () {
       const error = yield* resolveInterimSignerFromEnv({
         T3_TRADES_INTERIM_SIGNER_KEY: "0xnotakey",
-        T3_TRADES_INTERIM_SIGNER_ADDRESS: VALID_ADDR,
       }).pipe(Effect.flip);
       expect(error.reason).toBe("invalid_private_key");
-    }),
-  );
-
-  it.effect("rejects a malformed address", () =>
-    Effect.gen(function* () {
-      const error = yield* resolveInterimSignerFromEnv({
-        T3_TRADES_INTERIM_SIGNER_KEY: VALID_KEY,
-        T3_TRADES_INTERIM_SIGNER_ADDRESS: "0xdeadbeef",
-      }).pipe(Effect.flip);
-      expect(error.reason).toBe("invalid_address");
     }),
   );
 });
