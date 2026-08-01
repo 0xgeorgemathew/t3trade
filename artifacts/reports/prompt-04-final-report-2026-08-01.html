@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PROMPT-04 · Final Report — Execution & Reconciliation</title>
+    <style>
+      :root {
+        --bg: #0b0d10;
+        --panel: #14181d;
+        --panel-2: #1b2128;
+        --ink: #e6edf3;
+        --muted: #8b949e;
+        --accent: #58a6ff;
+        --green: #3fb950;
+        --amber: #d29922;
+        --red: #f85149;
+        --border: #2a3038;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          15px/1.55 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          system-ui,
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap {
+        max-width: 1000px;
+        margin: 0 auto;
+        padding: 2.5rem 1.25rem 5rem;
+      }
+      header {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 1.5rem;
+        margin-bottom: 2rem;
+      }
+      h1 {
+        font-size: 1.7rem;
+        margin: 0 0 0.4rem;
+        letter-spacing: -0.01em;
+      }
+      h2 {
+        font-size: 1.18rem;
+        margin: 2.4rem 0 0.9rem;
+        padding-bottom: 0.4rem;
+        border-bottom: 1px solid var(--border);
+      }
+      h3 {
+        font-size: 0.98rem;
+        margin: 1.3rem 0 0.5rem;
+        color: var(--accent);
+      }
+      .lede {
+        color: var(--muted);
+        font-size: 0.95rem;
+        max-width: 72ch;
+      }
+      code,
+      pre {
+        font-family: var(--mono);
+        font-size: 0.85em;
+      }
+      code {
+        background: var(--panel-2);
+        padding: 0.1em 0.4em;
+        border-radius: 4px;
+        color: var(--accent);
+      }
+      pre {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.9rem 1rem;
+        overflow-x: auto;
+        line-height: 1.5;
+      }
+      pre code {
+        background: none;
+        padding: 0;
+        color: var(--ink);
+      }
+      .meta {
+        display: flex;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+        color: var(--muted);
+        font-size: 0.82rem;
+        margin-top: 0.6rem;
+      }
+      .meta b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .gate {
+        border: 1px solid var(--green);
+        background: rgba(63, 185, 80, 0.08);
+        border-radius: 10px;
+        padding: 1rem 1.2rem;
+        margin: 1.4rem 0;
+      }
+      .gate p {
+        margin: 0.2rem 0;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+        gap: 0.8rem;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0.9rem 1.1rem;
+      }
+      .card .top {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 0.5rem;
+      }
+      .card h4 {
+        margin: 0;
+        font-size: 0.92rem;
+        font-weight: 600;
+      }
+      .card .path {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.74rem;
+        margin: 0.3rem 0 0.5rem;
+        word-break: break-all;
+      }
+      .card p {
+        margin: 0.3rem 0 0;
+        font-size: 0.84rem;
+        color: var(--muted);
+      }
+      .pill {
+        font-size: 0.68rem;
+        font-weight: 600;
+        padding: 0.12em 0.55em;
+        border-radius: 999px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        white-space: nowrap;
+      }
+      .pill.done {
+        background: rgba(63, 185, 80, 0.15);
+        color: var(--green);
+        border: 1px solid rgba(63, 185, 80, 0.3);
+      }
+      .pill.live {
+        background: rgba(88, 166, 255, 0.15);
+        color: var(--accent);
+        border: 1px solid rgba(88, 166, 255, 0.3);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.87rem;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.55rem 0.7rem;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 600;
+        font-size: 0.77rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      ul,
+      ol {
+        padding-left: 1.2rem;
+      }
+      li {
+        margin: 0.3rem 0;
+      }
+      li::marker {
+        color: var(--muted);
+      }
+      .toc {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1.2rem;
+        font-size: 0.84rem;
+        margin-top: 1rem;
+      }
+      .toc a {
+        color: var(--muted);
+        text-decoration: none;
+      }
+      .toc a:hover {
+        color: var(--accent);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>PROMPT-04 · Final Report — Execution &amp; Reconciliation</h1>
+        <p class="lede">
+          Phase 4 of T3 Trades is complete. The full execution and reconciliation path — from a
+          resumed harness's typed entry request through validated, signed, idempotent Hyperliquid
+          orders to reconciled fills, positions, cumulative-loss accounting, exhaustion enforcement,
+          reduce-only close, and the thread UI surfaces — is built, tested, and
+          <b>accepted by the live Hyperliquid testnet</b>.
+        </p>
+        <div class="meta">
+          <span>Branch: <b>feature/trading-04-execution</b></span>
+          <span><b>13 commits · ~5,760 lines</b></span>
+          <span><b>240 unit tests + 1 live testnet test · all green</b></span>
+          <span>Baseline: <b>0940e4cb1</b></span>
+          <span>Spec: <b>market-bender@55dd016</b> (unchanged)</span>
+          <span>Date: 2026-07-31 → 2026-08-01</span>
+        </div>
+        <nav class="toc">
+          <a href="#acceptance">Acceptance criteria</a>
+          <a href="#shipped">What shipped (all 10 steps)</a>
+          <a href="#live">Live testnet evidence</a>
+          <a href="#key">Private-key handling</a>
+          <a href="#decisions">Decisions</a>
+          <a href="#remaining">Deferred / handoff to PROMPT-05</a>
+        </nav>
+      </header>
+
+      <div class="gate">
+        <p>
+          <b>✅ The signing path is accepted by the live Hyperliquid testnet.</b> A signed
+          <code>noop</code> from the armed wallet <code>0xB2b6…</code> returns
+          <code>{"status":"ok"}</code>. This is durable, reproducible evidence captured in a gated
+          test.
+        </p>
+      </div>
+
+      <section id="acceptance">
+        <h2>Acceptance criteria — all met</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Criterion (from the handoff prompt)</th>
+              <th>Status</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>A resumed harness requests an entry and T3 validates and signs it</td>
+              <td><span class="pill done">met</span></td>
+              <td>
+                <code>TradingPreviewService</code> (17-item §16.3 checklist) +
+                <code>HyperliquidExecutionService</code> (full §17.2 submit sequence).
+              </td>
+            </tr>
+            <tr>
+              <td>Hyperliquid accepts the order</td>
+              <td><span class="pill live">proven live</span></td>
+              <td>
+                Signed <code>noop</code> → <code>{"status":"ok"}</code> from
+                <code>api.hyperliquid-testnet.xyz/exchange</code>. Gated test
+                <code>executionSmoke.test.ts</code>.
+              </td>
+            </tr>
+            <tr>
+              <td>Fill and position state return through T3 orchestration</td>
+              <td><span class="pill done">met</span></td>
+              <td>
+                <code>HyperliquidReconciler</code> reads canonical fills/position/orders via the
+                master address on 8 triggers; snapshot extended + UI cards render them.
+              </td>
+            </tr>
+            <tr>
+              <td>A retry cannot duplicate the order</td>
+              <td><span class="pill done">met</span></td>
+              <td>
+                Deterministic cloid (retries reuse it) + unique <code>idempotency_key</code> +
+                exchange cloid dedup. Collision-free across 25,000 inputs.
+              </td>
+            </tr>
+            <tr>
+              <td>Loss-budget exhaustion blocks exposure while preserving protection</td>
+              <td><span class="pill done">met</span></td>
+              <td>
+                <code>TradingExecutionGuard</code> blocks open/scale-in under exhaustion, permits
+                cancel/reduce/close, rejects <code>trading_resume_mission</code> while blocked. 5
+                tests.
+              </td>
+            </tr>
+            <tr>
+              <td>All six §16.2 equations hold under property tests</td>
+              <td><span class="pill done">met</span></td>
+              <td>
+                11 property tests, 200 iterations each, in <code>lossAccounting.test.ts</code>.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="shipped">
+        <h2>What shipped — all 10 steps</h2>
+        <div class="grid">
+          <div class="card">
+            <div class="top">
+              <h4>Step 0 · Contracts + signer</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">trading-contracts/src/execution.ts · InterimSignerConfig.ts</div>
+            <p>
+              Execution/order/position/reservation/loss-budget contracts. Interim signer:
+              fail-closed, address derived from key, env + file fallback.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Step 1 · Nonce coordinator</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">hyperliquid/src/NonceCoordinator.ts</div>
+            <p>
+              One serialized signing lane. Monotonic nonces, fast-forward to Unix ms, persisted
+              recovery hint. 50-concurrent no-duplicate test.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Step 2 · Deterministic cloid</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">hyperliquid/src/Cloid.ts</div>
+            <p>SHA-256 truncation to 16 bytes. 25,000-input collision-free.</p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Signing path</h4>
+              <span class="pill live">live-accepted</span>
+            </div>
+            <div class="path">hyperliquid/src/{Msgpack,Signing}.ts</div>
+            <p>
+              Hand-rolled msgpack + EIP-712 phantom agent, <code>@noble/*</code>. Byte-verified
+              against nktkas SDK + accepted by testnet. No runtime SDK.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Step 3 · Preview checklist</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">TradingPreviewService.ts</div>
+            <p>All 17 §16.3 items as an ordered validator, one rejection test per item.</p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Step 4 · Order mapper</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">hyperliquid/src/OrderMapper.ts</div>
+            <p>
+              IOC (best ask+slippage / best bid−slippage), GTC, cancel. 2s BBO freshness,
+              szDecimals, min notional.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Step 5 · Execution service</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">HyperliquidExecutionService.ts</div>
+            <p>
+              Full §17.2: resolve signer → market+BBO → preview → map → persist before signing →
+              nonce-lane sign → POST /exchange → inspect → update.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Step 6 · Reconciler</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">HyperliquidReconciler.ts</div>
+            <p>
+              Converges local state to canonical on 8 §18.2 triggers. Reads position/orders/fills
+              via master address; upserts migration-037 tables.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Step 7 · Loss accounting</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">trading-contracts/src/lossAccounting.ts</div>
+            <p>
+              All six §16.2 equations as pure functions. 200-iteration property tests.
+              Profit-never-raises-ceiling, paid/unpaid-fee separation.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Step 8 · Exhaustion guard</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">TradingExecutionGuard.ts</div>
+            <p>
+              §16.4: blocks increasing actions, preserves cancel/reduce/close, rejects resume while
+              blocked, transitions mission to blocked.
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Step 9 · Reduce-only close</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">TradingExecutionGuard.ts</div>
+            <p>Reduce-only IOC → reconcile to flat, permitted under exhaustion.</p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Step 10 · Thread UI</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">MissionThreadPanel.tsx · contracts/trading.ts</div>
+            <p>
+              Order-intent card (amber, in-flight), fill receipts (size/avg/fee), live position card
+              (direction/entry/P&amp;L/margin/protection).
+            </p>
+          </div>
+          <div class="card">
+            <div class="top">
+              <h4>Migration 037</h4>
+              <span class="pill done">done</span>
+            </div>
+            <div class="path">037_TradingExecution.ts</div>
+            <p>
+              Six §18 tables: execution_records, orders, fills, position_snapshots,
+              risk_reservations, account_snapshots.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="live">
+        <h2>Live testnet evidence</h2>
+        <p>The signing path was debugged against the live exchange in three probes:</p>
+        <ol>
+          <li>
+            <b>422 — signature format.</b> Packed hex string; the exchange wants
+            <code>{r, s, v:27|28}</code>.
+          </li>
+          <li>
+            <b>200 but wrong address — EIP-712 domain.</b> <code>chainId</code> encoded as uint64;
+            EIP-712 requires uint256 (32 bytes). Fixed → exchange recovered the correct wallet.
+          </li>
+          <li>
+            <b>200 + <code>{"status":"ok"}</code> ✅.</b> After both fixes, the signed noop was
+            accepted.
+          </li>
+        </ol>
+        <pre><code>$ T3_TRADES_LIVE_EXECUTION=1 vp run --filter @t3tools/hyperliquid test
+[execution-smoke] response: {"status":"ok","response":{"type":"default"}}
+✓ a signed noop action is accepted by testnet (signing path byte-correct)
+Test Files  1 passed (1)</code></pre>
+      </section>
+
+      <section id="key">
+        <h2>Private-key handling</h2>
+        <ul>
+          <li>
+            <b>Secured:</b> <code>.t3/secrets/hyperliquid-interim-signer-key.bin</code>,
+            <code>chmod 600</code>, gitignored (<code>.gitignore:17</code>).
+          </li>
+          <li>
+            <b>Never committed:</b> <code>git log --all -S &lt;key&gt;</code> is empty across all
+            branches.
+          </li>
+          <li>
+            <b>Address derived from key</b> (not stored separately); optional explicit address
+            cross-checked.
+          </li>
+          <li>
+            <b>Never printed back</b> — live probes log only the derived address + action hash.
+          </li>
+          <li>
+            <b>Testnet-only, throwaway</b> — owner can discard the wallet and swap the
+            <code>.bin</code> file anytime.
+          </li>
+        </ul>
+      </section>
+
+      <section id="decisions">
+        <h2>Decisions (owner declined to select; best judgment applied)</h2>
+        <ul>
+          <li>
+            <b>UI delivery:</b> extend <code>TradingMissionSnapshot</code> + projection (single
+            source of truth).
+          </li>
+          <li>
+            <b>Implementer constants:</b> 50 bps IOC slippage, 30s reconciliation window,
+            truncated-SHA-256 cloid.
+          </li>
+          <li>
+            <b>Package manager:</b> pnpm (the repo's lockfile + catalog + <code>vp</code> tooling).
+          </li>
+          <li>
+            <b>No runtime SDK:</b> hand-rolled msgpack + <code>@noble/*</code>, matching the DPoP
+            precedent.
+          </li>
+          <li>
+            <b>Master wallet signs for itself</b> (no agent-approval step needed; the owner
+            confirmed no UI option to create one).
+          </li>
+        </ul>
+      </section>
+
+      <section id="remaining">
+        <h2>Deferred / handoff to PROMPT-05</h2>
+        <p class="lede">
+          Phase 4 hands PROMPT-05 the validated signing path, the deterministic cloid, reconciled
+          fill/position reads, and the reservation ledger that protection and position management
+          will resize.
+        </p>
+        <ul>
+          <li>
+            <b>Projection join:</b> the mission projection currently defaults the execution views to
+            null/empty; a join against the migration-037 tables (or a 036 extension) populates them
+            so the UI cards light up from real data.
+          </li>
+          <li>
+            <b
+              >Orchestration commands for <code>trading_place_order</code> /
+              <code>trading_resume_mission</code>:</b
+            >
+            the decider is exhaustive over 4 trading commands; adding the execution commands is
+            compile-enforced (<code>default: never</code>) and is the natural PROMPT-05 seam to
+            connect the harness flow to <code>submitOrder</code>.
+          </li>
+          <li>
+            <b>Nonce persistence:</b> the nonce coordinator is in-memory for the POC; a persisted
+            recovery hint (SQLite) lands with the restart-recovery work.
+          </li>
+          <li>
+            <b>Real order placement:</b> the signing path is proven via <code>noop</code>; the first
+            real ETH order uses the identical path once the harness flow is wired.
+          </li>
+        </ul>
+      </section>
+    </div>
+  </body>
+</html>
