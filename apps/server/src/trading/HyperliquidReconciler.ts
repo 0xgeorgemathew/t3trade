@@ -206,9 +206,16 @@ function readCanonicalFills(
     return wireFills
       .filter((f) => f.coin === input.market)
       .map(
-        (f) =>
+        (f, idx) =>
           ({
-            fillId: f.hash ?? f.cloid ?? `${f.oid}-${f.time}`,
+            // Fill identity: prefer the exchange hash; fall back to a composite
+            // cloid-time-idx rather than bare cloid. Two partial fills of the
+            // same order share a cloid but are distinct fill events — a bare
+            // cloid would collide on fill_id and the idempotent upsert would
+            // silently drop one. `hash` is optional on the wire fill, so the
+            // composite must carry the timestamp (and a positional idx as a
+            // tiebreaker for same-ms partials).
+            fillId: f.hash ?? `${f.cloid ?? f.oid}-${f.time}-${idx}`,
             missionId: input.missionId,
             cloid: f.cloid,
             orderId: f.oid,

@@ -89,6 +89,28 @@ describe("openPositionRisk (§16.2 eq 3)", () => {
       expect(result).toBeGreaterThanOrEqual(0);
     }
   });
+
+  it("documents the missing-stop hazard: an undefined stop floors to 0 (caller must supply it)", () => {
+    // The contract uses `stopPrice ?? 0`. A long with no stop therefore computes
+    // stopDistance = entry - 0 = the full notional, which would exhaust the
+    // budget instantly. This is BY DESIGN — the caller (TradingBudgetReader,
+    // Task 2) is responsible for threading the real stop or leaving the position
+    // out. This test pins the behavior so a future "fix" does not silently
+    // change the contract's missing-stop semantics.
+    const rng = makeRng(11);
+    const longNoStop = pos(rng, {
+      direction: "long",
+      weightedEntryPrice: 3_000,
+      stopPrice: undefined,
+    });
+    const stopDistance = (longNoStop.weightedEntryPrice ?? 0) - 0;
+    expect(openPositionRisk(longNoStop)).toBeCloseTo(
+      stopDistance * longNoStop.size +
+        longNoStop.estimatedExitFeeUsd +
+        longNoStop.stopSlippageReserveUsd,
+      6,
+    );
+  });
 });
 
 describe("pendingEntryRisk (§16.2 eq 4)", () => {
@@ -193,6 +215,21 @@ describe("evaluateLossBudget (§16.2 eqs 1, 2, 5, 6)", () => {
     const expectedPending = pendings.reduce((s, e) => s + pendingEntryRisk(e), 0);
     expect(b.openPositionRiskUsd).toBeCloseTo(expectedOpen, 6);
     expect(b.pendingEntryRiskUsd).toBeCloseTo(expectedPending, 6);
+  });
+
+  it("paid fees do not double-count into open/pending risk (§16.2 invariance)", () => {
+    // allPaidTradingFeesUsd flows only into Eq 1 (realised result). It must NOT
+    // reappear in openPositionRiskUsd or pendingEntryRiskUsd — those carry
+    // their own unpaid-fee estimates. Varying paid fees leaves them unchanged.
+    const rng = makeRng(8);
+    const base = budget(rng);
+    const lowFees = evaluateLossBudget({ ...base, allPaidTradingFeesUsd: 0 });
+    const highFees = evaluateLossBudget({
+      ...base,
+      allPaidTradingFeesUsd: base.allPaidTradingFeesUsd + 1_000,
+    });
+    expect(highFees.openPositionRiskUsd).toBeCloseTo(lowFees.openPositionRiskUsd, 6);
+    expect(highFees.pendingEntryRiskUsd).toBeCloseTo(lowFees.pendingEntryRiskUsd, 6);
   });
 });
 
