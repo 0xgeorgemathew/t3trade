@@ -7,8 +7,18 @@
  * identical cloids; different inputs must not collide.
  *
  * Algorithm (owner-approved): SHA-256 over the concatenated inputs, taking
- * the first 16 bytes, hex-encoded as a bare 32-character lowercase string
- * (no `0x` prefix, matching the Hyperliquid wire convention for `cloid`).
+ * the first 16 bytes, hex-encoded as a `0x`-prefixed 34-character lowercase
+ * string — the Hyperliquid wire convention for `cloid` (16 bytes / 128 bits,
+ * `0x` + 32 hex chars, validated by the exchange as `len(cloid[2:]) == 32`).
+ *
+ * Format note (Task 4 finding): a prior version returned a bare 32-char hex
+ * string with no `0x` prefix. The live Gate E entry (oid 57307761690) was
+ * accepted, but reading it back showed the exchange stored `"cloid": null` —
+ * the bare form was silently dropped, so retry-deduplication rested entirely
+ * on local idempotency-key convergence, never on exchange-side cloid match.
+ * The `0x` prefix is now applied at this single boundary so one
+ * representation flows everywhere: the wire order, the DB column, the
+ * reconciler's join, and the UI slice.
  *
  * @module HyperliquidCloid
  */
@@ -46,8 +56,8 @@ function appendText(out: number[], text: string): void {
 }
 
 /**
- * Derive a deterministic 16-byte cloid, returned as a bare 32-char lowercase
- * hex string (the Hyperliquid wire shape).
+ * Derive a deterministic 16-byte cloid, returned as a `0x`-prefixed
+ * 34-char lowercase hex string (the Hyperliquid wire shape).
  */
 export function deriveCloid(input: CloidInput): string {
   const acc: number[] = [];
@@ -62,5 +72,6 @@ export function deriveCloid(input: CloidInput): string {
   const bytes = new Uint8Array(acc);
   const full = sha256(bytes);
   // First 16 bytes (128 bits) — collision resistance matches the cloid width.
-  return bytesToHex(full.subarray(0, 16));
+  // `0x`-prefix so the exchange records it rather than silently dropping it.
+  return `0x${bytesToHex(full.subarray(0, 16))}`;
 }

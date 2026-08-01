@@ -13,15 +13,17 @@ describe("deriveCloid", () => {
     expect(deriveCloid(input)).toBe(deriveCloid(input));
   });
 
-  it("returns a bare 32-char lowercase hex string", () => {
+  it("returns a 0x-prefixed 34-char lowercase hex string (the Hyperliquid wire shape)", () => {
     const cloid = deriveCloid({
       missionId: "mission_1",
       strategyVersion: 1,
       executionSequence: 0,
       actionType: "open",
     });
-    expect(cloid).toMatch(/^[0-9a-f]{32}$/);
-    expect(cloid.startsWith("0x")).toBe(false);
+    // 0x + 32 hex chars (16 bytes / 128 bits). The exchange validates this
+    // shape; a bare 32-char hex is silently dropped (Task 4 finding).
+    expect(cloid).toMatch(/^0x[0-9a-f]{32}$/);
+    expect(cloid.length).toBe(34);
   });
 
   it("changes when any input changes", () => {

@@ -133,7 +133,7 @@ describe("mapOrder", () => {
         nowMs: 1_000,
       });
       expect(a.cloid).toBe(b.cloid);
-      expect(a.cloid).toMatch(/^[0-9a-f]{32}$/);
+      expect(a.cloid).toMatch(/^0x[0-9a-f]{32}$/);
     }),
   );
 });
@@ -163,13 +163,13 @@ describe("buildOrderAction / buildCancelByCloidAction", () => {
     // The cancel action mirrors the order action's shape: a discriminating
     // top-level `type` and legs keyed by the numeric asset index, not the coin
     // symbol. Key order is hash-critical, so assert the full sequence exactly.
-    const action = buildCancelByCloidAction(2, "deadbeefdeadbeefdeadbeefdeadbeef");
+    const action = buildCancelByCloidAction(2, "0xdeadbeefdeadbeefdeadbeefdeadbeef");
     expect(Object.keys(action)).toEqual(["type", "cancels"]);
     expect(action.type).toBe("cancelByCloid");
     const cancel = (action.cancels as unknown[])[0] as Record<string, unknown>;
     expect(Object.keys(cancel)).toEqual(["asset", "cloid"]);
     expect(cancel.asset).toBe(2);
     expect(cancel.coin).toBeUndefined();
-    expect(cancel.cloid).toBe("deadbeefdeadbeefdeadbeefdeadbeef");
+    expect(cancel.cloid).toBe("0xdeadbeefdeadbeefdeadbeefdeadbeef");
   });
 });
