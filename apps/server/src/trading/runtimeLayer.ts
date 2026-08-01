@@ -2,8 +2,8 @@
  * The trading services the server runtime provides.
  *
  * The SQL-backed services sit on the migration-035/-036/-037 tables; the
- * hyperliquid transport (Info + Exchange HTTP clients, market resolver, read
- * gateway, nonce coordinator) sits on the server's `HttpClient`.
+ * Hyperliquid transport and execution services are composed here so callers
+ * receive a complete trading runtime.
  *
  * @module TradingRuntimeLayer
  */
@@ -17,31 +17,22 @@ import {
   HyperliquidInfoClientLive,
   HyperliquidMarketResolverLive,
   HyperliquidNonceCoordinatorLive,
+  HyperliquidWebSocketClientLive,
 } from "@t3tools/hyperliquid";
 import { HyperliquidExecutionServiceLive } from "./HyperliquidExecutionService.ts";
 import { HyperliquidReconcilerLive } from "./HyperliquidReconciler.ts";
+import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingExecutionGuardLive } from "./TradingExecutionGuard.ts";
 import { InterimSignerConfigLive } from "./InterimSignerConfig.ts";
 import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingPreviewServiceLive } from "./TradingPreviewService.ts";
 import { TradingStrategyServiceLive } from "./TradingStrategyService.ts";
+import { TradingTurnCoordinatorLive } from "./TradingTurnCoordinator.ts";
+import { TradingWakeupComposerLive } from "./TradingWakeupComposer.ts";
+import { TradingWatchServiceLive } from "./TradingWatchService.ts";
 
-/**
- * The Hyperliquid read path, composed bottom-up so each service's build-time
- * dependency is provided at the right level:
- *
- *  1. `FetchHttpClient.layer` → provides `HttpClient.HttpClient`.
- *  2. `HyperliquidInfoClientLive` → yields HttpClient at build; provided (1).
- *  3. `HyperliquidMarketResolverLive` → yields InfoClient at build; provided (2).
- *  4. `HyperliquidGatewayLive` → yields InfoClient + Resolver at build; provided (2)+(3).
- *
- * Only `HyperliquidGateway` surfaces from this layer.
- */
-// FetchHttpClient needs NodeServices; bake it in so the trading layer is
-// self-contained and doesn't leak HttpClient requirements to consumers.
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
-
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
 const resolverWithInfo = HyperliquidMarketResolverLive.pipe(Layer.provide(infoWithHttp));
 
@@ -49,33 +40,38 @@ export const HyperliquidReadLayerLive = HyperliquidGatewayLive.pipe(
   Layer.provide(Layer.mergeAll(infoWithHttp, resolverWithInfo)),
 );
 
+export const HyperliquidWsLayerLive = HyperliquidWebSocketClientLive;
+
 /**
- * The Hyperliquid write path. The exchange client shares the same HttpClient
- * as the read path; the nonce coordinator is a single serialized lane per
- * wallet (in-memory for the POC; a persisted recovery hint lands with the
- * restart-recovery work).
+ * Mission services that do not require the exchange write path. This layer is
+ * kept for the reactor's narrow unit tests.
  */
+export const TradingCoreLayerLive = Layer.mergeAll(
+  TradingMissionProjectionLive,
+  HyperliquidReadLayerLive,
+  TradingMissionServiceLive,
+  TradingStrategyServiceLive,
+);
+
+const composerWithDeps = TradingWakeupComposerLive.pipe(
+  Layer.provide(HyperliquidReadLayerLive),
+  Layer.provideMerge(TradingMissionServiceLive),
+  Layer.provideMerge(TradingWatchServiceLive),
+);
+
+const coordinatorWithDeps = TradingTurnCoordinatorLive.pipe(
+  Layer.provideMerge(TradingMissionServiceLive),
+  Layer.provideMerge(TradingStrategyServiceLive),
+  Layer.provideMerge(TradingEventInboxLive),
+  Layer.provideMerge(composerWithDeps),
+);
+
 const exchangeWithHttp = HyperliquidExchangeClientLive.pipe(Layer.provide(httpWithNode));
 
 /**
- * The core trading layer: mission/strategy/projection + the read path. This
- * is what the mission reactor and its tests need — it does not pull in the
- * exchange write path or the execution services, so a test exercising only
- * mission orchestration is not forced to provide an HttpClient for signing.
- */
-export const TradingCoreLayerLive = Layer.mergeAll(
-  TradingMissionServiceLive,
-  TradingStrategyServiceLive,
-  TradingMissionProjectionLive,
-  HyperliquidReadLayerLive,
-);
-
-/**
- * The full trading layer. The foundational services (core + signer + the
- * exchange write path) are merged first; the preview + execution services
- * are then provided-merge'd on top because they depend on those foundations.
- * This ordering satisfies the layer-dependency constraint that `Layer.mergeAll`
- * (parallel) would otherwise violate.
+ * The full trading layer. A1 will correct the consumer/foundation direction
+ * of the final composition; keeping the stages explicit makes that boundary
+ * visible and preserves both the wakeup and execution services after merge.
  */
 const TradingFoundation = Layer.mergeAll(
   TradingCoreLayerLive,
@@ -84,9 +80,19 @@ const TradingFoundation = Layer.mergeAll(
   HyperliquidNonceCoordinatorLive(),
 );
 
-export const TradingLayerLive = TradingFoundation.pipe(
+const TradingExecutionLayerLive = TradingFoundation.pipe(
   Layer.provideMerge(TradingPreviewServiceLive),
   Layer.provideMerge(HyperliquidExecutionServiceLive),
   Layer.provideMerge(HyperliquidReconcilerLive),
   Layer.provideMerge(TradingExecutionGuardLive),
+);
+
+export const TradingLayerLive = Layer.mergeAll(
+  TradingMissionServiceLive,
+  TradingStrategyServiceLive,
+  TradingWatchServiceLive,
+  TradingEventInboxLive,
+  coordinatorWithDeps,
+  TradingExecutionLayerLive,
+  HyperliquidWsLayerLive,
 );

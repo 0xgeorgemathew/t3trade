@@ -30,16 +30,18 @@ import { OrchestrationEventStoreLive } from "../persistence/Layers/Orchestration
 import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers/OrchestrationCommandReceipts.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import type { HarnessRunRequest } from "./Schemas.ts";
 import { TradingMissionProjection } from "./TradingMissionProjection.ts";
 import { TradingMissionReactor, TradingMissionReactorLive } from "./TradingMissionReactor.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
-import { TradingCoreLayerLive } from "./runtimeLayer.ts";
+import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
+import { TradingLayerLive } from "./runtimeLayer.ts";
 
 const THREAD_ID = ThreadId.make("thread-trading-reactor");
 const MISSION_ID = TradingMissionId.make("mission-trading-reactor");
 
 const TestLayer = TradingMissionReactorLive.pipe(
-  Layer.provideMerge(TradingCoreLayerLive),
+  Layer.provideMerge(TradingLayerLive),
   Layer.provideMerge(OrchestrationEngineLive),
   Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
   Layer.provideMerge(OrchestrationProjectionPipelineLive),
@@ -217,3 +219,66 @@ it.layer(TestLayer)("trading mission reactor", (it) => {
     }),
   );
 });
+
+/**
+ * The wake loop seam: a `trading.mission-watch-fired` domain event must reach
+ * `TradingTurnCoordinator.requestRun` with the watch as the triggering cause.
+ * Uses a recording stub coordinator so the test observes exactly what the
+ * reactor asked for without driving a real provider turn.
+ */
+it.live("asks the coordinator for a run when a watch fires", () =>
+  Effect.gen(function* () {
+    const calls: Array<HarnessRunRequest> = [];
+    const stubCoordinator = Layer.succeed(TradingTurnCoordinator, {
+      requestRun: (input) =>
+        Effect.sync(() => {
+          calls.push(input);
+          return { status: "started", harnessRunId: `run_${calls.length}` } as const;
+        }),
+    });
+
+    const StubbedLayer = TradingMissionReactorLive.pipe(
+      Layer.provide(stubCoordinator),
+      Layer.provideMerge(TradingLayerLive),
+      Layer.provideMerge(OrchestrationEngineLive),
+      Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+      Layer.provideMerge(OrchestrationProjectionPipelineLive),
+      Layer.provideMerge(OrchestrationEventStoreLive),
+      Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+      Layer.provideMerge(RepositoryIdentityResolver.layer),
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-watchfired-" }),
+      ),
+      Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    yield* Effect.gen(function* () {
+      yield* started;
+      yield* createMission;
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0]?.cause, "mission_created");
+
+      const engine = yield* OrchestrationEngineService;
+      yield* engine.dispatch({
+        type: "trading.mission.watch-fired",
+        commandId: yield* commandId,
+        threadId: THREAD_ID,
+        missionId: MISSION_ID,
+        watchId: "watch_1",
+        deduplicationKey: "candle_close:watch_1:1000",
+        createdAt: NOW,
+      });
+      yield* settle;
+
+      // The retry loop is forked; poll briefly for the recorded request.
+      for (let attempt = 0; attempt < 300 && calls.length < 2; attempt++) {
+        yield* Effect.sleep("10 millis");
+      }
+      assert.equal(calls.length, 2, "the fired watch must request a run");
+      assert.equal(calls[1]?.cause, "market_watch_triggered");
+      assert.equal(calls[1]?.triggeringWatchId, "watch_1");
+      assert.equal(calls[1]?.missionId, MISSION_ID);
+    }).pipe(Effect.scoped, Effect.provide(StubbedLayer));
+  }),
+);

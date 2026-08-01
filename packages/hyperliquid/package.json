@@ -63,6 +63,10 @@
     "./ExchangeClient": {
       "types": "./src/ExchangeClient.ts",
       "import": "./src/ExchangeClient.ts"
+    },
+    "./InfoClientTest": {
+      "types": "./src/InfoClientTest.ts",
+      "import": "./src/InfoClientTest.ts"
     }
   },
   "scripts": {

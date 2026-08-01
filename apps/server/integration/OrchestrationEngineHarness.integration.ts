@@ -53,7 +53,8 @@ import { OrchestrationProjectionSnapshotQueryLive } from "../src/orchestration/L
 import { RuntimeReceiptBusTest } from "../src/orchestration/Layers/RuntimeReceiptBus.ts";
 import { OrchestrationReactorLive } from "../src/orchestration/Layers/OrchestrationReactor.ts";
 import { TradingMissionReactor } from "../src/trading/TradingMissionReactor.ts";
-import { TradingCoreLayerLive } from "../src/trading/runtimeLayer.ts";
+import { WatchEvaluator } from "../src/trading/WatchEvaluator.ts";
+import { TradingLayerLive } from "../src/trading/runtimeLayer.ts";
 import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
 import {
@@ -377,6 +378,14 @@ export const makeOrchestrationIntegrationHarness = (
         }),
       ),
       Layer.provideMerge(
+        Layer.succeed(WatchEvaluator, {
+          start: () => Effect.void,
+          drain: Effect.void,
+          evaluateDelivery: () => Effect.void,
+          sweep: Effect.void,
+        }),
+      ),
+      Layer.provideMerge(
         Layer.succeed(AgentAwarenessRelay.AgentAwarenessRelay, {
           publishThread: () => Effect.void,
           start: () => Effect.void,
@@ -386,7 +395,17 @@ export const makeOrchestrationIntegrationHarness = (
     const layer = Layer.empty.pipe(
       Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(orchestrationReactorLayer),
-      Layer.provideMerge(TradingCoreLayerLive),
+      // `TradingLayerLive` requires `OrchestrationEngineService` (the turn
+      // coordinator dispatches `thread.turn.start`). The engine is already in
+      // `runtimeServicesLayer`; provide `orchestrationLayer` (with its snapshot
+      // query dep) directly to the trading layer so the requirement is met
+      // type-safely without leaking unrelated dependencies.
+      Layer.provideMerge(
+        TradingLayerLive.pipe(
+          Layer.provide(orchestrationLayer),
+          Layer.provide(projectionSnapshotQueryLayer),
+        ),
+      ),
       Layer.provideMerge(providerRegistryLayer),
       Layer.provide(persistenceLayer),
       Layer.provideMerge(RepositoryIdentityResolver.layer),

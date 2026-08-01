@@ -29,7 +29,7 @@ import {
 import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./mission.ts";
 import { TradingId } from "./primitives.ts";
 import { momentumStrategyAuthoredFields, MomentumStrategyState } from "./strategy.ts";
-import { PersistedWatch } from "./watch.ts";
+import { MarketWatch, PersistedWatch } from "./watch.ts";
 
 export const TRADING_GET_MISSION_TOOL = "trading_get_mission";
 export const TRADING_PUBLISH_MOMENTUM_STRATEGY_TOOL = "trading_publish_momentum_strategy";
@@ -210,3 +210,61 @@ export type TradingGetOrderBookResult = OrderBook;
 export type TradingGetAccountStateResult = AgentAccountSnapshot;
 export type TradingGetPositionResult = AgentNetPosition;
 export type TradingGetOpenOrdersResult = ReadonlyArray<AgentOpenOrder>;
+
+// -- §14.4 watch tools (Phase 3) ---------------------------------------------
+//
+// Watches are registered against the mission's current strategy version. A
+// cancel only affects an active watch; triggered/consumed/superseded watches
+// keep their terminal status. The handler resolves the bound mission through
+// the same `resolveBoundCall` path as the §14.2/§14.3 tools.
+
+export const TRADING_REGISTER_WATCH_TOOL = "trading_register_watch";
+export const TRADING_SCHEDULE_REASSESSMENT_TOOL = "trading_schedule_reassessment";
+export const TRADING_LIST_WATCHES_TOOL = "trading_list_watches";
+export const TRADING_CANCEL_WATCH_TOOL = "trading_cancel_watch";
+
+export const TradingRegisterWatchInput = Schema.Struct({
+  ...missionBound,
+  watch: MarketWatch,
+});
+export type TradingRegisterWatchInput = typeof TradingRegisterWatchInput.Type;
+
+export const TradingRegisterWatchResult = PersistedWatch;
+export type TradingRegisterWatchResult = PersistedWatch;
+
+export const TradingScheduleReassessmentInput = Schema.Struct({
+  ...missionBound,
+  /** Epoch millis at which the mission should be reassessed. */
+  runAt: Schema.Number.check(Schema.isGreaterThan(0)),
+});
+export type TradingScheduleReassessmentInput = typeof TradingScheduleReassessmentInput.Type;
+
+export const TradingScheduleReassessmentResult = PersistedWatch;
+export type TradingScheduleReassessmentResult = PersistedWatch;
+
+export const TradingListWatchesInput = Schema.Struct({ ...missionBound });
+export type TradingListWatchesInput = typeof TradingListWatchesInput.Type;
+
+export const TradingListWatchesResult = Schema.Array(PersistedWatch);
+export type TradingListWatchesResult = ReadonlyArray<PersistedWatch>;
+
+export const TradingCancelWatchInput = Schema.Struct({
+  ...missionBound,
+  watchId: TradingId,
+});
+export type TradingCancelWatchInput = typeof TradingCancelWatchInput.Type;
+
+export const TradingCancelWatchRejection = Schema.Literals(["watch_not_found", "watch_not_active"]);
+export type TradingCancelWatchRejection = typeof TradingCancelWatchRejection.Type;
+
+export const TradingCancelWatchResult = Schema.Union([
+  Schema.Struct({
+    outcome: Schema.Literal("cancelled"),
+    watch: PersistedWatch,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("rejected"),
+    reason: TradingCancelWatchRejection,
+  }),
+]);
+export type TradingCancelWatchResult = typeof TradingCancelWatchResult.Type;

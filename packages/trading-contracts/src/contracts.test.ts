@@ -617,6 +617,7 @@ describe("subpath exports", () => {
         "./account-snapshot",
         "./execution",
         "./loss-accounting",
+        "./wakeup",
       ].sort(),
     );
 

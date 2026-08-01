@@ -55,6 +55,10 @@
     "./loss-accounting": {
       "types": "./src/lossAccounting.ts",
       "import": "./src/lossAccounting.ts"
+    },
+    "./wakeup": {
+      "types": "./src/wakeup.ts",
+      "import": "./src/wakeup.ts"
     }
   },
   "scripts": {

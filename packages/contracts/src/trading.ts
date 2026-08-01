@@ -16,10 +16,13 @@
  * @module TradingOrchestration
  */
 import {
+  MarketWatch,
   MomentumStrategyState,
   PersistedWatch,
+  PersistedWatchStatus,
   TradingAuthority,
   TradingHarnessBinding,
+  TradingHarnessRunCause,
   TradingMissionBlockedReason,
   TradingMissionControl,
   TradingMissionStatus,
@@ -205,9 +208,73 @@ export const TradingMissionStrategyPublishedCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * A watch was registered or cancelled - spec §11.3, §12.1.
+ *
+ * The watch registry is the writer; this command records the outcome so the
+ * workspace sees the new watch (or the cancellation) on the ordered WS push
+ * path rather than polling.
+ */
+export const TradingMissionWatchRegisteredCommand = Schema.Struct({
+  type: Schema.Literal("trading.mission.watch-registered"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  missionId: TradingMissionId,
+  /** The full persisted watch, as the registry accepted it. */
+  watch: PersistedWatch,
+  createdAt: IsoDateTime,
+});
+
+export const TradingMissionWatchCancelledCommand = Schema.Struct({
+  type: Schema.Literal("trading.mission.watch-cancelled"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  missionId: TradingMissionId,
+  watchId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * A watch predicate matched - spec §11.3, §12.1.
+ *
+ * Raised by the watch evaluator after it flips a watch to `triggered` and
+ * persists the inbox event. The turn coordinator consumes this to decide
+ * whether to acquire the lease and wake the bound session.
+ */
+export const TradingMissionWatchFiredCommand = Schema.Struct({
+  type: Schema.Literal("trading.mission.watch-fired"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  missionId: TradingMissionId,
+  watchId: TrimmedNonEmptyString,
+  /** The deduplication key the inbox event was persisted under. */
+  deduplicationKey: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * A harness run started - spec §11.2, §12.3.
+ *
+ * The turn coordinator raises this once the seven pre-run checks pass and the
+ * lease is acquired, so the projection reflects the active run.
+ */
+export const TradingMissionRunStartedCommand = Schema.Struct({
+  type: Schema.Literal("trading.mission.run-started"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  missionId: TradingMissionId,
+  harnessRunId: TrimmedNonEmptyString,
+  cause: TradingHarnessRunCause,
+  createdAt: IsoDateTime,
+});
+
 export const InternalTradingCommand = Schema.Union([
   TradingMissionStatusSetCommand,
   TradingMissionStrategyPublishedCommand,
+  TradingMissionWatchRegisteredCommand,
+  TradingMissionWatchCancelledCommand,
+  TradingMissionWatchFiredCommand,
+  TradingMissionRunStartedCommand,
 ]);
 export type InternalTradingCommand = typeof InternalTradingCommand.Type;
 
@@ -260,9 +327,43 @@ export const TradingMissionStrategyPublishedPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+export const TradingMissionWatchRegisteredPayload = Schema.Struct({
+  missionId: TradingMissionId,
+  threadId: ThreadId,
+  watch: PersistedWatch,
+  updatedAt: IsoDateTime,
+});
+
+export const TradingMissionWatchCancelledPayload = Schema.Struct({
+  missionId: TradingMissionId,
+  threadId: ThreadId,
+  watchId: TrimmedNonEmptyString,
+  updatedAt: IsoDateTime,
+});
+
+export const TradingMissionWatchFiredPayload = Schema.Struct({
+  missionId: TradingMissionId,
+  threadId: ThreadId,
+  watchId: TrimmedNonEmptyString,
+  deduplicationKey: TrimmedNonEmptyString,
+  updatedAt: IsoDateTime,
+});
+
+export const TradingMissionRunStartedPayload = Schema.Struct({
+  missionId: TradingMissionId,
+  threadId: ThreadId,
+  harnessRunId: TrimmedNonEmptyString,
+  cause: TradingHarnessRunCause,
+  updatedAt: IsoDateTime,
+});
+
 export const TRADING_EVENT_TYPES = [
   "trading.mission-create-requested",
   "trading.mission-control-requested",
   "trading.mission-status-changed",
   "trading.mission-strategy-published",
+  "trading.mission-watch-registered",
+  "trading.mission-watch-cancelled",
+  "trading.mission-watch-fired",
+  "trading.mission-run-started",
 ] as const;
