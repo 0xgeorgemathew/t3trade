@@ -146,6 +146,16 @@ describe("previewOrder — §16.3 checklist", () => {
     }),
   );
 
+  it.effect("item 4: rejects a stale authority version (authority_version_current)", () =>
+    Effect.gen(function* () {
+      const item = yield* rejectionItem(
+        goodIntent(),
+        goodCtx(now, { currentAuthorityVersion: 2, expectedAuthorityVersion: 1 }),
+      );
+      expect(item).toBe("authority_version_current");
+    }),
+  );
+
   it.effect("item 5: rejects when no harness run owns the lease (harness_run_owns_lease)", () =>
     Effect.gen(function* () {
       const item = yield* rejectionItem(goodIntent(), goodCtx(now, { activeHarnessRunId: null }));
@@ -175,6 +185,16 @@ describe("previewOrder — §16.3 checklist", () => {
         goodCtx(now),
       );
       expect(item).toBe("market_is_eth");
+    }),
+  );
+
+  it.effect("item 8: rejects when no execution wallet is armed (execution_wallet_approved)", () =>
+    Effect.gen(function* () {
+      const item = yield* rejectionItem(
+        goodIntent(),
+        goodCtx(now, { approvedExecutionWalletAddress: null }),
+      );
+      expect(item).toBe("execution_wallet_approved");
     }),
   );
 

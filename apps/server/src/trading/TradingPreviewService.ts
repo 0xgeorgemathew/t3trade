@@ -78,8 +78,10 @@ export interface PreviewContext {
   /** The harness run id that owns the decision lease for this mission. */
   readonly activeHarnessRunId: string | null;
   /**
-   * The approved execution-wallet address for this mission's account (§10.6).
-   * A request whose signer is not the approved wallet is rejected at preview.
+   * The armed execution-wallet address for this mission's account. Until
+   * PROMPT-06's approved-wallet registry, this is the interim signer's own
+   * address (or null when the signer is unarmed); preview item 8 fail-closes
+   * on null. The signer-to-wallet match is enforced at sign time.
    */
   readonly approvedExecutionWalletAddress: string | null;
   /** Fresh BBO for the market (§15.4: 2s window). */
@@ -166,15 +168,17 @@ const marketIsEth: Check = (intent, _ctx) =>
     : reject("market_is_eth", `POC trades ETH only; got ${intent.market}`);
 
 const executionWalletApproved: Check = (_intent, ctx) =>
-  // The mission's account must name an approved execution wallet. The interim
-  // signer's address is checked at sign time against this value; preview
-  // rejects when no wallet is approved so the failure is visible before a nonce
-  // is spent.
+  // Armed-signer gate (not an approved-wallet registry check). Until PROMPT-06
+  // introduces the approved-execution-wallet registry, this is a fail-closed
+  // null check: the mission's account must name *some* execution wallet, which
+  // the interim signer resolves to its own armed address. Preview rejects here
+  // so an unarmed signer is visible before a nonce is spent; the actual
+  // signer-to-wallet match happens in InterimSignerConfig at sign time.
   ctx.approvedExecutionWalletAddress !== null
     ? Effect.void
     : reject(
         "execution_wallet_approved",
-        "no approved execution wallet for this mission's account",
+        "no armed execution wallet for this mission's account (interim signer unresolved)",
       );
 
 const accountAndBboFresh: Check = (_intent, ctx) => {
