@@ -26,6 +26,7 @@ import {
   evaluateLossBudget,
   isPermittedUnderExhaustion,
 } from "@t3tools/trading-contracts/loss-accounting";
+import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
 
 /** One of the 17 §16.3 checklist items, in order. */
 export const PREVIEW_CHECKLIST_ITEMS = [
@@ -210,9 +211,12 @@ const sizeAndPriceValid: Check = (intent, _ctx) =>
 
 const exchangeMinimumMet: Check = (intent, _ctx) => {
   const notional = intent.size * intent.limitPrice;
-  return notional >= 10
+  return notional >= MIN_NOTIONAL_USD
     ? Effect.void
-    : reject("exchange_minimum_met", `notional $${notional.toFixed(2)} below the $10 minimum`);
+    : reject(
+        "exchange_minimum_met",
+        `notional $${notional.toFixed(2)} below the $${MIN_NOTIONAL_USD} minimum`,
+      );
 };
 
 /**
