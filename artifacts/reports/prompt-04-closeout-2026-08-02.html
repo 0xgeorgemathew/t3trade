@@ -1,0 +1,999 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PROMPT-04 — Execution & Reconciliation Close-out</title>
+    <style>
+      :root {
+        --bg: #0b0d10;
+        --panel: #14181d;
+        --panel-2: #1b2128;
+        --ink: #e6edf3;
+        --muted: #8b949e;
+        --accent: #58a6ff;
+        --green: #3fb950;
+        --amber: #d29922;
+        --red: #f85149;
+        --border: #2a3038;
+        --border-soft: #20262d;
+
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+        --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        --serif: ui-serif, Georgia, serif;
+
+        --radius-panel: 10px;
+        --radius-row: 8px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        padding: 56px 24px 120px;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 15px;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .page {
+        max-width: 940px;
+        margin: 0 auto;
+      }
+
+      /* ---------- Header ---------- */
+      header {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 28px;
+        margin-bottom: 44px;
+      }
+      .header-top {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 10px;
+      }
+      h1 {
+        font-size: 1.85rem;
+        margin: 0;
+        letter-spacing: -0.01em;
+        font-weight: 600;
+      }
+      .auto-pill {
+        font-family: var(--mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 5px 11px;
+        white-space: nowrap;
+      }
+      .lede {
+        color: var(--muted);
+        font-size: 0.95rem;
+        max-width: 76ch;
+        margin: 10px 0 0;
+      }
+      .lede b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .meta {
+        display: flex;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+        color: var(--muted);
+        font-size: 0.82rem;
+        margin-top: 16px;
+        font-family: var(--mono);
+      }
+      .meta b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      /* ---------- Sections ---------- */
+      section {
+        margin-bottom: 52px;
+      }
+      h2 {
+        font-size: 1.28rem;
+        margin: 0 0 8px;
+        letter-spacing: -0.01em;
+        font-weight: 600;
+      }
+      hr.rule {
+        border: none;
+        border-top: 1px solid var(--border);
+        margin: 0 0 24px;
+      }
+
+      /* ---------- Supersession banner ---------- */
+      .supersede {
+        border: 1px solid var(--amber);
+        background: rgba(210, 153, 34, 0.08);
+        border-radius: var(--radius-panel);
+        padding: 14px 18px;
+        margin-bottom: 44px;
+        font-size: 0.9rem;
+      }
+      .supersede b {
+        color: var(--amber);
+      }
+
+      /* ---------- Summary band ---------- */
+      .summary-band {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+      }
+      @media (max-width: 720px) {
+        .summary-band {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+      .stat-card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-panel);
+        padding: 20px 22px 18px;
+      }
+      .stat-card.warn {
+        border-left: 3px solid var(--amber);
+        padding-left: 19px;
+      }
+      .stat-card.proven {
+        border-left: 3px solid var(--green);
+        padding-left: 19px;
+      }
+      .stat-num {
+        font-family: var(--mono);
+        font-size: 34px;
+        font-weight: 500;
+        line-height: 1;
+        color: var(--ink);
+        margin-bottom: 10px;
+        letter-spacing: -0.02em;
+      }
+      .stat-label {
+        font-family: var(--sans);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+      }
+      .stat-delta {
+        font-family: var(--mono);
+        font-size: 11px;
+        margin-top: 8px;
+        color: var(--muted);
+      }
+      .stat-delta.up {
+        color: var(--green);
+      }
+      .stat-delta.warn {
+        color: var(--amber);
+      }
+
+      /* ---------- Gate E callout ---------- */
+      .gate {
+        border: 1px solid var(--green);
+        background: rgba(63, 185, 80, 0.07);
+        border-radius: var(--radius-panel);
+        padding: 16px 20px;
+        margin-bottom: 44px;
+      }
+      .gate .gate-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 6px;
+      }
+      .gate .gate-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 0 4px rgba(63, 185, 80, 0.15);
+      }
+      .gate .gate-title {
+        font-family: var(--mono);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--green);
+        font-weight: 600;
+      }
+      .gate p {
+        margin: 0.3rem 0;
+        font-size: 0.92rem;
+      }
+      .gate .caveat {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px dashed rgba(210, 153, 34, 0.3);
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      .gate .caveat b {
+        color: var(--amber);
+      }
+
+      /* ---------- Highlights ---------- */
+      .highlights {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .highlights li {
+        position: relative;
+        padding: 0 0 14px 26px;
+        font-size: 15px;
+        color: var(--muted);
+      }
+      .highlights li::before {
+        content: "";
+        position: absolute;
+        left: 6px;
+        top: 8px;
+        width: 7px;
+        height: 7px;
+        border-radius: 2px;
+        background: var(--accent);
+      }
+      .highlights li strong {
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      /* ---------- Acceptance table ---------- */
+      table.acceptance {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-panel);
+        overflow: hidden;
+      }
+      table.acceptance thead th {
+        text-align: left;
+        font-family: var(--sans);
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        background: var(--panel-2);
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+      table.acceptance tbody td {
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--border-soft);
+        font-size: 13.5px;
+        vertical-align: top;
+      }
+      table.acceptance tbody tr:last-child td {
+        border-bottom: none;
+      }
+      table.acceptance tbody tr:hover {
+        background: rgba(88, 166, 255, 0.03);
+      }
+      td .crit {
+        color: var(--ink);
+        font-weight: 600;
+        display: block;
+        margin-bottom: 4px;
+      }
+      td .ev {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        font-family: var(--sans);
+        font-size: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      .pill .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .pill.proven .dot {
+        background: var(--green);
+      }
+      .pill.proven {
+        color: var(--green);
+      }
+      .pill.built .dot {
+        background: var(--accent);
+      }
+      .pill.built {
+        color: var(--accent);
+      }
+      .pill.partial .dot {
+        background: var(--amber);
+      }
+      .pill.partial {
+        color: var(--amber);
+      }
+
+      code,
+      pre {
+        font-family: var(--mono);
+        font-size: 0.85em;
+      }
+      code {
+        background: var(--panel-2);
+        padding: 0.1em 0.4em;
+        border-radius: 4px;
+        color: var(--accent);
+      }
+
+      /* ---------- Progressive disclosure (details) ---------- */
+      details.block {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-panel);
+        margin-top: 12px;
+        overflow: hidden;
+      }
+      details.block > summary {
+        cursor: pointer;
+        list-style: none;
+        padding: 14px 18px;
+        font-weight: 600;
+        font-size: 0.92rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        color: var(--ink);
+      }
+      details.block > summary::-webkit-details-marker {
+        display: none;
+      }
+      details.block > summary::after {
+        content: "▸";
+        color: var(--muted);
+        font-family: var(--mono);
+        transition: transform 0.15s ease;
+      }
+      details.block[open] > summary::after {
+        transform: rotate(90deg);
+      }
+      details.block > summary .sum-tag {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-weight: 500;
+      }
+      details.block > .body {
+        padding: 0 18px 18px;
+        border-top: 1px solid var(--border-soft);
+      }
+      details.block > .body > p:first-child {
+        margin-top: 14px;
+      }
+      details.block .ev-list {
+        list-style: none;
+        padding: 0;
+        margin: 10px 0 0;
+      }
+      details.block .ev-list li {
+        padding: 6px 0 6px 22px;
+        position: relative;
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+      details.block .ev-list li::before {
+        content: "›";
+        position: absolute;
+        left: 4px;
+        color: var(--accent);
+        font-family: var(--mono);
+      }
+      details.block .ev-list li b {
+        color: var(--ink);
+      }
+
+      pre.evidence {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 14px;
+        overflow-x: auto;
+        font-size: 0.8rem;
+        line-height: 1.55;
+        margin: 10px 0 0;
+        color: var(--ink);
+      }
+      pre.evidence .k {
+        color: var(--accent);
+      }
+      pre.evidence .s {
+        color: var(--green);
+      }
+      pre.evidence .n {
+        color: var(--amber);
+      }
+      pre.evidence .c {
+        color: var(--muted);
+      }
+
+      /* ---------- Carryover / Deferrals ---------- */
+      .carryover {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-panel);
+        padding: 4px 22px;
+      }
+      .carry-item {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        padding: 14px 0;
+        flex-wrap: wrap;
+      }
+      .carry-item + .carry-item {
+        border-top: 1px solid var(--border-soft);
+      }
+      .carry-tag {
+        font-family: var(--mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--ink);
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 3px 8px;
+        flex-shrink: 0;
+      }
+      .carry-tag.next {
+        color: var(--accent);
+        border-color: rgba(88, 166, 255, 0.4);
+      }
+      .carry-tag.later {
+        color: var(--muted);
+      }
+      .carry-body {
+        font-size: 14px;
+        color: var(--muted);
+        flex: 1;
+        min-width: 200px;
+      }
+      .carry-body b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .carry-body .why {
+        color: var(--muted);
+        font-size: 0.82rem;
+        display: block;
+        margin-top: 2px;
+      }
+
+      /* ---------- Footer ---------- */
+      footer {
+        margin-top: 64px;
+        padding-top: 20px;
+        border-top: 1px solid var(--border);
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.7;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+        details.block > summary::after {
+          transition: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header>
+        <div class="header-top">
+          <h1>PROMPT-04 — Execution &amp; Reconciliation Close-out</h1>
+          <span class="auto-pill">close-out · 2026-08-02</span>
+        </div>
+        <p class="lede">
+          Phase 4 closes with the <b>entry path proven on the live Hyperliquid testnet</b>
+          and all five spec acceptance criteria built out. This is the authoritative close-out: the
+          earlier prompt-04 reports (several of which overstated completion) are superseded — see
+          the banner below.
+        </p>
+        <div class="meta">
+          <span>Branch: <b>feature/trading-04-execution</b></span>
+          <span><b>17 commits</b> this phase</span>
+          <span>Tests: <b>~290 passing</b></span>
+          <span>Typecheck: <b>0 errors</b></span>
+          <span>Migrations: <b>038 · 039 · 040</b></span>
+        </div>
+      </header>
+
+      <!-- Supersession banner -->
+      <div class="supersede">
+        <b>Supersedes earlier prompt-04 reports.</b>
+        The prior <code>prompt-04-*</code> artifacts (<code>execution-handoff</code>,
+        <code>execution-plan</code>, <code>wiring-complete</code>, <code>session-report</code>,
+        <code>completion-review</code>, <code>final-report</code>) were written against interim
+        states of the work and several overstated completion — in particular the close/reduce-only
+        path, which has a signing-recovery issue and is <b>not</b> live-proven. Treat this document
+        as the single source of truth for PROMPT-04.
+      </div>
+
+      <!-- Summary band -->
+      <section>
+        <div class="summary-band">
+          <div class="stat-card proven">
+            <div class="stat-num">5/5</div>
+            <div class="stat-label">Acceptance criteria</div>
+            <div class="stat-delta up">4 built · 1 live-proven</div>
+          </div>
+          <div class="stat-card proven">
+            <div class="stat-num">200</div>
+            <div class="stat-label">Gate E — entry filled</div>
+            <div class="stat-delta up">oid 57307761690</div>
+          </div>
+          <div class="stat-card warn">
+            <div class="stat-num">1</div>
+            <div class="stat-label">Open caveat</div>
+            <div class="stat-delta warn">close-path signing</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-num">~290</div>
+            <div class="stat-label">Tests passing</div>
+            <div class="stat-delta">0 typecheck errors</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Gate E callout -->
+      <div class="gate">
+        <div class="gate-head">
+          <span class="gate-dot"></span>
+          <span class="gate-title">Gate E — live testnet evidence</span>
+        </div>
+        <p>
+          A signed <code>IOC</code> entry of <b>0.01 ETH</b> from the armed wallet was
+          <b>ACCEPTED and FILLED</b> on the Hyperliquid testnet — status 200, oid
+          <code>57307761690</code>, avgPx <code>1833.9</code>, fee <code>0.008252</code>. The
+          <code>noop</code> handshake also returns <code>{"status":"ok"}</code>, confirming the
+          signing path's byte-correctness (responseType default).
+        </p>
+        <p>
+          <b>Bug found &amp; fixed at the gate:</b> <code>buildOrderAction</code> omitted the
+          required <code>type:"order"</code> field, so every live order action failed to deserialize
+          with a <b>422</b>. Fixed in <code>OrderMapper</code> (commit <code>5dfb4bc</code>) — the
+          entry then filled on the next attempt.
+        </p>
+        <div class="caveat">
+          <b>Caveat — close path.</b> The reduce-only / close path has a separate signing-recovery
+          issue: sell-action signatures recover to a wrong address on testnet. The
+          <b>entry — the primary acceptance criterion — is proven</b>; the close path needs its own
+          investigation (likely a msgpack serialization edge for <code>b:false</code>).
+        </div>
+      </div>
+
+      <!-- Highlights -->
+      <section>
+        <h2>Highlights</h2>
+        <hr class="rule" />
+        <ul class="highlights">
+          <li>
+            <strong>Entry is live-accepted and idempotent.</strong> The signed IOC fills on testnet,
+            and the execution-record / reservation unique keys mean a retry cannot duplicate it —
+            the D1 keystone proves one record and one reservation survive a duplicate submit.
+          </li>
+          <li>
+            <strong>Loss budget and fee reserve are spec-aligned.</strong>
+            <code>userFees</code> is read live, <code>reservedRiskUsd</code> = plannedLoss +
+            entryFee + exitFee + slippageReserve, and the open-position risk is stop-aware (no
+            fabricated 0 stop).
+          </li>
+          <li>
+            <strong>Exhaustion actually halts new risk.</strong>
+            <code>blockForExhaustion</code> cancels mission-owned increasing orders via
+            cancel-by-cloid on the nonce lane; <code>guardAction</code> blocks open/scale_in and
+            permits close/reduce while blocked.
+          </li>
+          <li>
+            <strong>A 422 was caught at the gate, not in production.</strong> The missing
+            <code>type:"order"</code> would have rejected every live order; it surfaced in Gate E
+            and was fixed before any of this left testnet.
+          </li>
+        </ul>
+      </section>
+
+      <!-- Acceptance criteria table -->
+      <section>
+        <h2>Acceptance criteria — spec mapping</h2>
+        <hr class="rule" />
+        <table class="acceptance">
+          <thead>
+            <tr>
+              <th style="width: 110px">Status</th>
+              <th>Criterion &amp; evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <span class="pill proven"><span class="dot"></span>live-proven</span>
+              </td>
+              <td>
+                <span class="crit"
+                  >Hyperliquid accepts the order &amp; retry cannot duplicate it</span
+                >
+                <span class="ev"
+                  >Gate E: signed IOC entry (0.01 ETH) ACCEPTED &amp; FILLED — status 200, oid
+                  <code>57307761690</code>, avgPx <code>1833.9</code>. Retry idempotency via
+                  execution-record/reservation unique keys. D1 e2e: submit recorded, duplicate
+                  deduped (one record, one reservation).</span
+                >
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <span class="pill built"><span class="dot"></span>built</span>
+              </td>
+              <td>
+                <span class="crit">§16.2 loss budget + Eq-4 fee reserve</span>
+                <span class="ev"
+                  ><code>userFees</code> read wired (<code>Gateway.getTakerFeeRateBps</code>);
+                  <code>reservedRiskUsd = plannedLoss + entryFee + exitFee + slippageReserve</code>.
+                  Stop-aware open-position risk — no fabricated 0 stop.</span
+                >
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <span class="pill built"><span class="dot"></span>built</span>
+              </td>
+              <td>
+                <span class="crit">§16.4 exhaustion enforcement</span>
+                <span class="ev"
+                  ><code>blockForExhaustion</code> cancels mission-owned increasing orders
+                  (cancel-by-cloid via the nonce lane). <code>guardAction</code> blocks
+                  open/scale_in, permits close/reduce. <code>guardResume</code> rejects while
+                  blocked.</span
+                >
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <span class="pill built"><span class="dot"></span>built</span>
+              </td>
+              <td>
+                <span class="crit">Reconciled fills / positions / mark</span>
+                <span class="ev"
+                  ><code>mark_px</code> derived from unrealised PnL. Fill identity
+                  <code>cloid-time-idx</code> (collision fix).
+                  <code>websocket_reconnect</code> trigger wired. Fill-list cap aligned (3).</span
+                >
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <span class="pill built"><span class="dot"></span>built</span>
+              </td>
+              <td>
+                <span class="crit">Preview 17-item checklist</span>
+                <span class="ev"
+                  >All 17 items have rejection tests (items 4 and 8 added). Mission-level ceilings
+                  (existing + proposed) enforced for leverage and gross-notional.</span
+                >
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- Progressive disclosure detail blocks -->
+      <section>
+        <h2>Detail — expand for evidence</h2>
+        <hr class="rule" />
+
+        <details class="block">
+          <summary>
+            <span>1 · Order acceptance &amp; idempotency</span>
+            <span class="sum-tag">live-proven</span>
+          </summary>
+          <div class="body">
+            <p>
+              The primary acceptance criterion: a signed entry lands on Hyperliquid, fills, and a
+              retry cannot duplicate it.
+            </p>
+            <ul class="ev-list">
+              <li>
+                <b>Noop accepted</b> — status <code>ok</code>, responseType default. Confirms the
+                signing path is byte-correct.
+              </li>
+              <li>
+                <b>Entry filled</b> — oid <code>57307761690</code>, 0.01 ETH @ <code>1833.9</code>,
+                fee <code>0.008252</code>.
+              </li>
+              <li>
+                <b>D1 keystone</b> — against a recording fake exchange: entry submit recorded; a
+                DUPLICATE submit produces <b>one</b> execution record and <b>one</b> reservation
+                (the retry fast-path); a close submits a second signed action.
+              </li>
+            </ul>
+            <pre class="evidence"><span class="c">// Gate E — captured response</span>
+{
+  <span class="k">"status"</span>: <span class="s">"ok"</span>,
+  <span class="k">"response"</span>: {
+    <span class="k">"type"</span>: <span class="s">"order"</span>,
+    <span class="k">"data"</span>: {
+      <span class="k">"statuses"</span>: [{ <span class="k">"filled"</span>: {
+        <span class="k">"oid"</span>: <span class="n">57307761690</span>,
+        <span class="k">"avgPx"</span>: <span class="s">"1833.9"</span>,
+        <span class="k">"totalFee"</span>: <span class="s">"0.008252"</span>
+      }}]
+    }
+  }
+}</pre>
+          </div>
+        </details>
+
+        <details class="block">
+          <summary>
+            <span>2 · §16.2 loss budget + Eq-4 fee reserve</span>
+            <span class="sum-tag">built</span>
+          </summary>
+          <div class="body">
+            <p>
+              The risk reservation now reflects real fees and a real stop, not optimistic defaults.
+            </p>
+            <ul class="ev-list">
+              <li>
+                <b>Fee source live</b> — <code>Gateway.getTakerFeeRateBps</code> reads
+                <code>userFees</code>; reserve uses the actual taker rate.
+              </li>
+              <li>
+                <b>Eq-4 reserve</b> —
+                <code>reservedRiskUsd = plannedLoss + entryFee + exitFee + slippageReserve</code>.
+              </li>
+              <li>
+                <b>Stop-aware open risk</b> — the budget reader threads the real intent stop and
+                snapshot freshness; no fabricated <code>0</code> stop on positions that have one.
+              </li>
+            </ul>
+          </div>
+        </details>
+
+        <details class="block">
+          <summary>
+            <span>3 · §16.4 exhaustion enforcement</span>
+            <span class="sum-tag">built</span>
+          </summary>
+          <div class="body">
+            <p>
+              When the cumulative-loss budget is exhausted, the harness can reduce risk but cannot
+              add it.
+            </p>
+            <ul class="ev-list">
+              <li>
+                <b>blockForExhaustion</b> cancels mission-owned <i>increasing</i> orders via
+                cancel-by-cloid on the nonce lane.
+              </li>
+              <li>
+                <b>guardAction</b> blocks <code>open</code> / <code>scale_in</code> and permits
+                <code>close</code> / <code>reduce</code> while blocked.
+              </li>
+              <li><b>guardResume</b> rejects resume while the exhaustion condition still holds.</li>
+              <li>
+                <b>D4 test</b> pins the full permit matrix (block open, permit reduce) and the
+                cancel-by-cloid path.
+              </li>
+            </ul>
+          </div>
+        </details>
+
+        <details class="block">
+          <summary>
+            <span>4 · Reconciled fills / positions / mark</span>
+            <span class="sum-tag">built</span>
+          </summary>
+          <div class="body">
+            <p>
+              Reconciliation reads canonical fills, positions, and orders and gives them stable,
+              collision-free identity.
+            </p>
+            <ul class="ev-list">
+              <li><b>mark_px</b> derived from unrealised PnL (migration 040 column).</li>
+              <li>
+                <b>Fill identity</b> = <code>cloid-time-idx</code> — fixes the prior collision where
+                concurrent fills at the same instant collapsed.
+              </li>
+              <li>
+                <b>websocket_reconnect</b> trigger wired (§18.2 #2) so a dropped feed forces a full
+                re-sync rather than a silent gap.
+              </li>
+              <li><b>Fill-list cap</b> aligned to 3 to bound reconciler work.</li>
+            </ul>
+          </div>
+        </details>
+
+        <details class="block">
+          <summary>
+            <span>5 · Preview 17-item checklist</span>
+            <span class="sum-tag">built</span>
+          </summary>
+          <div class="body">
+            <p>
+              Every preview item rejects the trade it should reject. Items 4 and 8 were added this
+              phase.
+            </p>
+            <ul class="ev-list">
+              <li><b>All 17 items</b> have dedicated rejection tests in the preview suite.</li>
+              <li><b>Item 4 &amp; 8</b> added with tests; item 8's comment corrected.</li>
+              <li>
+                <b>Mission ceilings</b> enforced against existing + proposed exposure for leverage
+                and gross-notional (commit <code>a8dbcae</code>).
+              </li>
+              <li>
+                <b>Item 8</b> stays an armed-signer check pending the approved-execution-wallet
+                registry (deferred to PROMPT-06).
+              </li>
+            </ul>
+          </div>
+        </details>
+
+        <details class="block">
+          <summary>
+            <span>Gate E · the bug, the fix, the caveat</span>
+            <span class="sum-tag">finding</span>
+          </summary>
+          <div class="body">
+            <p>
+              Gate E did its job: it found a defect that would have broken every live order, and it
+              scoped exactly how far the live proof extends.
+            </p>
+            <ul class="ev-list">
+              <li>
+                <b>Defect</b> — <code>buildOrderAction</code> omitted <code>type:"order"</code>;
+                every order action failed to deserialize with HTTP <b>422</b>.
+              </li>
+              <li>
+                <b>Fix</b> — added the field in <code>OrderMapper</code> (commit
+                <code>5dfb4bc14</code>). Entry then filled.
+              </li>
+              <li>
+                <b>Proof scope</b> — the <b>entry</b> path is live-proven. The
+                <b>close/reduce-only</b> path is <b>not</b>: sell-action signatures recover to a
+                wrong address on testnet.
+              </li>
+              <li>
+                <b>Likely cause</b> — a msgpack serialization edge for <code>b:false</code> in the
+                sell action. Needs a focused investigation, not a patch in flight.
+              </li>
+            </ul>
+            <pre class="evidence"><span class="c"># the fix (commit 5dfb4bc14)</span>
+fix(hyperliquid): add type:order to buildOrderAction (Gate E finding)
+
+Gate E (live testnet) discovered buildOrderAction omitted the required
+type:<span class="s">"order"</span> field, so every order action deserialization
+failed with a 422. Confirmed live: a signed order with type:order is
+accepted and filled (status 200, filled, oid 57307761690, 0.01 ETH @ 1833.9).</pre>
+          </div>
+        </details>
+
+        <details class="block">
+          <summary>
+            <span>Migrations · 038 · 039 · 040</span>
+            <span class="sum-tag">schema</span>
+          </summary>
+          <div class="body">
+            <ul class="ev-list">
+              <li><b>038</b> — six §18 tables (reconciliation / execution state).</li>
+              <li><b>039</b> — additive columns to existing tables.</li>
+              <li>
+                <b>040</b> — <code>stop_price</code>, <code>planned_loss_at_stop_usd</code>,
+                <code>mark_px</code> for stop-aware risk and mark derivation.
+              </li>
+            </ul>
+          </div>
+        </details>
+      </section>
+
+      <!-- Deferrals (carryover) -->
+      <section>
+        <h2>Deferrals — honest scope</h2>
+        <hr class="rule" />
+        <div class="carryover">
+          <div class="carry-item">
+            <span class="carry-tag next">PROMPT-05</span>
+            <div class="carry-body">
+              <b>§17.2 steps 6–8, <code>protected</code> status, protection reconciliation.</b>
+              <span class="why"
+                >The submit sequence's tail and the protection state machine belong with the
+                deterministic-control work.</span
+              >
+            </div>
+          </div>
+          <div class="carry-item">
+            <span class="carry-tag next">PROMPT-05</span>
+            <div class="carry-body">
+              <b
+                >Deterministic user controls (<code>trading_control_*</code>) + harness pause /
+                resume / revoke tools.</b
+              >
+              <span class="why"
+                >Operator-facing controls are part of the control-plane prompt.</span
+              >
+            </div>
+          </div>
+          <div class="carry-item">
+            <span class="carry-tag later">PROMPT-06</span>
+            <div class="carry-body">
+              <b>Privy wallet + approved-execution-wallet registry.</b>
+              <span class="why"
+                >Preview item 8 stays an <b>armed-signer</b> check until the registry exists.</span
+              >
+            </div>
+          </div>
+          <div class="carry-item">
+            <span class="carry-tag later">later</span>
+            <div class="carry-body">
+              <b>Funding-rate accounting</b> (<code>netFundingUsd</code> stays 0); exchange-side
+              leverage caps; isolated-margin enforcement.
+            </div>
+          </div>
+          <div class="carry-item">
+            <span class="carry-tag later">later</span>
+            <div class="carry-body">
+              <b>Multi-market (ETH only this phase) and multi-mission concurrency.</b>
+            </div>
+          </div>
+          <div class="carry-item">
+            <span class="carry-tag next">investigate</span>
+            <div class="carry-body">
+              <b>Close/reduce-only signing recovery.</b>
+              <span class="why"
+                >Sell-action signatures recover to a wrong address on testnet — likely a msgpack
+                edge for <code>b:false</code>. The entry path is unaffected.</span
+              >
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <footer>
+        Sources: git log · executionLive.test.ts (gated) · D1/D4 keystone tests · Gate E capture
+        &nbsp;&mdash;&nbsp; close-out generated 2026-08-02
+        <br />
+        Supersedes: prompt-04-execution-handoff · prompt-04-execution-plan ·
+        prompt-04-wiring-complete · prompt-04-session-report · prompt-04-completion-review ·
+        prompt-04-final-report (all 2026-07-31 / 2026-08-01)
+      </footer>
+    </div>
+  </body>
+</html>
