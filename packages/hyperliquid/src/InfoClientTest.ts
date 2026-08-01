@@ -25,6 +25,7 @@ import type {
   WireL2BookResponse,
   WireMetaAndAssetCtxsResponse,
   WireOpenOrdersResponse,
+  WireUserFillsResponse,
 } from "./wire.ts";
 
 /** Canned responses for the fake Info client. All optional; unset throws. */
@@ -35,6 +36,7 @@ export interface FakeInfoResponses {
   candleSnapshot?: (req: WireCandleSnapshotRequest) => WireCandleSnapshotResponse;
   clearinghouseState?: (address: string) => WireClearinghouseStateResponse;
   openOrders?: (address: string) => WireOpenOrdersResponse;
+  userFills?: (address: string) => WireUserFillsResponse;
 }
 
 /**
@@ -66,6 +68,8 @@ export function makeFakeInfoClient(responses: FakeInfoResponses): HyperliquidInf
         : fail("clearinghouseState"),
     openOrders: (address) =>
       responses.openOrders ? Effect.succeed(responses.openOrders(address)) : fail("openOrders"),
+    userFills: (address) =>
+      responses.userFills ? Effect.succeed(responses.userFills(address)) : fail("userFills"),
   });
 }
 

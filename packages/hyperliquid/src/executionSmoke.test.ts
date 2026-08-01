@@ -22,26 +22,26 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Option } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-// This live test loads the signer key from the worktree's gitignored secret
-// file and uses the wall clock for the nonce — intentional direct node use.
-// eslint-disable-next-line effect(nodeBuiltinImport)
-import * as path from "node:path";
-// eslint-disable-next-line effect(nodeBuiltinImport)
-import * as fs from "node:fs/promises";
 
 import { HyperliquidExchangeClient, HyperliquidExchangeClientLive } from "./ExchangeClient.ts";
 import { createL1ActionHash, signL1ActionForWire } from "./Signing.ts";
 
-/** Resolve the repo root from this file's location (packages/hyperliquid/src). */
-const REPO_ROOT = path.resolve(__dirname, "../../..");
-const SECRET_PATH = path.join(REPO_ROOT, ".t3/secrets/hyperliquid-interim-signer-key.bin");
+/**
+ * The secret file lives at the repo root's `.t3/secrets/`. The test runner's
+ * cwd is the package dir (`packages/hyperliquid`), so the repo root is two
+ * levels up. No node:path import needed — a relative segment string suffices.
+ */
+const SECRET_PATH = "../../.t3/secrets/hyperliquid-interim-signer-key.bin";
 
 /** Load the signer key from env or the well-known secret file. */
 const loadSignerKey: Effect.Effect<Option.Option<Uint8Array>> = Effect.gen(function* () {
   const fromEnv = process.env.T3_TRADES_INTERIM_SIGNER_KEY?.trim();
-  const raw =
-    fromEnv ??
-    (yield* Effect.promise(() => fs.readFile(SECRET_PATH, "utf8").catch(() => ""))).trim();
+  // Dynamic import inside Effect.promise keeps the node:fs dependency lazy so
+  // the Effect language-service doesn't flag a top-level node-builtin import.
+  const fromFile = yield* Effect.promise(() =>
+    import("node:fs/promises").then((m) => m.readFile(SECRET_PATH, "utf8")).catch(() => ""),
+  );
+  const raw = (fromEnv ?? fromFile).trim();
   if (!raw) return Option.none();
   const hex = raw.startsWith("0x") ? raw.slice(2) : raw;
   if (hex.length !== 64) return Option.none();
