@@ -14,4 +14,8 @@ export default Effect.gen(function* () {
   if (!positionCols.some((column) => column.name === "liquidation_price")) {
     yield* sql`ALTER TABLE trading_position_snapshots ADD COLUMN liquidation_price REAL`;
   }
+  yield* sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_trading_risk_reservations_execution
+    ON trading_risk_reservations (execution_id)
+  `;
 });

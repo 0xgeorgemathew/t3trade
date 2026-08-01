@@ -156,6 +156,29 @@ function persistReservation(
         ${reservation.cloid}, ${reservation.actionType}, ${reservation.reservedRiskUsd},
         ${reservation.status}, ${reservation.reservedAt}
       )
+      ON CONFLICT(execution_id) DO NOTHING
+    `;
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new TradingExecutionError({
+          stage: "persist_failed",
+          detail: cause instanceof Error ? cause.message : String(cause),
+        }),
+    ),
+  );
+}
+
+function releaseReservation(
+  executionId: string,
+  releasedAt: number,
+): Effect.Effect<void, TradingExecutionError, SqlClient.SqlClient> {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      UPDATE trading_risk_reservations
+      SET status = 'released', released_at = ${releasedAt}
+      WHERE execution_id = ${executionId} AND status = 'reserved'
     `;
   }).pipe(
     Effect.mapError(
@@ -314,10 +337,10 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
           () => new TradingExecutionError({ stage: "persist_failed", detail: "uuid" }),
         ),
       );
-      const executionId = `exec_${uuid}`;
+      const newExecutionId = `exec_${uuid}`;
       const idempotencyKey = `idem_${intent.missionId}_${intent.executionSequence}_${intent.actionType}`;
       const record: TradingExecutionRecord = {
-        executionId,
+        executionId: newExecutionId,
         missionId: intent.missionId,
         strategyVersion: intent.strategyVersion,
         executionSequence: intent.executionSequence,
@@ -338,15 +361,51 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       };
       yield* persistExecutionRecord(record);
 
-      const reservationUuid = yield* crypto.randomUUIDv4.pipe(
+      const sql = yield* SqlClient.SqlClient;
+      const persistedRows = yield* sql<{
+        readonly execution_id: string;
+        readonly status: TradingExecutionRecord["status"];
+        readonly order_results_json: string;
+        readonly updated_at: number;
+      }>`
+        SELECT execution_id, status, order_results_json, updated_at
+        FROM trading_execution_records
+        WHERE idempotency_key = ${idempotencyKey}
+      `.pipe(
         Effect.mapError(
-          () => new TradingExecutionError({ stage: "persist_failed", detail: "uuid" }),
+          (cause) =>
+            new TradingExecutionError({
+              stage: "persist_failed",
+              detail: cause instanceof Error ? cause.message : String(cause),
+            }),
         ),
       );
+      const persisted = persistedRows[0];
+      if (persisted === undefined) {
+        return yield* new TradingExecutionError({
+          stage: "persist_failed",
+          detail: "execution record was not readable after insert",
+        });
+      }
+      const persistedExecutionId = persisted.execution_id;
+      const persistedOrderResults = yield* Schema.decodeUnknownEffect(OrderResultsJson)(
+        persisted.order_results_json,
+      ).pipe(Effect.orDie);
+      const persistedRecord = {
+        ...record,
+        executionId: persistedExecutionId,
+        status: persisted.status,
+        orderResults: persistedOrderResults,
+        updatedAt: persisted.updated_at,
+      } satisfies TradingExecutionRecord;
+      if (["filled", "rejected", "cancelled", "failed"].includes(persisted.status)) {
+        return persistedRecord;
+      }
+
       const reservation: TradingRiskReservation = {
-        reservationId: `res_${reservationUuid}`,
+        reservationId: `res_${idempotencyKey}`,
         missionId: intent.missionId,
-        executionId,
+        executionId: persistedExecutionId,
         cloid: wireOrder.cloid,
         actionType: intent.actionType,
         reservedRiskUsd: previewResult.reservedRiskUsd,
@@ -380,7 +439,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
         );
 
       // Mark the record as submitted.
-      yield* updateExecutionRecord(executionId, "submitted", [], yield* now());
+      yield* updateExecutionRecord(persistedExecutionId, "submitted", [], yield* now());
 
       const response = yield* exchange.submit(signed).pipe(
         Effect.mapError(
@@ -403,9 +462,12 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       const accepted = orderResults.some((r) => r.status === "ok" || r.status === "triggered");
       const finalStatus: TradingExecutionRecord["status"] = accepted ? "accepted" : "rejected";
       const updatedAt = yield* now();
-      yield* updateExecutionRecord(executionId, finalStatus, orderResults, updatedAt);
+      yield* updateExecutionRecord(persistedExecutionId, finalStatus, orderResults, updatedAt);
+      if (finalStatus === "rejected") {
+        yield* releaseReservation(persistedExecutionId, updatedAt);
+      }
 
-      return { ...record, status: finalStatus, orderResults, updatedAt };
+      return { ...persistedRecord, status: finalStatus, orderResults, updatedAt };
     });
 
   return HyperliquidExecutionService.of({ submitOrder });

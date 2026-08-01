@@ -94,6 +94,11 @@ function FillReceipt({ fill }: { fill: TradingFillView }) {
         label={`${fill.side === "buy" ? "Buy" : "Sell"} ${fill.filledSize} ${fill.market}`}
         value={`@ ${fill.avgFillPrice}`}
       />
+      <Field label="Traded" value={new Date(fill.tradedAt).toLocaleString()} />
+      <Field
+        label="Order"
+        value={`${fill.orderId}${fill.cloid ? ` · ${fill.cloid.slice(0, 10)}…` : ""}`}
+      />
       <Field label="Fee" value={fmtUsd(fill.feeUsd)} />
     </div>
   );
@@ -109,13 +114,14 @@ function PositionCard({ position }: { position: TradingPositionView }) {
         <span className="text-xs font-medium text-foreground">
           {direction} {position.market}
         </span>
-        {position.protectedSize > 0 && (
-          <span className="text-xs text-emerald-500">Protected {position.protectedSize}</span>
-        )}
+        <span className="text-xs text-muted-foreground">Protection in Phase 5</span>
       </div>
       <Field label="Size" value={String(Math.abs(position.size))} />
       {position.entryPrice !== undefined && (
         <Field label="Entry" value={String(position.entryPrice)} />
+      )}
+      {position.markPrice !== undefined && (
+        <Field label="Mark" value={String(position.markPrice)} />
       )}
       {position.liquidationPrice !== undefined && (
         <Field label="Liq." value={String(position.liquidationPrice)} />

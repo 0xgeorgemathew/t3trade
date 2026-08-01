@@ -42,6 +42,7 @@ import { TradingExecutionGuard } from "./TradingExecutionGuard.ts";
 import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
 import { HyperliquidReconciler } from "./HyperliquidReconciler.ts";
 import { TradingBudgetReader } from "./TradingBudgetReader.ts";
+import { TradingFillReconciler } from "./TradingFillReconciler.ts";
 import { InterimSignerConfig } from "./InterimSignerConfig.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
@@ -288,14 +289,21 @@ const make = Effect.gen(function* () {
   ) {
     const { missionId, threadId, targetStatus } = event.payload;
 
-    // §16.4: a mission blocked under exhaustion cannot resume until the user
-    // explicitly revalidates. `guardResume` fails with `resume_blocked` if the
-    // mission is blocked for cumulative-loss; the surrounding `catchCause`
-    // logs the refusal and the projection keeps the blocked status.
     const mission = yield* missions.getMission(missionId);
     const isBlocked =
       mission.status === "blocked" && mission.blockedReason === "cumulative_loss_limit";
-    yield* guard.guardResume(missionId, isBlocked);
+    if (targetStatus === "analysing") {
+      // §16.4 applies the exhaustion gate to resume only; pause and revoke
+      // remain available while blocked so the user can recover safely.
+      yield* guard.guardResume(missionId, isBlocked);
+      yield* Effect.gen(function* () {
+        const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+        yield* reconciler.reconcile(
+          { missionId, masterAddress, market: mission.market },
+          "before_resuming_paused_mission",
+        );
+      }).pipe(Effect.catch(() => Effect.void));
+    }
 
     const expectedVersion = yield* missions.getMissionVersion(missionId);
 
@@ -344,6 +352,12 @@ const make = Effect.gen(function* () {
     });
     const orderBook = yield* gateway.getOrderBook(intent.market);
     const budget = evaluateLossBudget(budgetInput);
+    const sql = yield* SqlClient.SqlClient;
+    const pendingRows = yield* sql<{ readonly count: number }>`
+      SELECT COUNT(*) AS count FROM trading_execution_records
+      WHERE mission_id = ${missionId}
+        AND status NOT IN ('filled', 'rejected', 'cancelled', 'failed')
+    `;
     // The interim signer IS the approved execution wallet for the POC (Privy
     // replaces it in PROMPT-06). Resolve its address so preview item 8 can
     // confirm a wallet is approved before a nonce is spent. If the signer is
@@ -357,7 +371,7 @@ const make = Effect.gen(function* () {
     // submit sequence spends a nonce. Cancel/reduce/close pass through.
     yield* guard.guardAction(intent.actionType, budget);
 
-    yield* execution.submitOrder({
+    const executionInput = {
       intent,
       masterAddress,
       previewContext: {
@@ -369,12 +383,17 @@ const make = Effect.gen(function* () {
         approvedExecutionWalletAddress,
         bbo: orderBook.bestBidOffer,
         accountObservedAt: budgetInput.observedAt,
-        hasPendingExecution: false,
+        hasPendingExecution: (pendingRows[0]?.count ?? 0) > 0,
         budget: budgetInput,
         nowMs: budgetInput.observedAt,
       },
       allowedSlippageBps: 50,
-    });
+    };
+    if (intent.actionType === "close" || (intent.actionType === "reduce" && intent.reduceOnly)) {
+      yield* guard.reduceOnlyClose(executionInput);
+    } else {
+      yield* execution.submitOrder(executionInput);
+    }
 
     // §18.2 trigger #4: converge local state to canonical exchange state after
     // the submit landed. Local records are hints until this confirms them.
@@ -396,15 +415,13 @@ const make = Effect.gen(function* () {
       const expectedVersion = yield* missions.getMissionVersion(missionId);
       // A version conflict means another transition beat us; the mission state
       // the projection holds is still authoritative, so log and continue.
-      yield* guard
-        .blockForExhaustion(missionId, expectedVersion)
-        .pipe(
-          Effect.catch(() =>
-            Effect.logWarning("trading execution: could not block exhausted mission", {
-              missionId,
-            }),
-          ),
-        );
+      yield* guard.blockForExhaustion(missionId, expectedVersion).pipe(
+        Effect.catch(() =>
+          Effect.logWarning("trading execution: could not block exhausted mission", {
+            missionId,
+          }),
+        ),
+      );
       yield* announceStatus({ missionId, threadId, status: "blocked" });
     }
   });
@@ -457,6 +474,10 @@ const make = Effect.gen(function* () {
     yield* reconciler
       .reconcile({ missionId: mission.id, masterAddress, market: mission.market }, "server_startup")
       .pipe(Effect.catch(() => Effect.void));
+    const fillReconciler = yield* TradingFillReconciler;
+    yield* fillReconciler
+      .follow({ missionId: mission.id, masterAddress, market: mission.market })
+      .pipe(Effect.forkScoped);
   }).pipe(Effect.forkScoped);
 
   const start: TradingMissionReactorShape["start"] = Effect.fn("start")(function* () {

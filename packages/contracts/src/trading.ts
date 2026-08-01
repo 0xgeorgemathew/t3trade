@@ -86,6 +86,7 @@ export const TradingPositionView = Schema.Struct({
   market: Schema.String,
   size: Schema.Number,
   entryPrice: Schema.optional(Schema.Number),
+  markPrice: Schema.optional(Schema.Number),
   unrealisedPnl: Schema.Number,
   marginUsed: Schema.Number,
   protectedSize: Schema.Number,

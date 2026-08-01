@@ -235,6 +235,37 @@ const handlers = {
       return published;
     }),
 
+  trading_request_entry: (input) =>
+    Effect.gen(function* () {
+      const { threadId, mission } = yield* resolveBoundCall(input.missionId);
+      const engine = yield* OrchestrationEngineService;
+      const crypto = yield* Crypto.Crypto;
+      const commandId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      const createdAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+      yield* engine
+        .dispatch({
+          type: "trading.execution.requested",
+          commandId: CommandId.make(commandId),
+          threadId: ThreadId.make(threadId),
+          missionId: TradingMissionId.make(input.missionId),
+          intent: input.intent,
+          expectedAuthorityVersion: input.expectedAuthorityVersion,
+          activeHarnessRunId: input.activeHarnessRunId,
+          createdAt,
+        })
+        .pipe(Effect.orDie);
+      return {
+        executionId: commandId,
+        status: "submitted" as const,
+        cloid: "",
+        orderResults: [],
+        budget: {
+          remainingCumulativeLossUsd: mission.authority.maximumCumulativeLossUsd,
+          exhausted: false,
+        },
+      };
+    }),
+
   // -- §14.2 read-only market-data tools -------------------------------------
   //
   // Every read handler resolves the bound mission first (the same capability +

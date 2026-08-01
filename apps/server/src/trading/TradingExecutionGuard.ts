@@ -34,6 +34,7 @@ export class TradingExhaustionError extends Schema.TaggedErrorClass<TradingExhau
       "budget_exhausted",
       "action_not_permitted_under_exhaustion",
       "resume_blocked",
+      "close_did_not_flatten",
     ]),
     detail: Schema.optional(Schema.String),
   },
@@ -158,10 +159,37 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
     SqlClient.SqlClient | HyperliquidGateway | HyperliquidInfoClient
   > =>
     Effect.gen(function* () {
-      // A reduce-only close is permitted under exhaustion (§16.4). Run it
-      // through the execution service (which signs + submits a reduce-only
-      // IOC), then reconcile to confirm the canonical position is flat.
-      yield* execution.submitOrder(executionInput).pipe(
+      const before = yield* reconciler
+        .reconcile(
+          {
+            missionId: executionInput.intent.missionId,
+            masterAddress: executionInput.masterAddress,
+            market: executionInput.intent.market,
+          },
+          "before_execution",
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new TradingExhaustionError({
+                reason: "budget_exhausted",
+                detail: `reconcile failed before close: ${cause.reason}`,
+              }),
+          ),
+        );
+      const position = before.position;
+      if (position === null || position.size === 0) return yield* Effect.void;
+      const closeIntent = {
+        ...executionInput.intent,
+        actionType: "close" as const,
+        side: position.size > 0 ? ("sell" as const) : ("buy" as const),
+        size: Math.abs(position.size),
+        orderPreference: "marketable_ioc" as const,
+        reduceOnly: true,
+      };
+      // A reduce-only close is permitted under exhaustion (§16.4). Always
+      // submit the canonical position as an IOC, regardless of caller input.
+      yield* execution.submitOrder({ ...executionInput, intent: closeIntent }).pipe(
         Effect.mapError(
           (cause) =>
             new TradingExhaustionError({
@@ -170,7 +198,7 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
             }),
         ),
       );
-      const { intent } = executionInput;
+      const { intent } = { intent: closeIntent };
       // Reconcile to confirm flat. The master address is the §10.6 identity
       // for canonical reads — resolved by the caller through the mission's
       // trading account, threaded here via a closure-built input.
@@ -196,7 +224,7 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
       // position is not flat rather than marking the mission closed on a lie.
       if (state.position !== null && state.position.size !== 0) {
         return yield* new TradingExhaustionError({
-          reason: "budget_exhausted",
+          reason: "close_did_not_flatten",
           detail: `close_did_not_flatten: size ${state.position.size} remains`,
         });
       }

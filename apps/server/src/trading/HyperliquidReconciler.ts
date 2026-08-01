@@ -201,7 +201,7 @@ function readCanonicalFills(
       .map(
         (f) =>
           ({
-            fillId: `${f.oid}-${f.time}`,
+            fillId: f.hash ?? f.cloid ?? `${f.oid}-${f.time}`,
             missionId: input.missionId,
             cloid: f.cloid,
             orderId: f.oid,
@@ -373,6 +373,25 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
       // here so the projection and loss-budget accounting read reconciled truth.
       yield* persistFills(fills);
       yield* persistOpenOrders(openOrders, input);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        UPDATE trading_risk_reservations
+        SET status = 'released', released_at = ${observedAt}
+        WHERE mission_id = ${input.missionId}
+          AND status = 'reserved'
+          AND execution_id IN (
+            SELECT execution_id FROM trading_execution_records
+            WHERE status IN ('filled', 'rejected', 'cancelled', 'failed')
+          )
+      `.pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingReconciliationError({
+              reason: "persist_failed",
+              detail: cause instanceof Error ? cause.message : String(cause),
+            }),
+        ),
+      );
 
       yield* Effect.logInfo("trading reconciled", { missionId: input.missionId, trigger });
       return { position, openOrders, fills, observedAt } as ReconciledState;
