@@ -205,7 +205,7 @@ const INITIAL_STATE: FakeState = {
 // Build the Ref once outside the layer so the suite-scoped layer and every
 // test share the same mutable cell. (it.layer memoises the layer, so this is
 // safe: the Ref is constructed a single time at module load.)
-const stateRef = Effect.runSync(Ref.make<FakeState>(INITIAL_STATE));
+const stateRef = Ref.makeUnsafe<FakeState>(INITIAL_STATE);
 
 const layer = it.layer(
   HyperliquidReconcilerLive.pipe(
