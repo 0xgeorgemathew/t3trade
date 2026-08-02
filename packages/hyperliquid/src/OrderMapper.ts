@@ -180,9 +180,14 @@ export function buildOrderAction(
         // Hyperliquid order-wire uses "c" for the client order id inside an
         // order leg (verified against hyperliquid-python-sdk's
         // order_request_to_order_wire). The cancel-by-cloid action's top-level
-        // leg uses "cloid"; the order leg uses "c". Getting this wrong produces
-        // a self-consistent signature that the exchange rejects ("wallet does
-        // not exist"), because the action hash differs from the canonical shape.
+        // leg uses "cloid"; the order leg uses "c".
+        //
+        // Getting this wrong fails silently rather than loudly: an unrecognised
+        // key still msgpacks, so the signature verifies and the order is
+        // accepted — the exchange simply never registers the cloid. The
+        // original Gate E fill was stored with `cloid: null` under the old key
+        // while every status read "ok". The cost lands later: `cancelByCloid`
+        // has nothing to address, and no cloid comes back to reconcile a fill.
         c: order.cloid,
       },
     ],

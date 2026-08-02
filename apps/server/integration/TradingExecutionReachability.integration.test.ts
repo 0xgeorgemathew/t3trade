@@ -421,6 +421,7 @@ it.live(
       // captures process.env at build time); restore it on release.
       const prevSignerKey = setInterimSignerEnv();
       yield* Effect.acquireUseRelease(
+        // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- The reachability proof needs ONE runtime shared across many separate runPromise calls so dispatch, the reactors, and the SQL connection are the same instances; it.effect's per-test layer cannot express that shared lifetime.
         Effect.sync(() => ManagedRuntime.make(layer)),
         (runtime) =>
           Effect.gen(function* () {

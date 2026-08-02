@@ -2,9 +2,18 @@
  * Deterministic client order id (cloid) - spec §15.5.
  *
  * `derive16Bytes(missionId, strategyVersion, executionSequence, actionType)`
- * produces a stable 16-byte cloid so a retry of the same action reuses the
- * same cloid and the exchange deduplicates the order. Identical inputs give
- * identical cloids; different inputs must not collide.
+ * produces a stable 16-byte cloid so a retry of the same action carries the
+ * same cloid. Identical inputs give identical cloids; different inputs must not
+ * collide.
+ *
+ * **A cloid is a correlation id, not an idempotency key.** Hyperliquid enforces
+ * cloid uniqueness only among *resting* orders, and a marketable IOC never
+ * rests — resubmitting one is verified live (`executionLive.test.ts`) to open a
+ * second order that fills again. What the stable cloid buys is reconciliation:
+ * the Info API echoes it back on the order and its fills, so a fill can be
+ * joined to the execution record that caused it. Retry safety belongs to the
+ * caller — `HyperliquidExecutionService` refuses to resubmit a record that has
+ * already reached the exchange.
  *
  * Algorithm (owner-approved): SHA-256 over the concatenated inputs, taking
  * the first 16 bytes, hex-encoded as a `0x`-prefixed 34-character lowercase
