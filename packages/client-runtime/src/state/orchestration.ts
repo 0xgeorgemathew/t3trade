@@ -6,13 +6,15 @@ import * as Crypto from "effect/Crypto";
 import { createEnvironmentCommand, createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
 import {
   type TradingMissionControlInput,
+  type TradingMissionCreateInput,
   type TradingRiskControlInput,
   tradingMissionControl,
+  tradingMissionCreate,
   tradingRiskControl,
 } from "../operations/commands.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 
-export type { TradingMissionControlInput, TradingRiskControlInput };
+export type { TradingMissionControlInput, TradingMissionCreateInput, TradingRiskControlInput };
 
 export function createOrchestrationEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | Crypto.Crypto | R, E>,
@@ -45,6 +47,10 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
     riskControl: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:trading:risk-control",
       execute: (input: TradingRiskControlInput) => tradingRiskControl(input),
+    }),
+    missionCreate: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:trading:mission-create",
+      execute: (input: TradingMissionCreateInput) => tradingMissionCreate(input),
     }),
   };
 }

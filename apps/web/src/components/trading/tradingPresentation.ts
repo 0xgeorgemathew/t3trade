@@ -261,3 +261,52 @@ export function formatDuration(millis: number): string {
   if (minutes > 0) return `${minutes}m ${seconds}s`;
   return `${seconds}s`;
 }
+
+// -- new-mission form (development only) -------------------------------------
+//
+// The POC has no mission-creation surface: Privy owns account onboarding and
+// arrives in PROMPT-06, and nothing before it dispatches `trading.mission.create`.
+// Until then the workspace offers a seeding form so the protection and control
+// paths can be exercised end-to-end by hand. The two derivations below are here
+// rather than in the component so they can be tested without rendering.
+
+/** A thread a new mission could bind to. */
+export interface MissionThreadOption {
+  readonly threadId: string;
+  readonly title: string;
+}
+
+/**
+ * The threads that can take a new mission.
+ *
+ * §10.2 freezes one active mission onto one thread, so a thread that already
+ * carries a live mission is not offered — picking it would only produce a
+ * `TradingMissionAlreadyActiveError` at the reactor.
+ */
+export function selectableMissionThreads(
+  threads: ReadonlyArray<{
+    readonly id: string;
+    readonly title: string;
+    readonly archivedAt: string | null;
+  }>,
+  boundThreadIds: ReadonlySet<string>,
+): ReadonlyArray<MissionThreadOption> {
+  return threads
+    .filter((thread) => thread.archivedAt === null && !boundThreadIds.has(thread.id))
+    .map((thread) => ({ threadId: thread.id, title: thread.title }));
+}
+
+/** Why a new-mission form cannot be submitted yet, or null when it can. */
+export function newMissionBlocker(input: {
+  readonly threadId: string | null;
+  readonly instruction: string;
+  readonly allocatedCapitalUsd: number;
+  readonly tradingAccountId: string;
+}): string | null {
+  if (input.threadId === null) return "Pick a thread to bind the mission to.";
+  if (input.instruction.trim().length === 0)
+    return "Write the instruction the harness will act on.";
+  if (!(input.allocatedCapitalUsd > 0)) return "Allocated capital must be greater than zero.";
+  if (input.tradingAccountId.trim().length === 0) return "Name the trading account.";
+  return null;
+}

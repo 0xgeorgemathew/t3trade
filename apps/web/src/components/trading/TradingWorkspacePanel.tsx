@@ -11,6 +11,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useProjects } from "../../state/entities";
 import { SettingsPageContainer, SettingsSection } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
+import { NewMissionForm } from "./NewMissionForm";
 import {
   deriveCompletionSummary,
   deriveMissionStrip,
@@ -501,6 +502,13 @@ function TradingWorkspaceForEnvironment({ environmentId }: { environmentId: Envi
           </p>
         ) : null}
       </SettingsSection>
+
+      {import.meta.env.DEV ? (
+        <NewMissionForm
+          environmentId={environmentId}
+          boundThreadIds={new Set(missions.map((mission) => mission.threadId))}
+        />
+      ) : null}
 
       {missions.map((mission) => (
         <MissionWithControls key={mission.id} mission={mission} environmentId={environmentId} />

@@ -11,6 +11,8 @@ import {
   humanizeLiteral,
   isMissionComplete,
   isPositionDataStale,
+  newMissionBlocker,
+  selectableMissionThreads,
   shouldShowMissionStrip,
 } from "./tradingPresentation";
 
@@ -255,5 +257,57 @@ describe("formatDuration", () => {
     expect(formatDuration(45_000)).toBe("45s");
     expect(formatDuration(150_000)).toBe("2m 30s");
     expect(formatDuration(3_930_000)).toBe("1h 5m");
+  });
+});
+
+describe("selectableMissionThreads", () => {
+  const thread = (id: string, archivedAt: string | null = null) => ({
+    id,
+    title: `Thread ${id}`,
+    archivedAt,
+  });
+
+  it("offers the threads that are free to take a mission", () => {
+    const options = selectableMissionThreads([thread("a"), thread("b")], new Set());
+    expect(options.map((option) => option.threadId)).toEqual(["a", "b"]);
+    expect(options[0]?.title).toBe("Thread a");
+  });
+
+  // §10.2 freezes one active mission onto one thread, so offering a bound
+  // thread would only produce a rejection at the reactor.
+  it("withholds a thread that already carries a mission", () => {
+    const options = selectableMissionThreads([thread("a"), thread("b")], new Set(["a"]));
+    expect(options.map((option) => option.threadId)).toEqual(["b"]);
+  });
+
+  it("withholds archived threads", () => {
+    const options = selectableMissionThreads([thread("a", "2026-08-02T00:00:00Z")], new Set());
+    expect(options).toEqual([]);
+  });
+});
+
+describe("newMissionBlocker", () => {
+  const valid = {
+    threadId: "thread_1",
+    instruction: "Trade ETH momentum",
+    allocatedCapitalUsd: 50,
+    tradingAccountId: "local-hyperliquid-testnet",
+  };
+
+  it("admits a complete form", () => {
+    expect(newMissionBlocker(valid)).toBeNull();
+  });
+
+  it("names what is missing, one thing at a time", () => {
+    expect(newMissionBlocker({ ...valid, threadId: null })).toMatch(/thread/i);
+    expect(newMissionBlocker({ ...valid, instruction: "   " })).toMatch(/instruction/i);
+    expect(newMissionBlocker({ ...valid, tradingAccountId: "" })).toMatch(/account/i);
+  });
+
+  // A blank capital field parses to NaN, which must block rather than dispatch
+  // a mission with an unusable allocation.
+  it("blocks non-positive and unparseable capital", () => {
+    expect(newMissionBlocker({ ...valid, allocatedCapitalUsd: 0 })).toMatch(/capital/i);
+    expect(newMissionBlocker({ ...valid, allocatedCapitalUsd: Number.NaN })).toMatch(/capital/i);
   });
 });

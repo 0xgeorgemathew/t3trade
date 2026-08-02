@@ -20,6 +20,7 @@ import {
   HyperliquidWebSocketClientLive,
 } from "@t3tools/hyperliquid";
 import { HyperliquidExecutionServiceLive } from "./HyperliquidExecutionService.ts";
+import { TradingAccountBootstrapLive } from "./TradingAccountBootstrap.ts";
 import { HyperliquidReconcilerLive } from "./HyperliquidReconciler.ts";
 import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingExecutionGuardLive } from "./TradingExecutionGuard.ts";
@@ -111,6 +112,9 @@ const TradingExecutionLayerLive = Layer.mergeAll(
   TradingFillReconcilerLive,
   TradingEmergencyCloseServiceLive,
   TradingControlServiceLive,
+  // Provisions the account row a mission names. Merged here because it needs
+  // the resolved interim signer, which the foundation below supplies.
+  TradingAccountBootstrapLive,
 ).pipe(Layer.provideMerge(TradingProtectionLayerLive));
 
 export const TradingLayerLive = Layer.mergeAll(
