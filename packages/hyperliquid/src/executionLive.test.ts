@@ -272,9 +272,10 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
           freshness: { observedAt: cancelBook.time, source: "info_api", staleAfterMillis: 2_000 },
         };
         const nowMsResting = yield* Effect.clockWith((c) => c.currentTimeMillis);
-        // A resting GTC buy priced well below the bid — it will not cross, so it
-        // rests and is available to cancel.
-        const restingPx = (cancelBbo.bidPrice ?? 1) * 0.5;
+        // A resting GTC buy priced just below the bid (5% under) — it will not
+        // cross the ask, so it rests and is available to cancel. Kept close to
+        // the market so 0.01 ETH clears the $10 minimum notional.
+        const restingPx = (cancelBbo.bidPrice ?? 2_000) * 0.95;
         const restingOrder = yield* mapOrder({
           intent: {
             missionId: MISSION,

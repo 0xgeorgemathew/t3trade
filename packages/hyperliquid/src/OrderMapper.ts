@@ -177,7 +177,13 @@ export function buildOrderAction(
         s: order.size,
         r: order.reduceOnly,
         t: { limit: { tif: order.timeInForce === "ioc" ? "Ioc" : "Gtc" } },
-        cloid: order.cloid,
+        // Hyperliquid order-wire uses "c" for the client order id inside an
+        // order leg (verified against hyperliquid-python-sdk's
+        // order_request_to_order_wire). The cancel-by-cloid action's top-level
+        // leg uses "cloid"; the order leg uses "c". Getting this wrong produces
+        // a self-consistent signature that the exchange rejects ("wallet does
+        // not exist"), because the action hash differs from the canonical shape.
+        c: order.cloid,
       },
     ],
     grouping: "na",
