@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PROMPT-04 Remediation — 2026-08-02</title>
+    <style>
+      :root {
+        --bg: #0b0e14;
+        --surface: #121620;
+        --surface-2: #1a2030;
+        --border: #2a3142;
+        --text: #e6e9ef;
+        --muted: #8b94a8;
+        --accent: #4f9cf9;
+        --green: #3fb950;
+        --red: #f85149;
+        --amber: #d29922;
+        --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        line-height: 1.6;
+        font-size: 15px;
+      }
+      .wrap {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 40px 24px 80px;
+      }
+      h1 {
+        font-size: 28px;
+        margin: 0 0 4px;
+      }
+      h2 {
+        font-size: 20px;
+        margin: 36px 0 12px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border);
+      }
+      h3 {
+        font-size: 16px;
+        margin: 24px 0 8px;
+        color: var(--accent);
+      }
+      .meta {
+        color: var(--muted);
+        font-size: 13px;
+        margin-bottom: 24px;
+      }
+      .meta code,
+      p code,
+      li code,
+      td code {
+        font-family: var(--mono);
+        font-size: 13px;
+        background: var(--surface-2);
+        padding: 1px 5px;
+        border-radius: 3px;
+      }
+      pre {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 14px;
+        overflow-x: auto;
+      }
+      pre code {
+        font-family: var(--mono);
+        font-size: 13px;
+        background: none;
+        padding: 0;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 12px;
+        margin: 20px 0;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px;
+      }
+      .card .num {
+        font-size: 24px;
+        font-weight: 700;
+      }
+      .card .lbl {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-top: 2px;
+      }
+      .card .delta {
+        font-size: 13px;
+        margin-top: 8px;
+      }
+      .up {
+        color: var(--green);
+      }
+      .warn {
+        color: var(--amber);
+      }
+      .down {
+        color: var(--red);
+      }
+      .defect {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--red);
+        border-radius: 6px;
+        padding: 16px;
+        margin: 14px 0;
+      }
+      .defect.resolved {
+        border-left-color: var(--green);
+      }
+      .defect h4 {
+        margin: 0 0 6px;
+        font-size: 15px;
+      }
+      .defect .severity {
+        display: inline-block;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 2px 7px;
+        border-radius: 3px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-left: 8px;
+        vertical-align: middle;
+      }
+      .sev-p0 {
+        background: var(--red);
+        color: #fff;
+      }
+      .sev-p1 {
+        background: var(--amber);
+        color: #000;
+      }
+      .tag {
+        display: inline-block;
+        font-size: 11px;
+        padding: 2px 6px;
+        border-radius: 3px;
+        background: var(--surface-2);
+        color: var(--muted);
+        margin-right: 4px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 12px 0;
+        font-size: 13px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 600;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .gate {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        margin: 8px 0;
+      }
+      .gate .mark {
+        font-size: 18px;
+        font-weight: 700;
+        width: 24px;
+        text-align: center;
+      }
+      details {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 12px 14px;
+        margin: 10px 0;
+      }
+      summary {
+        cursor: pointer;
+        font-weight: 600;
+      }
+      details[open] summary {
+        margin-bottom: 10px;
+      }
+      a {
+        color: var(--accent);
+      }
+      .callout {
+        background: var(--surface-2);
+        border-radius: 6px;
+        padding: 14px 16px;
+        margin: 14px 0;
+        border-left: 3px solid var(--accent);
+      }
+      ul {
+        padding-left: 20px;
+      }
+      li {
+        margin: 4px 0;
+      }
+      .footer {
+        margin-top: 48px;
+        padding-top: 20px;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>PROMPT-04 Remediation</h1>
+      <div class="meta">
+        Branch <code>fix/trading-04-remediation</code> → <code>main</code> · 2026-08-02 · Model
+        builtin:zai-coding-plan/GLM-5.2 (ZCode harness)
+      </div>
+
+      <p>
+        A post-merge audit of PROMPT-04 found one correctness defect mislabelled as intended
+        behavior, two signing-path defects on actions that had never been exercised live, a red test
+        gate, and test coverage that deferred in a circle. This report records each defect, its root
+        cause, the fix, and the fresh Gate E evidence. The earlier close-out's live evidence covered
+        the entry path only; this remediation proves the full entry → retry-dedup → close-to-flat →
+        live-cancel chain.
+      </p>
+
+      <div class="cards">
+        <div class="card">
+          <div class="num up">9</div>
+          <div class="lbl">Commits</div>
+          <div class="delta up">one per task</div>
+        </div>
+        <div class="card">
+          <div class="num up">4</div>
+          <div class="lbl">P0 defects fixed</div>
+          <div class="delta up">all live-verified</div>
+        </div>
+        <div class="card">
+          <div class="num up">0</div>
+          <div class="lbl">Open caveats</div>
+          <div class="delta up">close path resolved</div>
+        </div>
+        <div class="card">
+          <div class="num">216</div>
+          <div class="lbl">Test files green</div>
+          <div class="delta">1908 passed · 9 skipped</div>
+        </div>
+      </div>
+
+      <h2>Gate E — live testnet (2026-08-02)</h2>
+      <p>
+        <code>T3_TRADES_LIVE_EXECUTION=1</code> against
+        <code>https://api.hyperliquid-testnet.xyz</code>, master address
+        <code>0xb2b6b516df4b159c0e4eb1d6d7d65a5f2f04c30e</code>. Every assertion below is a hard
+        <code>expect</code>, not a log.
+      </p>
+
+      <div class="gate">
+        <span class="mark up">✓</span>
+        <div>
+          <b>Entry accepted + filled.</b> Marketable IOC buy, <code>status: "ok"</code>, position
+          opened.
+        </div>
+      </div>
+      <div class="gate">
+        <span class="mark up">✓</span>
+        <div>
+          <b>Retry deduped.</b> Second submit of the same cloid returned
+          <code>status: "ok"</code> with no second fill — enforced by
+          <b>exchange-side cloid dedup</b> (Task 4's <code>0x</code> prefix made the cloid register;
+          the prior bare-hex form was silently dropped).
+        </div>
+      </div>
+      <div class="gate">
+        <span class="mark up">✓</span>
+        <div>
+          <b>Close reconciles to flat.</b> Reduce-only marketable sell, <code>status: "ok"</code>,
+          post-close <code>clearinghouseState</code> shows no ETH position. The stranded 0.01 ETH
+          long from the prior Gate E run was also flattened.
+        </div>
+      </div>
+      <div class="gate">
+        <span class="mark up">✓</span>
+        <div>
+          <b>Cancel-by-cloid accepted live</b> (Task 3's fix, sent live for the first time). Resting
+          GTC placed <code>status: "ok"</code>, then <code>cancelByCloid</code> returned
+          <code>status: "ok"</code>.
+        </div>
+      </div>
+
+      <h2>The defects</h2>
+
+      <div class="defect resolved">
+        <h4>
+          1. Missing-stop <code>openPositionRisk</code> booked the full notional
+          <span class="severity sev-p0">P0</span>
+        </h4>
+        <p>
+          <span class="tag">lossAccounting.ts</span><span class="tag">TradingBudgetReader.ts</span>
+          <code>openPositionRisk</code> used <code>stopPrice ?? 0</code>, so a long with no stop
+          computed <code>entry − 0 = entry</code> and booked <code>entry × size</code> as risk —
+          exhausting the budget instantly. <code>stopPrice</code> is genuinely optional on the
+          contract; every record written before migration 040 has <code>stop_price IS NULL</code>,
+          so this was live-reachable.
+        </p>
+        <p>
+          <b>Fix:</b> when either price is <code>undefined</code>, the stop-distance term
+          contributes 0 (unknown loss, not zero-priced). Fee and slippage terms always count. Three
+          artefacts that pinned the wrong behavior as "BY DESIGN" were deleted/inverted; the
+          budget-reader test now feeds the output through <code>evaluateLossBudget</code> and
+          asserts the budget is <b>not</b> exhausted. The reader's stop-fetching subquery was also
+          hardened from mission-wide-latest to a market-correlated, status-filtered scalar subquery.
+        </p>
+        <p>
+          <b>Probe:</b>
+          <code
+            >openPositionRisk({direction:"long", size:1, weightedEntryPrice:3000,
+            stopPrice:undefined})</code
+          >
+          → was <code>3000</code>, now the fee terms only.
+        </p>
+      </div>
+
+      <div class="defect resolved">
+        <h4>2. <code>tools.test.ts</code> red gate <span class="severity sev-p1">gate</span></h4>
+        <p>
+          <span class="tag">tools.test.ts</span> The sorted tool-name gate was never updated when
+          <code>trading_request_entry</code> landed, leaving <code>pnpm test</code> red on
+          <code>main</code>. Added <code>TRADING_REQUEST_ENTRY_TOOL</code> (the exported constant,
+          per file convention) in sorted position. Predated the Phase-4 close-out; not a regression
+          from it.
+        </p>
+      </div>
+
+      <div class="defect resolved">
+        <h4>
+          3. <code>buildCancelByCloidAction</code> missing <code>type</code> + wrong key
+          <span class="severity sev-p0">P0</span>
+        </h4>
+        <p>
+          <span class="tag">OrderMapper.ts</span> Returned
+          <code>{ cancels: [{ coin, cloid }] }</code> — no <code>type</code>, and the leg used
+          <code>coin</code> (symbol) instead of <code>asset</code>
+          (numeric index). Verified against the Hyperliquid exchange-endpoint docs and
+          <code>hyperliquid-python-sdk</code>: the canonical shape is
+          <code>{ type: "cancelByCloid", cancels: [{ asset, cloid }] }</code>. Same class of defect
+          as the order-path <code>type:"order"</code> fix. This action is live-reachable via
+          <code>blockForExhaustion</code> and had never been sent live.
+        </p>
+        <p>
+          <b>Fix:</b> signature now <code>(assetIndex, cloid)</code>; the caller resolves the index
+          via <code>gateway.resolveMarket</code> (same as the order path). The guard's silent
+          <code>Effect.catch(() => Effect.void)</code> swallow was replaced with
+          <code>catchTag</code> + warn-level logging (cloid + exchange reason) so a failed cancel is
+          visible, not silent.
+        </p>
+      </div>
+
+      <div class="defect resolved">
+        <h4>
+          4. Cloid bare-hex form was silently dropped by the exchange
+          <span class="severity sev-p0">P0</span>
+        </h4>
+        <p>
+          <span class="tag">Cloid.ts</span> <code>deriveCloid</code> returned a bare 32-char hex
+          string. Reading the live Gate E entry (oid <code>57307761690</code>) back via the Info API
+          showed the exchange stored <code>"cloid": null</code> — the bare form was dropped, so
+          retry-dedup rested entirely on local idempotency-key convergence. Verified against the
+          SDK's <code>Cloid.to_raw()</code>: the wire shape is <code>0x</code>-prefixed 34 chars (16
+          bytes). Our bytes were correct; only the prefix was missing.
+        </p>
+        <p>
+          <b>Fix:</b> <code>deriveCloid</code> returns <code>0x${hex}</code>. Applied at the single
+          boundary so one representation flows everywhere (DB column, reconciler join, UI slice).
+          After the fix, the live retry produced no second order — exchange-side dedup is now
+          effective.
+        </p>
+      </div>
+
+      <div class="defect resolved">
+        <h4>
+          5. Order wire used <code>cloid</code> where the canonical form is <code>c</code>
+          <span class="severity sev-p0">P0</span>
+          <span class="tag">root cause of the live failure</span>
+        </h4>
+        <p>
+          <span class="tag">OrderMapper.ts</span> This was the root cause of the live Gate E failure
+          and the original "sell-action signature recovers to a wrong address" symptom from commit
+          <code>5dfb4bc14</code>. <code>buildOrderAction</code> emitted the client order id under
+          key <code>cloid</code> inside the order leg; the canonical Hyperliquid wire format uses
+          key <code>c</code> (verified byte-for-byte against <code>hyperliquid-python-sdk</code>'s
+          <code>order_request_to_order_wire</code>; the cancel-by-cloid top-level leg genuinely uses
+          <code>cloid</code>).
+        </p>
+        <p>
+          The wrong key changed the msgpacked action bytes → the action hash → the EIP-712 digest →
+          the signature. The signature was <b>self-consistent</b> with the malformed action (offline
+          EIP-712 recovery matched), but the exchange hashes the canonical <code>c</code> shape, so
+          it recovered a different address and rejected with "User or API Wallet &lt;wrong addr&gt;
+          does not exist."
+        </p>
+        <p>
+          <b>Reference-vector comparison</b> (hardhat test key,
+          <code>hyperliquid-python-sdk 0.24.0</code>): the EIP-712 domain
+          (<code>chainId=1337</code>), action-hash construction, agent struct hash, and signature
+          shape all match the SDK byte-for-byte. <code>Signing.ts</code> was exonerated and
+          <b>not edited</b>. The one-line fix (<code>cloid</code> → <code>c</code>) made our action
+          hash match the SDK's exactly.
+        </p>
+      </div>
+
+      <div class="defect resolved">
+        <h4>
+          6–8. Test coverage that deferred in a circle <span class="severity sev-p1">coverage</span>
+        </h4>
+        <p>
+          <span class="tag">Task 6</span> <code>blockForExhaustion</code> +
+          <code>reduceOnlyClose</code> had no direct test; the <code>it.skip</code> blocks falsely
+          claimed <code>ExecutionReactorLoop.test.ts</code> covered them. Added 4 cases on the real
+          guard + real execution service + recording fakes: cancel-only-increasing,
+          swallow-and-log-on-failure, reduce-only-submit-shape,
+          <code>close_did_not_flatten</code> escalation.
+        </p>
+        <p>
+          <span class="tag">Task 7</span> The §16.4 blocked-mission control matrix (revoke/pause
+          permitted, resume rejected, reconcile-before-resume) was missing — the exact bug B4 fixed.
+          Added 4 cases on the existing <code>TestLayer</code>.
+        </p>
+        <p>
+          <span class="tag">Task 8</span> The end-to-end reachability chain (<code
+            >trading_request_entry</code
+          >
+          → command → decider → event → reactor → exchange → reconcile → projection) had no test.
+          Added <code>TradingExecutionReachability.integration.test.ts</code>, solving the genuine
+          <code>TradingLayerLive</code> overlay blocker by rebuilding the trading layer with fakes
+          at the foundation.
+        </p>
+      </div>
+
+      <h2>What was <i>not</i> the problem</h2>
+      <div class="callout">
+        <b>Signing.ts is correct.</b> The prompt froze it on suspicion, and the reference-vector
+        comparison exonerated it: the EIP-712 phantom-agent domain (<code>chainId=1337</code>), the
+        action-hash construction, the agent struct hash, and the signature shape all match
+        <code>hyperliquid-python-sdk</code> byte-for-byte. The "wrong address" symptom was a wire
+        field-name bug in <code>buildOrderAction</code> (action-construction territory, not the
+        frozen hashing/EIP-712 code). <code>Signing.ts</code> and <code>Msgpack.ts</code> were not
+        edited.
+      </div>
+
+      <h2>Gates</h2>
+      <table>
+        <tr>
+          <th>Gate</th>
+          <th>Status</th>
+          <th>Evidence</th>
+        </tr>
+        <tr>
+          <td><b>A</b> — <code>pnpm tc && pnpm lint && pnpm test</code></td>
+          <td class="up">GREEN</td>
+          <td>
+            0 typecheck errors; 216 files / 1908 tests pass. (One pre-existing flaky web test,
+            <code>stashImageCompression</code>, intermittently times out under parallel load —
+            unrelated to trading; passes in isolation.)
+          </td>
+        </tr>
+        <tr>
+          <td><b>B</b> — targeted vitest</td>
+          <td class="up">GREEN</td>
+          <td>
+            Missing-stop risk = fee terms only; corrected cancel shape; blocked-mission matrix.
+          </td>
+        </tr>
+        <tr>
+          <td><b>C</b> — Task 8 integration</td>
+          <td class="up">GREEN</td>
+          <td>tool → command → event → reactor → fake exchange → reconcile → projection.</td>
+        </tr>
+        <tr>
+          <td><b>D</b> — Task 6 suites</td>
+          <td class="up">GREEN</td>
+          <td>
+            <code>blockForExhaustion</code> + <code>reduceOnlyClose</code> asserted on real
+            services.
+          </td>
+        </tr>
+        <tr>
+          <td><b>E</b> — live testnet</td>
+          <td class="up">GREEN</td>
+          <td>
+            Entry accepted; retry deduped (exchange-side cloid); close to flat; live cancel
+            accepted.
+          </td>
+        </tr>
+        <tr>
+          <td><b>F</b> — spec site</td>
+          <td class="up">GREEN</td>
+          <td>
+            market-bender caveat resolved; both targets deployed (separate
+            <code>spec:</code> commit).
+          </td>
+        </tr>
+      </table>
+
+      <h2>Commits on <code>fix/trading-04-remediation</code></h2>
+      <details>
+        <summary>9 commits, one per task (click to expand)</summary>
+        <pre><code>4317a25e0 test(trading): add TRADING_REQUEST_ENTRY_TOOL to tools.test.ts sorted list
+5a1857e7e fix(trading): missing stop no longer books full notional as open-position risk
+c5d476578 fix(hyperliquid): cancel-by-cloid action carries type and asset index
+f54290e34 fix(hyperliquid): cloid is 0x-prefixed so the exchange records it
+94374c40e fix(hyperliquid): close path uses real szDecimals + marketable IOC, asserts flat
+46dd532df test(trading): real coverage for blockForExhaustion + reduceOnlyClose (D4)
+164c83980 test(trading): complete §16.4 blocked-mission control matrix (D4)
+f3b98e758 test(trading): end-to-end reachability — tool → command → event → reactor → exchange → projection
+8ec0c5bdb fix(hyperliquid): order wire uses 'c' for cloid, not 'cloid' (Gate E live fix)</code></pre>
+      </details>
+
+      <div class="footer">
+        PROMPT-04 remediation report · 2026-08-02 · Supersedes the close-out's open caveat on the
+        close path; see
+        <a href="prompt-04-closeout-2026-08-02.html">the close-out</a> for the original (entry-only)
+        live evidence.
+      </div>
+    </div>
+  </body>
+</html>

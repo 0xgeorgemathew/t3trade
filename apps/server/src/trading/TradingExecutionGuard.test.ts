@@ -150,15 +150,23 @@ layer("TradingExecutionGuard — §16.4 exhaustion enforcement", (it) => {
 
   // blockForExhaustion cancels increasing orders + transitions the mission to
   // blocked; reduceOnlyClose submits a reduce-only IOC and reconciles. Both
-  // require the full layer (SQL + gateway stubs + reconciled state machine)
-  // and are covered end-to-end by ExecutionReactorLoop.test.ts. Skipped here
-  // rather than reimplemented locally — the guard logic they add on top of
-  // guardAction is the SQL/gateway interaction, not a pure rule.
-  it.skip("blockForExhaustion cancels increasing orders and transitions to blocked (covered by ExecutionReactorLoop.test.ts)", () => {
-    // See ExecutionReactorLoop.test.ts (the M6 wiring fixture).
-  });
-
-  it.skip("reduceOnlyClose submits a reduce-only IOC and reconciles to flat (covered by ExecutionReactorLoop.test.ts)", () => {
-    // See ExecutionReactorLoop.test.ts (the M6 wiring fixture).
-  });
+  // blockForExhaustion and reduceOnlyClose own the SQL/gateway interaction
+  // (the cancel-by-cloid loop, the mission transition to blocked, the
+  // before/after reconcile, the close_did_not_flatten escalation). They need
+  // the full layer (SQL + recording fake exchange + reconciler + mission
+  // service), which this pure-rule unit file cannot supply without dragging
+  // in the entire execution stack. The real coverage lives in
+  // ExecutionReactorLoop.test.ts, which builds the real guard on top of the
+  // real execution + reconciler + recording fakes and asserts:
+  //   - blockForExhaustion cancels only increasing orders, transitions the
+  //     mission to blocked/cumulative_loss_limit, and still transitions when a
+  //     cancel fails (swallow-and-log).
+  //   - reduceOnlyClose submits a sell reduce-only IOC at the canonical size
+  //     and escalates close_did_not_flatten when the post-close position is
+  //     non-zero.
+  // These stubs are kept as signposts pointing at that file; the previous
+  // version falsely claimed ExecutionReactorLoop.test.ts covered them when it
+  // did not (it only exercised the permit matrix + submitCancel in isolation).
+  it.skip("blockForExhaustion — see ExecutionReactorLoop.test.ts (blockForExhaustion cancels increasing orders + transitions to blocked)", () => {});
+  it.skip("reduceOnlyClose — see ExecutionReactorLoop.test.ts (reduce-only IOC + close_did_not_flatten escalation)", () => {});
 });

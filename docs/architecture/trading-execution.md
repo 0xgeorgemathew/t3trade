@@ -164,6 +164,16 @@ signature = EIP-712 sign({
   encodes them as float64 and the hash diverges).
 - `expiresAfter` absent → marker `[0x00]` with **no** trailing bytes.
   Vault present → marker `[0x01]` + 20 raw address bytes (no `0x`).
+- **Wire field names are hash-critical and not always intuitive.** The order
+  leg's client-order-id key is `c`, not `cloid` (the cancel-by-cloid action's
+  top-level leg uses `cloid`; the order leg uses `c`). Every L1 action carries
+  a discriminating top-level `type` (`order`, `cancelByCloid`). A wrong field
+  name or missing `type` produces a signature that is self-consistent with
+  the malformed action but that the exchange rejects ("wallet does not exist"
+  — it recovers a wrong address against the canonical hash). The order-path
+  `type:"order"`, the order-leg `c` cloid key, and the cancel `type:
+"cancelByCloid"` + numeric `asset` index were all live-verified in the
+  PROMPT-04 remediation Gate E re-run (2026-08-02).
 
 **No runtime SDK.** Hand-rolled with `@noble/hashes` (sha3 `keccak_256`,
 utils) and `@noble/curves` (`secp256k1`), both already in the workspace
@@ -187,6 +197,16 @@ lossBudgetUsedUsd        = realizedLossUsedUsd
                            + sum(openPositionRiskUsd) + sum(pendingEntryRiskUsd)
 remainingCumulativeLossUsd = max(0, maximumCumulativeLossUsd - lossBudgetUsedUsd)
 ```
+
+**Missing-stop semantics (Eq 3):** `stopPrice` and `weightedEntryPrice`
+are both optional on the contract. When either is `undefined`, the
+directional loss-to-stop term contributes **0** — the loss is unknown, not
+zero-priced. A missing stop must NOT be substituted with $0 (which for a
+long computes `entry − 0 = entry`, booking the full notional as risk and
+exhausting the budget instantly). The fee and slippage terms are
+independent of the stop and always count. PROMPT-05's protection layer
+makes the stop always present; until then a missing stop is reported
+honestly as "no directional risk reserved."
 
 **Paid vs unpaid fees never double-count** (§16.2): paid entry fees live in
 `realizedMissionResultUsd`; they must not also be reserved as unpaid

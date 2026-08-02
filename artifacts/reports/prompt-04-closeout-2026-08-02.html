@@ -545,8 +545,10 @@
         <code>execution-plan</code>, <code>wiring-complete</code>, <code>session-report</code>,
         <code>completion-review</code>, <code>final-report</code>) were written against interim
         states of the work and several overstated completion — in particular the close/reduce-only
-        path, which has a signing-recovery issue and is <b>not</b> live-proven. Treat this document
-        as the single source of truth for PROMPT-04.
+        path, which had a signing-recovery issue and was <b>not</b> live-proven at the time.
+        <b>Update (2026-08-02):</b> the close path is now live-proven; see
+        <a href="prompt-04-remediation-2026-08-02.html">the remediation report</a>. Treat this
+        document together with the remediation report as the source of truth for PROMPT-04.
       </div>
 
       <!-- Summary band -->
@@ -562,10 +564,10 @@
             <div class="stat-label">Gate E — entry filled</div>
             <div class="stat-delta up">oid 57307761690</div>
           </div>
-          <div class="stat-card warn">
-            <div class="stat-num">1</div>
-            <div class="stat-label">Open caveat</div>
-            <div class="stat-delta warn">close-path signing</div>
+          <div class="stat-card">
+            <div class="stat-num">0</div>
+            <div class="stat-label">Open caveats</div>
+            <div class="stat-delta up">close path resolved</div>
           </div>
           <div class="stat-card">
             <div class="stat-num">~290</div>
@@ -594,11 +596,18 @@
           with a <b>422</b>. Fixed in <code>OrderMapper</code> (commit <code>5dfb4bc</code>) — the
           entry then filled on the next attempt.
         </p>
-        <div class="caveat">
-          <b>Caveat — close path.</b> The reduce-only / close path has a separate signing-recovery
-          issue: sell-action signatures recover to a wrong address on testnet. The
-          <b>entry — the primary acceptance criterion — is proven</b>; the close path needs its own
-          investigation (likely a msgpack serialization edge for <code>b:false</code>).
+        <div class="caveat resolved">
+          <b>Close path — resolved (2026-08-02, PROMPT-04 remediation).</b> The "signing-recovery
+          defect" was a Hyperliquid wire field-name bug, not a signing-math issue: the order leg's
+          client-order-id key was <code>cloid</code> where the canonical wire format uses
+          <code>c</code>. The EIP-712 phantom-agent signature was correct throughout (verified
+          byte-for-byte against <code>hyperliquid-python-sdk</code>). The wrong key changed the
+          action hash, so our signature was self-consistent with the malformed action but the
+          exchange recovered a different address and rejected it ("wallet does not exist"). After
+          the one-line fix, Gate E re-run is fully green: entry accepted+filled, retry deduped via
+          exchange-side cloid (Task 4's <code>0x</code> prefix made the cloid register), close
+          reconciled to flat, and a cancel-by-cloid action accepted live for the first time. Full
+          evidence in <a href="prompt-04-remediation-2026-08-02.html">the remediation report</a>.
         </div>
       </div>
 

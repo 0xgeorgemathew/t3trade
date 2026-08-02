@@ -177,7 +177,13 @@ export function buildOrderAction(
         s: order.size,
         r: order.reduceOnly,
         t: { limit: { tif: order.timeInForce === "ioc" ? "Ioc" : "Gtc" } },
-        cloid: order.cloid,
+        // Hyperliquid order-wire uses "c" for the client order id inside an
+        // order leg (verified against hyperliquid-python-sdk's
+        // order_request_to_order_wire). The cancel-by-cloid action's top-level
+        // leg uses "cloid"; the order leg uses "c". Getting this wrong produces
+        // a self-consistent signature that the exchange rejects ("wallet does
+        // not exist"), because the action hash differs from the canonical shape.
+        c: order.cloid,
       },
     ],
     grouping: "na",
@@ -185,10 +191,24 @@ export function buildOrderAction(
 }
 
 /**
- * Build the Hyperliquid `cancel` action payload for a cloid-keyed order.
+ * Build the Hyperliquid `cancelByCloid` action payload (insertion-order keys).
+ *
+ * Per the Hyperliquid exchange-endpoint spec, the action carries a top-level
+ * `type: "cancelByCloid"` and each cancel leg is keyed by the numeric
+ * `asset` index (the same ETH-universe index `buildOrderAction` threads as
+ * `a`), not by the coin symbol. The action hash depends on key order, so
+ * this is the single source of truth for the field sequence the signer
+ * msgpacks — mirroring `buildOrderAction`.
+ *
+ * `assetIndex` is runtime-resolved from live metadata by the caller, never
+ * copied into source.
  */
-export function buildCancelByCloidAction(coin: string, cloid: string): Record<string, unknown> {
+export function buildCancelByCloidAction(
+  assetIndex: number,
+  cloid: string,
+): Record<string, unknown> {
   return {
-    cancels: [{ coin, cloid }],
+    type: "cancelByCloid",
+    cancels: [{ asset: assetIndex, cloid }],
   };
 }

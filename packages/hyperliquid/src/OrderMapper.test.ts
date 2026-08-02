@@ -133,7 +133,7 @@ describe("mapOrder", () => {
         nowMs: 1_000,
       });
       expect(a.cloid).toBe(b.cloid);
-      expect(a.cloid).toMatch(/^[0-9a-f]{32}$/);
+      expect(a.cloid).toMatch(/^0x[0-9a-f]{32}$/);
     }),
   );
 });
@@ -152,18 +152,29 @@ describe("buildOrderAction / buildCancelByCloidAction", () => {
       expect(Object.keys(action)).toEqual(["type", "orders", "grouping"]);
       expect(action.type).toBe("order");
       const leg = (action.orders as unknown[])[0] as Record<string, unknown>;
+      // The full leg key sequence — hash-critical, so assert it exactly.
+      // Note the cloid field is "c" inside an order leg (the cancel-by-cloid
+      // action's top-level leg uses "cloid"; the order leg uses "c").
+      expect(Object.keys(leg)).toEqual(["a", "b", "p", "s", "r", "t", "c"]);
       // The asset index is threaded in (ETH = 2 on testnet), never copied.
       expect(leg.a).toBe(2);
       expect(leg.b).toBe(true);
-      expect(leg.cloid).toBe(order.cloid);
+      expect(leg.c).toBe(order.cloid);
+      expect(leg.cloid).toBeUndefined();
     }),
   );
 
-  it("builds a cancel-by-cloid action", () => {
-    const action = buildCancelByCloidAction("ETH", "deadbeefdeadbeefdeadbeefdeadbeef");
-    expect(Object.keys(action)).toEqual(["cancels"]);
+  it("builds a cancel-by-cloid action with insertion-order keys", () => {
+    // The cancel action mirrors the order action's shape: a discriminating
+    // top-level `type` and legs keyed by the numeric asset index, not the coin
+    // symbol. Key order is hash-critical, so assert the full sequence exactly.
+    const action = buildCancelByCloidAction(2, "0xdeadbeefdeadbeefdeadbeefdeadbeef");
+    expect(Object.keys(action)).toEqual(["type", "cancels"]);
+    expect(action.type).toBe("cancelByCloid");
     const cancel = (action.cancels as unknown[])[0] as Record<string, unknown>;
-    expect(cancel.coin).toBe("ETH");
-    expect(cancel.cloid).toBe("deadbeefdeadbeefdeadbeefdeadbeef");
+    expect(Object.keys(cancel)).toEqual(["asset", "cloid"]);
+    expect(cancel.asset).toBe(2);
+    expect(cancel.coin).toBeUndefined();
+    expect(cancel.cloid).toBe("0xdeadbeefdeadbeefdeadbeefdeadbeef");
   });
 });
