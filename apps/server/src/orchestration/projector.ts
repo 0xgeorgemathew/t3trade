@@ -753,6 +753,7 @@ export function projectEvent(
     // ProjectionPipeline, against its own projection table.
     case "trading.mission-create-requested":
     case "trading.mission-control-requested":
+    case "trading.mission-risk-control-requested":
     case "trading.mission-status-changed":
     case "trading.mission-strategy-published":
     case "trading.mission-watch-registered":

@@ -345,6 +345,7 @@ import { TradingExecutionGuardLive } from "../src/trading/TradingExecutionGuard.
 import { TradingFillReconcilerLive } from "../src/trading/TradingFillReconciler.ts";
 import { TradingProtectionServiceLive } from "../src/trading/TradingProtectionService.ts";
 import { TradingEmergencyCloseServiceLive } from "../src/trading/TradingEmergencyCloseService.ts";
+import { TradingControlServiceLive } from "../src/trading/TradingControlService.ts";
 import { TradingBudgetReaderLive } from "../src/trading/TradingBudgetReader.ts";
 import {
   TradingPreviewService,
@@ -410,12 +411,17 @@ const tradingExecutionCore = Layer.mergeAll(
 // HyperliquidWebSocketClient, which the guard and fill reconciler both need.
 // mergeAll builds in parallel, so it has to be a provideMerge underneath them
 // rather than a sibling in the same merge.
+const tradingProtectionForTest = TradingProtectionServiceLive.pipe(
+  Layer.provideMerge(coordinatorWithDeps),
+  Layer.provideMerge(tradingExecutionCore),
+);
+
 const tradingLayerForTest = Layer.mergeAll(
   TradingExecutionGuardLive,
   TradingFillReconcilerLive,
-  TradingProtectionServiceLive,
   TradingEmergencyCloseServiceLive,
-).pipe(Layer.provideMerge(coordinatorWithDeps), Layer.provideMerge(tradingExecutionCore));
+  TradingControlServiceLive,
+).pipe(Layer.provideMerge(tradingProtectionForTest));
 
 // --- layer composition ------------------------------------------------------
 // The real TradingMissionReactorLive provided with the faked trading layer

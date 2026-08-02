@@ -45,6 +45,7 @@ import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
 import { HyperliquidReconciler } from "./HyperliquidReconciler.ts";
 import { TradingProtectionService } from "./TradingProtectionService.ts";
 import { TradingEmergencyCloseService } from "./TradingEmergencyCloseService.ts";
+import { TradingControlService } from "./TradingControlService.ts";
 import { TradingBudgetReader } from "./TradingBudgetReader.ts";
 import { TradingFillReconciler } from "./TradingFillReconciler.ts";
 import { InterimSignerConfig } from "./InterimSignerConfig.ts";
@@ -57,6 +58,7 @@ type TradingRequestEvent = Extract<
   OrchestrationEvent,
   | { type: "trading.mission-create-requested" }
   | { type: "trading.mission-control-requested" }
+  | { type: "trading.mission-risk-control-requested" }
   | { type: "trading.mission-watch-fired" }
   | { type: "trading.execution-requested" }
 >;
@@ -64,6 +66,7 @@ type TradingRequestEvent = Extract<
 const HANDLED_EVENT_TYPES: ReadonlySet<string> = new Set([
   "trading.mission-create-requested",
   "trading.mission-control-requested",
+  "trading.mission-risk-control-requested",
   "trading.mission-watch-fired",
   "trading.execution-requested",
 ]);
@@ -130,6 +133,7 @@ const make = Effect.gen(function* () {
   const signerConfig = yield* InterimSignerConfig;
   const protection = yield* TradingProtectionService;
   const emergency = yield* TradingEmergencyCloseService;
+  const controls = yield* TradingControlService;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
@@ -380,6 +384,46 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * A workspace button pressed one of §14.7's exchange-touching controls.
+   *
+   * The whole point of these is that they do not need a harness turn, so this
+   * handler resolves the mission's canonical identity and calls the control
+   * service directly. Nothing here consults the harness binding, the decision
+   * lease, or the strategy version.
+   */
+  const processRiskControlRequested = Effect.fn("TradingMissionReactor.riskControl")(function* (
+    event: Extract<TradingRequestEvent, { type: "trading.mission-risk-control-requested" }>,
+  ) {
+    const { missionId, threadId, control, reductionPercent } = event.payload;
+
+    const mission = yield* missions.getMission(missionId);
+    const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+    const target = { missionId, masterAddress, market: mission.market };
+
+    const outcome = yield* control === "cancel_entries"
+      ? controls.cancelEntries(target)
+      : control === "reduce_position"
+        ? controls.reducePosition({ ...target, percent: reductionPercent ?? 100 })
+        : control === "close_position"
+          ? controls.closePosition(target)
+          : controls.closeAndRevoke(target);
+
+    yield* Effect.logInfo("trading deterministic control applied", {
+      missionId,
+      control,
+      summary: outcome.summary,
+    });
+
+    if (outcome.status !== undefined) {
+      yield* announceStatus({
+        missionId,
+        threadId,
+        status: outcome.status as TradingMissionStatus,
+      });
+    }
+  });
+
+  /**
    * The §17.2 write side. A harness raised `trading.execution.requested`; the
    * reactor answers it by running preview → guard → submit → reconcile, then
    * blocking the mission if the post-submit budget is exhausted. A refused
@@ -520,6 +564,8 @@ const make = Effect.gen(function* () {
         yield* processCreateRequested(event);
       } else if (event.type === "trading.mission-control-requested") {
         yield* processControlRequested(event);
+      } else if (event.type === "trading.mission-risk-control-requested") {
+        yield* processRiskControlRequested(event);
       } else if (event.type === "trading.mission-watch-fired") {
         yield* processWatchFired(event);
       } else {

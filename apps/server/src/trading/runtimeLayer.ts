@@ -35,6 +35,7 @@ import { TradingBudgetReaderLive } from "./TradingBudgetReader.ts";
 import { TradingFillReconcilerLive } from "./TradingFillReconciler.ts";
 import { TradingProtectionServiceLive } from "./TradingProtectionService.ts";
 import { TradingEmergencyCloseServiceLive } from "./TradingEmergencyCloseService.ts";
+import { TradingControlServiceLive } from "./TradingControlService.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
@@ -98,12 +99,19 @@ const TradingExecutionCore = Layer.mergeAll(
   HyperliquidReconcilerLive,
 ).pipe(Layer.provideMerge(TradingWithPreview));
 
+const TradingProtectionLayerLive = TradingProtectionServiceLive.pipe(
+  Layer.provideMerge(TradingExecutionCore),
+);
+
+// The control service sits on top of protection: `cancel_entries` routes
+// through `cancelEntriesWithProtection` (§17.3), so protection has to be built
+// first rather than merged alongside.
 const TradingExecutionLayerLive = Layer.mergeAll(
   TradingExecutionGuardLive,
   TradingFillReconcilerLive,
-  TradingProtectionServiceLive,
   TradingEmergencyCloseServiceLive,
-).pipe(Layer.provideMerge(TradingExecutionCore));
+  TradingControlServiceLive,
+).pipe(Layer.provideMerge(TradingProtectionLayerLive));
 
 export const TradingLayerLive = Layer.mergeAll(
   TradingMissionServiceLive,

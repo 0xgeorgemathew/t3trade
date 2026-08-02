@@ -25,6 +25,7 @@ import {
   DispatchableTradingCommand,
   InternalTradingCommand,
   TradingMissionControlRequestedPayload,
+  TradingMissionRiskControlRequestedPayload,
   TradingMissionCreateRequestedPayload,
   TradingMissionId,
   TradingMissionRunStartedPayload,
@@ -924,6 +925,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.activity-appended",
   "trading.mission-create-requested",
   "trading.mission-control-requested",
+  "trading.mission-risk-control-requested",
   "trading.mission-status-changed",
   "trading.mission-strategy-published",
   "trading.mission-watch-registered",
@@ -1295,6 +1297,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("trading.mission-control-requested"),
     payload: TradingMissionControlRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("trading.mission-risk-control-requested"),
+    payload: TradingMissionRiskControlRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
