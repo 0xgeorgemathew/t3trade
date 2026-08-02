@@ -345,11 +345,14 @@ const tradingExecutionCore = Layer.mergeAll(
   HyperliquidReconcilerLive,
 ).pipe(Layer.provideMerge(tradingWithPreview));
 
+// `coordinatorWithDeps` supplies TradingMissionService / HyperliquidGateway /
+// HyperliquidWebSocketClient, which the guard and fill reconciler both need.
+// mergeAll builds in parallel, so it has to be a provideMerge underneath them
+// rather than a sibling in the same merge.
 const tradingLayerForTest = Layer.mergeAll(
   TradingExecutionGuardLive,
   TradingFillReconcilerLive,
-  coordinatorWithDeps,
-).pipe(Layer.provideMerge(tradingExecutionCore));
+).pipe(Layer.provideMerge(coordinatorWithDeps), Layer.provideMerge(tradingExecutionCore));
 
 // --- layer composition ------------------------------------------------------
 // The real TradingMissionReactorLive provided with the faked trading layer
