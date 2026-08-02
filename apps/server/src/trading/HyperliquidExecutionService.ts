@@ -47,6 +47,11 @@ import type {
   TradingRiskReservation,
 } from "@t3tools/trading-contracts/execution";
 
+import {
+  checkStopInformation,
+  describeStopGateDefect,
+} from "@t3tools/trading-contracts/protection";
+
 import { InterimSignerConfig, InterimSignerError } from "./InterimSignerConfig.ts";
 import { TradingPreviewService, type PreviewContext } from "./TradingPreviewService.ts";
 
@@ -63,6 +68,7 @@ export class TradingExecutionError extends Schema.TaggedErrorClass<TradingExecut
       "sign_failed",
       "submit_failed",
       "inspect_failed",
+      "missing_stop",
     ]),
     detail: Schema.optional(Schema.String),
   },
@@ -364,6 +370,27 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
         ),
       );
 
+      // --- 4b. the mandatory-stop gate, second evaluation (§16.3 item 17) ----
+      // Preview already ran `checkStopInformation` against the harness's limit.
+      // This one runs against the price actually going on the wire — for a
+      // marketable IOC that is the BBO-derived limit, not the requested one —
+      // so an increase whose stop stopped making sense between preview and
+      // mapping is refused here rather than signed. Nothing has been persisted
+      // and no nonce has been spent at this point.
+      const stopGateInput = {
+        actionType: intent.actionType,
+        side: intent.side,
+        referencePrice: Number.parseFloat(wireOrder.limitPrice),
+        stop: intent.stop,
+      };
+      const stopDefect = checkStopInformation(stopGateInput);
+      if (stopDefect !== null) {
+        return yield* new TradingExecutionError({
+          stage: "missing_stop",
+          detail: describeStopGateDefect(stopDefect, stopGateInput),
+        });
+      }
+
       // --- 5. persist the execution record + reservation (before signing) ----
       const uuid = yield* crypto.randomUUIDv4.pipe(
         Effect.mapError(
@@ -391,8 +418,8 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
         orderResults: [],
         createdAt: nowMs,
         updatedAt: nowMs,
-        stopPrice: intent.stop.stopPrice,
-        plannedLossAtStopUsd: intent.stop.plannedLossAtStopUsd,
+        stopPrice: intent.stop?.stopPrice,
+        plannedLossAtStopUsd: intent.stop?.plannedLossAtStopUsd,
       };
       yield* persistExecutionRecord(record);
 

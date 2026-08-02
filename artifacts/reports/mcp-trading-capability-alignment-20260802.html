@@ -1,0 +1,973 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Repository-grounded analysis of whether MCP is the right agent capability boundary for trading in T3 Trade."
+    />
+    <title>MCP and trading capability alignment · T3 Trade</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ivory: #faf9f5;
+        --paper: #fffefa;
+        --slate: #171716;
+        --ink: #3d3d39;
+        --muted: #62615b;
+        --line: #d5d2c8;
+        --soft: #f0eee6;
+        --clay: #984326;
+        --olive: #64764f;
+        --olive-soft: #edf1e8;
+        --amber-soft: #f8efe3;
+        --serif: ui-serif, Georgia, "Times New Roman", serif;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        background: var(--ivory);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 15px;
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+      }
+      a {
+        color: inherit;
+      }
+      a:hover {
+        color: var(--clay);
+      }
+      a:focus-visible,
+      button:focus-visible,
+      summary:focus-visible {
+        outline: 3px solid #1769aa;
+        outline-offset: 3px;
+      }
+      code,
+      pre {
+        font-family: var(--mono);
+      }
+      code {
+        font-size: 0.88em;
+      }
+
+      .page {
+        width: min(1120px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 52px 0 96px;
+        display: grid;
+        grid-template-columns: 210px minmax(0, 1fr);
+        gap: 48px;
+      }
+      nav {
+        position: sticky;
+        top: 28px;
+        align-self: start;
+        font-size: 13px;
+      }
+      nav .label,
+      .eyebrow,
+      .kicker {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+      }
+      nav .label {
+        margin-bottom: 11px;
+      }
+      nav a {
+        display: block;
+        padding: 5px 0 5px 12px;
+        border-left: 2px solid var(--line);
+        text-decoration: none;
+      }
+      nav a:hover {
+        border-color: var(--clay);
+      }
+      nav .files {
+        margin-top: 26px;
+        padding-top: 15px;
+        border-top: 1px solid var(--line);
+      }
+      nav .files code {
+        display: block;
+        padding: 3px 0;
+        color: var(--muted);
+        font-size: 10.5px;
+        overflow-wrap: anywhere;
+      }
+
+      main {
+        min-width: 0;
+      }
+      header {
+        margin-bottom: 18px;
+      }
+      .eyebrow {
+        margin-bottom: 10px;
+      }
+      h1,
+      h2,
+      h3 {
+        color: var(--slate);
+        font-family: var(--serif);
+        font-weight: 500;
+      }
+      h1 {
+        max-width: 760px;
+        margin: 0 0 14px;
+        font-size: clamp(32px, 4.6vw, 48px);
+        line-height: 1.06;
+        letter-spacing: -0.025em;
+      }
+      h2 {
+        margin: 44px 0 14px;
+        font-size: 25px;
+        scroll-margin-top: 24px;
+      }
+      h3 {
+        margin: 0 0 5px;
+        font-size: 18px;
+      }
+      p {
+        max-width: 760px;
+        margin: 0 0 12px;
+      }
+      .lede {
+        color: var(--muted);
+        font-size: 16px;
+      }
+
+      .decision {
+        margin: 24px 0 0;
+        padding: 20px 22px;
+        border: 1px solid #bdc8b1;
+        border-left: 4px solid var(--olive);
+        border-radius: 12px;
+        background: var(--olive-soft);
+      }
+      .decision .verdict {
+        margin: 2px 0 5px;
+        color: var(--slate);
+        font-family: var(--serif);
+        font-size: 24px;
+        line-height: 1.25;
+      }
+      .decision p {
+        margin: 0;
+      }
+
+      .two-col {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+      .card {
+        min-width: 0;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--paper);
+      }
+      .card .kicker {
+        margin-bottom: 8px;
+      }
+      .card p:last-child {
+        margin-bottom: 0;
+      }
+      .mechanic {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        gap: 12px;
+        align-items: center;
+        margin: 16px 0;
+      }
+      .mechanic .node {
+        height: 100%;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--paper);
+      }
+      .mechanic .arrow {
+        color: var(--clay);
+        font-size: 20px;
+      }
+      .node b {
+        display: block;
+        color: var(--slate);
+      }
+      .node small {
+        color: var(--muted);
+      }
+
+      .cite {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11px;
+        text-decoration-color: var(--line);
+        text-underline-offset: 3px;
+      }
+      .callout {
+        margin: 18px 0;
+        padding: 14px 16px;
+        border: 1px solid #e3ceb5;
+        border-radius: 10px;
+        background: var(--amber-soft);
+      }
+      .callout b {
+        color: var(--slate);
+      }
+
+      .tool-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px 16px;
+        margin: 14px 0 8px;
+        padding: 0;
+        list-style: none;
+      }
+      .tool-list li {
+        position: relative;
+        padding: 7px 8px 7px 20px;
+        border-bottom: 1px solid var(--soft);
+        overflow-wrap: anywhere;
+      }
+      .tool-list li::before {
+        content: "";
+        position: absolute;
+        left: 4px;
+        top: 15px;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--olive);
+      }
+
+      details {
+        margin: 13px 0;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--paper);
+      }
+      summary {
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+        padding: 13px 15px;
+        cursor: pointer;
+        color: var(--slate);
+        font-family: var(--serif);
+        font-size: 16px;
+        list-style: none;
+      }
+      summary::-webkit-details-marker {
+        display: none;
+      }
+      summary::before {
+        content: "▸";
+        color: var(--clay);
+        font-family: var(--sans);
+        font-size: 12px;
+        transition: transform 120ms ease;
+      }
+      details[open] summary::before {
+        transform: rotate(90deg);
+      }
+      summary .where {
+        margin-left: auto;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 10.5px;
+        text-align: right;
+      }
+      details .body {
+        padding: 0 15px 15px;
+      }
+      details .body p {
+        font-size: 14px;
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: var(--paper);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      caption {
+        padding: 11px 12px;
+        border-bottom: 1px solid var(--line);
+        color: var(--slate);
+        font-family: var(--serif);
+        font-size: 16px;
+        text-align: left;
+      }
+      th,
+      td {
+        padding: 11px 12px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        background: var(--soft);
+        color: var(--slate);
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      tr:last-child td {
+        border-bottom: 0;
+      }
+      td:first-child {
+        width: 23%;
+        color: var(--slate);
+        font-weight: 650;
+      }
+
+      .prompt-box {
+        position: relative;
+        margin-top: 16px;
+        padding: 18px;
+        border: 1px solid var(--slate);
+        border-radius: 12px;
+        background: var(--slate);
+        color: #f7f5ee;
+      }
+      .prompt-box pre {
+        margin: 0;
+        padding-right: 92px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font-size: 12.5px;
+        line-height: 1.65;
+      }
+      .copy {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        padding: 7px 10px;
+        border: 1px solid #77756d;
+        border-radius: 7px;
+        background: #292927;
+        color: #fff;
+        font: 11px var(--mono);
+        cursor: pointer;
+      }
+      .copy:hover {
+        background: #3b3b38;
+      }
+      .scope-list {
+        padding-left: 20px;
+      }
+      .scope-list li {
+        margin: 5px 0;
+      }
+      footer {
+        margin-top: 44px;
+        padding-top: 15px;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      @media (max-width: 900px) {
+        .page {
+          grid-template-columns: 1fr;
+          padding-top: 30px;
+        }
+        nav {
+          display: none;
+        }
+      }
+      @media (max-width: 650px) {
+        .page {
+          width: min(100% - 24px, 1120px);
+        }
+        .two-col,
+        .tool-list {
+          grid-template-columns: 1fr;
+        }
+        .mechanic {
+          grid-template-columns: 1fr;
+        }
+        .mechanic .arrow {
+          transform: rotate(90deg);
+          justify-self: center;
+        }
+        .prompt-box pre {
+          padding: 42px 0 0;
+        }
+        summary .where {
+          display: none;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+        *,
+        *::before,
+        *::after {
+          transition-duration: 0.01ms !important;
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <nav aria-label="Report sections">
+        <div class="label">On this page</div>
+        <a href="#decision">Decision</a>
+        <a href="#coding">Coding path</a>
+        <a href="#trading">Trading path</a>
+        <a href="#comparison">Comparison</a>
+        <a href="#evidence">Evidence</a>
+        <a href="#proceed">Prompt to proceed</a>
+        <a href="#scope">Scope</a>
+        <div class="files">
+          <div class="label">Primary files</div>
+          <code>providerRuntime.ts</code>
+          <code>provider/Layers/CodexAdapter.ts</code>
+          <code>mcp/toolkits/trading/tools.ts</code>
+          <code>mcp/toolkits/trading/handlers.ts</code>
+          <code>mcp/McpHttpServer.ts</code>
+        </div>
+      </nav>
+
+      <main>
+        <header>
+          <div class="eyebrow">Alignment analysis · 2 August 2026</div>
+          <h1>Is MCP the right choice for trading?</h1>
+          <p class="lede">
+            One question, framed against T3 Code itself: how capabilities reach the agent.
+          </p>
+          <section class="decision" id="decision" aria-labelledby="decision-title">
+            <div class="kicker">Assessment</div>
+            <div class="verdict" id="decision-title">
+              Architecturally aligned by precedent—not transport-identical. Keep trading on MCP.
+            </div>
+            <p>
+              The transports are mechanically different, but the difference is justified. Providers
+              supply their own integral coding tools; T3 normalizes their events and routes
+              responses. Upstream T3 Code’s closest first-party precedent for an auxiliary,
+              provider-neutral capability is its optional preview MCP toolkit. Applying that
+              precedent to T3-owned trading is a repository-grounded inference, not a claim that
+              every T3-owned extension must universally use MCP.
+            </p>
+          </section>
+        </header>
+
+        <h2 id="coding">How T3 Code exposes coding capabilities</h2>
+        <div class="card">
+          <div class="kicker">Short statement</div>
+          <p>
+            <strong>Upstream T3 Code uses MCP for no integral coding capability.</strong> File
+            edits, patch application, and shell commands come from the selected provider’s native
+            tool surface. T3’s adapter translates provider-native lifecycle and approval messages
+            into canonical events, and the provider service routes the user’s decision back to the
+            owning provider adapter. Upstream’s first-party MCP use is the optional, auxiliary
+            preview browser toolkit.
+          </p>
+          <p>
+            <a class="cite" href="../../apps/server/src/provider/Layers/CodexAdapter.ts#L295"
+              >CodexAdapter.ts:295–316</a
+            >
+            ·
+            <a class="cite" href="../../apps/server/src/provider/Layers/CodexAdapter.ts#L540"
+              >CodexAdapter.ts:540–609</a
+            >
+            ·
+            <a class="cite" href="../../apps/server/src/provider/Services/ProviderAdapter.ts#L45"
+              >ProviderAdapter.ts:45–78</a
+            >
+            ·
+            <a class="cite" href="../../apps/server/src/provider/Layers/ProviderService.ts#L763"
+              >ProviderService.ts:763–785</a
+            >
+            ·
+            <a class="cite" href="../../apps/server/src/mcp/McpHttpServer.ts#L208"
+              >McpHttpServer.ts:208–219</a
+            >
+          </p>
+        </div>
+
+        <div class="mechanic" aria-label="Coding capability path">
+          <div class="node">
+            <b>Provider-owned native tools</b
+            ><small>command execution · file reads · file changes · patch application</small>
+          </div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="node">
+            <b>T3 normalization and response routing</b
+            ><small
+              ><code>request.opened</code> / <code>request.resolved</code> and adapter
+              <code>respondToRequest</code></small
+            >
+          </div>
+        </div>
+
+        <details>
+          <summary>
+            Why <code>CanonicalRequestType</code> is not a capability API
+            <span class="where">providerRuntime.ts:135–146, 421–433</span>
+          </summary>
+          <div class="body">
+            <p>
+              The schema names normalized categories for provider-originated interactive
+              requests—command execution, file read/change, patch, and command approvals. Those
+              values populate <code>request.opened</code> and
+              <code>request.resolved</code> payloads. They describe and route an interaction after a
+              provider has exposed a tool; they do not register a new tool with an agent.
+            </p>
+            <p>
+              <a class="cite" href="../../packages/contracts/src/providerRuntime.ts#L135"
+                >providerRuntime.ts:135–146</a
+              >
+              ·
+              <a class="cite" href="../../packages/contracts/src/providerRuntime.ts#L421"
+                >providerRuntime.ts:421–433</a
+              >
+              ·
+              <a class="cite" href="../../packages/contracts/src/providerRuntime.ts#L794"
+                >providerRuntime.ts:794–806</a
+              >
+            </p>
+          </div>
+        </details>
+
+        <details>
+          <summary>
+            MCP calls are a separate lifecycle kind
+            <span class="where">providerRuntime.ts:104–112</span>
+          </summary>
+          <div class="body">
+            <p>
+              The canonical lifecycle contract proves only that <code>command_execution</code>,
+              <code>file_change</code>, and <code>mcp_tool_call</code> are separate sibling item
+              types. The native origin is shown by the Codex adapter: it maps Codex app-server
+              command/file/patch request methods into canonical categories, while mapping MCP
+              lifecycle items separately. Together, the evidence shows coexistence rather than
+              coding actions traversing MCP.
+            </p>
+            <p>
+              <a class="cite" href="../../packages/contracts/src/providerRuntime.ts#L104"
+                >providerRuntime.ts:104–112</a
+              >
+              ·
+              <a class="cite" href="../../apps/server/src/provider/Layers/CodexAdapter.ts#L295"
+                >CodexAdapter.ts:295–316</a
+              >
+              ·
+              <a class="cite" href="../../apps/server/src/provider/Layers/CodexAdapter.ts#L218"
+                >CodexAdapter.ts:218–228</a
+              >
+            </p>
+          </div>
+        </details>
+
+        <h2 id="trading">How T3 Trade exposes trading capabilities</h2>
+        <div class="card">
+          <div class="kicker">Short statement</div>
+          <p>
+            <strong
+              >T3 Trade defines all 14 inspected agent-facing trading operations as one MCP
+              toolkit.</strong
+            >
+            Its handler layer implements that toolkit, and <code>McpHttpServer</code> registers it
+            beside the existing preview toolkit on the same first-party <code>/mcp</code> transport.
+            Within the inspected agent-facing surface, no second trading capability transport is
+            defined.
+          </p>
+          <p>
+            <a class="cite" href="../../apps/server/src/mcp/toolkits/trading/tools.ts#L74"
+              >tools.ts:74–290</a
+            >
+            ·
+            <a class="cite" href="../../apps/server/src/mcp/toolkits/trading/handlers.ts#L201"
+              >handlers.ts:201–267, 282–456</a
+            >
+            ·
+            <a class="cite" href="../../apps/server/src/mcp/McpHttpServer.ts#L208"
+              >McpHttpServer.ts:208–234</a
+            >
+          </p>
+        </div>
+
+        <ul class="tool-list" aria-label="Fourteen trading MCP tools">
+          <li><code>trading_get_mission</code></li>
+          <li><code>trading_publish_momentum_strategy</code></li>
+          <li><code>trading_resolve_market</code></li>
+          <li><code>trading_get_market_snapshot</code></li>
+          <li><code>trading_get_market_history</code></li>
+          <li><code>trading_get_order_book</code></li>
+          <li><code>trading_get_account_state</code></li>
+          <li><code>trading_get_position</code></li>
+          <li><code>trading_get_open_orders</code></li>
+          <li><code>trading_register_watch</code></li>
+          <li><code>trading_schedule_reassessment</code></li>
+          <li><code>trading_list_watches</code></li>
+          <li><code>trading_cancel_watch</code></li>
+          <li><code>trading_request_entry</code></li>
+        </ul>
+        <p>
+          <a class="cite" href="../../apps/server/src/mcp/toolkits/trading/tools.ts#L276"
+            >TradingToolkit assembly · tools.ts:276–290</a
+          >
+        </p>
+
+        <details>
+          <summary>
+            Trading and preview share T3’s MCP extension boundary
+            <span class="where">McpHttpServer.ts:208–234</span>
+          </summary>
+          <div class="body">
+            <p>
+              <code>PreviewToolkitRegistrationLive</code> and
+              <code>TradingToolkitRegistrationLive</code> are merged and provided the same HTTP MCP
+              transport. Preview is therefore the closest repository precedent for making a T3-owned
+              auxiliary capability available across providers. Treating that as support for trading
+              is an architectural inference from the inspected implementation, not a universal T3
+              rule.
+            </p>
+            <p>
+              <a class="cite" href="../../apps/server/src/mcp/McpHttpServer.ts#L208"
+                >McpHttpServer.ts:208–234</a
+              >
+            </p>
+          </div>
+        </details>
+
+        <details>
+          <summary>
+            The first-party MCP session is injected across provider adapters
+            <span class="where">Codex · Claude · Cursor · Grok · OpenCode</span>
+          </summary>
+          <div class="body">
+            <p>
+              The adapters conditionally inject the same <code>t3-code</code> MCP endpoint into
+              Codex, Claude, Cursor, Grok, and OpenCode sessions. That concrete cross-provider
+              wiring is why the existing MCP boundary is a suitable delivery mechanism for a
+              T3-owned toolkit.
+            </p>
+            <p>
+              <a class="cite" href="../../apps/server/src/provider/Layers/CodexAdapter.ts#L1397"
+                >CodexAdapter.ts:1397–1425</a
+              >
+              ·
+              <a class="cite" href="../../apps/server/src/provider/Layers/ClaudeAdapter.ts#L3523"
+                >ClaudeAdapter.ts:3523–3559</a
+              >
+              ·
+              <a class="cite" href="../../apps/server/src/provider/Layers/CursorAdapter.ts#L534"
+                >CursorAdapter.ts:534–555</a
+              >
+              ·
+              <a class="cite" href="../../apps/server/src/provider/Layers/GrokAdapter.ts#L572"
+                >GrokAdapter.ts:572–593</a
+              >
+              ·
+              <a class="cite" href="../../apps/server/src/provider/Layers/OpenCodeAdapter.ts#L1217"
+                >OpenCodeAdapter.ts:1217–1230</a
+              >
+            </p>
+          </div>
+        </details>
+
+        <h2 id="comparison">Same transport? No. Same architecture? Yes.</h2>
+        <div class="two-col">
+          <section class="card">
+            <div class="kicker">Mechanically different</div>
+            <h3>Coding is provider-native</h3>
+            <p>
+              Codex, Claude, and other providers already own the coding tool surface. T3 adapts
+              their native requests into a common runtime model.
+            </p>
+          </section>
+          <section class="card">
+            <div class="kicker">Architecturally aligned</div>
+            <h3>Trading is a T3 extension</h3>
+            <p>
+              Trading is owned by T3 Trade and must reach whichever provider is active. Preview
+              supplies the closest existing first-party precedent, and the adapters already inject
+              that MCP endpoint across providers.
+            </p>
+          </section>
+        </div>
+
+        <div class="callout">
+          <b
+            >The relevant T3 Code comparison is ownership, not “every world-changing action uses one
+            transport.”</b
+          >
+          Provider-owned integral coding tools stay native. For trading, reusing the cross-provider
+          MCP wiring and preview precedent is the smallest consistent extension. Moving trading into
+          <code>CanonicalRequestType</code> would confuse normalization of provider-originated
+          interactive requests with tool registration, and would require inventing provider-specific
+          trading integrations without a coding-side precedent.
+        </div>
+
+        <p>
+          <strong>Answer:</strong> MCP is the right choice. This is not transport parity with
+          coding; it is a justified, repository-consistent use of the closest T3 Code precedent. No
+          trading transport rewrite is indicated. The useful follow-up is to make the boundary
+          explicit in documentation and keep it covered by focused registration/contract tests.
+        </p>
+
+        <h2 id="evidence">Evidence ledger</h2>
+        <div class="table-wrap">
+          <table aria-label="Repository evidence supporting the capability-delivery assessment">
+            <caption>
+              Repository evidence and the conclusion each item supports
+            </caption>
+            <thead>
+              <tr>
+                <th>Question</th>
+                <th>Repository evidence</th>
+                <th>What it establishes</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Where coding tools originate</td>
+                <td>
+                  <a class="cite" href="../../apps/server/src/provider/Layers/CodexAdapter.ts#L295"
+                    >CodexAdapter.ts:295–316</a
+                  >
+                </td>
+                <td>Provider-native method names are classified into canonical request types.</td>
+              </tr>
+              <tr>
+                <td>How approval interaction crosses T3</td>
+                <td>
+                  <a class="cite" href="../../packages/contracts/src/providerRuntime.ts#L421"
+                    >providerRuntime.ts:421–433</a
+                  >;
+                  <a
+                    class="cite"
+                    href="../../apps/server/src/provider/Services/ProviderAdapter.ts#L71"
+                    >ProviderAdapter.ts:71–78</a
+                  >;
+                  <a
+                    class="cite"
+                    href="../../apps/server/src/provider/Layers/ProviderService.ts#L763"
+                    >ProviderService.ts:763–785</a
+                  >
+                </td>
+                <td>
+                  T3 normalizes opened/resolved requests and sends a decision to the owning adapter.
+                </td>
+              </tr>
+              <tr>
+                <td>Whether MCP is the coding substrate</td>
+                <td>
+                  <a class="cite" href="../../packages/contracts/src/providerRuntime.ts#L104"
+                    >providerRuntime.ts:104–112</a
+                  >;
+                  <a class="cite" href="../../apps/server/src/provider/Layers/CodexAdapter.ts#L295"
+                    >CodexAdapter.ts:295–316</a
+                  >;
+                  <a class="cite" href="../../apps/server/src/provider/Layers/CodexAdapter.ts#L218"
+                    >CodexAdapter.ts:218–228</a
+                  >
+                </td>
+                <td>
+                  Command/file actions and MCP calls are separate canonical lifecycle kinds; the
+                  Codex adapter supplies the native-origin evidence.
+                </td>
+              </tr>
+              <tr>
+                <td>Where trading tools are declared</td>
+                <td>
+                  <a class="cite" href="../../apps/server/src/mcp/toolkits/trading/tools.ts#L74"
+                    >trading/tools.ts:74–290</a
+                  >
+                </td>
+                <td>
+                  Fourteen named operations are declared and assembled as
+                  <code>TradingToolkit</code>.
+                </td>
+              </tr>
+              <tr>
+                <td>How trading reaches agents</td>
+                <td>
+                  <a class="cite" href="../../apps/server/src/mcp/McpHttpServer.ts#L221"
+                    >McpHttpServer.ts:221–234</a
+                  >
+                </td>
+                <td>The trading toolkit is registered on the first-party MCP server.</td>
+              </tr>
+              <tr>
+                <td>T3-owned precedent</td>
+                <td>
+                  <a class="cite" href="../../apps/server/src/mcp/McpHttpServer.ts#L208"
+                    >McpHttpServer.ts:208–219, 231–234</a
+                  >
+                </td>
+                <td>
+                  Preview and trading are merged into the same MCP surface; using that precedent for
+                  trading is an inference, not a universal rule.
+                </td>
+              </tr>
+              <tr>
+                <td>Cross-provider delivery</td>
+                <td>
+                  <a class="cite" href="../../apps/server/src/provider/Layers/CodexAdapter.ts#L1397"
+                    >Codex</a
+                  >
+                  ·
+                  <a
+                    class="cite"
+                    href="../../apps/server/src/provider/Layers/ClaudeAdapter.ts#L3523"
+                    >Claude</a
+                  >
+                  ·
+                  <a class="cite" href="../../apps/server/src/provider/Layers/CursorAdapter.ts#L534"
+                    >Cursor</a
+                  >
+                  ·
+                  <a class="cite" href="../../apps/server/src/provider/Layers/GrokAdapter.ts#L572"
+                    >Grok</a
+                  >
+                  ·
+                  <a
+                    class="cite"
+                    href="../../apps/server/src/provider/Layers/OpenCodeAdapter.ts#L1217"
+                    >OpenCode</a
+                  >
+                </td>
+                <td>
+                  Each adapter conditionally receives the same first-party <code>t3-code</code> MCP
+                  session.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="proceed">Prompt to proceed</h2>
+        <p>
+          If follow-up work is desired, this keeps it at the capability-delivery boundary
+          established by the evidence:
+        </p>
+        <div class="prompt-box">
+          <button
+            class="copy"
+            type="button"
+            data-copy="proceed-prompt"
+            aria-label="Copy prompt to clipboard"
+          >
+            Copy
+          </button>
+          <pre id="proceed-prompt">
+Proceed without rewriting the trading capability transport. Keep all 14 trading capabilities on T3 Trade’s first-party MCP toolkit, registered beside preview on the existing /mcp boundary.
+
+Make only boundary-clarifying changes:
+1. Add a short architecture note explaining that provider-owned coding tools remain native and are normalized through ProviderRuntime/ProviderAdapter, while trading follows the closest T3-owned precedent: the optional preview toolkit on the cross-provider first-party MCP boundary.
+2. Add or tighten focused tests that assert the trading toolkit’s 14 tool names and its registration beside preview on the MCP server.
+3. State explicitly that CanonicalRequestType is for normalizing and routing provider-originated interactive requests, not for registering trading capabilities.
+
+Do not add trading request types to CanonicalRequestType, build provider-specific trading adapters, or move trading off MCP. Stay strictly on how capabilities reach the agent; do not analyze security, signing, budgets, or the execution loop.</pre
+          >
+          <span id="copy-status" role="status" aria-live="polite"></span>
+        </div>
+
+        <h2 id="scope">Scope and exclusions</h2>
+        <ul class="scope-list">
+          <li>
+            <strong>In scope:</strong> provider-native tools, canonical event/request normalization,
+            provider response routing, MCP toolkit registration, and the preview precedent.
+          </li>
+          <li>
+            <strong>Explicitly out of scope:</strong> security, signing, capital controls, budgets,
+            and execution-loop design.
+          </li>
+          <li>
+            <strong>Evidence boundary:</strong> conclusions are limited to the inspected provider
+            contracts/adapters and the server’s preview/trading MCP toolkits. No claim is made about
+            whether an individual trading operation is otherwise well designed.
+          </li>
+        </ul>
+
+        <footer>
+          Repository-grounded report · T3 Trade capability alignment · generated 2026-08-02
+        </footer>
+      </main>
+    </div>
+    <script>
+      (() => {
+        const button = document.querySelector('[data-copy="proceed-prompt"]');
+        const prompt = document.getElementById("proceed-prompt");
+        const status = document.getElementById("copy-status");
+        if (!button || !prompt || !status) return;
+        const fallbackCopy = (text) => {
+          let textarea;
+          try {
+            textarea = document.createElement("textarea");
+            textarea.value = text;
+            textarea.setAttribute("readonly", "");
+            textarea.style.position = "fixed";
+            textarea.style.inset = "0 auto auto -9999px";
+            document.body.appendChild(textarea);
+            textarea.select();
+            return typeof document.execCommand === "function" && document.execCommand("copy");
+          } catch {
+            return false;
+          } finally {
+            textarea?.remove();
+          }
+        };
+        button.addEventListener("click", async () => {
+          try {
+            const text = prompt.textContent || "";
+            if (navigator.clipboard?.writeText) {
+              await navigator.clipboard.writeText(text);
+            } else if (!fallbackCopy(text)) {
+              throw new Error("Copy command unavailable");
+            }
+            button.textContent = "Copied";
+            status.textContent = "Prompt copied to clipboard.";
+            window.setTimeout(() => {
+              button.textContent = "Copy";
+              status.textContent = "";
+            }, 1800);
+          } catch {
+            const text = prompt.textContent || "";
+            if (fallbackCopy(text)) {
+              button.textContent = "Copied";
+              status.textContent = "Prompt copied to clipboard.";
+              window.setTimeout(() => {
+                button.textContent = "Copy";
+                status.textContent = "";
+              }, 1800);
+            } else {
+              status.textContent = "Copy failed. Select the prompt text manually.";
+            }
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

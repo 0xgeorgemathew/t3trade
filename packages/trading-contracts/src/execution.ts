@@ -104,8 +104,16 @@ export const TradingOrderIntent = Schema.Struct({
   orderPreference: MomentumOrderPreference,
   limitPrice: Price,
 
-  /** Required for every position-increasing action (§16.3 item 17). */
-  stop: TradingStopInfo,
+  /**
+   * Required for every position-increasing action (§16.3 item 17, §17).
+   *
+   * Optional in the schema, not optional in behaviour: a reduce-only action is
+   * itself an exit and carries no stop, while an increase without one is
+   * refused by the mandatory-stop gate (`checkStopInformation`) at preview and
+   * again immediately before signing. Encoding "required" in the decoder
+   * instead would put the safety rule in a place neither gate can test.
+   */
+  stop: Schema.optional(TradingStopInfo),
 
   reduceOnly: Schema.Boolean,
 });

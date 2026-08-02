@@ -345,4 +345,58 @@ describe("previewOrder — §16.3 checklist", () => {
       expect(item).toBe("valid_stop_defined");
     }),
   );
+
+  // --- the mandatory-stop gate, preview half (§16.3 item 17, §17) ----------
+
+  it.effect("item 17: rejects an open carrying no stop at all", () =>
+    Effect.gen(function* () {
+      const rejection = yield* previewOrder(goodIntent({ stop: undefined }), goodCtx(now)).pipe(
+        Effect.flip,
+      );
+      expect(rejection.item).toBe("valid_stop_defined");
+      expect(rejection.detail).toContain("§16.3 item 17");
+    }),
+  );
+
+  it.effect("item 17: rejects a scale-in carrying no stop", () =>
+    Effect.gen(function* () {
+      const item = yield* rejectionItem(
+        goodIntent({ actionType: "scale_in", stop: undefined }),
+        goodCtx(now),
+      );
+      expect(item).toBe("valid_stop_defined");
+    }),
+  );
+
+  it.effect("item 17: admits a reduce-only close carrying no stop", () =>
+    Effect.gen(function* () {
+      // The close IS the exit. Requiring a stop on it would reject the only
+      // action that removes exposure — and reserve nothing, since a close
+      // plans no new loss.
+      const preview = yield* previewOrder(
+        goodIntent({ actionType: "close", side: "sell", stop: undefined, reduceOnly: true }),
+        goodCtx(now),
+      );
+      expect(preview.intent.stop).toBeUndefined();
+      // Only the fee + slippage components remain; no planned loss.
+      expect(preview.reservedRiskUsd).toBeLessThan(12);
+    }),
+  );
+
+  it.effect("item 17: admits a reduce-only close still carrying the entry's stop", () =>
+    Effect.gen(function* () {
+      // The side flips on a close, which makes the entry's stop look
+      // wrong-sided. The gate keys off the action, not the stop's shape.
+      const preview = yield* previewOrder(
+        goodIntent({
+          actionType: "close",
+          side: "sell",
+          reduceOnly: true,
+          stop: { stopPrice: 3_700, plannedLossAtStopUsd: 12 },
+        }),
+        goodCtx(now),
+      );
+      expect(preview.intent.actionType).toBe("close");
+    }),
+  );
 });

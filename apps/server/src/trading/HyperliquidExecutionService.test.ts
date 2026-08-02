@@ -416,4 +416,91 @@ layer("HyperliquidExecutionService", (it) => {
         assert.equal(action.cancels![0]!.cloid, cloid);
       }),
   );
+
+  // --- the mandatory-stop gate, submission half (§16.3 item 17, §17) -------
+  //
+  // The preview in this suite is stubbed green, which is exactly what makes
+  // these tests meaningful: they prove the submission gate stands on its own
+  // rather than inheriting preview's verdict. Both refusals happen before any
+  // persist and before any nonce is spent, so nothing reaches the exchange and
+  // no execution record is written.
+
+  it.effect("refuses to submit a position increase carrying no stop", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* resetRecorder();
+      recordingExchange.response = OK_RESPONSE;
+
+      const service = yield* HyperliquidExecutionService;
+      const { stop: _dropped, ...stopless } = openIntent(0);
+      const failure = yield* service
+        .submitOrder({
+          intent: stopless as ExecutionInput["intent"],
+          previewContext,
+          allowedSlippageBps: 10,
+          masterAddress: "0xmaster",
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(failure.stage, "missing_stop");
+      assert.equal(recordingExchange.submitted.length, 0);
+
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{
+        readonly count: number;
+      }>`SELECT COUNT(*) AS count FROM trading_execution_records WHERE mission_id = ${MISSION}`;
+      assert.equal(rows[0]!.count, 0);
+    }),
+  );
+
+  it.effect("refuses to submit a long whose stop sits above the wire price", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* resetRecorder();
+      recordingExchange.response = OK_RESPONSE;
+
+      const service = yield* HyperliquidExecutionService;
+      const failure = yield* service
+        .submitOrder({
+          intent: {
+            ...openIntent(0),
+            stop: { stopPrice: 3_200, plannedLossAtStopUsd: 25 },
+          } as ExecutionInput["intent"],
+          previewContext,
+          allowedSlippageBps: 10,
+          masterAddress: "0xmaster",
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(failure.stage, "missing_stop");
+      assert.ok(failure.detail?.includes("wrong side"));
+      assert.equal(recordingExchange.submitted.length, 0);
+    }),
+  );
+
+  it.effect("submits a reduce-only close that carries no stop", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* resetRecorder();
+      recordingExchange.response = OK_RESPONSE;
+
+      const service = yield* HyperliquidExecutionService;
+      const { stop: _dropped, ...base } = openIntent(0);
+      const record = yield* service.submitOrder({
+        intent: {
+          ...base,
+          actionType: "close",
+          side: "sell",
+          reduceOnly: true,
+        } as ExecutionInput["intent"],
+        previewContext,
+        allowedSlippageBps: 10,
+        masterAddress: "0xmaster",
+      });
+
+      assert.equal(record.status, "accepted");
+      assert.equal(record.stopPrice, undefined);
+      assert.equal(recordingExchange.submitted.length, 1);
+    }),
+  );
 });

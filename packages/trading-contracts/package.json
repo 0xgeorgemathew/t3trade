@@ -59,6 +59,10 @@
     "./wakeup": {
       "types": "./src/wakeup.ts",
       "import": "./src/wakeup.ts"
+    },
+    "./protection": {
+      "types": "./src/protection.ts",
+      "import": "./src/protection.ts"
     }
   },
   "scripts": {

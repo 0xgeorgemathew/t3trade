@@ -464,11 +464,21 @@ describe("TradingOrderIntent", () => {
   it("decodes a valid position-increasing entry intent", () => {
     const decoded = decodeOrderIntent(intent);
     expect(decoded.side).toBe("buy");
-    expect(decoded.stop.stopPrice).toBe(3_700);
+    expect(decoded.stop?.stopPrice).toBe(3_700);
   });
 
-  it("rejects an intent without a stop (§16.3 item 17)", () => {
-    expect(() => decodeOrderIntent({ ...intent, stop: undefined })).toThrow();
+  it("decodes a reduce-only exit that carries no stop", () => {
+    // A close is the exit; it plans no new loss and needs no stop. The
+    // mandatory-stop gate (§16.3 item 17) is what refuses a stopless
+    // *increase* — see protection.test.ts.
+    const decoded = decodeOrderIntent({
+      ...intent,
+      actionType: "close",
+      side: "sell",
+      stop: undefined,
+      reduceOnly: true,
+    });
+    expect(decoded.stop).toBeUndefined();
   });
 
   it("rejects a non-positive size", () => {
@@ -618,6 +628,7 @@ describe("subpath exports", () => {
         "./account-snapshot",
         "./execution",
         "./loss-accounting",
+        "./protection",
         "./wakeup",
       ].sort(),
     );
