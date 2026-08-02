@@ -32,9 +32,28 @@ import * as Layer from "effect/Layer";
 import { addressFromPrivateKey } from "@t3tools/hyperliquid/Signing";
 import { ServerConfig } from "../config.ts";
 
-/** Read a file as UTF-8 text. Read errors (absence, perms) are caught upstream. */
-const readFileText = (path: string): Effect.Effect<string, NodeJS.ErrnoException> =>
-  Effect.promise(() => import("node:fs/promises").then((fs) => fs.readFile(path, "utf8")));
+/** The secret file could not be read — absent, unreadable, or wrong perms. */
+export class SecretFileReadError extends Schema.TaggedErrorClass<SecretFileReadError>()(
+  "SecretFileReadError",
+  { path: Schema.String, cause: Schema.Unknown },
+) {}
+
+/**
+ * Read a file as UTF-8 text. Read errors (absence, perms) are caught upstream.
+ *
+ * `tryPromise`, not `promise`: a rejection from `promise` becomes a DEFECT, and
+ * a defect walks straight past the `orElseSucceed` that turns an absent key
+ * file into "unarmed". With `promise` the fail-closed fallback never fired —
+ * a missing file killed the caller instead.
+ *
+ * Exported so the regression test can drive the real reader; a fake one is
+ * exactly what let the defect through.
+ */
+export const readFileText = (path: string): Effect.Effect<string, SecretFileReadError> =>
+  Effect.tryPromise({
+    try: () => import("node:fs/promises").then((fs) => fs.readFile(path, "utf8")),
+    catch: (cause) => new SecretFileReadError({ path, cause }),
+  });
 
 /** The key is invalid or the env shape was wrong. */
 export class InterimSignerError extends Schema.TaggedErrorClass<InterimSignerError>()(
@@ -148,7 +167,7 @@ export const resolveInterimSignerFromEnv = (
  * `readFile` is injected so this stays pure and testable.
  */
 export const resolveInterimSignerFromFile = (
-  readFile: (path: string) => Effect.Effect<string, NodeJS.ErrnoException>,
+  readFile: (path: string) => Effect.Effect<string, SecretFileReadError>,
   secretsDir: string,
   explicitAddress?: string,
 ): Effect.Effect<Option.Option<InterimSigner>, InterimSignerError> =>
@@ -171,7 +190,7 @@ export const resolveInterimSignerFromFile = (
  */
 export const resolveInterimSigner = (
   env: Record<string, string | undefined>,
-  readFile: (path: string) => Effect.Effect<string, NodeJS.ErrnoException>,
+  readFile: (path: string) => Effect.Effect<string, SecretFileReadError>,
   secretsDir: string,
 ): Effect.Effect<Option.Option<InterimSigner>, InterimSignerError> =>
   Effect.gen(function* () {

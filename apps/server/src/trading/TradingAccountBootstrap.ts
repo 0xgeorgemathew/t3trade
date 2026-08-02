@@ -17,6 +17,7 @@
  *
  * @module TradingAccountBootstrap
  */
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -136,7 +137,7 @@ export const TradingAccountBootstrapLive: Layer.Layer<
   ensureLocalTradingAccount.pipe(
     Effect.catchCause((cause) =>
       Effect.logWarning("TradingAccountBootstrap: local trading account not provisioned", {
-        cause,
+        cause: Cause.pretty(cause),
       }),
     ),
   ),
