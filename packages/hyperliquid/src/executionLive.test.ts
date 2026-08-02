@@ -313,6 +313,20 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
           cloid: restingOrder.cloid,
         });
 
+        // Confirm the resting order is actually open before we cancel it — a
+        // cancel proof that runs against an order that was never placed proves
+        // nothing. Read openOrders back and find the order by cloid.
+        yield* Effect.sleep("1500 millis"); // let the exchange index the order
+        const openBefore = yield* info.openOrders(masterAddress);
+        const presentBefore = openBefore.some(
+          (o) => o.cloid === restingOrder.cloid || o.cloid === restingOrder.cloid.slice(2),
+        );
+        yield* Effect.logInfo("[execution-live] resting order present before cancel", {
+          presentBefore,
+          openCount: openBefore.length,
+        });
+        expect(presentBefore).toBe(true);
+
         // Now cancel it by cloid — the corrected action shape (type + asset index).
         const cancelAction = buildCancelByCloidAction(ethAssetIndex, restingOrder.cloid);
         const cancelNonce = yield* Effect.clockWith((c) => c.currentTimeMillis);
@@ -332,6 +346,21 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
           type: cancelResp.response.type,
         });
         expect("status" in cancelResp ? cancelResp.status : undefined).toBe("ok");
+
+        // The cancel response being "ok" only means the action was accepted —
+        // it does NOT prove the order was removed. Read openOrders back and
+        // assert the cancelled order is gone by cloid. This is the actual proof
+        // (a cancel that silently no-ops would pass the response check above).
+        yield* Effect.sleep("1500 millis"); // let the exchange process the cancel
+        const openAfter = yield* info.openOrders(masterAddress);
+        const stillPresent = openAfter.some(
+          (o) => o.cloid === restingOrder.cloid || o.cloid === restingOrder.cloid.slice(2),
+        );
+        yield* Effect.logInfo("[execution-live] resting order present after cancel", {
+          stillPresent,
+          openCount: openAfter.length,
+        });
+        expect(stillPresent).toBe(false);
       }).pipe(Effect.provide(Layer.mergeAll(exchangeLayer, infoLayer))),
     120_000,
   );
