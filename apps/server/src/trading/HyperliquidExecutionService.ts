@@ -14,9 +14,13 @@
  *   8. inspect EVERY per-order status
  *   9. update the execution record with the result
  *
- * Retries reuse the same cloid + idempotency key (persisted before signing),
- * so the exchange deduplicates on cloid and the local write deduplicates on
- * idempotency key.
+ * Retries reuse the same cloid + idempotency key (persisted before signing).
+ * Idempotency is entirely local: the record is read back by idempotency key and
+ * the retry is refused the moment that record shows the action already reached
+ * the exchange. The exchange itself does NOT deduplicate — cloid uniqueness is
+ * enforced only among *resting* orders, and a marketable IOC never rests, so a
+ * resubmitted IOC opens a second order and fills again (verified live in
+ * `packages/hyperliquid/src/executionLive.test.ts`).
  *
  * @module HyperliquidExecutionService
  */
@@ -118,6 +122,23 @@ const OrderResultsJson = Schema.fromJsonString(
 const encodeOrderResultsJson = Schema.encodeUnknownSync(OrderResultsJson);
 
 const now = (): Effect.Effect<number> => Clock.currentTimeMillis;
+
+/**
+ * The only statuses from which it is safe to submit. Everything else means this
+ * cloid has already been POSTed to `/exchange`, and the exchange will not stop
+ * a second copy: cloid uniqueness applies to *resting* orders only, so a
+ * marketable IOC — which never rests — fills twice if it is submitted twice.
+ *
+ * `submitted` is deliberately excluded even though its outcome is unknown. An
+ * unresolved submission is exactly the case that duplicates a position if it is
+ * retried blind, so the retry returns the unresolved record and leaves it to
+ * reconciliation (§18.2) to settle it into `accepted`/`filled`/`failed`.
+ */
+const PRE_SUBMISSION_STATUSES: ReadonlyArray<TradingExecutionRecord["status"]> = [
+  "previewed",
+  "reserved",
+  "signed",
+];
 
 /** Persist the execution record BEFORE signing (§17.2 step 2). */
 function persistExecutionRecord(
@@ -412,7 +433,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
         orderResults: persistedOrderResults,
         updatedAt: persisted.updated_at,
       } satisfies TradingExecutionRecord;
-      if (["filled", "rejected", "cancelled", "failed"].includes(persisted.status)) {
+      if (!PRE_SUBMISSION_STATUSES.includes(persisted.status)) {
         return persistedRecord;
       }
 

@@ -6,9 +6,15 @@
  *   1. Retry idempotency (§17.2 / §15.5): calling `submitOrder` twice with the
  *      same intent (same missionId + executionSequence + actionType ⇒ same
  *      idempotency_key + cloid) yields ONE execution record and ONE risk
- *      reservation. The second call reads back the terminal record and returns
- *      it without re-signing or re-reserving. The exchange is submitted to
- *      exactly once (the recording fake asserts this).
+ *      reservation. The second call reads the record back and returns it
+ *      without re-signing or re-reserving. The exchange is submitted to exactly
+ *      once (the recording fake asserts this).
+ *
+ *      Covered on the rejected path, the accepted path, and the unresolved
+ *      `submitted` path — all three, because this guard is the ONLY thing
+ *      between a retry and a duplicate position. Hyperliquid does not
+ *      deduplicate on cloid for marketable IOCs (they never rest), so a retry
+ *      that gets past the check fills a second time for real.
  *
  *   2. submitCancel (§16.4): with a recording fake exchange, calling
  *      `submitCancel` results in a signed action whose payload carries
@@ -323,6 +329,66 @@ layer("HyperliquidExecutionService", (it) => {
         const orders = (signedAction.action as { orders?: ReadonlyArray<unknown> }).orders;
         assert.ok(Array.isArray(orders) && orders.length === 1);
       }),
+  );
+
+  it.effect(
+    "retry idempotency on the ACCEPTED path: a retry of a live order never reaches the exchange twice",
+    () =>
+      Effect.gen(function* () {
+        yield* migrated;
+        yield* resetRecorder();
+        // The exchange accepts. This is the path that actually spends capital,
+        // and the one the rejected-path test above cannot speak for.
+        recordingExchange.response = OK_RESPONSE;
+
+        const service = yield* HyperliquidExecutionService;
+        const execInput: ExecutionInput = {
+          intent: openIntent(0),
+          previewContext,
+          allowedSlippageBps: 10,
+          masterAddress: "0xmaster",
+        };
+
+        const first = yield* service.submitOrder(execInput);
+        assert.equal(first.status, "accepted");
+
+        // The retry must stop at the persisted record. Nothing downstream will
+        // catch it if it does not: the live testnet run shows a resubmitted
+        // marketable IOC opening a SECOND order under the same cloid and
+        // filling again, doubling the position.
+        const second = yield* service.submitOrder(execInput);
+        assert.equal(second.status, "accepted");
+        assert.equal(second.executionId, first.executionId);
+        assert.equal(recordingExchange.submitted.length, 1);
+      }),
+  );
+
+  it.effect("an unresolved `submitted` record is not retried blind", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* resetRecorder();
+      recordingExchange.response = OK_RESPONSE;
+
+      const service = yield* HyperliquidExecutionService;
+      const execInput: ExecutionInput = {
+        intent: openIntent(0),
+        previewContext,
+        allowedSlippageBps: 10,
+        masterAddress: "0xmaster",
+      };
+      yield* service.submitOrder(execInput);
+
+      // Simulate the crash window: the POST went out, the process died before
+      // the response was recorded, so the record is stuck at "submitted" and
+      // whether an order exists is unknown. Resubmitting on that evidence is
+      // how a position silently doubles.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE trading_execution_records SET status = 'submitted' WHERE mission_id = ${MISSION}`;
+
+      const retry = yield* service.submitOrder(execInput);
+      assert.equal(retry.status, "submitted");
+      assert.equal(recordingExchange.submitted.length, 1);
+    }),
   );
 
   it.effect(

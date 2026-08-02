@@ -156,7 +156,9 @@ describe("buildOrderAction / buildCancelByCloidAction", () => {
       // Note the cloid field is "c" inside an order leg (the cancel-by-cloid
       // action's top-level leg uses "cloid"; the order leg uses "c").
       expect(Object.keys(leg)).toEqual(["a", "b", "p", "s", "r", "t", "c"]);
-      // The asset index is threaded in (ETH = 2 on testnet), never copied.
+      // The asset index is threaded in by the caller, never derived here — the
+      // live index tracks the universe listing order (ETH resolved to 4 on
+      // testnet on 2026-08-02), so 2 stands in for "whatever was passed".
       expect(leg.a).toBe(2);
       expect(leg.b).toBe(true);
       expect(leg.c).toBe(order.cloid);

@@ -7,8 +7,14 @@
  *
  * Submits ONE real marketable IOC entry through the live `/exchange` endpoint,
  * asserts the order is accepted and filled, reconciles the fill + position via
- * the Info API, then submits the SAME request again to prove the exchange
- * deduplicates on cloid (no second order). Finally closes to flat.
+ * the Info API, then submits the SAME request again to establish what a retry
+ * actually does. Finally closes to flat.
+ *
+ * The retry does NOT deduplicate. Hyperliquid enforces cloid uniqueness only
+ * among *resting* orders, and a marketable IOC never rests, so the resubmission
+ * opens a second order and fills again — a run costs two entry fills plus one
+ * close. Retry safety is therefore the harness's job, not the exchange's; see
+ * the RETRY step and `HyperliquidExecutionService`.
  *
  * The master account is in Manual (Standard) mode and must stay there; mission
  * capital is the perps-side USDC balance only.
@@ -62,15 +68,16 @@ const infoLayer = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
 /**
  * The deterministic cloid the harness uses (§15.5): SHA-256 of the mission +
  * strategy + sequence + actionType, truncated to 16 bytes, 0x-prefixed. Reused
- * across the entry and its retry so the exchange deduplicates on it. The cloid
- * is derived inside the test from `mapOrder` (which calls `deriveCloid`); the
- * asset index + szDecimals are resolved live from market metadata.
+ * across the entry and its retry so both submissions are attributable to one
+ * intent — it correlates, it does not deduplicate. The cloid is derived inside
+ * the test from `mapOrder` (which calls `deriveCloid`); the asset index +
+ * szDecimals are resolved live from market metadata.
  */
 const MISSION = "mission_live_e";
 
 describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
   it.live(
-    "a marketable IOC entry is accepted + filled; retry deduped; close to flat",
+    "a marketable IOC entry is accepted + filled; a retry opens a SECOND order; close to flat",
     () =>
       Effect.gen(function* () {
         const keyOpt = yield* loadSignerKey;
@@ -132,6 +139,10 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
           nowMs: nowMsEntry,
         });
         const action = buildOrderAction(wireOrder, ethAssetIndex);
+        // Fills accumulate on the account across runs and the cloid is
+        // deterministic, so the retry assertion below is scoped to fills from
+        // THIS run. Without the cut-off a previous run's fills satisfy it.
+        const runStartMs = yield* Effect.clockWith((c) => c.currentTimeMillis);
         const nonce = yield* Effect.clockWith((c) => c.currentTimeMillis);
         const signature = signL1ActionForWire({ action, nonce, privateKey, isTestnet: true });
         const actionHash = createL1ActionHash({ action, nonce });
@@ -150,7 +161,7 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
         });
         expect("status" in entryResp ? entryResp.status : undefined).toBe("ok");
 
-        // --- 2. RETRY: same cloid — exchange deduplicates -----------------
+        // --- 2. RETRY: same cloid, resubmitted ----------------------------
         const nonce2 = yield* Effect.clockWith((c) => c.currentTimeMillis);
         const sig2 = signL1ActionForWire({ action, nonce: nonce2, privateKey, isTestnet: true });
         const retryResp = yield* exchange.submit({ action, nonce: nonce2, signature: sig2 });
@@ -158,8 +169,33 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
           status: "status" in retryResp ? retryResp.status : undefined,
           type: retryResp.response.type,
         });
-        // The retry is either silently deduped (status ok, no new fill) or
-        // rejected as a duplicate. Either way it does NOT create a second fill.
+        // Two things are pinned here, and only one of them is good news.
+        //
+        // 1. The exchange echoes our cloid back on the fill. It only does that
+        //    if it registered the field, which requires the order-leg key `c`.
+        //    Under the old `cloid` key the field was silently ignored while
+        //    every status still read "ok".
+        // 2. The retry opened a SECOND order. A cloid is not an idempotency key
+        //    on Hyperliquid: uniqueness is enforced among resting orders, and an
+        //    IOC never rests, so both submissions fill.
+        //
+        // This is asserted rather than commented so that a change in exchange
+        // behaviour surfaces in a test run and not in a live mission. The
+        // harness-side guard in HyperliquidExecutionService is what actually
+        // prevents the duplicate in production.
+        yield* Effect.sleep("2000 millis");
+        const fillsAfterRetry = yield* info.userFills(masterAddress);
+        const entryFills = fillsAfterRetry.filter(
+          (f) => f.cloid === wireOrder.cloid && f.time >= runStartMs,
+        );
+        const entryOids = new Set(entryFills.map((f) => f.oid));
+        yield* Effect.logInfo("[execution-live] fills carrying the entry cloid", {
+          fills: entryFills.length,
+          distinctOids: entryOids.size,
+          cloid: wireOrder.cloid,
+        });
+        expect(entryFills.length).toBeGreaterThan(0);
+        expect(entryOids.size).toBe(2);
 
         // --- 3. RECONCILE: fill + position via the Info API ----------------
         yield* Effect.sleep("2000 millis"); // give the exchange a moment to settle
