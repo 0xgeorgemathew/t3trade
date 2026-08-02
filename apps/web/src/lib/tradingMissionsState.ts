@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, OrchestrationTradingMission, ThreadId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { orchestrationEnvironment } from "../state/orchestration";
@@ -14,6 +14,17 @@ function tradingMissionSnapshotAtom(environmentId: EnvironmentId) {
 export function refreshTradingMissions(environmentId: EnvironmentId): void {
   appAtomRegistry.refresh(tradingMissionSnapshotAtom(environmentId));
 }
+
+/**
+ * How often a mounted mission surface re-reads the projection.
+ *
+ * The projection is pull-only: no server push invalidates it, so without a poll
+ * a mission created, advanced, or revoked while the view is open stays frozen
+ * at whatever the first read returned. Three seconds sits under the 5s account
+ * window `isPositionDataStale` measures against, so the staleness banner
+ * reflects the exchange read rather than this timer.
+ */
+const MISSION_POLL_INTERVAL_MS = 3_000;
 
 export interface TradingMissionsState {
   readonly missions: ReadonlyArray<OrchestrationTradingMission>;
@@ -36,6 +47,11 @@ export function useTradingMissions(environmentId: EnvironmentId): TradingMission
   const refresh = useCallback(() => {
     refreshTradingMissions(environmentId);
   }, [environmentId]);
+
+  useEffect(() => {
+    const id = window.setInterval(refresh, MISSION_POLL_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [refresh]);
 
   return {
     missions: snapshot?.missions ?? [],

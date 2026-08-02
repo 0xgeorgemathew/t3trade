@@ -1,6 +1,7 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useMemo, useState } from "react";
 
+import { refreshTradingMissions } from "../../lib/tradingMissionsState";
 import { useEnvironmentThreadRefs, useThreadShells } from "../../state/entities";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -79,6 +80,12 @@ export function NewMissionForm({
         allocatedCapitalUsd,
       },
     })
+      .then(() => {
+        // The command only records the intent; the reactor writes the mission a
+        // moment later. Read the projection back rather than waiting out the
+        // poll, so the new mission is on screen by the time the button re-arms.
+        refreshTradingMissions(environmentId);
+      })
       .catch((cause: unknown) => {
         setError(String(cause));
       })
@@ -102,7 +109,11 @@ export function NewMissionForm({
         ) : (
           <Select value={threadId} onValueChange={(value: string | null) => setThreadId(value)}>
             <SelectTrigger className="w-full" aria-label="Thread">
-              <SelectValue placeholder="Pick a thread" />
+              {/* Without children the trigger prints the raw threadId, which
+                  is the one thing a picker of threads must not show. */}
+              <SelectValue placeholder="Pick a thread">
+                {options.find((option) => option.threadId === threadId)?.title}
+              </SelectValue>
             </SelectTrigger>
             <SelectPopup>
               {options.map((option) => (
