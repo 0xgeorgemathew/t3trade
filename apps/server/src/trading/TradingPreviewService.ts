@@ -29,6 +29,7 @@ import {
 import {
   checkStopInformation,
   describeStopGateDefect,
+  isPositionIncreasing,
 } from "@t3tools/trading-contracts/protection";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
 
@@ -170,11 +171,59 @@ const harnessRunOwnsLease: Check = (_intent, ctx) =>
     ? Effect.void
     : reject("harness_run_owns_lease", "no harness run currently owns the decision lease");
 
+/**
+ * The mission's open position in this market, from the reconciled budget
+ * snapshot. Its `direction` and `size` are what tell a scale-in apart from a
+ * reversal.
+ */
+const openPositionOf = (ctx: PreviewContext) => ctx.budget.openPositions.find((p) => p.size > 0);
+
+/**
+ * §16.3 item 6, plus the three authority flags that govern position management.
+ *
+ * The direction the authority allows is only half of it. `allowScaleIn`,
+ * `allowPartialReduction`, and `allowDirectionReversal` are published fields on
+ * `TradingAuthority` that nothing read until now, so an authority that said
+ * "no reversals" — the POC default — did not actually prevent one.
+ *
+ * A reversal is specifically a position-INCREASING action whose direction
+ * opposes the open position. A reduce or a close in the opposite direction is
+ * how you exit, not a reversal, and reduce-only orders cannot flip a position
+ * anyway.
+ */
 const directionPermitted: Check = (intent, ctx) => {
+  const authority = ctx.mission.authority;
   const wants = intent.side === "buy" ? "long" : "short";
-  return ctx.mission.authority.allowedDirections.includes(wants as never)
-    ? Effect.void
-    : reject("direction_permitted", `authority does not permit ${wants}`);
+  if (!authority.allowedDirections.includes(wants as never)) {
+    return reject("direction_permitted", `authority does not permit ${wants}`);
+  }
+
+  const open = openPositionOf(ctx);
+  const increasing = isPositionIncreasing(intent.actionType);
+
+  if (increasing && open !== undefined && open.direction !== wants) {
+    return authority.allowDirectionReversal
+      ? Effect.void
+      : reject(
+          "direction_permitted",
+          `authority does not permit reversing an open ${open.direction} into a ${wants}`,
+        );
+  }
+
+  if (intent.actionType === "scale_in" && !authority.allowScaleIn) {
+    return reject("direction_permitted", "authority does not permit scaling in");
+  }
+
+  // A partial reduction is a reduce that leaves something behind. A full close
+  // is always permitted — refusing the exit is never the safe answer.
+  if (intent.actionType === "reduce" && !authority.allowPartialReduction) {
+    const leavesRemainder = open !== undefined && intent.size < open.size;
+    if (leavesRemainder) {
+      return reject("direction_permitted", "authority does not permit partial reduction");
+    }
+  }
+
+  return Effect.void;
 };
 
 const marketIsEth: Check = (intent, _ctx) =>
