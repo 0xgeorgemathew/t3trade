@@ -113,7 +113,24 @@ export class TradingProtectionService extends Context.Service<
   {
     readonly reconcileProtection: (
       input: ProtectionInput,
-    ) => Effect.Effect<ProtectionOutcome, TradingProtectionError, HyperliquidGateway>;
+    ) => Effect.Effect<ProtectionOutcome, TradingProtectionError>;
+
+    /**
+     * Cancel entry orders in the order §17.3 requires: protect first, cancel
+     * second, reconcile again third.
+     *
+     * The middle step is the dangerous one. A partially filled parent's linked
+     * TP/SL children are cancelled along with it, so cancelling the parent of
+     * a partial fill can strip the filled slice of its only stop — and the
+     * slice stays open. Reconciling protection BEFORE the cancel puts an
+     * independent, `na`-grouped stop on the filled size, which survives.
+     *
+     * The reconcile afterwards is not belt-and-braces: it is the step that
+     * notices the children went with the parent, and replaces them.
+     */
+    readonly cancelEntriesWithProtection: (
+      input: ProtectionInput & { readonly cloids: ReadonlyArray<string> },
+    ) => Effect.Effect<ProtectionOutcome, TradingProtectionError>;
   }
 >()("t3/trading/TradingProtectionService") {}
 
@@ -143,13 +160,16 @@ function protectionCloid(input: ProtectionInput, attempt: number): string {
 
 export const makeTradingProtectionService = Effect.gen(function* () {
   const execution = yield* HyperliquidExecutionService;
+  // Captured at layer build rather than demanded per call: these methods are
+  // invoked from the deterministic control path, which must not have to carry
+  // an exchange-read service into every call site.
+  const gateway = yield* HyperliquidGateway;
 
   /** Read the canonical position and every resting order in one pass. */
   const readCanonical = (
     input: ProtectionInput,
-  ): Effect.Effect<CanonicalView, TradingProtectionError, HyperliquidGateway> =>
+  ): Effect.Effect<CanonicalView, TradingProtectionError> =>
     Effect.gen(function* () {
-      const gateway = yield* HyperliquidGateway;
       const snapshot = yield* gateway.getAccountSnapshot(input.masterAddress as `0x${string}`).pipe(
         Effect.mapError(
           (cause) =>
@@ -212,11 +232,7 @@ export const makeTradingProtectionService = Effect.gen(function* () {
    */
   const confirmWithin = (
     input: ProtectionInput,
-  ): Effect.Effect<
-    { view: CanonicalView; covered: number },
-    TradingProtectionError,
-    HyperliquidGateway
-  > =>
+  ): Effect.Effect<{ view: CanonicalView; covered: number }, TradingProtectionError> =>
     Effect.gen(function* () {
       const deadlinePolls = Math.max(
         1,
@@ -245,7 +261,7 @@ export const makeTradingProtectionService = Effect.gen(function* () {
 
   const reconcileProtection = (
     input: ProtectionInput,
-  ): Effect.Effect<ProtectionOutcome, TradingProtectionError, HyperliquidGateway> =>
+  ): Effect.Effect<ProtectionOutcome, TradingProtectionError> =>
     Effect.gen(function* () {
       // --- §17.2 step 5: query canonical state ------------------------------
       let view = yield* readCanonical(input);
@@ -367,7 +383,38 @@ export const makeTradingProtectionService = Effect.gen(function* () {
       } satisfies ProtectionOutcome;
     });
 
-  return TradingProtectionService.of({ reconcileProtection });
+  const cancelEntriesWithProtection: TradingProtectionService["Service"]["cancelEntriesWithProtection"] =
+    (input) =>
+      Effect.gen(function* () {
+        // --- §17.3 step 4: independent protection BEFORE the cancel ---------
+        //
+        // If this escalates, the cancel does not happen. Cancelling a parent
+        // whose filled slice could not be protected would trade a known
+        // problem (an entry still working) for an unknown one (an unprotected
+        // position and nothing left to cancel).
+        const before = yield* reconcileProtection(input);
+        if (before.status === "escalate") return before;
+
+        for (const cloid of input.cloids) {
+          yield* execution
+            .submitCancel({ market: input.market, cloid })
+            .pipe(
+              Effect.catchTag("TradingExecutionError", (cause) =>
+                Effect.logWarning(
+                  `cancel entries: could not cancel ${cloid}: ${cause.message}. ` +
+                    "The reconcile below still runs; a still-resting order is caught " +
+                    "on the next convergence.",
+                ),
+              ),
+            );
+        }
+
+        // --- §17.3 step 5: reconcile again, because the parent's children
+        // may have been cancelled with it.
+        return yield* reconcileProtection(input);
+      });
+
+  return TradingProtectionService.of({ reconcileProtection, cancelEntriesWithProtection });
 });
 
 export const TradingProtectionServiceLive = Layer.effect(

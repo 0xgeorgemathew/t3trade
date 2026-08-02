@@ -161,15 +161,19 @@ const runWith = <A, E>(
  * sleeps never advance on their own, so the body runs forked and the clock is
  * pushed past the whole window.
  */
-const runReconcile = (fake: FakeExchange, input: ProtectionInput = INPUT) =>
+const runWithClock = <A, E>(
+  fake: FakeExchange,
+  body: (service: TradingProtectionService["Service"]) => Effect.Effect<A, E, HyperliquidGateway>,
+) =>
   Effect.gen(function* () {
-    const fiber = yield* runWith(fake, (service) => service.reconcileProtection(input)).pipe(
-      Effect.forkChild,
-    );
+    const fiber = yield* runWith(fake, body).pipe(Effect.forkChild);
     yield* Effect.yieldNow;
     yield* TestClock.adjust("60 seconds");
     return yield* Fiber.join(fiber);
   }).pipe(Effect.provide(TestClock.layer()), Effect.scoped);
+
+const runReconcile = (fake: FakeExchange, input: ProtectionInput = INPUT) =>
+  runWithClock(fake, (service) => service.reconcileProtection(input));
 
 it.effect("reports a flat position as nothing to protect", () =>
   Effect.gen(function* () {
@@ -292,5 +296,60 @@ it.effect("does not count a non-reduce-only trigger as protection", () =>
 
     assert.equal(outcome.status, "protected");
     assert.equal(fake.placements.length, 1);
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// §17.3 · Cancelling a partially filled parent
+// ---------------------------------------------------------------------------
+
+it.effect("protects the filled slice before it cancels a partially filled parent", () =>
+  Effect.gen(function* () {
+    // The §17.3 failure this prevents: the parent's linked children are
+    // cancelled with it, so cancelling first would strip the filled slice of
+    // its only stop and leave it open.
+    const fake = makeFake({ positionSize: 0.12 });
+    yield* runWithClock(fake, (service) =>
+      service.cancelEntriesWithProtection({ ...INPUT, cloids: ["0xparent"] }),
+    );
+
+    assert.equal(fake.log[0], "place");
+    assert.equal(fake.cancels.includes("0xparent"), true);
+    assert.equal(fake.placements[0]!.positionSize, 0.12);
+  }),
+);
+
+it.effect("replaces protection the parent cancel took with it", () =>
+  Effect.gen(function* () {
+    // §17.3 step 5. Cancelling a parent cancels its linked children, so the
+    // reconcile AFTER the cancel is not belt-and-braces — it is the step that
+    // notices the stop is gone and puts a new one back.
+    const fake = makeFake({ positionSize: 0.12 });
+
+    yield* runWithClock(fake, (service) =>
+      Effect.gen(function* () {
+        const first = yield* service.reconcileProtection(INPUT);
+        assert.equal(first.status, "protected");
+        // The parent cancel takes the linked child with it.
+        fake.orders = [];
+        return yield* service.reconcileProtection(INPUT);
+      }),
+    );
+
+    assert.equal(fake.placements.length, 2);
+  }),
+);
+
+it.effect("does not cancel the parent when the filled slice cannot be protected", () =>
+  Effect.gen(function* () {
+    // Cancelling here would trade a working entry for an unprotected position
+    // with nothing left to cancel.
+    const fake = makeFake({ positionSize: 0.12, swallowPlacements: true });
+    const outcome = yield* runWithClock(fake, (service) =>
+      service.cancelEntriesWithProtection({ ...INPUT, cloids: ["0xparent"] }),
+    );
+
+    assert.equal(outcome.status, "escalate");
+    assert.deepEqual(fake.cancels, []);
   }),
 );
