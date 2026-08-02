@@ -184,6 +184,16 @@ export const TradingRequestEntryResult = Schema.Struct({
     remainingCumulativeLossUsd: Schema.Number,
     exhausted: Schema.Boolean,
   }),
+  /**
+   * Why the request ended the way it did — the refusal reason for a
+   * `rejected`, the record's exchange status for an `accepted`, and for a
+   * `submitted` the fact that the outcome is not yet known.
+   *
+   * `status` alone cannot distinguish "refused at preview, no order exists"
+   * from "the exchange rejected the order", and a harness that cannot tell
+   * those apart cannot decide what to do next.
+   */
+  detail: Schema.optional(Schema.String),
 });
 export type TradingRequestEntryResult = typeof TradingRequestEntryResult.Type;
 

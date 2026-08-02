@@ -254,10 +254,12 @@ it.effect("serves trading_get_mission and a versioned publish over the real /mcp
       assert.equal(after.result.structuredContent.strategy.name, "overnight range break");
 
       // The accepted publish was announced on the orchestration engine, which
-      // is what puts it on the server's ordered WS push path.
+      // is what puts it on the server's ordered WS push path — and so was the
+      // status the publish settled the mission on (§11.1 `analysing → waiting`
+      // happens inside the publish write, so the UI has to hear about it too).
       assert.deepStrictEqual(
         dispatchedCommands.map((command) => command.type),
-        ["trading.mission.strategy-published"],
+        ["trading.mission.strategy-published", "trading.mission.status-set"],
       );
     }),
   ),

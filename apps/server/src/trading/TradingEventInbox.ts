@@ -61,6 +61,17 @@ export interface TradingEventInboxShape {
     missionId: string,
   ) => Effect.Effect<ReadonlyArray<TradingDomainEventSummary>, PersistenceSqlError>;
 
+  /**
+   * Read one event by its deduplication key, whatever lifecycle status it is
+   * in. `isPending` answers "is this still queued for a run"; this answers
+   * "was this ever recorded", which is what a caller reporting an outcome
+   * needs — the event may already have been claimed by the run that is asking.
+   */
+  readonly findSummary: (
+    missionId: string,
+    deduplicationKey: string,
+  ) => Effect.Effect<TradingDomainEventSummary | null, PersistenceSqlError>;
+
   /** Whether an event with `deduplicationKey` is still pending for `missionId`. */
   readonly isPending: (
     missionId: string,
@@ -140,6 +151,19 @@ const makeTradingEventInbox = Effect.gen(function* () {
       ),
     );
 
+  const findSummary: TradingEventInboxShape["findSummary"] = (missionId, deduplicationKey) =>
+    sql<ClaimedRow>`
+      SELECT category, deduplication_key, occurred_at, summary
+      FROM trading_event_inbox
+      WHERE mission_id = ${missionId} AND deduplication_key = ${deduplicationKey}
+    `.pipe(
+      Effect.mapError(sqlFail("findSummary")),
+      Effect.map((rows) => {
+        const row = rows[0];
+        return row === undefined ? null : toSummary(row);
+      }),
+    );
+
   const isPending: TradingEventInboxShape["isPending"] = (missionId, deduplicationKey) =>
     sql<{ readonly event_id: string }>`
       SELECT event_id FROM trading_event_inbox
@@ -160,6 +184,7 @@ const makeTradingEventInbox = Effect.gen(function* () {
   return {
     persist,
     claimPending,
+    findSummary,
     isPending,
     markIncludedConsumed,
   } satisfies TradingEventInboxShape;

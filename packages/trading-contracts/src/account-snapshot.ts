@@ -50,7 +50,15 @@ export type AccountPosition = typeof AccountPosition.Type;
 export const AgentNetPosition = Schema.Struct({
   market: TradingMarket,
   size: Schema.Number,
-  entryPrice: Price,
+  /**
+   * Absent when the account is flat.
+   *
+   * `AccountPosition` can require a `Price` because a row only exists while a
+   * position does. This view also has to model "no position", which is a
+   * legitimate answer rather than an error — and a flat account has no entry
+   * price to report. Reporting `0` instead is what a `Price` refuses.
+   */
+  entryPrice: Schema.optional(Price),
   unrealisedPnl: Schema.Number,
   cumulativeFunding: Schema.Number,
   marginUsed: UsdAmount,

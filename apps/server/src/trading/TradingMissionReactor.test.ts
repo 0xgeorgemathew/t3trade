@@ -200,7 +200,10 @@ it.layer(TestLayer)("trading mission reactor", (it) => {
       assert.ok(Option.isSome(projected), "expected a projected mission row");
       assert.equal(projected.value.id, MISSION_ID);
       assert.equal(projected.value.threadId, THREAD_ID);
-      assert.equal(projected.value.status, "initializing");
+      // §11.1 `initializing → analysing`: the create handler starts the first
+      // run and then advances, so a mission whose first run started is
+      // analysing by the time it is projected.
+      assert.equal(projected.value.status, "analysing");
       assert.equal(projected.value.strategyVersion, 0);
       assert.equal(projected.value.strategy, null);
       // The mandate is the POC authority defaults over the allocated capital.
@@ -217,14 +220,8 @@ it.layer(TestLayer)("trading mission reactor", (it) => {
       yield* started;
       yield* createMission;
 
-      // initializing's only loop edge is to analysing, so get there first.
-      const missions = yield* TradingMissionService;
-      yield* missions.transition({
-        missionId: MISSION_ID,
-        to: "analysing",
-        expectedVersion: yield* missions.getMissionVersion(MISSION_ID),
-      });
-
+      // The create handler already advanced the mission to analysing, which is
+      // where pause is legal from.
       yield* control("trading.mission.pause");
 
       const paused = yield* projectedMission;
@@ -461,13 +458,8 @@ it.live("reconciles before resuming a paused mission", () =>
         )
       `;
 
-      // Get into the active loop, then pause — the state resume targets.
-      const missions = yield* TradingMissionService;
-      yield* missions.transition({
-        missionId: MISSION_ID,
-        to: "analysing",
-        expectedVersion: yield* missions.getMissionVersion(MISSION_ID),
-      });
+      // Creation already put the mission in the active loop; pause is the
+      // state resume targets.
       yield* control("trading.mission.pause");
 
       const paused = yield* projectedMission;

@@ -388,18 +388,21 @@ const makeHyperliquidGateway = Effect.gen(function* () {
     const position = snapshot.positions.find((p) => p.market === symbol);
     if (!position) {
       // No open position is a valid net-zero state, not an error. Return a
-      // flat zero position so the harness sees a deterministic shape.
-      return {
+      // flat position so the harness sees a deterministic shape — with no
+      // entry price, because a flat account has none. Reporting `0` here made
+      // every `trading_get_position` call fail to encode while flat, which is
+      // exactly when the harness asks.
+      const flat: AgentNetPosition = {
         market: symbol as AgentNetPosition["market"],
         size: 0,
-        entryPrice: 0,
         unrealisedPnl: 0,
         cumulativeFunding: 0,
         marginUsed: 0,
         freshness: snapshot.freshness,
-      } as AgentNetPosition;
+      };
+      return flat;
     }
-    return {
+    const open: AgentNetPosition = {
       market: position.market,
       size: position.size,
       entryPrice: position.entryPrice,
@@ -407,7 +410,8 @@ const makeHyperliquidGateway = Effect.gen(function* () {
       cumulativeFunding: position.cumulativeFunding,
       marginUsed: position.marginUsed,
       freshness: snapshot.freshness,
-    } as AgentNetPosition;
+    };
+    return open;
   });
 
   const getOpenOrders = Effect.fn("HyperliquidGateway.getOpenOrders")(function* (

@@ -596,21 +596,15 @@ it.live(
                     "mission projected after create",
                   );
 
-                  // Walk the mission through the §11.1 status graph to `executing`,
-                  // the only status (besides position_open) the §16.3 preview admits
-                  // an entry from. A real harness drives this via control commands;
-                  // here we transition directly through TradingMissionService (the
-                  // same service the reactor's control handler uses).
-                  const missions = yield* TradingMissionService;
-                  for (const target of ["analysing", "waiting", "executing"] as const) {
-                    const expectedVersion = yield* missions.getMissionVersion(MISSION_ID);
-                    yield* missions.transition({
-                      missionId: MISSION_ID,
-                      to: target,
-                      expectedVersion,
-                    });
-                  }
                   yield* tradingReactor.drain;
+
+                  // §11.1 `initializing → analysing`: creating the mission started
+                  // its first run, and the reactor advanced it. This test used to
+                  // walk the status graph by hand, which hid the fact that nothing
+                  // drove it — a real mission stayed in `initializing` forever and
+                  // §16.3 item 1 refused every entry.
+                  const missions = yield* TradingMissionService;
+                  assert.equal((yield* missions.getMission(MISSION_ID)).status, "analysing");
 
                   // Publish a momentum strategy so the mission's strategyVersion is
                   // 1 (the §16.3 preview rejects an intent whose strategyVersion
@@ -666,6 +660,10 @@ it.live(
                     },
                   });
                   assert.equal(published.outcome, "accepted", "strategy publish must be accepted");
+
+                  // §11.1 `analysing → waiting`: the publish itself ends analysis,
+                  // which is what makes `executing` reachable on the next step.
+                  assert.equal((yield* missions.getMission(MISSION_ID)).status, "waiting");
 
                   // 4. THE KEYSTONE DISPATCH: the command the
                   //    `trading_request_entry` tool handler raises. This is what
@@ -769,7 +767,10 @@ it.live(
                   //    the projection row's mission-level fields are populated too.
                   assert.equal(mission.id, MISSION_ID);
                   assert.equal(mission.threadId, THREAD_ID);
-                  assert.equal(mission.status, "initializing");
+                  // §11.1: the request moved the mission `waiting → executing`, and
+                  // the reactor settled it on the reconciled position — 0.5 long, so
+                  // `position_open` rather than back to `waiting`.
+                  assert.equal(mission.status, "position_open");
 
                   yield* Scope.close(scope, Exit.void);
                 }),

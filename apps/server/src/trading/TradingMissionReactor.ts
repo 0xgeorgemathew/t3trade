@@ -36,6 +36,7 @@ import * as Stream from "effect/Stream";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import type { PersistedWatch, TradingHarnessRunCause } from "./Schemas.ts";
+import { executionRefusedKey } from "./ExecutionRefusal.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
@@ -89,6 +90,19 @@ const QUEUE_RETRY_LIMIT = 60;
  * without inventing an identity contract the spec has not published.
  */
 export const LOCAL_TRADING_USER_ID = "local";
+
+/**
+ * A one-line reason a harness can act on, from a refusal's cause.
+ *
+ * The full `Cause.pretty` rendering is a stack trace with the reason buried in
+ * its first line; that first line is the part the harness needs and the part
+ * that fits an inbox summary. The whole rendering is kept on the event payload.
+ */
+const describeRefusal = (cause: Cause.Cause<unknown>): string => {
+  const failure = Cause.squash(cause);
+  const message = failure instanceof Error ? failure.message : String(failure);
+  return message.split("\n")[0] ?? "unknown";
+};
 
 export interface TradingMissionReactorShape {
   /** Start the event stream. The server-startup reconcile runs at layer build. */
@@ -154,6 +168,44 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * Move a mission one step along the §11.1 loop and announce where it landed.
+   *
+   * §11.1 publishes the loop, but until now nothing drove it: creation
+   * announced `initializing` and the only other writers were the user's own
+   * pause/resume/revoke controls. A mission therefore sat in `initializing`
+   * forever, and §16.3 item 1 (`mission_active`, which admits only `executing`
+   * and `position_open`) refused every entry the harness ever requested. The
+   * four callers below are the deterministic points the loop turns on.
+   *
+   * `from` is the status this step is valid out of. Anything else means another
+   * transition — a user pause, a revoke, an exhaustion block — got there first,
+   * and that status is the authoritative one; the step is skipped rather than
+   * forced. The returned boolean says whether the move happened.
+   */
+  const advance = Effect.fn("TradingMissionReactor.advance")(function* (input: {
+    readonly missionId: TradingMissionId;
+    readonly threadId: ThreadId;
+    readonly from: ReadonlyArray<TradingMissionStatus>;
+    readonly to: TradingMissionStatus;
+  }) {
+    const mission = yield* missions.getMission(input.missionId);
+    if (!input.from.includes(mission.status)) return false;
+
+    const expectedVersion = yield* missions.getMissionVersion(input.missionId);
+    const updated = yield* missions.transition({
+      missionId: input.missionId,
+      to: input.to,
+      expectedVersion,
+    });
+    yield* announceStatus({
+      missionId: input.missionId,
+      threadId: input.threadId,
+      status: updated.status,
+    });
+    return true;
+  });
+
+  /**
    * Derive the harness binding from the thread the mission is bound to.
    *
    * The provider and instance come from the thread's session (the live provider
@@ -212,16 +264,24 @@ const make = Effect.gen(function* () {
     // (coordinator check 7); the resumed turn's first job is to author one.
     // The coordinator forks the wake path internally (a daemon fiber), so this
     // returns once the lease is acquired, not when the turn completes.
-    yield* coordinator.requestRun({ missionId, cause: "mission_created" }).pipe(
+    const started = yield* coordinator.requestRun({ missionId, cause: "mission_created" }).pipe(
+      Effect.as(true),
       Effect.catchCause((cause) => {
         // A failure to start the first run is logged, not fatal — the
         // mission exists and a later watch or manual action can start it.
         return Effect.logWarning("TradingMissionReactor: first run did not start", {
           missionId,
           cause: Cause.pretty(cause),
-        });
+        }).pipe(Effect.as(false));
       }),
     );
+
+    // §11.1 `initializing → analysing`: the first run is what the mission was
+    // initializing for. A mission whose first run never started stays in
+    // `initializing`, which is the accurate description of it.
+    if (started) {
+      yield* advance({ missionId, threadId, from: ["initializing"], to: "analysing" });
+    }
   });
 
   /** Map the fired watch's type to the §11.2 run cause it wakes the harness with. */
@@ -437,6 +497,14 @@ const make = Effect.gen(function* () {
     const { missionId, threadId, intent, expectedAuthorityVersion, activeHarnessRunId } =
       event.payload;
 
+    // §11.1 `waiting → executing` / `position_open → executing`: requesting an
+    // entry is what puts the mission into execution. §16.3 item 1 admits an
+    // intent only from those two statuses, so this move is the thing that makes
+    // an entry reachable at all — and it happens before preview so preview
+    // reads the status this request just established. `runEvent` settles the
+    // mission out of `executing` afterwards, on every path.
+    yield* advance({ missionId, threadId, from: ["waiting", "position_open"], to: "executing" });
+
     const mission = yield* missions.getMission(missionId);
     // §10.6: account/position reads use the master-wallet address; the signer
     // address is recorded on the execution record only.
@@ -553,6 +621,70 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * Leave `executing` for whatever the exchange actually holds.
+   *
+   * §11.1 gives `executing` two exits: `position_open` and `waiting`. Which one
+   * applies is not a property of the request — a preview refusal, an unfilled
+   * IOC and a full fill all end the same request differently — so it is read
+   * from the reconciled position rather than inferred. Runs on every exit path
+   * of an execution, successful or not, because a mission stranded in
+   * `executing` would refuse its own next entry only after refusing to leave.
+   *
+   * The snapshot is what the `after_submission` reconcile just wrote (§18): the
+   * canonical position, already converged, with no second exchange round-trip.
+   * A request that failed before reaching that reconcile leaves the previous
+   * snapshot in place, which is still what the mission holds.
+   */
+  const settleAfterExecution = Effect.fn("TradingMissionReactor.settleAfterExecution")(function* (
+    event: Extract<TradingRequestEvent, { type: "trading.execution-requested" }>,
+  ) {
+    const { missionId, threadId, intent } = event.payload;
+    const mission = yield* missions.getMission(missionId);
+    if (mission.status !== "executing") return;
+
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ readonly size: number }>`
+      SELECT size FROM trading_position_snapshots
+      WHERE mission_id = ${missionId} AND market = ${intent.market}
+    `;
+    const size = rows[0]?.size ?? 0;
+
+    yield* advance({
+      missionId,
+      threadId,
+      from: ["executing"],
+      to: size === 0 ? "waiting" : "position_open",
+    });
+  });
+
+  /**
+   * Record why an execution request was refused, where the harness can read it.
+   *
+   * A refusal used to exist only as a server log line, so `trading_request_entry`
+   * had nothing to report and the harness carried on as though it had entered.
+   * Writing it to the mission inbox puts the reason on both paths that reach the
+   * harness: `TradingExecutionOutcome` reads it back for the tool's own return,
+   * and the next wakeup carries it as a pending event.
+   */
+  const recordExecutionRefused = Effect.fn("TradingMissionReactor.recordExecutionRefused")(
+    function* (
+      event: Extract<TradingRequestEvent, { type: "trading.execution-requested" }>,
+      cause: Cause.Cause<unknown>,
+    ) {
+      const { missionId, intent } = event.payload;
+      const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      yield* inbox.persist({
+        missionId,
+        category: "system",
+        deduplicationKey: executionRefusedKey(intent.executionSequence),
+        payload: { executionSequence: intent.executionSequence, cause: Cause.pretty(cause) },
+        occurredAt,
+        summary: `execution ${intent.executionSequence} refused: ${describeRefusal(cause)}`,
+      });
+    },
+  );
+
+  /**
    * Run one event. Every failure short of an interrupt is logged and swallowed
    * so a single refused request cannot crash the queue: the mission's
    * persisted state is the source of truth, not the request. Interrupts
@@ -569,7 +701,23 @@ const make = Effect.gen(function* () {
       } else if (event.type === "trading.mission-watch-fired") {
         yield* processWatchFired(event);
       } else {
-        yield* processExecutionRequested(event);
+        yield* processExecutionRequested(event).pipe(
+          Effect.tapCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.void
+              : recordExecutionRefused(event, cause).pipe(Effect.catch(() => Effect.void)),
+          ),
+          Effect.ensuring(
+            settleAfterExecution(event).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("trading execution: mission did not leave executing", {
+                  missionId: event.payload.missionId,
+                  cause: Cause.pretty(cause),
+                }),
+              ),
+            ),
+          ),
+        );
       }
     }).pipe(
       Effect.catchCause((cause) => {

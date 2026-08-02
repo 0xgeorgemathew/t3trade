@@ -23,6 +23,7 @@ import { HyperliquidExecutionServiceLive } from "./HyperliquidExecutionService.t
 import { TradingAccountBootstrapLive } from "./TradingAccountBootstrap.ts";
 import { HyperliquidReconcilerLive } from "./HyperliquidReconciler.ts";
 import { TradingEventInboxLive } from "./TradingEventInbox.ts";
+import { TradingExecutionOutcomeLive } from "./TradingExecutionOutcome.ts";
 import { TradingExecutionGuardLive } from "./TradingExecutionGuard.ts";
 import { InterimSignerConfigLive } from "./InterimSignerConfig.ts";
 import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
@@ -115,6 +116,10 @@ const TradingExecutionLayerLive = Layer.mergeAll(
   // Provisions the account row a mission names. Merged here because it needs
   // the resolved interim signer, which the foundation below supplies.
   TradingAccountBootstrapLive,
+  // Reports an execution's real outcome back to `trading_request_entry`; needs
+  // the budget reader and the gateway the layers below supply, plus the inbox
+  // the reactor records refusals in.
+  TradingExecutionOutcomeLive.pipe(Layer.provide(TradingEventInboxLive)),
 ).pipe(Layer.provideMerge(TradingProtectionLayerLive));
 
 export const TradingLayerLive = Layer.mergeAll(

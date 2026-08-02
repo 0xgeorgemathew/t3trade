@@ -21,6 +21,7 @@ import { OrchestrationEngineService } from "../../../orchestration/Services/Orch
 
 import type { TradingMission } from "../../../trading/Schemas.ts";
 import type { PersistedWatch } from "../../../trading/Schemas.ts";
+import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
@@ -134,6 +135,47 @@ const announceStrategyPublished = Effect.fn("TradingToolkit.announceStrategyPubl
   },
 );
 
+/**
+ * Put the mission's post-publish status on the WS push path.
+ *
+ * `publishMomentumStrategy` moves a mission out of `analysing` as part of the
+ * publish itself (§11.1 `analysing → waiting`). That write is durable but
+ * invisible to the workspace, which learns about mission status from
+ * `trading.mission.status-set` events; announcing the status the publish
+ * settled on is what closes that gap.
+ */
+const announceMissionStatus = Effect.fn("TradingToolkit.announceMissionStatus")(function* (input: {
+  readonly threadId: string;
+  readonly missionId: string;
+}) {
+  const missions = yield* TradingMissionService;
+  const engine = yield* OrchestrationEngineService;
+  const crypto = yield* Crypto.Crypto;
+
+  yield* Effect.gen(function* () {
+    const mission = yield* missions.getMission(input.missionId);
+    const commandId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+    const createdAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+    yield* engine.dispatch({
+      type: "trading.mission.status-set",
+      commandId: CommandId.make(commandId),
+      threadId: ThreadId.make(input.threadId),
+      missionId: TradingMissionId.make(input.missionId),
+      status: mission.status,
+      createdAt,
+    });
+  }).pipe(
+    // The publish and its status are already durable; failing to announce them
+    // costs the UI a refresh, not the publish.
+    Effect.catchCause((cause) =>
+      Effect.logWarning("could not announce a mission status after a strategy publish", {
+        missionId: input.missionId,
+        cause,
+      }),
+    ),
+  );
+});
+
 const announceWatchRegistered = Effect.fn("TradingToolkit.announceWatchRegistered")(
   function* (input: {
     readonly threadId: string;
@@ -230,6 +272,7 @@ const handlers = {
           strategyVersion: published.strategyVersion,
           supersededWatchIds: published.supersededWatchIds,
         });
+        yield* announceMissionStatus({ threadId, missionId: input.missionId });
       }
 
       return published;
@@ -254,16 +297,24 @@ const handlers = {
           createdAt,
         })
         .pipe(Effect.orDie);
-      return {
-        executionId: commandId,
-        status: "submitted" as const,
-        cloid: "",
-        orderResults: [],
-        budget: {
-          remainingCumulativeLossUsd: mission.authority.maximumCumulativeLossUsd,
-          exhausted: false,
-        },
-      };
+
+      // The dispatch is a question; the reactor answers it on its own worker.
+      // Wait for that answer rather than reporting the question as an outcome —
+      // a harness told "submitted" for a request that was refused at preview
+      // goes on to manage a position that does not exist.
+      const outcomes = yield* TradingExecutionOutcome;
+      const missions = yield* TradingMissionService;
+      const masterAddress = yield* missions
+        .getMasterWalletAddress(mission.tradingAccountId)
+        .pipe(Effect.orDie);
+
+      return yield* outcomes.awaitOutcome({
+        missionId: input.missionId,
+        executionSequence: input.intent.executionSequence,
+        maximumCumulativeLossUsd: mission.authority.maximumCumulativeLossUsd,
+        fallbackTakerFeeBpsPerSide: mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
+        masterAddress,
+      });
     }),
 
   // -- §14.2 read-only market-data tools -------------------------------------
