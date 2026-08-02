@@ -55,7 +55,7 @@ const goodMission = (overrides: Partial<TradingMission> = {}): TradingMission =>
         stopSlippageReserveBps: 25,
         positivePnlExpandsLossBudget: false,
       },
-      validUntil: "revoked",
+      validUntil: "until_revoked",
     },
     strategy: undefined,
     status: "executing",

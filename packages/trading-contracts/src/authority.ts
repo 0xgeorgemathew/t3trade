@@ -17,8 +17,21 @@ export type TradingDirection = typeof TradingDirection.Type;
 export const TradingMarginMode = Schema.Literals(["cross", "isolated"]);
 export type TradingMarginMode = typeof TradingMarginMode.Type;
 
-/** `"revoked"` for an open-ended mandate, otherwise an expiry in epoch millis. */
-export const TradingAuthorityValidUntil = Schema.Union([Schema.Literal("revoked"), UnixMillis]);
+/**
+ * `"until_revoked"` for an open-ended mandate, otherwise an expiry in epoch
+ * millis.
+ *
+ * The sentinel used to be spelled `"revoked"`, which read as a statement of
+ * fact rather than a duration. The whole authority is handed to the harness in
+ * its mission context, and a harness that reads `validUntil: "revoked"` quite
+ * reasonably concludes its mandate is gone and refuses to trade. The value is
+ * never enforced anywhere — it is documentation for the model — so it has to
+ * say what it means.
+ */
+export const TradingAuthorityValidUntil = Schema.Union([
+  Schema.Literal("until_revoked"),
+  UnixMillis,
+]);
 export type TradingAuthorityValidUntil = typeof TradingAuthorityValidUntil.Type;
 
 export const TradingRiskPolicy = Schema.Struct({
@@ -98,5 +111,5 @@ export const pocAuthorityDefaults = (allocatedCapitalUsd: number): TradingAuthor
 
   riskPolicy: pocRiskPolicyDefaults,
 
-  validUntil: "revoked",
+  validUntil: "until_revoked",
 });
