@@ -122,7 +122,23 @@ interface FillRow {
   readonly filled_size: number;
   readonly avg_fill_price: number;
   readonly fee_usd: number;
+  readonly closed_pnl: number;
   readonly traded_at: number;
+}
+
+/**
+ * The mission's realised result, aggregated across every fill.
+ *
+ * Separate from `recentFills` because the receipt list is capped at three: a
+ * completion summary built from that cap would understate any mission that
+ * traded more than three times.
+ */
+interface MissionResultRow {
+  readonly realized_pnl: number | null;
+  readonly fees_paid: number | null;
+  readonly fill_count: number;
+  readonly first_fill_at: number | null;
+  readonly last_fill_at: number | null;
 }
 
 /** Row shape for the latest position snapshot. */
@@ -146,12 +162,23 @@ interface ExecutionSurfaces {
   readonly recentFills: ReadonlyArray<FillRow>;
   /** The latest position snapshot, or null when flat/absent. */
   readonly position: PositionSnapshotRow | null;
+  /** Realised result across every fill. */
+  readonly result: MissionResultRow;
 }
+
+const EMPTY_RESULT: MissionResultRow = {
+  realized_pnl: 0,
+  fees_paid: 0,
+  fill_count: 0,
+  first_fill_at: null,
+  last_fill_at: null,
+};
 
 const EMPTY_SURFACES: ExecutionSurfaces = {
   inFlightExecution: null,
   recentFills: [],
   position: null,
+  result: EMPTY_RESULT,
 };
 
 const toMission = (row: ProjectionRow, exec: ExecutionSurfaces): OrchestrationTradingMission =>
@@ -198,8 +225,16 @@ const toMission = (row: ProjectionRow, exec: ExecutionSurfaces): OrchestrationTr
       filledSize: f.filled_size,
       avgFillPrice: f.avg_fill_price,
       feeUsd: f.fee_usd,
+      closedPnl: f.closed_pnl,
       tradedAt: toIso(f.traded_at),
     })),
+    result: {
+      realizedPnlUsd: exec.result.realized_pnl ?? 0,
+      feesPaidUsd: exec.result.fees_paid ?? 0,
+      fillCount: exec.result.fill_count,
+      firstFillAt: exec.result.first_fill_at === null ? null : toIso(exec.result.first_fill_at),
+      lastFillAt: exec.result.last_fill_at === null ? null : toIso(exec.result.last_fill_at),
+    },
     position:
       exec.position === null
         ? null
@@ -365,10 +400,23 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       // thread card renders — the projection and the UI agree on the same count
       // rather than the UI silently truncating a larger list.
       const recentFills = yield* sql<FillRow>`
-        SELECT cloid, order_id, market, side, filled_size, avg_fill_price, fee_usd, traded_at
+        SELECT cloid, order_id, market, side, filled_size, avg_fill_price, fee_usd,
+               closed_pnl, traded_at
         FROM trading_fills WHERE mission_id = ${missionId}
         ORDER BY traded_at DESC LIMIT 3
       `.pipe(Effect.mapError(sqlFail("fills")));
+
+      // The realised result across EVERY fill, for the completion summary.
+      const resultRows = yield* sql<MissionResultRow>`
+        SELECT
+          SUM(closed_pnl) AS realized_pnl,
+          SUM(fee_usd) AS fees_paid,
+          COUNT(*) AS fill_count,
+          MIN(traded_at) AS first_fill_at,
+          MAX(traded_at) AS last_fill_at
+        FROM trading_fills WHERE mission_id = ${missionId}
+      `.pipe(Effect.mapError(sqlFail("fills")));
+      const result = resultRows[0] ?? EMPTY_RESULT;
 
       // The latest position snapshot. Null when the mission has never had one.
       const positionRows = yield* sql<PositionSnapshotRow>`
@@ -379,7 +427,7 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       `.pipe(Effect.mapError(sqlFail("position")));
       const position = positionRows[0] ?? null;
 
-      return { inFlightExecution, recentFills, position } satisfies ExecutionSurfaces;
+      return { inFlightExecution, recentFills, position, result } satisfies ExecutionSurfaces;
     });
 
   const getByThreadId: TradingMissionProjectionShape["getByThreadId"] = (threadId) =>

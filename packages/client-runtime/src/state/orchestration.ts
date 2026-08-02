@@ -1,11 +1,21 @@
 import { ORCHESTRATION_WS_METHODS } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
 
-import { createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
+import * as Crypto from "effect/Crypto";
+
+import { createEnvironmentCommand, createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
+import {
+  type TradingMissionControlInput,
+  type TradingRiskControlInput,
+  tradingMissionControl,
+  tradingRiskControl,
+} from "../operations/commands.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 
+export type { TradingMissionControlInput, TradingRiskControlInput };
+
 export function createOrchestrationEnvironmentAtoms<R, E>(
-  runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
+  runtime: Atom.AtomRuntime<EnvironmentRegistry | Crypto.Crypto | R, E>,
 ) {
   return {
     turnDiff: createEnvironmentRpcQueryAtomFamily(runtime, {
@@ -23,6 +33,18 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
     tradingMissionSnapshot: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:orchestration:trading-mission-snapshot",
       tag: ORCHESTRATION_WS_METHODS.getTradingMissionSnapshot,
+    }),
+
+    // §14.7's deterministic controls. Ordinary environment commands: a
+    // workspace button dispatches straight to the server, which is the whole
+    // point — no harness turn stands between the press and the action.
+    missionControl: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:trading:mission-control",
+      execute: (input: TradingMissionControlInput) => tradingMissionControl(input),
+    }),
+    riskControl: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:trading:risk-control",
+      execute: (input: TradingRiskControlInput) => tradingRiskControl(input),
     }),
   };
 }

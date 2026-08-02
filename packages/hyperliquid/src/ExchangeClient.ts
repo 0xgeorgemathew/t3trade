@@ -11,7 +11,7 @@
  *
  * @module HyperliquidExchangeClient
  */
-import { Context, Effect, Schema } from "effect";
+import { Context, Effect } from "effect";
 import * as Layer from "effect/Layer";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 

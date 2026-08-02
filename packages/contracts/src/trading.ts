@@ -74,6 +74,8 @@ export const TradingFillView = Schema.Struct({
   filledSize: Schema.Number,
   avgFillPrice: Schema.Number,
   feeUsd: Schema.Number,
+  /** Realised PnL the exchange attributed to this fill (§16.2 closedPnl). */
+  closedPnl: Schema.Number,
   tradedAt: IsoDateTime,
 });
 export type TradingFillView = typeof TradingFillView.Type;
@@ -95,6 +97,25 @@ export const TradingPositionView = Schema.Struct({
   observedAt: IsoDateTime,
 });
 export type TradingPositionView = typeof TradingPositionView.Type;
+
+/**
+ * The completion summary card's figures (§14.7 risk chrome).
+ *
+ * Aggregated across ALL of the mission's fills, not the three the receipt list
+ * shows: a summary that only counted recent fills would understate a mission
+ * that traded more than three times.
+ */
+export const TradingMissionResultView = Schema.Struct({
+  /** Realised PnL the exchange attributed to this mission's fills. */
+  realizedPnlUsd: Schema.Number,
+  /** Trading fees already paid. Always a cost, never netted into PnL twice. */
+  feesPaidUsd: Schema.Number,
+  fillCount: NonNegativeInt,
+  /** First and last fill, for the mission's traded duration. */
+  firstFillAt: Schema.NullOr(IsoDateTime),
+  lastFillAt: Schema.NullOr(IsoDateTime),
+});
+export type TradingMissionResultView = typeof TradingMissionResultView.Type;
 
 // -- read model --------------------------------------------------------------
 
@@ -133,6 +154,8 @@ export const OrchestrationTradingMission = Schema.Struct({
   recentFills: Schema.Array(TradingFillView),
   /** The live position card from reconciled projections (§10). Null when flat. */
   position: Schema.NullOr(TradingPositionView),
+  /** Realised result across every fill, for the completion summary card. */
+  result: TradingMissionResultView,
 
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
