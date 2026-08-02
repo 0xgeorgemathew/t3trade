@@ -46,7 +46,7 @@ import type {
   WireCandleSnapshotRequest,
   WireClearinghouseStateResponse,
   WireL2BookResponse,
-  WireOpenOrder,
+  WireFrontendOpenOrder,
 } from "./wire.ts";
 
 /** Combined transport + domain error the gateway can surface. */
@@ -217,21 +217,36 @@ function toPosition(
 }
 
 /** Map a wire open order into the domain AgentOpenOrder. */
-function toOpenOrder(o: WireOpenOrder): AgentOpenOrder {
-  // Hyperliquid sides are "B" (bid) / "A" (ask); normalise to buy/sell.
-  // `sz` is the remaining size, `origSz` the original size.
+/**
+ * Map a `frontendOpenOrders` row to the agent contract.
+ *
+ * Hyperliquid sides are "B" (bid) / "A" (ask); normalise to buy/sell. `sz` is
+ * the remaining size, `origSz` the original size.
+ *
+ * The protective fields are read conservatively: absent means "not confirmable
+ * as protection". A stop that the exchange did not describe as reduce-only and
+ * triggering must never be counted toward protected size (§17.2 step 7), so
+ * the defaults have to fail closed rather than assume.
+ */
+function toOpenOrder(o: WireFrontendOpenOrder): AgentOpenOrder {
   const remaining = num(o.sz);
+  const triggerPrice = num(o.triggerPx);
   return {
     market: o.coin as AgentOpenOrder["market"],
     orderId: o.oid,
-    cloid: o.cloid,
+    cloid: o.cloid ?? undefined,
     side: o.side === "B" ? "buy" : "sell",
     limitPrice: num(o.limitPx),
     size: o.origSz === undefined ? remaining : num(o.origSz),
     remainingSize: remaining,
-    // The openOrders endpoint only lists resting orders, so every row is open.
+    // The endpoint only lists resting orders, so every row is open.
     status: "open",
     createdAt: o.timestamp,
+    reduceOnly: o.reduceOnly ?? false,
+    isTrigger: o.isTrigger ?? false,
+    // "0.0" on a non-trigger order; `Price` is strictly positive, so drop it.
+    triggerPrice: triggerPrice > 0 ? triggerPrice : undefined,
+    orderType: o.orderType,
   };
 }
 
@@ -400,7 +415,9 @@ const makeHyperliquidGateway = Effect.gen(function* () {
   ) {
     const masterAddress = yield* requireMasterAddress(address);
 
-    const wireOrders = yield* info.openOrders(String(masterAddress));
+    // §17.2 step 7: protection is confirmed from trigger + reduce-only flags,
+    // which only `frontendOpenOrders` carries.
+    const wireOrders = yield* info.frontendOpenOrders(String(masterAddress));
     return wireOrders.map(toOpenOrder);
   });
 

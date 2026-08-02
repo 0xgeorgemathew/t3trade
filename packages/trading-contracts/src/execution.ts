@@ -128,10 +128,14 @@ export type TradingOrderIntent = typeof TradingOrderIntent.Type;
  *
  * `derive16Bytes(missionId, strategyVersion, executionSequence, actionType)`
  * — SHA-256 of the concatenated inputs, truncated to the first 16 bytes,
- * hex-encoded as a 32-character string (no `0x` prefix, matching the
- * Hyperliquid wire convention for `cloid`).
+ * hex-encoded as a `0x`-prefixed 34-character string.
+ *
+ * The `0x` prefix is the Hyperliquid wire convention (the exchange validates
+ * `len(cloid[2:]) == 32`). An unprefixed cloid is accepted on submission and
+ * then silently stored as `null`, which is how the Gate-E entry ended up
+ * unjoinable to its own fill — see `HyperliquidCloid` for that finding.
  */
-export const TradingCloid = Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/));
+export const TradingCloid = Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{32}$/));
 export type TradingCloid = typeof TradingCloid.Type;
 
 // ---------------------------------------------------------------------------
@@ -179,7 +183,19 @@ export type TradingExecutionStatus = typeof TradingExecutionStatus.Type;
  * Per-order status as returned by the exchange, recorded verbatim (§17.2
  * step 4: inspect EVERY per-order status; do not assume batch atomicity).
  */
-export const TradingOrderResultStatus = Schema.Literals(["ok", "err", "queued", "triggered"]);
+export const TradingOrderResultStatus = Schema.Literals([
+  "filled",
+  "resting",
+  "waiting_for_fill",
+  /**
+   * A parent-linked TP/SL child whose parent has not fully filled. Present in
+   * the response and NOT live protection (§17.1) — the distinction this
+   * literal exists to preserve.
+   */
+  "waiting_for_trigger",
+  "success",
+  "error",
+]);
 export type TradingOrderResultStatus = typeof TradingOrderResultStatus.Type;
 
 /**
@@ -187,12 +203,21 @@ export type TradingOrderResultStatus = typeof TradingOrderResultStatus.Type;
  * The exchange returns one status per order in a batch; T3 records each.
  */
 export const TradingOrderResult = Schema.Struct({
-  cloid: TradingCloid,
+  /**
+   * The cloid this row belongs to. Positional: the exchange returns statuses
+   * in submission order, and a `filled` row does not always echo the cloid
+   * back, so the submitter attributes each row to the leg it sent.
+   */
+  cloid: Schema.String,
   status: TradingOrderResultStatus,
   /** Exchange-assigned order id when available. */
   orderId: Schema.optional(Schema.Number),
-  /** Error/reason text when status is `err`. */
+  /** Executed size on a `filled` row. */
+  filledSize: Schema.optional(Schema.Number),
+  /** Error/reason text when status is `error`. */
   reason: Schema.optional(Schema.String),
+  /** Which leg of the submission this was. */
+  role: Schema.optional(Schema.Literals(["entry", "protection"])),
 });
 export type TradingOrderResult = typeof TradingOrderResult.Type;
 

@@ -55,6 +55,7 @@ import type {
   OrderBook,
   ResolvedMarket,
 } from "@t3tools/trading-contracts/market";
+import type { AgentOpenOrder } from "@t3tools/trading-contracts/account-snapshot";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -139,15 +140,73 @@ interface RecordingExchange {
 }
 const recordingExchange: RecordingExchange = { submitted: [] };
 
+/**
+ * The real `/exchange` order response: rows nested under `response.data`,
+ * each a single-key object naming the outcome. The entry request is a
+ * position increase carrying a stop, so it goes out as a grouped normalTpsl
+ * action and comes back with one row per leg (§17.2 steps 3–4).
+ */
 const OK_FILLED = {
   status: "ok",
-  response: { type: "ok", statuses: [{ cloid: "0".repeat(32), rsp: "ok", oid: 999 }] },
+  response: {
+    type: "order",
+    data: {
+      statuses: [
+        { filled: { totalSz: "0.5", avgPx: "3000.0", oid: 999 } },
+        { resting: { oid: 1_000 } },
+      ],
+    },
+  },
 } as const;
+
+/**
+ * Reduce-only triggers the fake exchange has accepted, surfaced back through
+ * `getOpenOrders`.
+ *
+ * Without this the fake would accept a protective stop and then report no
+ * resting orders, so §17.2 step 7 could never confirm protection and the
+ * reactor would (correctly) escalate to the emergency close. Modelling the
+ * accepted stop as resting is what lets this test exercise the whole chain
+ * through to a protected position.
+ */
+const restingProtection: AgentOpenOrder[] = [];
+
+/** Turn a submitted reduce-only trigger leg into the order it becomes. */
+const recordProtectiveLegs = (signed: SignedAction): void => {
+  const orders = (signed.action as { orders?: ReadonlyArray<unknown> }).orders ?? [];
+  for (const leg of orders) {
+    const o = leg as {
+      b?: boolean;
+      s?: string;
+      p?: string;
+      r?: boolean;
+      c?: string;
+      t?: { trigger?: { triggerPx?: string } };
+    };
+    if (o.r !== true || o.t?.trigger === undefined) continue;
+    restingProtection.push({
+      market: "ETH",
+      orderId: 5_000 + restingProtection.length,
+      cloid: o.c,
+      side: o.b === true ? "buy" : "sell",
+      limitPrice: Number(o.p ?? 0),
+      size: Number(o.s ?? 0),
+      remainingSize: Number(o.s ?? 0),
+      status: "open",
+      createdAt: 1_000,
+      reduceOnly: true,
+      isTrigger: true,
+      triggerPrice: Number(o.t.trigger.triggerPx ?? 0),
+      orderType: "Stop Market",
+    } as AgentOpenOrder);
+  }
+};
 
 const recordingExchangeLayer = Layer.succeed(HyperliquidExchangeClient, {
   submit: (signed: SignedAction) =>
     Effect.sync(() => {
       recordingExchange.submitted.push(signed);
+      recordProtectiveLegs(signed);
       return OK_FILLED;
     }),
 } as unknown as HyperliquidExchangeClient["Service"]);
@@ -207,7 +266,7 @@ const fakeGatewayLayer = Layer.succeed(HyperliquidGateway, {
       ],
     }),
   getPosition: (() => Effect.die("not used")) as never,
-  getOpenOrders: () => Effect.succeed([]),
+  getOpenOrders: () => Effect.sync(() => restingProtection),
   getTakerFeeRateBps: () => Effect.succeed({ feeBps: 4.5, observedAt: 1_000 }),
 } as unknown as HyperliquidGateway["Service"]);
 
@@ -284,6 +343,8 @@ import { TradingWatchServiceLive } from "../src/trading/TradingWatchService.ts";
 import { TradingEventInboxLive } from "../src/trading/TradingEventInbox.ts";
 import { TradingExecutionGuardLive } from "../src/trading/TradingExecutionGuard.ts";
 import { TradingFillReconcilerLive } from "../src/trading/TradingFillReconciler.ts";
+import { TradingProtectionServiceLive } from "../src/trading/TradingProtectionService.ts";
+import { TradingEmergencyCloseServiceLive } from "../src/trading/TradingEmergencyCloseService.ts";
 import { TradingBudgetReaderLive } from "../src/trading/TradingBudgetReader.ts";
 import {
   TradingPreviewService,
@@ -352,6 +413,8 @@ const tradingExecutionCore = Layer.mergeAll(
 const tradingLayerForTest = Layer.mergeAll(
   TradingExecutionGuardLive,
   TradingFillReconcilerLive,
+  TradingProtectionServiceLive,
+  TradingEmergencyCloseServiceLive,
 ).pipe(Layer.provideMerge(coordinatorWithDeps), Layer.provideMerge(tradingExecutionCore));
 
 // --- layer composition ------------------------------------------------------

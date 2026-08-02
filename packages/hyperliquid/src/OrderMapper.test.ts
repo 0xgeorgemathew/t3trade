@@ -4,7 +4,14 @@ import { describe, expect, it } from "@effect/vitest";
 import type { MarketBestBidOffer } from "@t3tools/trading-contracts/market";
 import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
 
-import { buildCancelByCloidAction, buildOrderAction, mapOrder } from "./OrderMapper.ts";
+import {
+  buildCancelByCloidAction,
+  buildGroupedEntryWithStopAction,
+  buildOrderAction,
+  buildProtectiveStopAction,
+  mapOrder,
+  mapProtectiveStop,
+} from "./OrderMapper.ts";
 
 /** A fresh BBO with a known top-of-book (ETH bid 1891.4, ask 1891.5). */
 const FRESH_BBO = (observedAt: number): MarketBestBidOffer => ({
@@ -179,4 +186,133 @@ describe("buildOrderAction / buildCancelByCloidAction", () => {
     expect(cancel.coin).toBeUndefined();
     expect(cancel.cloid).toBe("0xdeadbeefdeadbeefdeadbeefdeadbeef");
   });
+});
+
+describe("mapProtectiveStop — §17.2 step 6 / §17.4", () => {
+  const PROTECT_CLOID = "0x" + "1".repeat(32);
+
+  it.effect("protects a long with a sell stop below the trigger", () =>
+    Effect.gen(function* () {
+      const stop = yield* mapProtectiveStop({
+        cloid: PROTECT_CLOID,
+        coin: "ETH",
+        positionSize: 0.25,
+        stopPrice: 1_800,
+        szDecimals: 4,
+      });
+
+      // The reducing side of a long is a sell.
+      expect(stop.side).toBe("sell");
+      expect(stop.triggerPrice).toBe("1800");
+      // The fill limit sits BELOW the trigger so the armed order crosses;
+      // a stop that cannot fill is not protection. 1800 * (1 - 0.01) = 1782.
+      expect(Number(stop.limitPrice)).toBeLessThan(1_800);
+      expect(Number(stop.limitPrice)).toBeCloseTo(1_782, 5);
+      expect(stop.size).toBe("0.25");
+    }),
+  );
+
+  it.effect("protects a short with a buy stop above the trigger", () =>
+    Effect.gen(function* () {
+      const stop = yield* mapProtectiveStop({
+        cloid: PROTECT_CLOID,
+        coin: "ETH",
+        positionSize: -0.25,
+        stopPrice: 1_900,
+        szDecimals: 4,
+      });
+
+      expect(stop.side).toBe("buy");
+      expect(Number(stop.limitPrice)).toBeGreaterThan(1_900);
+    }),
+  );
+
+  it.effect("sizes from the canonical position, not from a requested size", () =>
+    Effect.gen(function* () {
+      // A partial fill is exactly the case where these differ (§17.3).
+      const stop = yield* mapProtectiveStop({
+        cloid: PROTECT_CLOID,
+        coin: "ETH",
+        positionSize: 0.037,
+        stopPrice: 1_800,
+        szDecimals: 4,
+      });
+      expect(stop.size).toBe("0.037");
+    }),
+  );
+
+  it.effect("refuses to place protection for a flat position", () =>
+    Effect.gen(function* () {
+      const error = yield* mapProtectiveStop({
+        cloid: PROTECT_CLOID,
+        coin: "ETH",
+        positionSize: 0,
+        stopPrice: 1_800,
+        szDecimals: 4,
+      }).pipe(Effect.flip);
+      expect(error.reason).toBe("non_positive_size");
+    }),
+  );
+});
+
+describe("protective order actions — §17.2 step 3 / step 6", () => {
+  const PROTECT_CLOID = "0x" + "1".repeat(32);
+
+  const protectiveStop = mapProtectiveStop({
+    cloid: PROTECT_CLOID,
+    coin: "ETH",
+    positionSize: 0.02,
+    stopPrice: 1_800,
+    szDecimals: 4,
+  });
+
+  it.effect("groups an entry with its linked stop under normalTpsl", () =>
+    Effect.gen(function* () {
+      const entry = yield* mapOrder({
+        intent: baseIntent({}),
+        bbo: FRESH_BBO(1_000),
+        szDecimals: 4,
+        allowedSlippageBps: 50,
+        nowMs: 1_000,
+      });
+      const stop = yield* protectiveStop;
+      const action = buildGroupedEntryWithStopAction(entry, stop, 2);
+
+      expect(action.grouping).toBe("normalTpsl");
+      const legs = action.orders as ReadonlyArray<Record<string, unknown>>;
+      expect(legs).toHaveLength(2);
+
+      // Parent: the entry, unchanged and not reduce-only.
+      expect(Object.keys(legs[0]!)).toEqual(["a", "b", "p", "s", "r", "t", "c"]);
+      expect(legs[0]!.r).toBe(false);
+      expect(legs[0]!.c).toBe(entry.cloid);
+
+      // Child: reduce-only, opposite side, trigger rather than limit. Key
+      // order is hash-critical, so assert the full sequence exactly.
+      expect(Object.keys(legs[1]!)).toEqual(["a", "b", "p", "s", "r", "t", "c"]);
+      expect(legs[1]!.r).toBe(true);
+      expect(legs[1]!.b).toBe(false);
+      expect(legs[1]!.c).toBe(PROTECT_CLOID);
+      expect(legs[1]!.t).toEqual({
+        trigger: { isMarket: true, triggerPx: "1800", tpsl: "sl" },
+      });
+    }),
+  );
+
+  it.effect("builds a standalone sized stop that is nobody's child", () =>
+    Effect.gen(function* () {
+      const stop = yield* protectiveStop;
+      const action = buildProtectiveStopAction(stop, 2);
+
+      // `na` is load-bearing: independent protection has to survive the
+      // cancellation of the parent whose children would otherwise go with it
+      // (§17.3).
+      expect(action.grouping).toBe("na");
+      expect(action.type).toBe("order");
+      const legs = action.orders as ReadonlyArray<Record<string, unknown>>;
+      expect(legs).toHaveLength(1);
+      expect(legs[0]!.r).toBe(true);
+      expect(legs[0]!.a).toBe(2);
+    }),
+  );
 });

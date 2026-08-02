@@ -82,6 +82,110 @@ export function checkStopInformation(input: StopGateInput): StopGateDefect | nul
   return onLosingSide ? null : "stop_on_wrong_side_of_entry";
 }
 
+// ---------------------------------------------------------------------------
+// §17.2 steps 6–9 · The bounded reconciliation window
+// ---------------------------------------------------------------------------
+
+/**
+ * How long T3 may hold an acknowledged increase before full protection is
+ * confirmed, and how often it re-reads canonical state inside that window.
+ *
+ * §17 defines the window as "the shortest technically necessary" one but fixes
+ * no number, and Phase 4 did not land one either despite the Phase 5 brief
+ * saying it had. These are therefore fork-owned values, chosen to be a few
+ * exchange round-trips wide and no wider: the window is a liability, not a
+ * budget. When it expires without confirmed protection, §17.2 step 9 escalates
+ * to the deterministic emergency close rather than waiting longer.
+ */
+export const PROTECTION_RECONCILIATION = {
+  /** Total time protection may stay unconfirmed before escalation. */
+  windowMillis: 15_000,
+  /** Gap between canonical re-reads inside the window. */
+  confirmPollMillis: 750,
+  /** How many placement attempts the window allows before escalation. */
+  maximumPlacementAttempts: 3,
+} as const;
+
+/**
+ * Sizes below this are treated as flat. Exchange sizes are decimal strings
+ * truncated to `szDecimals`, so a residual far below any tradable increment is
+ * rounding, not exposure.
+ */
+export const PROTECTION_SIZE_EPSILON = 1e-9;
+
+/** The shape protection confirmation reads out of canonical open orders. */
+export interface ProtectiveOrderCandidate {
+  readonly market: string;
+  readonly side: TradingOrderSide;
+  readonly remainingSize: number;
+  readonly reduceOnly: boolean;
+  readonly isTrigger: boolean;
+  readonly triggerPrice?: number | undefined;
+}
+
+/** What confirmation inspects: the canonical position and the resting orders. */
+export interface ProtectionConfirmationInput {
+  readonly market: string;
+  /** Signed canonical position size; positive long, negative short. */
+  readonly positionSize: number;
+  /** Current mark, used to tell a protective stop from a take-profit. */
+  readonly referencePrice: number;
+  readonly openOrders: ReadonlyArray<ProtectiveOrderCandidate>;
+}
+
+/**
+ * True when one resting order is exchange-native protection for this position.
+ *
+ * All four must hold. Reduce-only and trigger are what make it protection at
+ * all; the reducing side is what makes it protect *this* position; and the
+ * trigger sitting on the losing side of the mark is what separates a stop from
+ * a take-profit. A take-profit is also a reduce-only trigger on the reducing
+ * side, and counting one as protection would report a position as safe while
+ * its entire downside is uncovered.
+ */
+export function isProtectiveOrder(
+  order: ProtectiveOrderCandidate,
+  input: ProtectionConfirmationInput,
+): boolean {
+  if (order.market !== input.market) return false;
+  if (!order.reduceOnly || !order.isTrigger) return false;
+  if (order.triggerPrice === undefined) return false;
+  if (order.remainingSize <= PROTECTION_SIZE_EPSILON) return false;
+
+  const isLong = input.positionSize > 0;
+  const reducingSide = isLong ? "sell" : "buy";
+  if (order.side !== reducingSide) return false;
+
+  return isLong
+    ? order.triggerPrice < input.referencePrice
+    : order.triggerPrice > input.referencePrice;
+}
+
+/**
+ * The confirmed protected size for a position (§17.2 steps 7–8).
+ *
+ * Sums the qualifying reduce-only stops and clamps to the position — resting
+ * protection larger than the position does not make it more than fully
+ * protected. Returns 0 for a flat position.
+ */
+export function confirmedProtectedSize(input: ProtectionConfirmationInput): number {
+  const exposure = Math.abs(input.positionSize);
+  if (exposure <= PROTECTION_SIZE_EPSILON) return 0;
+
+  const covered = input.openOrders
+    .filter((order) => isProtectiveOrder(order, input))
+    .reduce((sum, order) => sum + order.remainingSize, 0);
+
+  return Math.min(covered, exposure);
+}
+
+/** True when the position is fully covered by confirmed protection. */
+export function isFullyProtected(input: ProtectionConfirmationInput): boolean {
+  const exposure = Math.abs(input.positionSize);
+  if (exposure <= PROTECTION_SIZE_EPSILON) return true;
+  return confirmedProtectedSize(input) >= exposure - PROTECTION_SIZE_EPSILON;
+}
+
 /** Human-readable reason for a defect, used in both rejection messages. */
 export function describeStopGateDefect(defect: StopGateDefect, input: StopGateInput): string {
   switch (defect) {

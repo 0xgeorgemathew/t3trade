@@ -9,8 +9,12 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   checkStopInformation,
+  confirmedProtectedSize,
   describeStopGateDefect,
+  isFullyProtected,
   isPositionIncreasing,
+  isProtectiveOrder,
+  type ProtectiveOrderCandidate,
   type StopGateInput,
 } from "./protection.ts";
 
@@ -138,5 +142,139 @@ describe("describeStopGateDefect", () => {
     const message = describeStopGateDefect("stop_on_wrong_side_of_entry", longEntry);
     expect(message).toContain("3700");
     expect(message).toContain("3750");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §17.2 steps 7–8 · Confirming protection from canonical state
+// ---------------------------------------------------------------------------
+
+const stopOrder = (
+  overrides: Partial<ProtectiveOrderCandidate> = {},
+): ProtectiveOrderCandidate => ({
+  market: "ETH",
+  side: "sell",
+  remainingSize: 0.5,
+  reduceOnly: true,
+  isTrigger: true,
+  triggerPrice: 3_700,
+  ...overrides,
+});
+
+/** A long of 0.5 ETH marked at 3750. */
+const longAt = (openOrders: ReadonlyArray<ProtectiveOrderCandidate>) => ({
+  market: "ETH",
+  positionSize: 0.5,
+  referencePrice: 3_750,
+  openOrders,
+});
+
+describe("isProtectiveOrder", () => {
+  it("accepts a reduce-only sell trigger below a long", () => {
+    expect(isProtectiveOrder(stopOrder(), longAt([stopOrder()]))).toBe(true);
+  });
+
+  it("rejects an order that is not reduce-only", () => {
+    const order = stopOrder({ reduceOnly: false });
+    expect(isProtectiveOrder(order, longAt([order]))).toBe(false);
+  });
+
+  it("rejects a plain limit order sitting at the same price", () => {
+    const order = stopOrder({ isTrigger: false, triggerPrice: undefined });
+    expect(isProtectiveOrder(order, longAt([order]))).toBe(false);
+  });
+
+  it("rejects a trigger on the increasing side", () => {
+    // A buy trigger under a long adds exposure; it protects nothing.
+    const order = stopOrder({ side: "buy" });
+    expect(isProtectiveOrder(order, longAt([order]))).toBe(false);
+  });
+
+  it("rejects a take-profit above a long", () => {
+    // A TP is also a reduce-only trigger on the reducing side. Counting it as
+    // protection would report the position safe with its whole downside open.
+    const order = stopOrder({ triggerPrice: 3_900 });
+    expect(isProtectiveOrder(order, longAt([order]))).toBe(false);
+  });
+
+  it("rejects a take-profit below a short", () => {
+    const order = stopOrder({ side: "buy", triggerPrice: 3_600 });
+    expect(
+      isProtectiveOrder(order, {
+        market: "ETH",
+        positionSize: -0.5,
+        referencePrice: 3_750,
+        openOrders: [order],
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts a reduce-only buy trigger above a short", () => {
+    const order = stopOrder({ side: "buy", triggerPrice: 3_800 });
+    expect(
+      isProtectiveOrder(order, {
+        market: "ETH",
+        positionSize: -0.5,
+        referencePrice: 3_750,
+        openOrders: [order],
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects an order on another market", () => {
+    const order = stopOrder({ market: "BTC" });
+    expect(isProtectiveOrder(order, longAt([order]))).toBe(false);
+  });
+
+  it("rejects a fully consumed order", () => {
+    const order = stopOrder({ remainingSize: 0 });
+    expect(isProtectiveOrder(order, longAt([order]))).toBe(false);
+  });
+});
+
+describe("confirmedProtectedSize", () => {
+  it("reports zero when nothing rests", () => {
+    expect(confirmedProtectedSize(longAt([]))).toBe(0);
+  });
+
+  it("reports the covered size for a full-size stop", () => {
+    expect(confirmedProtectedSize(longAt([stopOrder()]))).toBe(0.5);
+    expect(isFullyProtected(longAt([stopOrder()]))).toBe(true);
+  });
+
+  it("reports partial coverage when the stop is smaller than the position", () => {
+    // The §17.3 shape: an entry partially filled, the stop sized to the slice
+    // that was live when it was placed.
+    const input = longAt([stopOrder({ remainingSize: 0.2 })]);
+    expect(confirmedProtectedSize(input)).toBe(0.2);
+    expect(isFullyProtected(input)).toBe(false);
+  });
+
+  it("sums overlapping stops during a §17.4 replacement", () => {
+    const input = longAt([
+      stopOrder({ remainingSize: 0.2 }),
+      stopOrder({ remainingSize: 0.3, triggerPrice: 3_690 }),
+    ]);
+    expect(confirmedProtectedSize(input)).toBe(0.5);
+  });
+
+  it("clamps coverage to the position rather than reporting over-protection", () => {
+    const input = longAt([stopOrder({ remainingSize: 5 })]);
+    expect(confirmedProtectedSize(input)).toBe(0.5);
+  });
+
+  it("ignores non-protective orders when summing", () => {
+    const input = longAt([
+      stopOrder({ remainingSize: 0.2 }),
+      stopOrder({ remainingSize: 0.3, reduceOnly: false }),
+      stopOrder({ remainingSize: 0.3, triggerPrice: 3_900 }),
+    ]);
+    expect(confirmedProtectedSize(input)).toBe(0.2);
+  });
+
+  it("calls a flat position fully protected", () => {
+    const input = { market: "ETH", positionSize: 0, referencePrice: 3_750, openOrders: [] };
+    expect(confirmedProtectedSize(input)).toBe(0);
+    expect(isFullyProtected(input)).toBe(true);
   });
 });

@@ -419,7 +419,7 @@ it.live("reconciles before resuming a paused mission", () =>
         Effect.sync(() => {
           triggers.push(trigger);
           assert.equal(input.missionId, MISSION_ID);
-          return { position: null, openOrders: [], fills: [], observedAt: 0 };
+          return { position: null, openOrders: [], canonicalOrders: [], fills: [], observedAt: 0 };
         }),
     });
 

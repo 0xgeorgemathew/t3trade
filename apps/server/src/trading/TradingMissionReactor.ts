@@ -20,6 +20,8 @@
 import type { OrchestrationEvent, ThreadId, TradingMissionId } from "@t3tools/contracts";
 import { CommandId } from "@t3tools/contracts";
 import type { TradingMissionStatus, TradingProvider } from "@t3tools/trading-contracts";
+import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
+import { isPositionIncreasing } from "@t3tools/trading-contracts/protection";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -41,6 +43,8 @@ import { TradingWatchService } from "./TradingWatchService.ts";
 import { TradingExecutionGuard } from "./TradingExecutionGuard.ts";
 import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
 import { HyperliquidReconciler } from "./HyperliquidReconciler.ts";
+import { TradingProtectionService } from "./TradingProtectionService.ts";
+import { TradingEmergencyCloseService } from "./TradingEmergencyCloseService.ts";
 import { TradingBudgetReader } from "./TradingBudgetReader.ts";
 import { TradingFillReconciler } from "./TradingFillReconciler.ts";
 import { InterimSignerConfig } from "./InterimSignerConfig.ts";
@@ -124,6 +128,8 @@ const make = Effect.gen(function* () {
   const budgetReader = yield* TradingBudgetReader;
   const gateway = yield* HyperliquidGateway;
   const signerConfig = yield* InterimSignerConfig;
+  const protection = yield* TradingProtectionService;
+  const emergency = yield* TradingEmergencyCloseService;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
@@ -320,6 +326,60 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * §17.2 steps 6–9 for one acknowledged increase.
+   *
+   * Reconciles protection against canonical state and, when the bounded window
+   * closes with the position still uncovered, hands off to §17.5's emergency
+   * close rather than waiting for a later harness turn. §17.5 is explicit that
+   * the deterministic path must converge on its own.
+   *
+   * A reduce-only action skips this: it removes exposure rather than adding
+   * any, and demanding fresh protection for it would place a stop against a
+   * position that is on its way to flat.
+   */
+  const protectIncrease = Effect.fn("TradingMissionReactor.protectIncrease")(function* (input: {
+    readonly missionId: TradingMissionId;
+    readonly threadId: ThreadId;
+    readonly intent: TradingOrderIntent;
+    readonly masterAddress: string;
+  }) {
+    const { missionId, threadId, intent, masterAddress } = input;
+    const stop = intent.stop;
+    if (!isPositionIncreasing(intent.actionType) || stop === undefined) return;
+
+    const outcome = yield* protection.reconcileProtection({
+      missionId,
+      strategyVersion: intent.strategyVersion,
+      executionSequence: intent.executionSequence,
+      masterAddress,
+      market: intent.market,
+      stopPrice: stop.stopPrice,
+    });
+
+    if (outcome.status !== "escalate") {
+      yield* Effect.logInfo("trading protection reconciled", {
+        missionId,
+        status: outcome.status,
+        positionSize: outcome.positionSize,
+        protectedSize: outcome.protectedSize,
+      });
+      return;
+    }
+
+    yield* Effect.logError("trading protection could not be confirmed; escalating to §17.5", {
+      missionId,
+      reason: outcome.escalationReason,
+    });
+    yield* emergency.emergencyClose({
+      missionId,
+      masterAddress,
+      market: intent.market,
+      reason: outcome.escalationReason ?? "protection could not be confirmed",
+    });
+    yield* announceStatus({ missionId, threadId, status: "blocked" });
+  });
+
+  /**
    * The §17.2 write side. A harness raised `trading.execution.requested`; the
    * reactor answers it by running preview → guard → submit → reconcile, then
    * blocking the mission if the post-submit budget is exhausted. A refused
@@ -413,6 +473,15 @@ const make = Effect.gen(function* () {
       { missionId, masterAddress, market: intent.market },
       "after_submission",
     );
+
+    // §17.2 steps 6–9: the acknowledged increase is not done until protection
+    // is confirmed for the ACTUAL canonical position. The grouped normalTpsl
+    // child that went out with the entry proves nothing (§17.1) — it may be
+    // untriggered, rejected, or sized to a fill that did not fully happen.
+    //
+    // This runs for increases only. A reduce or close removes exposure; the
+    // reconcile above already reflects whatever protection remains.
+    yield* protectIncrease({ missionId, threadId, intent, masterAddress });
 
     // §16.4: re-evaluate the budget after the reconciled submit. If the
     // cumulative-loss ceiling is now exhausted, block the mission so a later

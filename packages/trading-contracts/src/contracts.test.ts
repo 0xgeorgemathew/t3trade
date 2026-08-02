@@ -440,6 +440,8 @@ describe("§10.6 market- and account-read contracts (Phase 2 pin)", () => {
       remainingSize: 0.3,
       status: "open",
       createdAt: 1_753_000_000_000,
+      reduceOnly: false,
+      isTrigger: false,
     });
     expect(decoded.orderId).toBe(90_542_681);
   });
@@ -487,14 +489,16 @@ describe("TradingOrderIntent", () => {
 });
 
 describe("TradingCloid", () => {
-  it("accepts a 32-char lowercase hex string", () => {
-    expect(decodeCloid("0123456789abcdef0123456789abcdef")).toBe(
-      "0123456789abcdef0123456789abcdef",
+  it("accepts a 0x-prefixed 32-char lowercase hex string", () => {
+    expect(decodeCloid("0x0123456789abcdef0123456789abcdef")).toBe(
+      "0x0123456789abcdef0123456789abcdef",
     );
   });
 
-  it("rejects a cloid with a 0x prefix (wire convention is bare)", () => {
-    expect(() => decodeCloid("0x0123456789abcdef0123456789abcdef")).toThrow();
+  it("rejects a bare cloid with no 0x prefix", () => {
+    // The exchange validates `len(cloid[2:]) == 32` and silently stores a bare
+    // cloid as null — accepted on submission, then unjoinable to its own fill.
+    expect(() => decodeCloid("0123456789abcdef0123456789abcdef")).toThrow();
   });
 
   it("rejects a cloid of the wrong length", () => {
@@ -509,7 +513,7 @@ describe("TradingExecutionRecord", () => {
     strategyVersion: 1,
     executionSequence: 0,
     actionType: "open",
-    cloid: "0123456789abcdef0123456789abcdef",
+    cloid: "0x0123456789abcdef0123456789abcdef",
     idempotencyKey: "idem_1",
     market: "ETH",
     side: "buy",
@@ -563,7 +567,7 @@ describe("TradingRiskReservation", () => {
     reservationId: "res_1",
     missionId: "mission_1",
     executionId: "exec_1",
-    cloid: "0123456789abcdef0123456789abcdef",
+    cloid: "0x0123456789abcdef0123456789abcdef",
     actionType: "open",
     reservedRiskUsd: 20,
     status: "reserved",

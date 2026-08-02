@@ -92,6 +92,22 @@ export const AgentOpenOrder = Schema.Struct({
   /** Exchange order status, verbatim. */
   status: Schema.String,
   createdAt: UnixMillis,
+
+  // -- protective-order detail (§17.2 step 7) --------------------------------
+  //
+  // An order is protection only if all three hold: reduce-only, a trigger, and
+  // a trigger price on the losing side of the position. Defaulted to the
+  // conservative reading (`false` / absent) so an order the exchange did not
+  // describe is never counted as protection.
+
+  /** True when the order may only reduce an existing position. */
+  reduceOnly: Schema.Boolean,
+  /** True when the order is a stop/take-profit trigger rather than a limit. */
+  isTrigger: Schema.Boolean,
+  /** Trigger price, when this is a trigger order. */
+  triggerPrice: Schema.optional(Price),
+  /** Exchange order-type label, verbatim (e.g. "Stop Market"). */
+  orderType: Schema.optional(Schema.String),
 });
 export type AgentOpenOrder = typeof AgentOpenOrder.Type;
 

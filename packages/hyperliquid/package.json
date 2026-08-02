@@ -64,6 +64,10 @@
       "types": "./src/ExchangeClient.ts",
       "import": "./src/ExchangeClient.ts"
     },
+    "./ExchangeResponse": {
+      "types": "./src/ExchangeResponse.ts",
+      "import": "./src/ExchangeResponse.ts"
+    },
     "./InfoClientTest": {
       "types": "./src/InfoClientTest.ts",
       "import": "./src/InfoClientTest.ts"

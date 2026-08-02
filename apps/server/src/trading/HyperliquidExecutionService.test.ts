@@ -122,19 +122,24 @@ const orderBook: OrderBook = {
 // ---------------------------------------------------------------------------
 
 /**
- * The exchange's per-order response. `rsp:"err"` makes the inspector produce a
- * `rejected` final status — which is the terminal state the retry fast-path
- * returns early on.
+ * The exchange's real per-order response shape: rows nested under
+ * `response.data.statuses`, each a single-key object naming the outcome.
+ *
+ * `{error: …}` makes the inspector produce a `rejected` final status — the
+ * terminal state the retry fast-path returns early on. Two rows are supplied
+ * on the ok path because a position increase carrying a stop goes out as a
+ * grouped normalTpsl action (entry + linked stop), and the exchange answers
+ * one row per leg.
  */
-const ERR_RESPONSE = {
-  status: "ok",
-  response: { type: "ok", statuses: [{ cloid: "0".repeat(32), rsp: "err" }] },
-} as const;
+const rowsResponse = (statuses: ReadonlyArray<unknown>) =>
+  ({ status: "ok", response: { type: "order", data: { statuses } } }) as const;
 
-const OK_RESPONSE = {
-  status: "ok",
-  response: { type: "ok", statuses: [{ cloid: "0".repeat(32), rsp: "ok", oid: 999 }] },
-} as const;
+const ERR_RESPONSE = rowsResponse([{ error: "Order has invalid price" }]);
+
+const OK_RESPONSE = rowsResponse([
+  { filled: { totalSz: "0.5", avgPx: "3001.0", oid: 999 } },
+  { resting: { oid: 1_000 } },
+]);
 
 /**
  * A mutable recording exchange: holds the canned response and the list of
@@ -144,7 +149,7 @@ const OK_RESPONSE = {
  */
 interface RecordingExchange {
   submitted: SignedAction[];
-  response: typeof ERR_RESPONSE | typeof OK_RESPONSE;
+  response: ReturnType<typeof rowsResponse>;
 }
 
 const recordingExchange: RecordingExchange = {
@@ -324,10 +329,16 @@ layer("HyperliquidExecutionService", (it) => {
 
         // The exchange was submitted to exactly ONCE — the retry never signed.
         assert.equal(recordingExchange.submitted.length, 1);
-        // The signed action carries the deterministic order shape.
+        // The signed action carries the deterministic order shape. An entry
+        // carrying a stop goes out as a grouped normalTpsl action (§17.2 step
+        // 3): the IOC parent and its linked reduce-only child in one action.
         const signedAction = recordingExchange.submitted[0]!;
-        const orders = (signedAction.action as { orders?: ReadonlyArray<unknown> }).orders;
-        assert.ok(Array.isArray(orders) && orders.length === 1);
+        const action = signedAction.action as {
+          orders?: ReadonlyArray<unknown>;
+          grouping?: string;
+        };
+        assert.ok(Array.isArray(action.orders) && action.orders.length === 2);
+        assert.equal(action.grouping, "normalTpsl");
       }),
   );
 

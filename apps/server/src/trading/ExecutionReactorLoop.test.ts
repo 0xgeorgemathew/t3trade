@@ -91,7 +91,17 @@ const recordingExchange: RecordingExchange = { submitted: [] };
 
 const OK_FILLED = {
   status: "ok",
-  response: { type: "ok", statuses: [{ cloid: "0".repeat(32), rsp: "ok", oid: 999 }] },
+  // The real shape: rows under `response.data`, one per submitted leg. An
+  // entry carrying a stop is a grouped normalTpsl action, so there are two.
+  response: {
+    type: "order",
+    data: {
+      statuses: [
+        { filled: { totalSz: "0.5", avgPx: "3001.0", oid: 999 } },
+        { resting: { oid: 1_000 } },
+      ],
+    },
+  },
 } as const;
 
 const recordingExchangeLayer = Layer.succeed(HyperliquidExchangeClient, {

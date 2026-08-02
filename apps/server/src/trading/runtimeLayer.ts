@@ -33,6 +33,8 @@ import { TradingWakeupComposerLive } from "./TradingWakeupComposer.ts";
 import { TradingWatchServiceLive } from "./TradingWatchService.ts";
 import { TradingBudgetReaderLive } from "./TradingBudgetReader.ts";
 import { TradingFillReconcilerLive } from "./TradingFillReconciler.ts";
+import { TradingProtectionServiceLive } from "./TradingProtectionService.ts";
+import { TradingEmergencyCloseServiceLive } from "./TradingEmergencyCloseService.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
@@ -99,6 +101,8 @@ const TradingExecutionCore = Layer.mergeAll(
 const TradingExecutionLayerLive = Layer.mergeAll(
   TradingExecutionGuardLive,
   TradingFillReconcilerLive,
+  TradingProtectionServiceLive,
+  TradingEmergencyCloseServiceLive,
 ).pipe(Layer.provideMerge(TradingExecutionCore));
 
 export const TradingLayerLive = Layer.mergeAll(

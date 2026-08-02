@@ -199,6 +199,51 @@ export type WireOpenOrder = typeof WireOpenOrder.Type;
 export const WireOpenOrdersResponse = Schema.Array(WireOpenOrder);
 export type WireOpenOrdersResponse = typeof WireOpenOrdersResponse.Type;
 
+// -- Info: frontendOpenOrders -------------------------------------------------
+
+/**
+ * An open order row from `frontendOpenOrders` (§17.2 step 7).
+ *
+ * `openOrders` returns price and size only, which is not enough to confirm the
+ * protective-order invariant: a stop is only protection if it is reduce-only,
+ * a trigger, and triggering on the losing side. Those three facts live on this
+ * endpoint and nowhere else, so protection confirmation reads it instead.
+ *
+ * Everything past the shared `openOrders` fields is optional. A shape drift on
+ * a field T3 does not need must not fail the read that confirms protection —
+ * `isTrigger`/`reduceOnly` absent simply means "not confirmable as protection",
+ * which is the safe reading.
+ */
+export const WireFrontendOpenOrder = Schema.Struct({
+  coin: Schema.String,
+  side: Schema.Literals(["B", "A"]),
+  limitPx: Schema.String,
+  sz: Schema.String,
+  oid: Schema.Number,
+  timestamp: Schema.Number,
+  origSz: Schema.optional(Schema.String),
+  cloid: Schema.optional(Schema.NullOr(Schema.String)),
+  /** True when the order is a trigger (stop / take-profit) rather than a limit. */
+  isTrigger: Schema.optional(Schema.Boolean),
+  /** Trigger price as a decimal string; "0.0" on a non-trigger order. */
+  triggerPx: Schema.optional(Schema.String),
+  /** Human-readable condition, e.g. "Below 2950.0". Recorded, never parsed. */
+  triggerCondition: Schema.optional(Schema.String),
+  /** True when the order may only reduce an existing position. */
+  reduceOnly: Schema.optional(Schema.Boolean),
+  /** True for a position-linked (positionTpsl) child rather than a parent-linked one. */
+  isPositionTpsl: Schema.optional(Schema.Boolean),
+  /** e.g. "Limit", "Stop Market", "Take Profit Market". */
+  orderType: Schema.optional(Schema.String),
+  tif: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Parent-linked TP/SL children, when the exchange nests them. */
+  children: Schema.optional(Schema.Array(Schema.Unknown)),
+});
+export type WireFrontendOpenOrder = typeof WireFrontendOpenOrder.Type;
+
+export const WireFrontendOpenOrdersResponse = Schema.Array(WireFrontendOpenOrder);
+export type WireFrontendOpenOrdersResponse = typeof WireFrontendOpenOrdersResponse.Type;
+
 // -- Info: userFills ----------------------------------------------------------
 
 /**
@@ -282,40 +327,23 @@ export type WireWsMessage = typeof WireWsMessage.Type;
 // ---------------------------------------------------------------------------
 
 /**
- * One per-order status row in a grouped `order` response (§17.2 step 4).
+ * The exchange's `/exchange` response.
  *
- * Hyperliquid returns one status per order in a batch; T3 records each rather
- * than assuming batch atomicity. `rsp` is the exchange's verbatim status
- * string (`ok`, `err`, `queued`, `triggered`).
- */
-export const WireOrderStatusRow = Schema.Struct({
-  cloid: Schema.optional(Schema.String),
-  oid: Schema.optional(Schema.Number),
-  rsp: Schema.String,
-});
-export type WireOrderStatusRow = typeof WireOrderStatusRow.Type;
-
-/**
- * The exchange's `/exchange` response. Kept permissive: the noop returns
- * `{"status":"ok","response":{"type":"default"}}` (no `statuses`), while an
- * order returns `{"response":{"type":"ok","statuses":[...]}}`. Only
- * `response.statuses` is load-bearing for the per-order inspection (§17.2
- * step 4); everything else is accepted verbatim.
+ * Deliberately permissive. The real payload nests per-order rows under
+ * `response.data.statuses` and mixes bare strings with single-key objects
+ * (`{resting: …}`, `{filled: …}`, `{error: …}`), and an action-level rejection
+ * replaces `response` with a plain string. Pinning that here would make a
+ * shape drift a decode failure at the transport boundary, where the caller
+ * cannot tell "the exchange said no" from "the client could not parse".
+ *
+ * So the envelope is accepted verbatim and `readExchangeResponse`
+ * (ExchangeResponse.ts) does the reading, where every branch is tested.
  */
 export const WireExchangeResponse = Schema.Struct({
-  /** "ok" | "err" — top-level acceptance for some action types (noop). */
+  /** "ok" | "err" — top-level acceptance. */
   status: Schema.optional(Schema.String),
-  /** "default" | "ok" | "err" — the response variant. */
-  response: Schema.Union([
-    Schema.Struct({
-      type: Schema.String,
-      statuses: Schema.optional(Schema.Array(Schema.Union([Schema.String, WireOrderStatusRow]))),
-    }),
-    // The noop returns response: {type: "default"} with no statuses.
-    Schema.Struct({
-      type: Schema.String,
-    }),
-  ]),
+  /** The response body, or the rejection text on an action-level failure. */
+  response: Schema.optional(Schema.Unknown),
   /// "order" | "cancel" | "noop" | … — echoes the action type.
   type: Schema.optional(Schema.String),
 });

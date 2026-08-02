@@ -98,6 +98,7 @@ const makeMutableInfo = (ref: Ref.Ref<FakeState>) =>
       candleSnapshot: () => Effect.die("not used"),
       clearinghouseState: () => Effect.die("not used"),
       openOrders: () => Effect.die("not used"),
+      frontendOpenOrders: () => Effect.die("not used"),
       userFills: () => Effect.map(Ref.get(ref), (s) => s.fills),
       userFees: () => Effect.die("not used"),
     }),
@@ -194,6 +195,8 @@ const order = (
   remainingSize: size,
   status: "open",
   createdAt: 1_000,
+  reduceOnly: false,
+  isTrigger: false,
 });
 
 const INITIAL_STATE: FakeState = {
