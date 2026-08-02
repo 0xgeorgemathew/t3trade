@@ -447,7 +447,11 @@ function MissionView({
       {mission.status === "paused" ? <PausedCard /> : null}
       {rejected === null ? null : <OrderRejectedCard notice={rejected} controls={controls} />}
       <MissionStatus mission={mission} />
-      <RiskControls mission={mission} controls={controls} />
+      {/* A revoked or completed mission has no authority left to exercise, so
+          every control would be rejected as an illegal transition. */}
+      {isMissionComplete(mission.status) ? null : (
+        <RiskControls mission={mission} controls={controls} />
+      )}
       {isMissionComplete(mission.status) ? <CompletionSummaryCard mission={mission} /> : null}
       <Mandate mission={mission} />
       <Strategy mission={mission} />
