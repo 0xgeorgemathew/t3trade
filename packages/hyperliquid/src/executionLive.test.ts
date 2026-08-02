@@ -28,10 +28,17 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { HyperliquidExchangeClient, HyperliquidExchangeClientLive } from "./ExchangeClient.ts";
 import { HyperliquidInfoClient, HyperliquidInfoClientLive } from "./InfoClient.ts";
 import { createL1ActionHash, signL1ActionForWire, addressFromPrivateKey } from "./Signing.ts";
-import { buildOrderAction, mapOrder } from "./OrderMapper.ts";
+import { buildOrderAction, buildCancelByCloidAction, mapOrder } from "./OrderMapper.ts";
 import type { MarketBestBidOffer } from "@t3tools/trading-contracts/market";
 
-const SECRET_PATH = "../../.t3/secrets/hyperliquid-interim-signer-key.bin";
+// Resolve the secret relative to this file (repo-root .t3/secrets/), so the
+// test finds the key regardless of the cwd vitest is invoked from. The prior
+// relative path "../../.t3/..." only resolved correctly when run from
+// packages/hyperliquid/src, not from the repo root.
+const SECRET_PATH = new URL(
+  "../../../.t3/secrets/hyperliquid-interim-signer-key.bin",
+  import.meta.url,
+).pathname;
 
 const loadSignerKey: Effect.Effect<Option.Option<Uint8Array>> = Effect.gen(function* () {
   const fromEnv = process.env.T3_TRADES_INTERIM_SIGNER_KEY?.trim();
@@ -249,7 +256,82 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
           remainingSzi: ethAfter?.position.szi,
         });
         expect(ethAfter).toBeUndefined();
+
+        // --- 5. CANCEL-BY-CLOID: place a resting GTC, then cancel it ----------
+        // Task 3's fix (type: "cancelByCloid" + numeric asset index) has never
+        // once been sent live. Place a small resting GTC order far from the
+        // market (so it does not fill), then cancel it by cloid and assert the
+        // exchange accepts the cancel action. This is the action §16.4's
+        // blockForExhaustion signs per resting increasing order.
+        const cancelBook = yield* info.l2Book("ETH");
+        const cancelBbo: MarketBestBidOffer = {
+          bidPrice: Number(cancelBook.levels[0][0]?.px ?? 0),
+          bidSize: Number(cancelBook.levels[0][0]?.sz ?? 0),
+          askPrice: Number(cancelBook.levels[1][0]?.px ?? 0),
+          askSize: Number(cancelBook.levels[1][0]?.sz ?? 0),
+          freshness: { observedAt: cancelBook.time, source: "info_api", staleAfterMillis: 2_000 },
+        };
+        const nowMsResting = yield* Effect.clockWith((c) => c.currentTimeMillis);
+        // A resting GTC buy priced well below the bid — it will not cross, so it
+        // rests and is available to cancel.
+        const restingPx = (cancelBbo.bidPrice ?? 1) * 0.5;
+        const restingOrder = yield* mapOrder({
+          intent: {
+            missionId: MISSION,
+            strategyVersion: 1,
+            executionSequence: 2,
+            actionType: "open" as const,
+            market: "ETH" as const,
+            side: "buy" as const,
+            size: 0.01,
+            orderPreference: "resting_limit" as const,
+            limitPrice: restingPx,
+            stop: { stopPrice: 0, plannedLossAtStopUsd: 0 },
+            reduceOnly: false,
+          },
+          bbo: cancelBbo,
+          szDecimals,
+          allowedSlippageBps: 50,
+          nowMs: nowMsResting,
+        });
+        const restingAction = buildOrderAction(restingOrder, ethAssetIndex);
+        const restingNonce = yield* Effect.clockWith((c) => c.currentTimeMillis);
+        const restingSig = signL1ActionForWire({
+          action: restingAction,
+          nonce: restingNonce,
+          privateKey,
+          isTestnet: true,
+        });
+        const restingResp = yield* exchange.submit({
+          action: restingAction,
+          nonce: restingNonce,
+          signature: restingSig,
+        });
+        yield* Effect.logInfo("[execution-live] resting GTC placed", {
+          status: "status" in restingResp ? restingResp.status : undefined,
+          cloid: restingOrder.cloid,
+        });
+
+        // Now cancel it by cloid — the corrected action shape (type + asset index).
+        const cancelAction = buildCancelByCloidAction(ethAssetIndex, restingOrder.cloid);
+        const cancelNonce = yield* Effect.clockWith((c) => c.currentTimeMillis);
+        const cancelSig = signL1ActionForWire({
+          action: cancelAction,
+          nonce: cancelNonce,
+          privateKey,
+          isTestnet: true,
+        });
+        const cancelResp = yield* exchange.submit({
+          action: cancelAction,
+          nonce: cancelNonce,
+          signature: cancelSig,
+        });
+        yield* Effect.logInfo("[execution-live] cancel-by-cloid response", {
+          status: "status" in cancelResp ? cancelResp.status : undefined,
+          type: cancelResp.response.type,
+        });
+        expect("status" in cancelResp ? cancelResp.status : undefined).toBe("ok");
       }).pipe(Effect.provide(Layer.mergeAll(exchangeLayer, infoLayer))),
-    60_000,
+    120_000,
   );
 });
