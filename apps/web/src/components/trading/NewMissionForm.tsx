@@ -33,9 +33,12 @@ const DEFAULT_CAPITAL_USD = 50;
 export function NewMissionForm({
   environmentId,
   boundThreadIds,
+  hasActiveMission,
 }: {
   environmentId: EnvironmentId;
   boundThreadIds: ReadonlySet<string>;
+  /** One active mission per user is a domain invariant, not a UI preference. */
+  hasActiveMission: boolean;
 }) {
   const threadRefs = useEnvironmentThreadRefs(environmentId);
   const allShells = useThreadShells();
@@ -60,6 +63,7 @@ export function NewMissionForm({
     instruction,
     allocatedCapitalUsd,
     tradingAccountId: accountId,
+    hasActiveMission,
   });
 
   const submit = () => {

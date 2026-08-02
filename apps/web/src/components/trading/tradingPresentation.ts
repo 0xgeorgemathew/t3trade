@@ -291,9 +291,25 @@ export function selectableMissionThreads(
   }>,
   boundThreadIds: ReadonlySet<string>,
 ): ReadonlyArray<MissionThreadOption> {
-  return threads
-    .filter((thread) => thread.archivedAt === null && !boundThreadIds.has(thread.id))
-    .map((thread) => ({ threadId: thread.id, title: thread.title }));
+  const free = threads.filter(
+    (thread) => thread.archivedAt === null && !boundThreadIds.has(thread.id),
+  );
+
+  // Providers title threads themselves, so several can read "Greeting". Binding
+  // a mission to the wrong one of those is silent — the panel simply appears on
+  // a thread you are not looking at — so repeated titles carry an id suffix.
+  const timesSeen = new Map<string, number>();
+  for (const thread of free) {
+    timesSeen.set(thread.title, (timesSeen.get(thread.title) ?? 0) + 1);
+  }
+
+  return free.map((thread) => ({
+    threadId: thread.id,
+    title:
+      (timesSeen.get(thread.title) ?? 0) > 1
+        ? `${thread.title} (${thread.id.slice(0, 8)})`
+        : thread.title,
+  }));
 }
 
 /** Why a new-mission form cannot be submitted yet, or null when it can. */
@@ -302,7 +318,13 @@ export function newMissionBlocker(input: {
   readonly instruction: string;
   readonly allocatedCapitalUsd: number;
   readonly tradingAccountId: string;
+  /** A mission already exists in a status other than revoked/completed. */
+  readonly hasActiveMission: boolean;
 }): string | null {
+  // The domain holds one active mission per user, so a second create fails on a
+  // uniqueness constraint. Saying so beats surfacing the raw SQL error.
+  if (input.hasActiveMission)
+    return "A mission is already active. Revoke it before starting another.";
   if (input.threadId === null) return "Pick a thread to bind the mission to.";
   if (input.instruction.trim().length === 0)
     return "Write the instruction the harness will act on.";

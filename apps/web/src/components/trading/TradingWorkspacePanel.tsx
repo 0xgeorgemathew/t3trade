@@ -507,6 +507,9 @@ function TradingWorkspaceForEnvironment({ environmentId }: { environmentId: Envi
         <NewMissionForm
           environmentId={environmentId}
           boundThreadIds={new Set(missions.map((mission) => mission.threadId))}
+          hasActiveMission={missions.some(
+            (mission) => mission.status !== "revoked" && mission.status !== "completed",
+          )}
         />
       ) : null}
 

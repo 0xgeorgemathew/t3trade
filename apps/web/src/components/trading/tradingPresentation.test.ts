@@ -284,6 +284,25 @@ describe("selectableMissionThreads", () => {
     const options = selectableMissionThreads([thread("a", "2026-08-02T00:00:00Z")], new Set());
     expect(options).toEqual([]);
   });
+
+  // Providers title threads themselves and duplicates are common ("Greeting").
+  // Binding a mission to the wrong one of two identically named threads is
+  // silent — the panel appears on a thread you are not looking at.
+  it("distinguishes threads that share a title", () => {
+    const options = selectableMissionThreads(
+      [
+        { id: "b4bfb480-4180-493c", title: "Greeting", archivedAt: null },
+        { id: "eb148ced-7bac-4035", title: "Greeting", archivedAt: null },
+        { id: "edd33aaa-8cca-4064", title: "Explore Trading Options", archivedAt: null },
+      ],
+      new Set(),
+    );
+    expect(options.map((option) => option.title)).toEqual([
+      "Greeting (b4bfb480)",
+      "Greeting (eb148ced)",
+      "Explore Trading Options",
+    ]);
+  });
 });
 
 describe("newMissionBlocker", () => {
@@ -292,10 +311,17 @@ describe("newMissionBlocker", () => {
     instruction: "Trade ETH momentum",
     allocatedCapitalUsd: 50,
     tradingAccountId: "local-hyperliquid-testnet",
+    hasActiveMission: false,
   };
 
   it("admits a complete form", () => {
     expect(newMissionBlocker(valid)).toBeNull();
+  });
+
+  // The domain holds one active mission per user, so a second create would fail
+  // on a uniqueness constraint rather than on anything the form said.
+  it("blocks while a mission is already active", () => {
+    expect(newMissionBlocker({ ...valid, hasActiveMission: true })).toMatch(/already active/i);
   });
 
   it("names what is missing, one thing at a time", () => {
