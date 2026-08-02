@@ -270,6 +270,19 @@ export function formatDuration(millis: number): string {
 // paths can be exercised end-to-end by hand. The two derivations below are here
 // rather than in the component so they can be tested without rendering.
 
+/**
+ * Whether a mission still holds its thread and the user's one active slot.
+ *
+ * `revoked` and `completed` are terminal: the server's create guard looks only
+ * for a mission outside those two, so a thread whose only mission is terminal
+ * is free again. Treating a revoked mission as still binding its thread would
+ * burn a thread permanently on every run — and since a mission thread is
+ * usually archived afterwards, the picker would empty out entirely.
+ */
+export function isLiveMission(status: string): boolean {
+  return status !== "revoked" && status !== "completed";
+}
+
 /** A thread a new mission could bind to. */
 export interface MissionThreadOption {
   readonly threadId: string;

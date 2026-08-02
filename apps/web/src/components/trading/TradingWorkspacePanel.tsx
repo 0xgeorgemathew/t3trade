@@ -20,6 +20,7 @@ import {
   formatDuration,
   formatUsd as usd,
   humanizeLiteral,
+  isLiveMission,
   isMissionComplete,
   isPositionDataStale,
   MISSION_STATUS_LABELS,
@@ -510,10 +511,12 @@ function TradingWorkspaceForEnvironment({ environmentId }: { environmentId: Envi
       {import.meta.env.DEV ? (
         <NewMissionForm
           environmentId={environmentId}
-          boundThreadIds={new Set(missions.map((mission) => mission.threadId))}
-          hasActiveMission={missions.some(
-            (mission) => mission.status !== "revoked" && mission.status !== "completed",
-          )}
+          boundThreadIds={
+            new Set(
+              missions.filter((mission) => isLiveMission(mission.status)).map((m) => m.threadId),
+            )
+          }
+          hasActiveMission={missions.some((mission) => isLiveMission(mission.status))}
         />
       ) : null}
 

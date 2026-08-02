@@ -11,6 +11,7 @@ import {
   humanizeLiteral,
   isMissionComplete,
   isPositionDataStale,
+  isLiveMission,
   newMissionBlocker,
   selectableMissionThreads,
   shouldShowMissionStrip,
@@ -302,6 +303,19 @@ describe("selectableMissionThreads", () => {
       "Greeting (eb148ced)",
       "Explore Trading Options",
     ]);
+  });
+});
+
+describe("isLiveMission", () => {
+  // The server's create guard admits any mission outside these two, so a
+  // terminal mission neither holds its thread nor the one active slot. Counting
+  // one as live burns a thread for good on every run.
+  it("treats revoked and completed as terminal and everything else as live", () => {
+    expect(isLiveMission("revoked")).toBe(false);
+    expect(isLiveMission("completed")).toBe(false);
+    for (const status of ["initializing", "analysing", "waiting", "executing", "position_open"]) {
+      expect(isLiveMission(status)).toBe(true);
+    }
   });
 });
 

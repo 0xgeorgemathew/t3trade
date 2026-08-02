@@ -103,8 +103,8 @@ export function NewMissionForm({
       <div className="space-y-3 px-3 py-3 sm:px-4">
         {options.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No free thread on this environment. Open a new chat thread first — a thread that already
-            carries a live mission cannot take another.
+            No free thread on this environment. Open a new chat thread first — an archived thread is
+            not offered, and a thread that already carries a live mission cannot take another.
           </p>
         ) : (
           <Select value={threadId} onValueChange={(value: string | null) => setThreadId(value)}>

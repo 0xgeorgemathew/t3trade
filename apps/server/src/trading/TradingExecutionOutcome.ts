@@ -59,6 +59,7 @@ export class TradingExecutionOutcome extends Context.Service<
 >()("t3/trading/TradingExecutionOutcome") {}
 
 const OrderResultsJson = Schema.fromJsonString(Schema.Array(Schema.Unknown));
+const decodeOrderResultsJson = Schema.decodeUnknownSync(OrderResultsJson);
 
 interface RecordRow {
   readonly execution_id: string;
@@ -130,7 +131,7 @@ const make = Effect.gen(function* () {
     );
 
   const decodeOrderResults = (json: string): ReadonlyArray<TradingOrderResult> =>
-    Schema.decodeUnknownSync(OrderResultsJson)(json) as ReadonlyArray<TradingOrderResult>;
+    decodeOrderResultsJson(json) as ReadonlyArray<TradingOrderResult>;
 
   const awaitOutcome: TradingExecutionOutcomeShape["awaitOutcome"] = (input) =>
     Effect.gen(function* () {
