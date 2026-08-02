@@ -354,6 +354,7 @@ import {
 import { TradingTurnCoordinatorLive } from "../src/trading/TradingTurnCoordinator.ts";
 import { TradingWakeupComposerLive } from "../src/trading/TradingWakeupComposer.ts";
 import { InterimSignerConfigLive } from "../src/trading/InterimSignerConfig.ts";
+import { AutoMissionConfigLive } from "../src/trading/AutoMissionConfig.ts";
 import { HyperliquidExecutionServiceLive } from "../src/trading/HyperliquidExecutionService.ts";
 import { HyperliquidReconcilerLive } from "../src/trading/HyperliquidReconciler.ts";
 import { HyperliquidNonceCoordinatorLive } from "@t3tools/hyperliquid/NonceCoordinator";
@@ -366,6 +367,7 @@ const tradingFoundationWithFakes = Layer.mergeAll(
   TradingMissionServiceLive,
   TradingStrategyServiceLive,
   InterimSignerConfigLive,
+  AutoMissionConfigLive,
   recordingExchangeLayer,
   fakeGatewayLayer,
   fakeInfoClientLayer,

@@ -1,4 +1,5 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { POC_DEFAULT_INSTRUCTION } from "@t3tools/trading-contracts/strategy";
 import { useMemo, useState } from "react";
 
 import { refreshTradingMissions } from "../../lib/tradingMissionsState";
@@ -20,7 +21,7 @@ import { newMissionBlocker, selectableMissionThreads } from "./tradingPresentati
  */
 const LOCAL_TRADING_ACCOUNT_ID = "local-hyperliquid-testnet";
 
-const DEFAULT_INSTRUCTION = "Trade ETH momentum on testnet.";
+const DEFAULT_INSTRUCTION = POC_DEFAULT_INSTRUCTION;
 const DEFAULT_CAPITAL_USD = 50;
 
 /**

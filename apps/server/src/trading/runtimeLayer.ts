@@ -26,6 +26,7 @@ import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingExecutionOutcomeLive } from "./TradingExecutionOutcome.ts";
 import { TradingExecutionGuardLive } from "./TradingExecutionGuard.ts";
 import { InterimSignerConfigLive } from "./InterimSignerConfig.ts";
+import { AutoMissionConfigLive } from "./AutoMissionConfig.ts";
 import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingPreviewServiceLive } from "./TradingPreviewService.ts";
@@ -87,6 +88,7 @@ const exchangeWithHttp = HyperliquidExchangeClientLive.pipe(Layer.provide(httpWi
 const TradingFoundation = Layer.mergeAll(
   TradingCoreLayerLive,
   InterimSignerConfigLive,
+  AutoMissionConfigLive,
   exchangeWithHttp,
   HyperliquidNonceCoordinatorLive(),
   HyperliquidWebSocketClientLive,

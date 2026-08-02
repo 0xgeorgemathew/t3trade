@@ -136,19 +136,50 @@ describe("mission strip", () => {
 
 describe("stale-data banner", () => {
   const now = 1_700_000_000_000;
+  const fresh = new Date(now - 1_000).toISOString();
+  const old = new Date(now - 6_000).toISOString();
 
   it("stays quiet on a fresh position read", () => {
-    const observedAt = new Date(now - 1_000).toISOString();
-    expect(isPositionDataStale({ position: { observedAt } }, now)).toBe(false);
+    expect(
+      isPositionDataStale(
+        { status: "position_open", position: { size: 0.5, observedAt: fresh } },
+        now,
+      ),
+    ).toBe(false);
   });
 
   it("fires once the read passes the 5s account window", () => {
-    const observedAt = new Date(now - 6_000).toISOString();
-    expect(isPositionDataStale({ position: { observedAt } }, now)).toBe(true);
+    expect(
+      isPositionDataStale(
+        { status: "position_open", position: { size: 0.5, observedAt: old } },
+        now,
+      ),
+    ).toBe(true);
   });
 
   it("stays quiet when there is no position to be stale about", () => {
-    expect(isPositionDataStale({ position: null }, now)).toBe(false);
+    expect(isPositionDataStale({ status: "waiting", position: null }, now)).toBe(false);
+  });
+
+  // §18.2 #8's periodic reconcile only runs while a position is open, so a flat
+  // mission's last snapshot ages out after five seconds and is never refreshed.
+  // Reading the timestamp alone latched the banner on for the rest of the
+  // session, on a mission with nothing at risk and nothing suspended.
+  it("stays quiet on a flat mission whose snapshot has stopped refreshing", () => {
+    expect(
+      isPositionDataStale({ status: "waiting", position: { size: 0, observedAt: old } }, now),
+    ).toBe(false);
+  });
+
+  // A revoked mission keeps its final position row forever. Yesterday's mission
+  // must not warn about today's order placement.
+  it("stays quiet on a terminal mission holding a historical snapshot", () => {
+    expect(
+      isPositionDataStale({ status: "revoked", position: { size: 0.5, observedAt: old } }, now),
+    ).toBe(false);
+    expect(
+      isPositionDataStale({ status: "completed", position: { size: 0.5, observedAt: old } }, now),
+    ).toBe(false);
   });
 });
 

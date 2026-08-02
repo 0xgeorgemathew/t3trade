@@ -23,6 +23,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
+import { POC_DEFAULT_TIMEFRAME } from "@t3tools/trading-contracts/strategy";
 
 import type { TradingAuthority } from "./Schemas.ts";
 import type { MomentumStrategyState } from "./Schemas.ts";
@@ -152,6 +153,7 @@ const make = Effect.gen(function* () {
         authority,
         pendingEvents: [...pendingEvents],
         instruction: mission.instruction,
+        defaultTimeframe: POC_DEFAULT_TIMEFRAME,
       };
 
       const text = encodeWakeupJson(wakeup);

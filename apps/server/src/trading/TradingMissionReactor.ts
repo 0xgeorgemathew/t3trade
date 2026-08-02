@@ -17,8 +17,8 @@
  *
  * @module TradingMissionReactor
  */
-import type { OrchestrationEvent, ThreadId, TradingMissionId } from "@t3tools/contracts";
-import { CommandId } from "@t3tools/contracts";
+import type { OrchestrationEvent, ThreadId } from "@t3tools/contracts";
+import { CommandId, TradingMissionId } from "@t3tools/contracts";
 import type { TradingMissionStatus, TradingProvider } from "@t3tools/trading-contracts";
 import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
 import { isPositionIncreasing } from "@t3tools/trading-contracts/protection";
@@ -50,6 +50,8 @@ import { TradingControlService } from "./TradingControlService.ts";
 import { TradingBudgetReader } from "./TradingBudgetReader.ts";
 import { TradingFillReconciler } from "./TradingFillReconciler.ts";
 import { InterimSignerConfig } from "./InterimSignerConfig.ts";
+import { AutoMissionConfig } from "./AutoMissionConfig.ts";
+import { ALL_MISSION_STATUSES, isActiveMissionStatus } from "./MissionTransitions.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
 import { evaluateLossBudget } from "@t3tools/trading-contracts/loss-accounting";
@@ -62,6 +64,9 @@ type TradingRequestEvent = Extract<
   | { type: "trading.mission-risk-control-requested" }
   | { type: "trading.mission-watch-fired" }
   | { type: "trading.execution-requested" }
+  // Not a trading intent: the auto-mission shortcut watches for a thread opened
+  // in the configured lab workspace. See `AutoMissionConfig`.
+  | { type: "thread.created" }
 >;
 
 const HANDLED_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -70,6 +75,7 @@ const HANDLED_EVENT_TYPES: ReadonlySet<string> = new Set([
   "trading.mission-risk-control-requested",
   "trading.mission-watch-fired",
   "trading.execution-requested",
+  "thread.created",
 ]);
 
 /**
@@ -148,6 +154,7 @@ const make = Effect.gen(function* () {
   const protection = yield* TradingProtectionService;
   const emergency = yield* TradingEmergencyCloseService;
   const controls = yield* TradingControlService;
+  const autoMission = yield* AutoMissionConfig;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
@@ -282,6 +289,86 @@ const make = Effect.gen(function* () {
     if (started) {
       yield* advance({ missionId, threadId, from: ["initializing"], to: "analysing" });
     }
+  });
+
+  /** Whether a mission still holds exchange exposure, per the reconciled snapshots. */
+  const holdsPosition = Effect.fn("TradingMissionReactor.holdsPosition")(function* (
+    missionId: TradingMissionId,
+  ) {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ open_count: number }>`
+      SELECT COUNT(*) AS open_count
+      FROM trading_position_snapshots
+      WHERE mission_id = ${missionId} AND size != 0
+    `;
+    return (rows[0]?.open_count ?? 0) > 0;
+  });
+
+  /**
+   * Give a thread opened in the lab workspace a mission of its own.
+   *
+   * Off unless `T3_TRADES_AUTO_MISSION_WORKSPACE` names a workspace root, and
+   * scoped to exactly that root — a thread in any other project is untouched.
+   * See `AutoMissionConfig` for why the shortcut exists.
+   *
+   * One active mission per user is a domain invariant (§10.1), so claiming the
+   * slot means retiring whoever holds it. That is safe only while the incumbent
+   * is flat: revoking a mission that holds a position would strand real exposure
+   * behind a mission with no authority left to manage it. A position-holding
+   * incumbent therefore keeps the slot, and the new thread simply gets no
+   * mission — close it from the workspace panel and open another thread.
+   */
+  const processThreadCreated = Effect.fn("TradingMissionReactor.autoMission")(function* (
+    event: Extract<TradingRequestEvent, { type: "thread.created" }>,
+  ) {
+    const settings = yield* autoMission.resolve;
+    if (Option.isNone(settings)) return;
+
+    const project = yield* snapshotQuery.getProjectShellById(event.payload.projectId);
+    if (Option.isNone(project)) return;
+    if (project.value.workspaceRoot !== settings.value.workspaceRoot) return;
+
+    const threadId = event.payload.threadId;
+    const active = yield* missions.findActiveMission(LOCAL_TRADING_USER_ID);
+
+    if (Option.isSome(active)) {
+      const previous = active.value;
+      // The bootstrap thread can be projected twice on a cold start; a mission
+      // already bound to this thread is the outcome we wanted, not a conflict.
+      if (previous.harness.threadId === threadId) return;
+
+      // The domain mission carries plain strings; the command surface is
+      // branded. Same values, re-tagged at the boundary.
+      const incumbentMissionId = TradingMissionId.make(previous.id);
+
+      if (yield* holdsPosition(incumbentMissionId)) {
+        yield* Effect.logWarning("auto-mission: incumbent holds a position, slot not taken", {
+          threadId,
+          incumbentMissionId,
+        });
+        return;
+      }
+
+      yield* advance({
+        missionId: incumbentMissionId,
+        threadId: previous.harness.threadId as ThreadId,
+        from: ALL_MISSION_STATUSES.filter(isActiveMissionStatus),
+        to: "revoked",
+      });
+    }
+
+    // Dispatched as the same command the Settings form sends, so the mission is
+    // created on the genuine path: decider, reactor, first harness turn.
+    yield* orchestrationEngine.dispatch({
+      type: "trading.mission.create",
+      commandId: CommandId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie)),
+      threadId,
+      missionId: TradingMissionId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie)),
+      tradingAccountId: settings.value.tradingAccountId,
+      instruction: settings.value.instruction,
+      allocatedCapitalUsd: settings.value.allocatedCapitalUsd,
+      createdAt: yield* nowIso,
+    });
   });
 
   /** Map the fired watch's type to the §11.2 run cause it wakes the harness with. */
@@ -700,6 +787,8 @@ const make = Effect.gen(function* () {
         yield* processRiskControlRequested(event);
       } else if (event.type === "trading.mission-watch-fired") {
         yield* processWatchFired(event);
+      } else if (event.type === "thread.created") {
+        yield* processThreadCreated(event);
       } else {
         yield* processExecutionRequested(event).pipe(
           Effect.tapCause((cause) =>
@@ -728,7 +817,8 @@ const make = Effect.gen(function* () {
         // projection keeps the state the domain still holds.
         return Effect.logWarning("trading mission reactor could not apply a requested intent", {
           eventType: event.type,
-          missionId: event.payload.missionId,
+          // `thread.created` is the one handled event with no mission on it.
+          missionId: "missionId" in event.payload ? event.payload.missionId : undefined,
           cause: Cause.pretty(cause),
         });
       }),

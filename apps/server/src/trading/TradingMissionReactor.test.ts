@@ -15,6 +15,7 @@ import {
   ThreadId,
   TradingMissionId,
 } from "@t3tools/contracts";
+import { POC_DEFAULT_INSTRUCTION } from "@t3tools/trading-contracts/strategy";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -188,6 +189,134 @@ const started = Effect.gen(function* () {
       createdAt: NOW,
     })
     .pipe(Effect.ignore);
+});
+
+/**
+ * The auto-mission shortcut (`AutoMissionConfig`): a thread opened in a
+ * configured lab workspace gets a mission without anyone visiting Settings.
+ *
+ * The env is set inside the test rather than around the layer because
+ * `AutoMissionConfigLive` reads `process.env` on every resolve, not at build
+ * time — and because `started` creates its own thread, which must be drained
+ * before the shortcut is armed or it would claim the slot first.
+ */
+const LAB_ROOT = "/tmp/t3-trading-reactor-lab";
+const LAB_PROJECT_ID = ProjectId.make("project-trading-reactor-lab");
+
+const withAutoMissionArmed = <A, E, R>(body: Effect.Effect<A, E, R>) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const previous = process.env.T3_TRADES_AUTO_MISSION_WORKSPACE;
+      process.env.T3_TRADES_AUTO_MISSION_WORKSPACE = LAB_ROOT;
+      return previous;
+    }),
+    () => body,
+    (previous) =>
+      Effect.sync(() => {
+        if (previous === undefined) delete process.env.T3_TRADES_AUTO_MISSION_WORKSPACE;
+        else process.env.T3_TRADES_AUTO_MISSION_WORKSPACE = previous;
+      }),
+  );
+
+/** Open a thread in the lab project, creating the project on first use. */
+const openLabThread = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const engine = yield* OrchestrationEngineService;
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("claude"),
+      model: "sonnet",
+    };
+    yield* engine
+      .dispatch({
+        type: "project.create",
+        commandId: yield* commandId,
+        projectId: LAB_PROJECT_ID,
+        title: "Lab",
+        workspaceRoot: LAB_ROOT,
+        defaultModelSelection: modelSelection,
+        createdAt: NOW,
+      })
+      .pipe(Effect.ignore);
+    yield* engine
+      .dispatch({
+        type: "thread.create",
+        commandId: yield* commandId,
+        threadId,
+        projectId: LAB_PROJECT_ID,
+        title: "Lab thread",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt: NOW,
+      })
+      .pipe(Effect.ignore);
+    // Two drains: the first runs the thread.created handler, whose dispatched
+    // mission.create enqueues the create-requested event the second drains.
+    yield* settle;
+    yield* settle;
+  });
+
+it.layer(TestLayer)("auto-mission shortcut", (it) => {
+  it.effect("gives a thread opened in the lab workspace a mission of its own", () =>
+    Effect.gen(function* () {
+      yield* started;
+      yield* settle;
+
+      const labThread = ThreadId.make("thread-trading-reactor-lab");
+      yield* withAutoMissionArmed(openLabThread(labThread));
+
+      const projection = yield* TradingMissionProjection;
+      const mission = yield* projection.getByThreadId(labThread).pipe(Effect.orDie);
+      assert.ok(Option.isSome(mission), "the lab thread should have been given a mission");
+      assert.equal(mission.value.instruction, POC_DEFAULT_INSTRUCTION);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("leaves a thread outside the lab workspace alone", () =>
+    Effect.gen(function* () {
+      yield* started;
+      yield* settle;
+
+      // `started`'s thread lives at process.cwd(), not LAB_ROOT.
+      yield* withAutoMissionArmed(settle);
+
+      const projected = yield* projectedMission;
+      assert.ok(Option.isNone(projected), "a thread outside the lab must not get a mission");
+    }).pipe(Effect.scoped),
+  );
+
+  // The safety rule. One active mission per user (§10.1) means claiming the slot
+  // retires the incumbent — and revoking a mission that still holds exposure
+  // would strand a live position behind a mission with no authority to manage
+  // it. A position-holding incumbent keeps the slot; the new thread gets nothing.
+  it.effect("refuses to take the slot from a mission that still holds a position", () =>
+    Effect.gen(function* () {
+      yield* started;
+      yield* createMission;
+      yield* settle;
+
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO trading_position_snapshots (
+          mission_id, market, size, entry_price, unrealised_pnl,
+          margin_used, protected_size, observed_at
+        ) VALUES (${MISSION_ID}, 'ETH', 0.03, 1882.7, 0, 20, 0.03, 0)
+      `;
+
+      const labThread = ThreadId.make("thread-trading-reactor-lab-blocked");
+      yield* withAutoMissionArmed(openLabThread(labThread));
+
+      const projection = yield* TradingMissionProjection;
+      const claimed = yield* projection.getByThreadId(labThread).pipe(Effect.orDie);
+      assert.ok(Option.isNone(claimed), "the lab thread must not get a mission");
+
+      const incumbent = yield* projectedMission;
+      assert.ok(Option.isSome(incumbent));
+      assert.notEqual(incumbent.value.status, "revoked", "the incumbent must keep its authority");
+    }).pipe(Effect.scoped),
+  );
 });
 
 it.layer(TestLayer)("trading mission reactor", (it) => {

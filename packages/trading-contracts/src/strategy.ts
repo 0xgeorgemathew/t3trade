@@ -13,6 +13,34 @@ export const TradingTimeframe = Schema.Literals(["1m", "3m", "5m", "15m", "1h"])
 export type TradingTimeframe = typeof TradingTimeframe.Type;
 
 /**
+ * The timeframe a mission works on unless its instruction says otherwise.
+ *
+ * Every interval in `TradingTimeframe` is subscribed and readable, so the
+ * harness has always been free to pick. Left with no stated preference it
+ * reached for 5m and 15m, which put ten to fifteen minutes between a decision
+ * and the candle that could confirm it. `1m` is the shortest direct interval
+ * (§13 forbids synthesising one from a smaller one), so it is the fastest the
+ * mission loop can honestly turn.
+ *
+ * This is a default, not a constraint: it is published to the harness in every
+ * wakeup and nothing rejects a strategy that names another timeframe.
+ */
+export const POC_DEFAULT_TIMEFRAME: TradingTimeframe = "1m";
+
+/**
+ * The instruction a mission gets when its creator does not write one.
+ *
+ * It names the timeframe even though every wakeup already carries
+ * `defaultTimeframe`: a harness weighs a direct instruction more heavily than a
+ * field in a snapshot, and the two agreeing is what keeps the loop turning once
+ * a minute rather than once every fifteen. Arming the watches on the same
+ * interval is the other half — a 1m read with a 15m watch still waits fifteen
+ * minutes to wake.
+ */
+export const POC_DEFAULT_INSTRUCTION =
+  "Trade ETH momentum on testnet using 1m candles. Arm candle-close watches on the 1m interval so each run wakes within a minute.";
+
+/**
  * A condition the harness published in prose, with optional structured hints -
  * spec §10.5.
  *

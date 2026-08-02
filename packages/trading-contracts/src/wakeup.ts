@@ -15,7 +15,7 @@ import { TradingAuthority } from "./authority.ts";
 import { AgentMarketSnapshot } from "./market.ts";
 import { TradingHarnessRunCause } from "./mission.ts";
 import { TradingId, TradingText, UnixMillis } from "./primitives.ts";
-import { MomentumStrategyState } from "./strategy.ts";
+import { MomentumStrategyState, TradingTimeframe } from "./strategy.ts";
 import { PersistedWatch } from "./watch.ts";
 
 /**
@@ -58,6 +58,13 @@ export const TradingHarnessWakeup = Schema.Struct({
   authority: TradingAuthority,
   pendingEvents: Schema.Array(TradingDomainEventSummary),
   instruction: TradingText,
+  /**
+   * The timeframe to work on unless the instruction names another. Published on
+   * every wakeup rather than only the first, so a resumed run that has lost the
+   * bootstrap turn from its context still knows which candle the mission runs
+   * on. See `POC_DEFAULT_TIMEFRAME`.
+   */
+  defaultTimeframe: TradingTimeframe,
 });
 export type TradingHarnessWakeup = typeof TradingHarnessWakeup.Type;
 

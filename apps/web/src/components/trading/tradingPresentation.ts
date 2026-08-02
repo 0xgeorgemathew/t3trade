@@ -148,16 +148,31 @@ export function deriveMissionStrip(mission: {
  * The banner is driven by the same freshness rule the execution path enforces,
  * so the user is told placement is suspended for the same reason it actually
  * is — not by a separate UI-side timer that could disagree.
+ *
+ * Two conditions have to hold before that claim is true, and checking only the
+ * timestamp made it false in the common case. `observed_at` is refreshed by the
+ * §18.2 #8 periodic reconcile, which runs *only while a position is open*: a
+ * flat mission's last snapshot ages out after five seconds and never comes
+ * back, so the banner latched on and stayed on. And a revoked mission keeps its
+ * final position row forever, so yesterday's mission still showed a live
+ * suspension warning today. Neither had anything suspended — a flat mission has
+ * nothing to go stale about, and a revoked one is blocked by being revoked.
  */
 export const ACCOUNT_STALE_AFTER_MILLIS = 5_000;
 
 export function isPositionDataStale(
-  mission: { readonly position: { readonly observedAt: string } | null },
+  mission: {
+    readonly status: TradingMissionStatus;
+    readonly position: { readonly size: number; readonly observedAt: string } | null;
+  },
   nowMs: number,
 ): boolean {
-  const observedAt = mission.position?.observedAt;
-  if (observedAt === undefined) return false;
-  return nowMs - Date.parse(observedAt) > ACCOUNT_STALE_AFTER_MILLIS;
+  if (isMissionComplete(mission.status)) return false;
+
+  const position = mission.position;
+  if (position === null || position.size === 0) return false;
+
+  return nowMs - Date.parse(position.observedAt) > ACCOUNT_STALE_AFTER_MILLIS;
 }
 
 /** The order-rejected surface, when the latest execution was refused. */

@@ -107,7 +107,7 @@ function Mandate({ mission }: { mission: OrchestrationTradingMission }) {
       <Field
         label="Valid until"
         value={
-          authority.validUntil === "revoked"
+          authority.validUntil === "until_revoked"
             ? "Until revoked"
             : new Date(authority.validUntil).toLocaleString()
         }
