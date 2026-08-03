@@ -39,6 +39,10 @@ export class TradingExhaustionError extends Schema.TaggedErrorClass<TradingExhau
       "action_not_permitted_under_exhaustion",
       "resume_blocked",
       "close_did_not_flatten",
+      /** A read or write the block needed did not answer. Not a verdict. */
+      "infrastructure_error",
+      /** The mission would not move to `blocked` — usually a version conflict. */
+      "transition_failed",
     ]),
     detail: Schema.optional(Schema.String),
   },
@@ -196,9 +200,13 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
           AND e.action_type NOT IN ('cancel', 'reduce', 'close', 'modify_stop')
       `.pipe(
         Effect.mapError(
+          // A SQL read that failed is not the budget saying no. Labelling it
+          // `budget_exhausted` sent the harness down a recovery path — wait for
+          // the ceiling to lift — that could never work, on a mission whose own
+          // payload said `exhausted: false`.
           (cause) =>
             new TradingExhaustionError({
-              reason: "budget_exhausted",
+              reason: "infrastructure_error",
               detail: `read open orders failed: ${cause instanceof Error ? cause.message : String(cause)}`,
             }),
         ),
@@ -231,9 +239,11 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
         })
         .pipe(
           Effect.mapError(
+            // Likewise: the mission refusing the transition says nothing about
+            // the budget.
             (cause) =>
               new TradingExhaustionError({
-                reason: "budget_exhausted",
+                reason: "transition_failed",
                 detail: cause instanceof Error ? cause.message : String(cause),
               }),
           ),

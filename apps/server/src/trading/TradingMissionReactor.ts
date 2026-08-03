@@ -37,7 +37,7 @@ import * as Stream from "effect/Stream";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import type { PersistedWatch, TradingHarnessRunCause } from "./Schemas.ts";
-import { executionRefusedKey } from "./ExecutionRefusal.ts";
+import { executionRefusedKey, executionSettledKey } from "./ExecutionRefusal.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
@@ -681,10 +681,11 @@ const make = Effect.gen(function* () {
               `protected first (${outcome.escalationReason ?? "protection unconfirmed"})`,
           });
         }
-        return;
+        return `order ${targetCloid} cancelled; the filled size keeps its stop`;
       }
 
       yield* execution.submitCancel({ market: intent.market, cloid: targetCloid });
+      return `order ${targetCloid} cancelled`;
     },
   );
 
@@ -773,7 +774,10 @@ const make = Effect.gen(function* () {
         protectedSize: outcome.protectedSize,
         replacedCloids: outcome.replacedCloids,
       });
-      return;
+      return (
+        `stop moved to ${stop.stopPrice}; ${outcome.protectedSize} of the position is ` +
+        `confirmed protected`
+      );
     }
 
     yield* Effect.logError("trading stop replacement left the position uncovered; escalating", {
@@ -787,6 +791,16 @@ const make = Effect.gen(function* () {
       reason: outcome.escalationReason ?? "stop replacement could not be confirmed",
     });
     yield* announceStatus({ missionId, threadId, status: "blocked" });
+    // The stop move did not happen and the position was closed out from under
+    // it. Failing here is what puts that on the tool's own answer instead of
+    // leaving the harness to read "succeeded" for a mission that is now flat
+    // and blocked.
+    return yield* new TradingExecutionError({
+      stage: "intent_invalid",
+      detail:
+        `the new stop could not be confirmed (${outcome.escalationReason ?? "unconfirmed"}); ` +
+        `the position was closed under §17.5 and the mission is blocked`,
+    });
   });
 
   /**
@@ -828,6 +842,28 @@ const make = Effect.gen(function* () {
       });
     }
   });
+
+  /**
+   * Record what a deterministic action did, where the harness can read it.
+   *
+   * `cancel` and `modify_stop` write no execution record — they place no order
+   * of their own — so `TradingExecutionOutcome` had nothing to find and sat out
+   * its full twenty-second deadline before answering "still in flight" for an
+   * action that had already succeeded. This is that answer.
+   */
+  const recordExecutionSettled = Effect.fn("TradingMissionReactor.recordExecutionSettled")(
+    function* (executionSequence: number, missionId: TradingMissionId, summary: string) {
+      const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      yield* inbox.persist({
+        missionId,
+        category: "system",
+        deduplicationKey: executionSettledKey(executionSequence),
+        payload: { executionSequence, summary },
+        occurredAt,
+        summary,
+      });
+    },
+  );
 
   /**
    * The §17.2 write side. A harness raised `trading.execution.requested`; the
@@ -888,11 +924,19 @@ const make = Effect.gen(function* () {
     // state — the harness must be able to reduce, close, cancel, or move a stop
     // while an entry rests. Counting `accepted` here is what made one filled
     // entry permanently lock the mission out of every subsequent write.
-    const pendingRows = yield* sql<{ readonly count: number }>`
-      SELECT COUNT(*) AS count FROM trading_execution_records
+    const pendingRows = yield* sql<{
+      readonly cloid: string;
+      readonly action_type: string;
+      readonly status: string;
+      readonly updated_at: number;
+    }>`
+      SELECT cloid, action_type, status, updated_at FROM trading_execution_records
       WHERE mission_id = ${missionId}
         AND status IN ('previewed', 'reserved', 'signed', 'submitted')
+      ORDER BY updated_at ASC
+      LIMIT 1
     `;
+    const blocking = pendingRows[0];
     // The interim signer IS the approved execution wallet for the POC (Privy
     // replaces it in PROMPT-06). Resolve its address so preview item 8 can
     // confirm a wallet is approved before a nonce is spent. If the signer is
@@ -918,7 +962,15 @@ const make = Effect.gen(function* () {
         approvedExecutionWalletAddress,
         bbo: orderBook.bestBidOffer,
         accountObservedAt: budgetInput.observedAt,
-        hasPendingExecution: (pendingRows[0]?.count ?? 0) > 0,
+        pendingExecution:
+          blocking === undefined
+            ? null
+            : {
+                cloid: blocking.cloid,
+                actionType: blocking.action_type,
+                status: blocking.status,
+                ageMillis: Math.max(0, budgetInput.observedAt - blocking.updated_at),
+              },
         budget: budgetInput,
         takerFeeRateBps: feeRate,
         stopSlippageReserveBps,
@@ -936,15 +988,17 @@ const make = Effect.gen(function* () {
     } else if (intent.actionType === "reduce") {
       yield* guard.reduceOnlySized(executionInput);
     } else if (intent.actionType === "cancel") {
-      yield* cancelRestingOrder({ missionId, intent, masterAddress });
+      const summary = yield* cancelRestingOrder({ missionId, intent, masterAddress });
+      yield* recordExecutionSettled(intent.executionSequence, missionId, summary);
     } else if (intent.actionType === "modify_stop") {
-      yield* modifyStop({
+      const summary = yield* modifyStop({
         missionId,
         threadId,
         intent,
         masterAddress,
         bbo: orderBook.bestBidOffer,
       });
+      yield* recordExecutionSettled(intent.executionSequence, missionId, summary);
     } else {
       yield* execution.submitOrder(executionInput);
     }

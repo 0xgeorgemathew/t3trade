@@ -7,16 +7,21 @@
  * the size never changed, price 25 points in favour, and a harness that was
  * never woken to take any of it.
  *
+ * The same floor applies to a flat mission that has published a thesis: a
+ * strategy whose triggers never come near the market would otherwise leave the
+ * mission silent forever, which reads exactly like a mission that is working.
+ *
  * The turn coordinator is what notices, because run settlement is the only
  * moment that knows a turn has finished deciding. These tests drive a real run
- * to its end — a one-event domain stream is the turn-end signal — and assert
- * what the mission is left holding.
+ * to its end — the test offers the turn-end event itself — and assert what the
+ * mission is left holding.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { EventId, ThreadId, type OrchestrationEvent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -37,10 +42,8 @@ const MISSION = "mission_floor";
 const THREAD = "thread_floor";
 
 /**
- * The turn-end signal, as a one-element stream. The coordinator's release
- * watcher takes the first `thread.session-set` where the session leaves
- * "running" with no active turn, so a static stream settles the run
- * deterministically instead of on a timer.
+ * The turn-end signal. The coordinator's release watcher takes the first
+ * `thread.session-set` where the session leaves "running" with no active turn.
  */
 const turnEnded = {
   type: "thread.session-set",
@@ -53,14 +56,39 @@ const turnEnded = {
   },
 } as unknown as OrchestrationEvent;
 
-const stubEngine = Layer.succeed(OrchestrationEngineService, {
-  dispatch: () => Effect.succeed({ sequence: 0 }),
-  readEvents: () => Stream.empty,
-  streamDomainEvents: Stream.make(turnEnded),
-  latestSequence: Effect.succeed(0),
-});
+/**
+ * The turn-end event is offered by the test rather than replayed from a static
+ * stream, so a case can set the mission up — publish a strategy, arm a watch —
+ * between the run starting and the run settling. Settlement is the moment the
+ * floor is applied, and the floor reads whatever is true then.
+ */
+let turnEndQueue: Queue.Queue<OrchestrationEvent> | null = null;
 
-/** Unused: the run under test takes the `mission_created` bootstrap branch. */
+/**
+ * How many turns the coordinator has dispatched. The wake path is forked, so
+ * this is what a test waits on before changing the mission underneath it.
+ */
+let dispatchCount = 0;
+
+const stubEngine = Layer.effect(
+  OrchestrationEngineService,
+  Effect.gen(function* () {
+    const queue = yield* Queue.unbounded<OrchestrationEvent>();
+    turnEndQueue = queue;
+    return {
+      dispatch: () =>
+        Effect.sync(() => {
+          dispatchCount += 1;
+          return { sequence: 0 };
+        }),
+      readEvents: () => Stream.empty,
+      streamDomainEvents: Stream.fromQueue(queue),
+      latestSequence: Effect.succeed(0),
+    };
+  }),
+);
+
+/** Never called: every run under test takes the `mission_created` bootstrap branch. */
 const stubComposer = Layer.succeed(TradingWakeupComposer, {
   compose: () => Effect.die("the bootstrap branch does not compose a wakeup"),
 });
@@ -94,6 +122,7 @@ const seed = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_event_inbox`;
   yield* sql`DELETE FROM trading_watches`;
   yield* sql`DELETE FROM trading_position_snapshots`;
+  yield* sql`DELETE FROM momentum_strategy_versions`;
 
   const missions = yield* TradingMissionService;
   yield* missions.createMission({
@@ -119,16 +148,29 @@ const holdPosition = (size: number, markPx: number) =>
   });
 
 /**
- * Run a turn to completion. `mission_created` is the one cause allowed to run
- * without a published strategy, which is what lets these tests exercise
- * settlement without also standing up a wakeup composer.
+ * Start a turn. `mission_created` is the one cause allowed to run without a
+ * published strategy, which is what lets these tests exercise settlement
+ * without also standing up a wakeup composer.
  */
-const runOneTurn = Effect.gen(function* () {
+const startTurn = Effect.gen(function* () {
+  const before = dispatchCount;
   const coordinator = yield* TradingTurnCoordinator;
   const outcome = yield* coordinator.requestRun({ missionId: MISSION, cause: "mission_created" });
   assert.equal(outcome.status, "started");
 
-  // The settlement path is forked. Yield until the run row goes terminal —
+  // The wake is forked and reads the mission as it is when it runs. Wait for
+  // its dispatch, so a case that publishes a strategy next does not change the
+  // wakeup's shape out from under it.
+  for (let attempt = 0; attempt < 500 && dispatchCount === before; attempt++) {
+    yield* Effect.yieldNow;
+  }
+  assert.isAbove(dispatchCount, before);
+});
+
+/** End the turn and wait for the forked settlement — the floor runs there. */
+const endTurn = Effect.gen(function* () {
+  yield* Queue.offer(turnEndQueue!, turnEnded);
+
   // `Effect.yieldNow` rather than a sleep, because these tests run on the test
   // clock and a sleep would never come back.
   const sql = yield* SqlClient.SqlClient;
@@ -142,6 +184,41 @@ const runOneTurn = Effect.gen(function* () {
   }
   // The coverage check runs after the release; give it its own turns.
   for (let attempt = 0; attempt < 500; attempt++) yield* Effect.yieldNow;
+});
+
+const runOneTurn = Effect.gen(function* () {
+  yield* startTurn;
+  yield* endTurn;
+});
+
+/** Publish a strategy, so the mission has a live thesis to come back to. */
+const publishStrategy = Effect.gen(function* () {
+  const strategies = yield* TradingStrategyService;
+  const published = yield* strategies.publishMomentumStrategy({
+    missionId: MISSION,
+    expectedVersion: 0,
+    strategy: {
+      name: "ETH breakout",
+      market: "ETH",
+      mode: "breakout_continuation",
+      direction: "long",
+      timeframes: ["1m"],
+      belief: { summary: "bullish", regime: "trending", evidence: [] },
+      entryPlan: { explanation: "enter", orderPreference: "marketable_ioc", conditions: [] },
+      positionManagement: {
+        scaleInAllowed: false,
+        scaleInConditions: [],
+        partialReductionAllowed: false,
+      },
+      protection: { stopMethod: "fixed" },
+      exitConditions: [],
+      abandonmentConditions: [],
+      reentryConditions: [],
+      currentAction: "waiting",
+      explanation: "wait for the level",
+    },
+  });
+  assert.equal(published.outcome, "accepted");
 });
 
 const activeWatches = Effect.gen(function* () {
@@ -233,12 +310,70 @@ layer("run settlement: the armed-coverage floor", (it) => {
     }),
   );
 
-  it.effect("leaves a flat mission alone", () =>
-    // A flat mission's next move is an entry, and timing an entry is the
-    // harness's own business. The floor only applies to open exposure.
+  it.effect("leaves a flat mission with no thesis alone", () =>
+    // Nothing has been published, so there is nothing to come back to. A
+    // create, a publish, or a user control moves this mission on.
     Effect.gen(function* () {
       yield* seed;
       yield* runOneTurn;
+
+      const active = yield* activeWatches;
+      assert.deepEqual(active, []);
+    }),
+  );
+
+  it.effect("arms a reassessment for a flat mission holding a live thesis", () =>
+    // The silent-mission case: a published thesis whose triggers never come
+    // near the market. Nothing crosses, nothing fires, and without the floor
+    // the mission never speaks again.
+    Effect.gen(function* () {
+      yield* seed;
+      yield* startTurn;
+      yield* publishStrategy;
+      yield* endTurn;
+
+      const active = yield* activeWatches;
+      assert.equal(active.length, 1);
+      assert.equal(active[0]!.watch.type, "scheduled_reassessment");
+      // Tagged, so the wake it produces can say why it happened.
+      assert.equal(active[0]!.armedReason, "staleness_floor");
+    }),
+  );
+
+  it.effect("does not stack a second reassessment when one is already due", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* startTurn;
+      yield* publishStrategy;
+
+      const watches = yield* TradingWatchService;
+      const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      yield* watches.registerWatch({
+        missionId: MISSION,
+        watch: { type: "scheduled_reassessment", runAt: now + 60_000 },
+      });
+
+      yield* endTurn;
+
+      const active = yield* activeWatches;
+      assert.equal(active.length, 1);
+      assert.equal(active[0]!.armedReason, undefined);
+    }),
+  );
+
+  it.effect("leaves a paused mission alone", () =>
+    // A paused mission has been told to stop reassessing. Waking it would ask
+    // the harness to do the one thing the user just took away.
+    Effect.gen(function* () {
+      yield* seed;
+      yield* startTurn;
+      yield* publishStrategy;
+
+      const missions = yield* TradingMissionService;
+      const version = yield* missions.getMissionVersion(MISSION);
+      yield* missions.transition({ missionId: MISSION, to: "paused", expectedVersion: version });
+
+      yield* endTurn;
 
       const active = yield* activeWatches;
       assert.deepEqual(active, []);

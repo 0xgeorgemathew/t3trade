@@ -21,6 +21,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import { TradingMissionNotFoundError } from "./Errors.ts";
 import { isActiveMissionStatus } from "./MissionTransitions.ts";
+import { WatchArmedReason } from "@t3tools/trading-contracts/watch";
 import {
   MarketWatch,
   PersistedWatch,
@@ -31,11 +32,17 @@ import {
 const decodeWatch = Schema.decodeUnknownSync(Schema.fromJsonString(MarketWatch));
 const encodeWatch = Schema.encodeUnknownSync(Schema.fromJsonString(MarketWatch));
 const decodeWatchStatus = Schema.decodeUnknownSync(PersistedWatchStatus);
+const decodeArmedReason = Schema.decodeUnknownSync(WatchArmedReason);
 const decodeMissionStatus = Schema.decodeUnknownSync(TradingMissionStatus);
 
 export interface RegisterWatchInput {
   readonly missionId: string;
   readonly watch: MarketWatch;
+  /**
+   * Set when the runtime — not the harness — armed this watch, so the wake it
+   * eventually produces can say why it happened.
+   */
+  readonly armedReason?: WatchArmedReason;
 }
 
 export interface CancelWatchInput {
@@ -97,16 +104,18 @@ interface WatchRow {
   readonly strategy_version: number;
   readonly watch_json: string;
   readonly status: string;
+  readonly armed_reason: string | null;
   readonly created_at: number;
   readonly updated_at: number;
 }
 
-const toPersistedWatch = (row: WatchRow): PersistedWatch => ({
+export const toPersistedWatch = (row: WatchRow): PersistedWatch => ({
   id: row.watch_id,
   missionId: row.mission_id,
   strategyVersion: row.strategy_version,
   watch: decodeWatch(row.watch_json),
   status: decodeWatchStatus(row.status),
+  ...(row.armed_reason === null ? {} : { armedReason: decodeArmedReason(row.armed_reason) }),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -143,9 +152,11 @@ const makeTradingWatchService = Effect.gen(function* () {
 
       yield* sql`
         INSERT INTO trading_watches
-          (watch_id, mission_id, strategy_version, watch_json, status, version, created_at, updated_at)
+          (watch_id, mission_id, strategy_version, watch_json, status, armed_reason, version,
+           created_at, updated_at)
         VALUES
-          (${watchId}, ${input.missionId}, ${strategyVersion}, ${watchJson}, 'active', 1, ${now}, ${now})
+          (${watchId}, ${input.missionId}, ${strategyVersion}, ${watchJson}, 'active',
+           ${input.armedReason ?? null}, 1, ${now}, ${now})
       `.pipe(Effect.mapError(sqlFail("register:insert")));
 
       return {
@@ -154,6 +165,7 @@ const makeTradingWatchService = Effect.gen(function* () {
         strategyVersion,
         watch: input.watch,
         status: "active",
+        ...(input.armedReason === undefined ? {} : { armedReason: input.armedReason }),
         createdAt: now,
         updatedAt: now,
       } satisfies PersistedWatch;
@@ -171,7 +183,7 @@ const makeTradingWatchService = Effect.gen(function* () {
         WHERE watch_id = ${input.watchId}
           AND mission_id = ${input.missionId}
           AND status = 'active'
-        RETURNING watch_id, mission_id, strategy_version, watch_json, status, created_at, updated_at
+        RETURNING watch_id, mission_id, strategy_version, watch_json, status, armed_reason, created_at, updated_at
       `.pipe(Effect.mapError(sqlFail("cancel:update")));
 
       return rows[0] ? toPersistedWatch(rows[0]) : null;
@@ -186,7 +198,7 @@ const makeTradingWatchService = Effect.gen(function* () {
         UPDATE trading_watches
         SET status = 'triggered', version = version + 1, updated_at = ${now}
         WHERE watch_id = ${watchId} AND status = 'active'
-        RETURNING watch_id, mission_id, strategy_version, watch_json, status, created_at, updated_at
+        RETURNING watch_id, mission_id, strategy_version, watch_json, status, armed_reason, created_at, updated_at
       `.pipe(Effect.mapError(sqlFail("markTriggered:update")));
 
       return rows[0] ? toPersistedWatch(rows[0]) : null;
@@ -195,7 +207,7 @@ const makeTradingWatchService = Effect.gen(function* () {
   const getWatch: TradingWatchServiceShape["getWatch"] = (watchId) =>
     Effect.gen(function* () {
       const rows = yield* sql<WatchRow>`
-        SELECT watch_id, mission_id, strategy_version, watch_json, status, created_at, updated_at
+        SELECT watch_id, mission_id, strategy_version, watch_json, status, armed_reason, created_at, updated_at
         FROM trading_watches WHERE watch_id = ${watchId}
       `.pipe(Effect.mapError(sqlFail("getWatch")));
       return rows[0] ? toPersistedWatch(rows[0]) : null;

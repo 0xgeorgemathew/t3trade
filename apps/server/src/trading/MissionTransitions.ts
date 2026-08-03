@@ -67,6 +67,17 @@ const isLoop = (status: TradingMissionStatus): boolean =>
 export const isActiveMissionStatus = (status: TradingMissionStatus): boolean =>
   !isPermanentTerminal(status);
 
+/**
+ * A mission that is running its own loop right now — not terminal, and not
+ * suspended waiting on a user, a provider, or a risk decision.
+ *
+ * This is the set the runtime may wake of its own accord. A paused or blocked
+ * mission still holds authority and still occupies the slot, but waking it
+ * would ask the harness to reassess something it has been explicitly told to
+ * stop reassessing.
+ */
+export const isOperativeMissionStatus = (status: TradingMissionStatus): boolean => isLoop(status);
+
 /** The statuses reachable from `from`, per §11.1. */
 export const allowedTransitions = (from: TradingMissionStatus): readonly TradingMissionStatus[] => {
   if (isPermanentTerminal(from)) return [];

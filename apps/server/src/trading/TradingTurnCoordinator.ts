@@ -46,6 +46,7 @@ import * as Stream from "effect/Stream";
 
 import { POC_DEFAULT_TIMEFRAME } from "@t3tools/trading-contracts/strategy";
 import {
+  hasReassessmentWithin,
   isDeafWhileHoldingPosition,
   readWatchCoverage,
   WATCH_COVERAGE_FLOOR_MILLIS,
@@ -64,7 +65,7 @@ import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
 import { TradingWakeupComposer } from "./TradingWakeupComposer.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
-import { isActiveMissionStatus } from "./MissionTransitions.ts";
+import { isActiveMissionStatus, isOperativeMissionStatus } from "./MissionTransitions.ts";
 
 export interface TradingTurnCoordinatorShape {
   /**
@@ -79,6 +80,26 @@ export interface TradingTurnCoordinatorShape {
   readonly requestRun: (
     input: HarnessRunRequest,
   ) => Effect.Effect<HarnessRunOutcome, PersistenceSqlError>;
+
+  /**
+   * Route a user's chat message on a mission thread through the wake path.
+   *
+   * Typing into a bound thread used to take the ordinary turn path: no wakeup
+   * snapshot, no decision lease, so the operator's turn could race a
+   * watch-fired run and worked from whatever market and account state happened
+   * to be left in the harness's context. A message on an operative mission is
+   * an event like any other, and gets the same fresh snapshot.
+   *
+   * Returns `true` when a run started and this call owns the turn — the caller
+   * must NOT also dispatch the plain turn. Returns `false` for every other
+   * case (no mission, not operative, blocked, or queued behind an active run),
+   * so the message still reaches the provider the ordinary way rather than
+   * being dropped.
+   */
+  readonly requestUserMessageRun: (input: {
+    readonly threadId: string;
+    readonly text: string;
+  }) => Effect.Effect<boolean>;
 }
 
 export class TradingTurnCoordinator extends Context.Service<
@@ -234,6 +255,30 @@ const make = Effect.gen(function* () {
     );
 
   /**
+   * Arm the floor's reassessment, once. `coversByReassessment` has already said
+   * nothing is due inside the window, so this cannot stack duplicates.
+   */
+  const armStalenessFloor = (input: {
+    readonly missionId: string;
+    readonly nowMillis: number;
+    readonly detail: Record<string, unknown>;
+  }) =>
+    Effect.gen(function* () {
+      const runAt = input.nowMillis + WATCH_COVERAGE_FLOOR_MILLIS;
+      const watch = yield* watches.registerWatch({
+        missionId: input.missionId,
+        watch: { type: "scheduled_reassessment", runAt },
+        armedReason: "staleness_floor",
+      });
+      yield* Effect.logInfo("TradingTurnCoordinator: armed a reassessment for a silent mission", {
+        missionId: input.missionId,
+        watchId: watch.id,
+        runAt,
+        ...input.detail,
+      });
+    });
+
+  /**
    * Never let a run end holding a position with nothing armed that can wake it.
    *
    * The failure this closes was observed live: a position open, one downside
@@ -262,13 +307,33 @@ const make = Effect.gen(function* () {
       `.pipe(Effect.mapError(sqlFail("ensureNotDeaf:position")));
 
       const position = rows[0];
-      // Flat: the mission's next move is an entry, and an entry is the
-      // harness's own business to time. No floor applies.
-      if (position === undefined) return;
-
       const now = yield* Clock.currentTimeMillis;
-      const markPrice = position.mark_px;
       const armed = yield* strategies.listWatches(missionId);
+
+      // Flat. Timing an entry is the harness's own business, so no level is
+      // required on either side — but a mission that has published a thesis and
+      // is running its loop must still come back to it. Without this, a thesis
+      // whose triggers never come near the market goes silent forever, and a
+      // silent mission is indistinguishable from a working one.
+      if (position === undefined) {
+        const mission = yield* missions.getMission(missionId);
+        if (!isOperativeMissionStatus(mission.status)) return;
+        const strategy = yield* strategies.getCurrentStrategy(missionId);
+        // No thesis: nothing to come back to. The mission is between strategies
+        // and something else — a create, a publish, a user control — will move
+        // it on.
+        if (strategy._tag === "None") return;
+        if (hasReassessmentWithin({ watches: armed, nowMillis: now })) return;
+
+        yield* armStalenessFloor({
+          missionId,
+          nowMillis: now,
+          detail: { missionStatus: mission.status, flat: true },
+        });
+        return;
+      }
+
+      const markPrice = position.mark_px;
 
       // With no mark there is no "each side of" anything to measure. Treat that
       // as uncovered rather than as covered: an unreadable mark is not evidence
@@ -280,17 +345,10 @@ const make = Effect.gen(function* () {
 
       if (!isDeafWhileHoldingPosition(coverage)) return;
 
-      const runAt = now + WATCH_COVERAGE_FLOOR_MILLIS;
-      const watch = yield* watches.registerWatch({
+      yield* armStalenessFloor({
         missionId,
-        watch: { type: "scheduled_reassessment", runAt },
-      });
-      yield* Effect.logInfo("TradingTurnCoordinator: armed a reassessment for a deaf mission", {
-        missionId,
-        watchId: watch.id,
-        runAt,
-        positionSize: position.size,
-        coverage,
+        nowMillis: now,
+        detail: { positionSize: position.size, coverage },
       });
     }).pipe(
       Effect.catchCause((cause) =>
@@ -484,7 +542,41 @@ const make = Effect.gen(function* () {
       return { status: "started", harnessRunId: runId } as const;
     });
 
-  return { requestRun } satisfies TradingTurnCoordinatorShape;
+  const requestUserMessageRun: TradingTurnCoordinatorShape["requestUserMessageRun"] = (input) =>
+    Effect.gen(function* () {
+      const bound = yield* missions.findMissionByThreadId(input.threadId);
+      if (bound._tag === "None") return false;
+
+      const mission = bound.value;
+      // A paused, blocked, or agent-unavailable mission is not taking events;
+      // the message goes to the provider the ordinary way.
+      if (!isOperativeMissionStatus(mission.status)) return false;
+
+      const outcome = yield* requestRun({
+        missionId: mission.id,
+        cause: "user_message",
+        userMessage: input.text,
+      });
+      if (outcome.status === "started") return true;
+
+      yield* Effect.logInfo("TradingTurnCoordinator: user message took the ordinary turn path", {
+        missionId: mission.id,
+        outcome: outcome.status,
+        ...(outcome.status === "blocked" ? { reason: outcome.reason } : {}),
+      });
+      return false;
+    }).pipe(
+      // A routing failure must never swallow the operator's message: fall back
+      // to the ordinary turn.
+      Effect.catchCause((cause) =>
+        Effect.logWarning("TradingTurnCoordinator: could not route a user message", {
+          threadId: input.threadId,
+          cause: String(cause),
+        }).pipe(Effect.as(false)),
+      ),
+    );
+
+  return { requestRun, requestUserMessageRun } satisfies TradingTurnCoordinatorShape;
 });
 
 export const TradingTurnCoordinatorLive = Layer.effect(TradingTurnCoordinator, make);

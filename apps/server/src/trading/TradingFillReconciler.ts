@@ -65,6 +65,18 @@ export class TradingFillReconciler extends Context.Service<
   TradingFillReconcilerShape
 >()("t3/trading/TradingFillReconciler") {}
 
+/** Whether any execution record for this mission is still non-terminal. */
+const hasUnsettledExecutions = (missionId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ readonly count: number }>`
+      SELECT COUNT(*) AS count FROM trading_execution_records
+      WHERE mission_id = ${missionId}
+        AND status IN ('previewed', 'reserved', 'signed', 'submitted', 'accepted')
+    `;
+    return (rows[0]?.count ?? 0) > 0;
+  }).pipe(Effect.orElseSucceed(() => false));
+
 const make = Effect.gen(function* () {
   const ws = yield* HyperliquidWebSocketClient;
   const reconciler = yield* HyperliquidReconciler;
@@ -103,13 +115,22 @@ const make = Effect.gen(function* () {
       // §18.2 #8: periodic backstop while a position is open. Every 5s, if the
       // canonical position is non-flat, reconcile. Closes the gap if the WS
       // socket dropped frames or a fill arrived out-of-band.
+      //
+      // A flat mission also reconciles, but only when it has an execution
+      // record still sitting in a non-terminal status. Nothing else settles
+      // those: the submit response is the last word the submit path hears, so a
+      // record left at `accepted` or `submitted` on a flat mission stayed there
+      // until the next server start — holding a risk reservation the budget
+      // kept counting, and holding preview item 16's lock against every new
+      // intent. The count is a cheap local read, so the gate still costs
+      // nothing on the ordinary flat mission with nothing outstanding.
       const periodic = Effect.gen(function* () {
         const snapshot = yield* gateway
           .getAccountSnapshot(input.masterAddress as `0x${string}`)
           .pipe(Effect.orElseSucceed(() => null));
         if (snapshot === null) return;
         const open = snapshot.positions.some((p) => p.market === input.market && p.size !== 0);
-        if (!open) return;
+        if (!open && !(yield* hasUnsettledExecutions(input.missionId))) return;
         yield* reconciler
           .reconcile(input, "periodic_while_position_open")
           .pipe(Effect.catch(() => Effect.void));

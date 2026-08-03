@@ -33,9 +33,19 @@ const stubEngine = Layer.succeed(OrchestrationEngineService, {
   latestSequence: Effect.succeed(0),
 });
 
-/** A no-op wakeup composer (the unit tests do not exercise the wake path). */
+/**
+ * A recording wakeup composer. The unit tests do not exercise the wake path
+ * itself — the empty text fails the coordinator's round-trip check, which marks
+ * the run failed — but what the coordinator asked to be composed is exactly
+ * what a user-message run has to get right.
+ */
+const composed: Array<{ readonly cause: string; readonly userMessage?: string | undefined }> = [];
 const stubComposer = Layer.succeed(TradingWakeupComposer, {
-  compose: () => Effect.succeed({ wakeup: {} as never, text: "" }),
+  compose: (input) =>
+    Effect.sync(() => {
+      composed.push({ cause: input.cause, userMessage: input.userMessage });
+      return { wakeup: {} as never, text: "" };
+    }),
 });
 
 const layer = it.layer(
@@ -60,7 +70,7 @@ const harness: TradingHarnessBinding = {
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 37 });
+  yield* runMigrations({ toMigrationInclusive: 43 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_harness_runs`;
@@ -203,6 +213,94 @@ layer("TradingTurnCoordinator", (it) => {
     }),
   );
 
+  it.effect("routes a user message on a bound thread through the wake path", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission;
+      composed.length = 0;
+
+      const coordinator = yield* TradingTurnCoordinator;
+      const routed = yield* coordinator.requestUserMessageRun({
+        threadId: "thread_1",
+        text: "take half off here",
+      });
+      assert.isTrue(routed);
+
+      const sql = yield* SqlClient.SqlClient;
+      const runs = yield* sql<{ readonly cause: string }>`
+        SELECT cause FROM trading_harness_runs WHERE mission_id = 'mission_1'
+      `;
+      assert.equal(runs[0]?.cause, "user_message");
+
+      // The wake is forked; give it its turns, then check what it composed.
+      // Earlier cases' forked wakes land here too, so look for this one.
+      for (let attempt = 0; attempt < 500; attempt++) {
+        if (composed.some((entry) => entry.cause === "user_message")) break;
+        yield* Effect.yieldNow;
+      }
+      const userWake = composed.filter((entry) => entry.cause === "user_message");
+      assert.deepEqual(userWake, [{ cause: "user_message", userMessage: "take half off here" }]);
+    }),
+  );
+
+  it.effect("leaves a message on an unbound thread to the ordinary turn path", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission;
+
+      const coordinator = yield* TradingTurnCoordinator;
+      const routed = yield* coordinator.requestUserMessageRun({
+        threadId: "thread_with_no_mission",
+        text: "hello",
+      });
+      assert.isFalse(routed);
+    }),
+  );
+
+  it.effect("leaves a message on a paused mission to the ordinary turn path", () =>
+    // A paused mission is not taking events. The message still has to reach the
+    // provider, so the ordinary turn carries it.
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission;
+      const missions = yield* TradingMissionService;
+      const version = yield* missions.getMissionVersion("mission_1");
+      yield* missions.transition({
+        missionId: "mission_1",
+        to: "paused",
+        expectedVersion: version,
+      });
+
+      const coordinator = yield* TradingTurnCoordinator;
+      const routed = yield* coordinator.requestUserMessageRun({
+        threadId: "thread_1",
+        text: "close it",
+      });
+      assert.isFalse(routed);
+    }),
+  );
+
+  it.effect("leaves a message queued behind an active run to the ordinary turn path", () =>
+    // Never swallow the operator's message: if the lease is held, the message
+    // goes the ordinary way rather than nowhere.
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission;
+      const coordinator = yield* TradingTurnCoordinator;
+      const first = yield* coordinator.requestRun({
+        missionId: "mission_1",
+        cause: "market_watch_triggered",
+      });
+      assert.equal(first.status, "started");
+
+      const routed = yield* coordinator.requestUserMessageRun({
+        threadId: "thread_1",
+        text: "are you there",
+      });
+      assert.isFalse(routed);
+    }),
+  );
+
   it.effect("allows a second run after the first completes (lease released)", () =>
     Effect.gen(function* () {
       yield* migrated;
@@ -293,7 +391,7 @@ it.live("releases the lease and consumes claimed inbox events when the turn ends
     );
 
     yield* Effect.gen(function* () {
-      yield* runMigrations({ toMigrationInclusive: 37 });
+      yield* runMigrations({ toMigrationInclusive: 43 });
       const missions = yield* TradingMissionService;
       yield* missions.createMission({
         missionId: "mission_1",

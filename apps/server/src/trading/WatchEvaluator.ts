@@ -337,32 +337,36 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * What the last sweep saw for a `position_update` / `order_update` watch.
-   *
-   * These two watch types are differential — they fire on a *change*, so each
-   * needs a baseline. The first sweep that sees a watch records the current
-   * value and fires nothing; a later sweep that reads something different
-   * fires. Keyed per watch, so two watches on the same market are independent.
-   *
-   * In-memory and per-process, like `lastDelivered` above: a restart re-seeds
-   * from whatever is canonical at that moment, which costs at most the one
-   * change that happened while the server was down. The reconciled tables it
-   * reads are durable, so nothing here is the system of record.
-   */
-  const lastObserved = new Map<string, string>();
-
-  /**
    * Fire when the reconciled state a watch names has changed since the last
    * sweep. `signature` is the value being watched, reduced to a string: the
    * position's size and entry for `position_update`, the order's remaining size
    * for `order_update`, and `"gone"` when the row no longer exists.
+   *
+   * `position_update` and `order_update` are differential — they fire on a
+   * *change*, so each needs a baseline. The first sweep that sees a watch
+   * records the current value and fires nothing; a later sweep that reads
+   * something different fires.
+   *
+   * The baseline lives on the watch row rather than in a process-local Map,
+   * because a restart with a Map baseline swallows exactly the change the
+   * harness most needs to hear about: the position that moved, or the order
+   * that filled, while the server was down. The row is durable, so the first
+   * real change after a restart still fires.
    */
   const fireOnChange = (tracked: TrackedWatch, signature: string, describe: () => string) =>
     Effect.gen(function* () {
       const key = tracked.watch.id;
-      const previous = lastObserved.get(key);
-      lastObserved.set(key, signature);
-      if (previous === undefined || previous === signature) return;
+      const rows = yield* sql<{ readonly baseline_signature: string | null }>`
+        SELECT baseline_signature FROM trading_watches WHERE watch_id = ${key}
+      `.pipe(Effect.orDie);
+      const previous = rows[0]?.baseline_signature ?? null;
+      if (previous === signature) return;
+
+      yield* sql`
+        UPDATE trading_watches SET baseline_signature = ${signature} WHERE watch_id = ${key}
+      `.pipe(Effect.orDie);
+      // The first observation is the baseline, not a change.
+      if (previous === null) return;
 
       yield* enqueueFire(tracked, `${tracked.watch.watch.type}:${key}:${signature}`, describe(), {
         watchId: key,

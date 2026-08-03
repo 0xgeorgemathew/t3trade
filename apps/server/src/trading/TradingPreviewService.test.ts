@@ -85,7 +85,7 @@ const goodCtx = (now: number, overrides: Partial<PreviewContext> = {}): PreviewC
   approvedExecutionWalletAddress: "0xapproved",
   bbo: freshBbo(now),
   accountObservedAt: now,
-  hasPendingExecution: false,
+  pendingExecution: null,
   budget: {
     maximumCumulativeLossUsd: 100,
     closedPnlUsd: 0,
@@ -326,12 +326,25 @@ describe("previewOrder — §16.3 checklist", () => {
   it.effect(
     "item 16: rejects when a conflicting execution is pending (no_conflicting_execution_pending)",
     () =>
+      // The rejection has to name the blocker. "Something is in flight" leaves
+      // the harness with nothing to decide between waiting and giving up on.
       Effect.gen(function* () {
-        const item = yield* rejectionItem(
+        const rejection = yield* previewOrder(
           goodIntent(),
-          goodCtx(now, { hasPendingExecution: true }),
-        );
-        expect(item).toBe("no_conflicting_execution_pending");
+          goodCtx(now, {
+            pendingExecution: {
+              cloid: "0xblocking",
+              actionType: "open",
+              status: "submitted",
+              ageMillis: 45_000,
+            },
+          }),
+        ).pipe(Effect.flip);
+
+        expect(rejection.item).toBe("no_conflicting_execution_pending");
+        expect(rejection.detail).toContain("0xblocking");
+        expect(rejection.detail).toContain("submitted");
+        expect(rejection.detail).toContain("45s");
       }),
   );
 

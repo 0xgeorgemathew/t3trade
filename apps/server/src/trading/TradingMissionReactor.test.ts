@@ -646,6 +646,7 @@ it.live("asks the coordinator for a run when a watch fires", () =>
           calls.push(input);
           return { status: "started", harnessRunId: `run_${calls.length}` } as const;
         }),
+      requestUserMessageRun: () => Effect.succeed(false),
     });
 
     const StubbedLayer = TradingMissionReactorLive.pipe(

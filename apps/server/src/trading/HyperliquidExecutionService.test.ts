@@ -253,7 +253,7 @@ const previewContext = {
   approvedExecutionWalletAddress: SIGNER_ADDR,
   bbo,
   accountObservedAt: 1_000,
-  hasPendingExecution: false,
+  pendingExecution: null,
   budget: {} as never,
   takerFeeRateBps: 4.5,
   stopSlippageReserveBps: 10,

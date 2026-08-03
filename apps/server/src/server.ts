@@ -216,10 +216,14 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ProviderCommandReactorLive),
   Layer.provideMerge(CheckpointReactorLive),
   Layer.provideMerge(ThreadDeletionReactorLive),
-  Layer.provideMerge(TradingMissionReactorLive.pipe(Layer.provide(TradingLayerLive))),
-  Layer.provideMerge(WatchEvaluatorLive.pipe(Layer.provide(TradingLayerLive))),
+  Layer.provideMerge(TradingMissionReactorLive),
+  Layer.provideMerge(WatchEvaluatorLive),
   Layer.provideMerge(AgentAwarenessRelay.layer.pipe(Layer.provide(ServerSecretStore.layer))),
   Layer.provideMerge(RuntimeReceiptBusLive),
+  // Merged rather than provided, so the WS command surface can reach the turn
+  // coordinator: a user message on a mission thread is routed through the
+  // trading wake path instead of starting a bare turn.
+  Layer.provideMerge(TradingLayerLive),
 );
 
 const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
