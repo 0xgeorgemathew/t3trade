@@ -444,7 +444,21 @@ export const previewOrder = (
     const reservedRiskUsd =
       plannedLossOf(intent) + estimatedEntryFeeUsd + estimatedExitFeeUsd + stopSlippageReserveUsd;
     return { intent, reservedRiskUsd } as TradingPreview;
-  });
+  }).pipe(
+    // A refused intent is a normal outcome, but it is also the most common
+    // reason an operator watching the chat sees nothing happen. The failing
+    // item and its detail are what turn "the agent tried and stopped" into a
+    // sentence, so they are logged once, here, where every refusal passes.
+    Effect.tapError((rejection) =>
+      Effect.logInfo("trading preview rejected", {
+        missionId: intent.missionId,
+        actionType: intent.actionType,
+        executionSequence: intent.executionSequence,
+        item: rejection.item,
+        detail: rejection.detail,
+      }),
+    ),
+  );
 
 export const TradingPreviewServiceLive = Layer.effect(
   TradingPreviewService,

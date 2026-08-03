@@ -6,6 +6,7 @@ import {
   deriveCompletionSummary,
   deriveMissionStrip,
   deriveRejectedOrder,
+  deriveWakeupCard,
   describeEntryPermission,
   describeMandate,
   describeTradingAccount,
@@ -535,5 +536,66 @@ describe("visibleMissions", () => {
 
   it("has nothing to show before the first mission exists", () => {
     expect(visibleMissions([])).toEqual([]);
+  });
+});
+
+describe("deriveWakeupCard", () => {
+  const wakeup = {
+    kind: "trading-harness-wakeup",
+    missionId: "mission_1",
+    harnessRunId: "run_1",
+    cause: "market_watch_triggered",
+    occurredAt: 1_700_000,
+    marketSnapshot: { market: "ETH", markPrice: 3_142.5 },
+    activeStrategy: { version: 3 },
+    pendingEvents: [{ summary: "external_close" }, { summary: "fill" }],
+  };
+
+  it("reads one line out of a full wakeup payload", () => {
+    const card = deriveWakeupCard(JSON.stringify(wakeup));
+
+    expect(card).not.toBeNull();
+    expect(card?.causeLabel).toBe("market watch triggered");
+    expect(card?.marketLabel).toBe("ETH · 3,142.5");
+    expect(card?.strategyLabel).toBe("Strategy v3");
+    expect(card?.pendingEventCount).toBe(2);
+    expect(card?.bootstrap).toBe(false);
+    expect(card?.rawJson).toContain('"missionId": "mission_1"');
+  });
+
+  // The first run carries no snapshot at all — the harness has not authored a
+  // strategy yet — and it still has to render as a card rather than as JSON.
+  it("renders the bootstrap message, which carries no snapshot", () => {
+    const card = deriveWakeupCard(
+      JSON.stringify({
+        kind: "trading-harness-wakeup",
+        bootstrap: true,
+        missionId: "mission_1",
+        harnessRunId: "run_1",
+        cause: "mission_created",
+        instruction: "trade the 1m",
+        defaultTimeframe: "1m",
+      }),
+    );
+
+    expect(card?.bootstrap).toBe(true);
+    expect(card?.causeLabel).toBe("mission created");
+    expect(card?.marketLabel).toBeNull();
+    expect(card?.strategyLabel).toBeNull();
+    expect(card?.pendingEventCount).toBe(0);
+  });
+
+  // A field the web build has never heard of must not knock the card back to
+  // raw JSON: the server is free to enrich the snapshot without a web release.
+  it("still renders when the payload carries unknown fields", () => {
+    const card = deriveWakeupCard(JSON.stringify({ ...wakeup, somethingNew: { a: 1 } }));
+    expect(card?.causeLabel).toBe("market watch triggered");
+  });
+
+  it("leaves anything that is not a wakeup alone", () => {
+    expect(deriveWakeupCard("what is the price of ETH?")).toBeNull();
+    expect(deriveWakeupCard('{"kind":"something-else","cause":"x"}')).toBeNull();
+    expect(deriveWakeupCard('{"kind":"trading-harness-wakeup",')).toBeNull();
+    expect(deriveWakeupCard("")).toBeNull();
   });
 });

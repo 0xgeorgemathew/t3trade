@@ -106,6 +106,7 @@ import {
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
 import { SkillInlineText } from "./SkillInlineText";
+import { deriveWakeupCard, type WakeupCard } from "../trading/tradingPresentation";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import {
   buildReviewCommentRenderablePatch,
@@ -881,8 +882,57 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
   );
 });
 
+/**
+ * A trading wakeup, as one legible line.
+ *
+ * The runtime injects the wakeup snapshot as the resumed turn's user message
+ * (§12.4), so without this the operator's thread is a stack of JSON blobs where
+ * their own messages used to be. The payload is what the harness was actually
+ * handed, so it stays one click away rather than being summarized out of
+ * existence.
+ */
+function TradingWakeupTimelineRow({ card }: { card: WakeupCard }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const details = [card.marketLabel, card.strategyLabel, card.bootstrap ? "Bootstrap" : null]
+    .concat(card.pendingEventCount > 0 ? [`${card.pendingEventCount} pending`] : [])
+    .filter((part): part is string => part !== null);
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <div className="max-w-[80%] rounded-2xl border border-border/70 bg-muted/40 px-3 py-2">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          data-scroll-anchor-ignore
+          onClick={() => setExpanded((value) => !value)}
+          className="flex w-full items-center gap-2 text-left text-xs text-muted-foreground hover:text-foreground/85"
+        >
+          {expanded ? (
+            <ChevronDownIcon className="size-3 shrink-0" />
+          ) : (
+            <ChevronRightIcon className="size-3 shrink-0" />
+          )}
+          <span className="font-medium text-foreground/80">Wakeup · {card.causeLabel}</span>
+          {details.length > 0 ? <span className="truncate">{details.join(" · ")}</span> : null}
+        </button>
+        {expanded ? (
+          <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-all text-[11px] text-muted-foreground">
+            {card.rawJson}
+          </pre>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
+  const wakeupCard = deriveWakeupCard(row.message.text);
+  if (wakeupCard !== null) {
+    return <TradingWakeupTimelineRow card={wakeupCard} />;
+  }
+
   const userImages = row.message.attachments ?? [];
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;

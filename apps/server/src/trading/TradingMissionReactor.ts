@@ -123,6 +123,46 @@ const describeRefusal = (cause: Cause.Cause<unknown>): string => {
   return message.split("\n")[0] ?? "unknown";
 };
 
+/**
+ * Warn with the reason, keep the stack for whoever asks for it.
+ *
+ * A `Cause.pretty` rendering at warn level is a dozen lines of fiber trace
+ * wrapped around one sentence, repeated for every failure the reactor
+ * swallows — it buries the mission log it is supposed to explain. The sentence
+ * goes to warn; the full cause goes to debug, where reading it is a deliberate
+ * act.
+ */
+const warnWithCause = (
+  message: string,
+  fields: Record<string, unknown>,
+  cause: Cause.Cause<unknown>,
+) =>
+  Effect.logWarning(message, { ...fields, reason: describeRefusal(cause) }).pipe(
+    Effect.andThen(Effect.logDebug(message, { ...fields, cause: Cause.pretty(cause) })),
+  );
+
+/**
+ * The predicate a watch fired on, in one line, for the log.
+ *
+ * Reads the predicate back rather than interpreting it: "ETH mark crosses above
+ * 3100" is what the operator armed, and it is the only thing that explains why
+ * the mission woke when it did.
+ */
+const describeWatchPredicate = (watch: PersistedWatch["watch"]): string => {
+  switch (watch.type) {
+    case "price_cross":
+      return `${watch.market} ${watch.priceSource} crosses ${watch.direction} ${watch.price}`;
+    case "candle_close":
+      return `${watch.market} ${watch.interval} candle closes ${watch.direction} ${watch.price}`;
+    case "order_update":
+      return `order ${watch.cloid} updated`;
+    case "position_update":
+      return `${watch.market} position updated`;
+    case "scheduled_reassessment":
+      return `scheduled reassessment due at ${watch.runAt}`;
+  }
+};
+
 export interface TradingMissionReactorShape {
   /** Start the event stream. The server-startup reconcile runs at layer build. */
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
@@ -202,21 +242,41 @@ const make = Effect.gen(function* () {
    * transition — a user pause, a revoke, an exhaustion block — got there first,
    * and that status is the authoritative one; the step is skipped rather than
    * forced. The returned boolean says whether the move happened.
+   *
+   * `reason` names what drove the step. It is logged rather than persisted: the
+   * §11.1 loop is legible from the outside only if each move says which of the
+   * handlers below made it, and a mission that silently stops moving is the
+   * failure this log is for.
    */
   const advance = Effect.fn("TradingMissionReactor.advance")(function* (input: {
     readonly missionId: TradingMissionId;
     readonly threadId: ThreadId;
     readonly from: ReadonlyArray<TradingMissionStatus>;
     readonly to: TradingMissionStatus;
+    readonly reason: string;
   }) {
     const mission = yield* missions.getMission(input.missionId);
-    if (!input.from.includes(mission.status)) return false;
+    if (!input.from.includes(mission.status)) {
+      yield* Effect.logDebug("trading mission transition skipped", {
+        missionId: input.missionId,
+        status: mission.status,
+        to: input.to,
+        reason: input.reason,
+      });
+      return false;
+    }
 
     const expectedVersion = yield* missions.getMissionVersion(input.missionId);
     const updated = yield* missions.transition({
       missionId: input.missionId,
       to: input.to,
       expectedVersion,
+    });
+    yield* Effect.logInfo("trading mission advanced", {
+      missionId: input.missionId,
+      from: mission.status,
+      to: updated.status,
+      reason: input.reason,
     });
     yield* announceStatus({
       missionId: input.missionId,
@@ -274,7 +334,7 @@ const make = Effect.gen(function* () {
     // exchange gateway already is; the service stays SQL-only. See
     // `MissionCapital` for the precedence and why an unreadable account warns
     // instead of blocking.
-    const resolvedCapitalUsd = yield* resolveMissionCapitalUsd({
+    const capital = yield* resolveMissionCapitalUsd({
       explicitUsd: allocatedCapitalUsd,
       readAccountValueUsd: missions.getMasterWalletAddress(tradingAccountId).pipe(
         Effect.flatMap((address) => gateway.getAccountSnapshot(address)),
@@ -287,8 +347,19 @@ const make = Effect.gen(function* () {
       userId: LOCAL_TRADING_USER_ID,
       tradingAccountId,
       instruction,
-      allocatedCapitalUsd: resolvedCapitalUsd,
+      allocatedCapitalUsd: capital.allocatedCapitalUsd,
       harness,
+    });
+
+    // The first line of a mission's story. The mandate scales from this number,
+    // so where the number came from belongs next to it.
+    yield* Effect.logInfo("trading mission created", {
+      missionId,
+      threadId,
+      tradingAccountId,
+      allocatedCapitalUsd: capital.allocatedCapitalUsd,
+      capitalSource: capital.source,
+      provider: harness.provider,
     });
 
     yield* announceStatus({ missionId, threadId, status: "initializing" });
@@ -303,10 +374,11 @@ const make = Effect.gen(function* () {
       Effect.catchCause((cause) => {
         // A failure to start the first run is logged, not fatal — the
         // mission exists and a later watch or manual action can start it.
-        return Effect.logWarning("TradingMissionReactor: first run did not start", {
-          missionId,
-          cause: Cause.pretty(cause),
-        }).pipe(Effect.as(false));
+        return warnWithCause(
+          "TradingMissionReactor: first run did not start",
+          { missionId },
+          cause,
+        ).pipe(Effect.as(false));
       }),
     );
 
@@ -314,7 +386,13 @@ const make = Effect.gen(function* () {
     // initializing for. A mission whose first run never started stays in
     // `initializing`, which is the accurate description of it.
     if (started) {
-      yield* advance({ missionId, threadId, from: ["initializing"], to: "analysing" });
+      yield* advance({
+        missionId,
+        threadId,
+        from: ["initializing"],
+        to: "analysing",
+        reason: "first_run_started",
+      });
     }
   });
 
@@ -379,11 +457,17 @@ const make = Effect.gen(function* () {
         return;
       }
 
+      yield* Effect.logInfo("auto-mission: taking the active slot from a flat incumbent", {
+        threadId,
+        incumbentMissionId,
+        incumbentStatus: previous.status,
+      });
       yield* advance({
         missionId: incumbentMissionId,
         threadId: previous.harness.threadId as ThreadId,
         from: ALL_MISSION_STATUSES.filter(isActiveMissionStatus),
         to: "revoked",
+        reason: "slot_taken_by_new_thread",
       });
     }
 
@@ -454,11 +538,13 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    yield* Effect.logInfo("settle revoked a flat mission", { missionId, threadId });
     yield* advance({
       missionId,
       threadId,
       from: ALL_MISSION_STATUSES.filter(isActiveMissionStatus),
       to: "revoked",
+      reason: "thread_settled",
     });
   });
 
@@ -496,6 +582,15 @@ const make = Effect.gen(function* () {
     const watch = yield* watches.getWatch(watchId);
     const cause = causeForWatch(watch);
 
+    yield* Effect.logInfo("trading watch fired", {
+      missionId,
+      watchId,
+      watchType: watch?.watch.type,
+      cause,
+      armedReason: watch?.armedReason,
+      summary: watch === null ? undefined : describeWatchPredicate(watch.watch),
+    });
+
     yield* Effect.gen(function* () {
       for (let attempt = 0; attempt < QUEUE_RETRY_LIMIT; attempt++) {
         const outcome = yield* coordinator.requestRun({
@@ -509,6 +604,7 @@ const make = Effect.gen(function* () {
             missionId,
             watchId,
             reason: outcome.reason,
+            attempt: attempt + 1,
           });
           return;
         }
@@ -519,14 +615,15 @@ const make = Effect.gen(function* () {
       yield* Effect.logWarning("TradingMissionReactor: fired watch stayed queued; giving up", {
         missionId,
         watchId,
+        attempts: QUEUE_RETRY_LIMIT,
       });
     }).pipe(
       Effect.catchCause((cause) =>
-        Effect.logWarning("TradingMissionReactor: watch-fired run request failed", {
-          missionId,
-          watchId,
-          cause: Cause.pretty(cause),
-        }),
+        warnWithCause(
+          "TradingMissionReactor: watch-fired run request failed",
+          { missionId, watchId },
+          cause,
+        ),
       ),
       Effect.forkDetach,
     );
@@ -891,7 +988,13 @@ const make = Effect.gen(function* () {
     // an entry reachable at all — and it happens before preview so preview
     // reads the status this request just established. `runEvent` settles the
     // mission out of `executing` afterwards, on every path.
-    yield* advance({ missionId, threadId, from: ["waiting", "position_open"], to: "executing" });
+    yield* advance({
+      missionId,
+      threadId,
+      from: ["waiting", "position_open"],
+      to: "executing",
+      reason: `execution_requested:${intent.actionType}`,
+    });
 
     const mission = yield* missions.getMission(missionId);
     // §10.6: account/position reads use the master-wallet address; the signer
@@ -1084,6 +1187,7 @@ const make = Effect.gen(function* () {
       threadId,
       from: ["executing"],
       to: size === 0 ? "waiting" : "position_open",
+      reason: "execution_settled",
     });
   });
 
@@ -1144,10 +1248,11 @@ const make = Effect.gen(function* () {
           Effect.ensuring(
             settleAfterExecution(event).pipe(
               Effect.catchCause((cause) =>
-                Effect.logWarning("trading execution: mission did not leave executing", {
-                  missionId: event.payload.missionId,
-                  cause: Cause.pretty(cause),
-                }),
+                warnWithCause(
+                  "trading execution: mission did not leave executing",
+                  { missionId: event.payload.missionId },
+                  cause,
+                ),
               ),
             ),
           ),
@@ -1160,12 +1265,15 @@ const make = Effect.gen(function* () {
         }
         // A refused control or execution is a normal outcome, not a crash: the
         // projection keeps the state the domain still holds.
-        return Effect.logWarning("trading mission reactor could not apply a requested intent", {
-          eventType: event.type,
-          // The two thread-lifecycle events carry no mission on the payload.
-          missionId: "missionId" in event.payload ? event.payload.missionId : undefined,
-          cause: Cause.pretty(cause),
-        });
+        return warnWithCause(
+          "trading mission reactor could not apply a requested intent",
+          {
+            eventType: event.type,
+            // The two thread-lifecycle events carry no mission on the payload.
+            missionId: "missionId" in event.payload ? event.payload.missionId : undefined,
+          },
+          cause,
+        );
       }),
     );
 
@@ -1228,9 +1336,7 @@ const make = Effect.gen(function* () {
     }).pipe(
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
-        return Effect.logWarning("trading could not follow the active mission", {
-          cause: Cause.pretty(cause),
-        });
+        return warnWithCause("trading could not follow the active mission", {}, cause);
       }),
     );
 
@@ -1270,6 +1376,7 @@ const make = Effect.gen(function* () {
       threadId: mission.harness.threadId as ThreadId,
       from: ["position_open"],
       to: "waiting",
+      reason: "position_went_flat",
     });
   });
 
@@ -1381,9 +1488,7 @@ const make = Effect.gen(function* () {
         Effect.catchCause((cause) =>
           Cause.hasInterruptsOnly(cause)
             ? Effect.failCause(cause)
-            : Effect.logWarning("trading protection watchdog pass failed", {
-                cause: Cause.pretty(cause),
-              }),
+            : warnWithCause("trading protection watchdog pass failed", {}, cause),
         ),
       );
     }

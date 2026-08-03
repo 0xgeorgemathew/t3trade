@@ -23,7 +23,7 @@ it.effect("takes an explicit grant verbatim, even above the balance", () =>
       explicitUsd: 5_000,
       readAccountValueUsd: neverRead,
     });
-    assert.equal(capital, 5_000);
+    assert.deepStrictEqual(capital, { allocatedCapitalUsd: 5_000, source: "explicit" });
   }),
 );
 
@@ -33,7 +33,7 @@ it.effect("sizes from the live account value when no capital was stated", () =>
       explicitUsd: undefined,
       readAccountValueUsd: accountValue(1_000),
     });
-    assert.equal(capital, 1_000);
+    assert.deepStrictEqual(capital, { allocatedCapitalUsd: 1_000, source: "account" });
   }),
 );
 
@@ -43,7 +43,10 @@ it.effect("falls back to the default when the account cannot be read", () =>
       explicitUsd: undefined,
       readAccountValueUsd: unreadableAccount,
     });
-    assert.equal(capital, FALLBACK_MISSION_CAPITAL_USD);
+    assert.deepStrictEqual(capital, {
+      allocatedCapitalUsd: FALLBACK_MISSION_CAPITAL_USD,
+      source: "fallback",
+    });
   }),
 );
 
@@ -56,7 +59,10 @@ it.effect("falls back when the account value is zero or nonsense", () =>
         explicitUsd: undefined,
         readAccountValueUsd: accountValue(value),
       });
-      assert.equal(capital, FALLBACK_MISSION_CAPITAL_USD);
+      assert.deepStrictEqual(capital, {
+        allocatedCapitalUsd: FALLBACK_MISSION_CAPITAL_USD,
+        source: "fallback",
+      });
     }
   }),
 );
@@ -70,7 +76,7 @@ it.effect("ignores an unusable explicit value and reads the account", () =>
         explicitUsd: value,
         readAccountValueUsd: accountValue(1_000),
       });
-      assert.equal(capital, 1_000);
+      assert.deepStrictEqual(capital, { allocatedCapitalUsd: 1_000, source: "account" });
     }
   }),
 );

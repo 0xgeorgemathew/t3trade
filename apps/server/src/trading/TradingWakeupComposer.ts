@@ -155,6 +155,7 @@ const make = Effect.gen(function* () {
       const authority: TradingAuthority = mission.authority;
 
       const wakeup: TradingHarnessWakeup = {
+        kind: "trading-harness-wakeup",
         missionId: mission.id,
         harnessRunId,
         cause,
