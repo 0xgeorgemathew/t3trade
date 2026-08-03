@@ -63,6 +63,13 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
   fork: TrimmedNonEmptyString,
   /** The upstream T3 Code commit (full SHA) this build forked from. */
   t3UpstreamCommit: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/)),
+  /** What this server is actually running: a short git SHA, `+dirty` when the
+      working tree had uncommitted changes at boot. Absent when the server
+      cannot see a git checkout (a packaged build, an extracted tarball), which
+      is honest — there is no build to name. Version alone cannot pin an
+      execution discrepancy to a build; two servers a dozen commits apart both
+      report the same one. */
+  serverBuild: Schema.optionalKey(TrimmedNonEmptyString),
   capabilities: ExecutionEnvironmentCapabilities,
 });
 export type ExecutionEnvironmentDescriptor = typeof ExecutionEnvironmentDescriptor.Type;

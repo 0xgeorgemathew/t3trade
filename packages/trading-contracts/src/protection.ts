@@ -22,10 +22,13 @@ import type { TradingOrderSide, TradingStopInfo } from "./execution.ts";
 
 /**
  * Actions that only ever shrink exposure. Mirrors §16.4's
- * exhaustion-permitted set, and `TradingExecutionGuard.blockForExhaustion`
- * reads the same three names out of SQL.
+ * exhaustion-permitted set.
+ *
+ * Exported as an array because `TradingExecutionGuard.blockForExhaustion`
+ * needs the same names inside a SQL `NOT IN`, and a hand-written list there
+ * was a second copy free to drift from this one.
  */
-const EXPOSURE_REDUCING_ACTIONS: ReadonlySet<string> = new Set([
+export const EXPOSURE_REDUCING_ACTION_TYPES = [
   "cancel",
   "reduce",
   "close",
@@ -33,7 +36,9 @@ const EXPOSURE_REDUCING_ACTIONS: ReadonlySet<string> = new Set([
   // open or extend a position, and demanding a stop *for* a stop would reject
   // the only action that repairs one.
   "modify_stop",
-]);
+] as const;
+
+const EXPOSURE_REDUCING_ACTIONS: ReadonlySet<string> = new Set(EXPOSURE_REDUCING_ACTION_TYPES);
 
 /**
  * True when `actionType` can increase exposure and therefore requires a stop.

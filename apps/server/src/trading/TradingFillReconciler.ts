@@ -24,6 +24,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { HyperliquidGateway, HyperliquidWebSocketClient } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
+import { NON_TERMINAL_EXECUTION_STATUSES } from "@t3tools/trading-contracts/execution";
 
 import { HyperliquidReconciler, type ReconcileInput } from "./HyperliquidReconciler.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
@@ -93,7 +94,7 @@ const hasUnsettledExecutions = (missionId: string) =>
     const rows = yield* sql<{ readonly count: number }>`
       SELECT COUNT(*) AS count FROM trading_execution_records
       WHERE mission_id = ${missionId}
-        AND status IN ('previewed', 'reserved', 'signed', 'submitted', 'accepted')
+        AND ${sql.in("status", NON_TERMINAL_EXECUTION_STATUSES)}
     `;
     return (rows[0]?.count ?? 0) > 0;
   }).pipe(Effect.orElseSucceed(() => false));

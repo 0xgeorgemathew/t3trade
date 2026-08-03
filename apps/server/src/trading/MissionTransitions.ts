@@ -53,9 +53,6 @@ const LOOP_TRANSITIONS: Readonly<
 const isPermanentTerminal = (status: TradingMissionStatus): boolean =>
   (PERMANENT_TERMINAL_STATUSES as readonly TradingMissionStatus[]).includes(status);
 
-const isSuspended = (status: TradingMissionStatus): boolean =>
-  (SUSPENDED_STATUSES as readonly TradingMissionStatus[]).includes(status);
-
 const isLoop = (status: TradingMissionStatus): boolean =>
   (LOOP_STATUSES as readonly TradingMissionStatus[]).includes(status);
 
@@ -134,4 +131,4 @@ export const ALL_MISSION_STATUSES: readonly TradingMissionStatus[] = [
   ...PERMANENT_TERMINAL_STATUSES,
 ];
 
-export { isSuspended, isPermanentTerminal };
+export { isPermanentTerminal };

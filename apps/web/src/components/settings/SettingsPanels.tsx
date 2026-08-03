@@ -78,6 +78,7 @@ import {
 } from "../../providerInstances";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
 import {
+  primaryServerConfigAtom,
   primaryServerObservabilityAtom,
   primaryServerProvidersAtom,
   serverEnvironment,
@@ -342,6 +343,40 @@ function AboutVersionTitle() {
       <span>Version</span>
       <code className="text-[11px] font-medium text-muted-foreground">{APP_VERSION}</code>
     </span>
+  );
+}
+
+/**
+ * What the backend is actually running.
+ *
+ * `APP_VERSION` above names the client, and the server's version only ever
+ * surfaced inside a mismatch banner — so a server that agreed with the client
+ * on version reported nothing at all, and no surface anywhere named the commit.
+ * Pinning an execution discrepancy to a build needs both, always visible.
+ */
+function AboutServerBuildRow() {
+  const environment = useAtomValue(primaryServerConfigAtom)?.environment ?? null;
+  if (environment === null) return null;
+
+  const build = environment.serverBuild ?? null;
+
+  return (
+    <SettingsRow
+      title={
+        <span className="inline-flex items-center gap-2">
+          <span>Server</span>
+          <code className="text-[11px] font-medium text-muted-foreground">
+            {environment.serverVersion}
+            {build === null ? "" : ` · ${build}`}
+          </code>
+        </span>
+      }
+      description={
+        build === null
+          ? "Version of the backend this client is connected to. It reports no build identifier — it is not running from a git checkout."
+          : "Version and build of the backend this client is connected to."
+      }
+    />
   );
 }
 
@@ -1675,6 +1710,7 @@ export function GeneralSettingsPanel() {
             description="Current version of the application."
           />
         )}
+        <AboutServerBuildRow />
         <SettingsRow
           title="Diagnostics"
           description={diagnosticsDescription}

@@ -29,6 +29,8 @@ import { deriveMissionStrip, type MissionStripTone } from "./tradingPresentation
  */
 export interface MissionStripControls {
   readonly isBusy: boolean;
+  /** Why the last press did not take effect, or null. */
+  readonly error: string | null;
   readonly lifecycle: (
     type: "trading.mission.pause" | "trading.mission.resume" | "trading.mission.revoke",
   ) => void;
@@ -95,6 +97,18 @@ export function MissionStripBar({
       {strip.detailSecondary === null ? null : (
         <span className="min-w-0 shrink truncate tabular-nums text-muted-foreground">
           {strip.detailSecondary}
+        </span>
+      )}
+
+      {/* A refused press outranks both detail slots: the way out not working is
+          the one thing on this strip the operator cannot afford to miss. */}
+      {controls.error === null ? null : (
+        <span
+          className="min-w-0 shrink truncate text-destructive"
+          data-testid="mission-strip-error"
+          title={controls.error}
+        >
+          {controls.error}
         </span>
       )}
 

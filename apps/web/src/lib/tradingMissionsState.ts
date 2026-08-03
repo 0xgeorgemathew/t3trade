@@ -66,13 +66,16 @@ export function useTradingMissions(environmentId: EnvironmentId): TradingMission
  * thread). Client-side filter over the environment snapshot — the projection
  * already carries `threadId`, so no contract change is needed for Phase 2.
  *
- * Returns `null` when the thread has no bound mission (the common case for
- * non-trading threads); the caller gates the UI on that.
+ * `mission` is `null` when the thread has no bound mission (the common case for
+ * non-trading threads); the caller gates the UI on that. `error` is carried
+ * alongside because a thread holding exposure has to be able to say the feed
+ * stopped — a mission that looks frozen and a mission whose poll is failing are
+ * the same picture otherwise.
  */
 export function useTradingMissionForThread(
   environmentId: EnvironmentId,
   threadId: ThreadId,
-): OrchestrationTradingMission | null {
-  const { missions } = useTradingMissions(environmentId);
-  return missions.find((m) => m.threadId === threadId) ?? null;
+): { readonly mission: OrchestrationTradingMission | null; readonly error: string | null } {
+  const { missions, error } = useTradingMissions(environmentId);
+  return { mission: missions.find((m) => m.threadId === threadId) ?? null, error };
 }

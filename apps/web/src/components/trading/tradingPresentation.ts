@@ -328,6 +328,141 @@ export function deriveMissionStrip(mission: {
 }
 
 // ---------------------------------------------------------------------------
+// small derivations ported from the execution prototype
+// ---------------------------------------------------------------------------
+
+/**
+ * How far the fill landed from the limit the order was placed at, in percent.
+ *
+ * Signed so that positive always means "worse than the limit": a buy that
+ * filled above it, a sell that filled below it. For a `marketable_ioc` the
+ * server prices the limit from BBO as a slippage bound, so this is the number
+ * that says how much of that bound the fill actually spent.
+ *
+ * Null when the fill cannot be attributed to a known intent — a fill whose
+ * cloid does not match the execution on screen has no limit to compare against,
+ * and inventing one would put a fabricated figure on a receipt.
+ */
+export function deriveFillSlippagePercent(
+  fill: {
+    readonly side: "buy" | "sell";
+    readonly avgFillPrice: number;
+    readonly cloid?: string | undefined;
+  },
+  intent: { readonly cloid: string; readonly limitPrice: number } | null,
+): number | null {
+  if (intent === null || fill.cloid === undefined || fill.cloid !== intent.cloid) return null;
+  if (!(intent.limitPrice > 0)) return null;
+
+  const delta =
+    fill.side === "buy"
+      ? fill.avgFillPrice - intent.limitPrice
+      : intent.limitPrice - fill.avgFillPrice;
+  return (delta / intent.limitPrice) * 100;
+}
+
+/** "+0.12%" / "-0.04%". Two decimals: basis points are the scale that matters. */
+export function formatSignedPercent(value: number): string {
+  const magnitude = Math.abs(value).toFixed(2);
+  if (value > 0) return `+${magnitude}%`;
+  if (value < 0) return `-${magnitude}%`;
+  return "0.00%";
+}
+
+/** The figures a paused mission still has at risk while it is not trading. */
+export interface PausedExposure {
+  readonly exposureLabel: string;
+  readonly unrealisedUsd: number;
+  readonly liquidationLabel: string;
+}
+
+/**
+ * What pausing did not stop.
+ *
+ * The paused card explains that the stop stays live; the numbers underneath it
+ * are what that stop is protecting. Null when the mission holds nothing, which
+ * is the case where the sentence alone is the whole story.
+ */
+export function derivePausedExposure(
+  position: {
+    readonly size: number;
+    readonly unrealisedPnl: number;
+    readonly liquidationPrice?: number | undefined;
+  } | null,
+): PausedExposure | null {
+  if (position === null || position.size === 0) return null;
+
+  return {
+    exposureLabel: `${position.size > 0 ? "Long" : "Short"} ${Math.abs(position.size)}`,
+    unrealisedUsd: position.unrealisedPnl,
+    liquidationLabel:
+      position.liquidationPrice === undefined ? "—" : formatPrice(position.liquidationPrice),
+  };
+}
+
+/**
+ * Where to see this mission on the exchange itself.
+ *
+ * The network comes from the account id, the same signal `describeTradingAccount`
+ * reads, so a testnet mission never links at the mainnet book. An account id
+ * that names neither gets no link at all — a wrong venue is worse than none.
+ */
+export function hyperliquidTradeUrl(market: string, tradingAccountId: string): string | null {
+  const normalized = tradingAccountId.toLowerCase();
+  const host = normalized.includes("testnet")
+    ? "https://app.hyperliquid-testnet.xyz"
+    : normalized.includes("mainnet")
+      ? "https://app.hyperliquid.xyz"
+      : null;
+  return host === null ? null : `${host}/trade/${market}`;
+}
+
+/** One step of the mission-phase breadcrumb. */
+export interface MissionPhase {
+  readonly label: string;
+  readonly state: "done" | "current" | "pending";
+}
+
+/** The §11.1 active loop, in the order a mission walks it. */
+const LOOP_PHASES: ReadonlyArray<{
+  readonly label: string;
+  readonly status: TradingMissionStatus;
+}> = [
+  { label: "Analyse", status: "analysing" },
+  { label: "Wait", status: "waiting" },
+  { label: "Execute", status: "executing" },
+  { label: "Position", status: "position_open" },
+];
+
+/**
+ * The mission's progress through the §11.1 loop.
+ *
+ * Empty for every status outside the loop. A paused, blocked, or revoked
+ * mission is not somewhere on this path — it has stepped off it — and a
+ * breadcrumb that guessed at a position would be the surface contradicting the
+ * status the strip is showing right next to it.
+ */
+export function deriveMissionPhases(status: TradingMissionStatus): ReadonlyArray<MissionPhase> {
+  if (status === "completed") {
+    return LOOP_PHASES.map((phase) => ({ label: phase.label, state: "done" as const }));
+  }
+
+  // `initializing` is before the first step rather than on it: the mission
+  // exists and has walked nothing yet.
+  if (status === "initializing") {
+    return LOOP_PHASES.map((phase) => ({ label: phase.label, state: "pending" as const }));
+  }
+
+  const current = LOOP_PHASES.findIndex((phase) => phase.status === status);
+  if (current === -1) return [];
+
+  return LOOP_PHASES.map((phase, index) => ({
+    label: phase.label,
+    state: index < current ? ("done" as const) : index === current ? "current" : "pending",
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // composer controls
 // ---------------------------------------------------------------------------
 //
@@ -408,6 +543,30 @@ export function isPositionDataStale(
   if (position === null || position.size === 0) return false;
 
   return nowMs - Date.parse(position.observedAt) > ACCOUNT_STALE_AFTER_MILLIS;
+}
+
+/**
+ * The staleness banner's own text, or null when nothing is stale.
+ *
+ * "Position data is stale" alone left the operator with no way to tell a read
+ * that is a second late from one that stopped four minutes ago — and those are
+ * very different situations to be holding a position through. The age is the
+ * whole point of the banner, so it goes in the sentence.
+ */
+export function describeStaleness(
+  mission: {
+    readonly status: TradingMissionStatus;
+    readonly position: { readonly size: number; readonly observedAt: string } | null;
+  },
+  nowMs: number,
+): string | null {
+  if (!isPositionDataStale(mission, nowMs)) return null;
+
+  const observedAt =
+    mission.position === null ? Number.NaN : Date.parse(mission.position.observedAt);
+  const age = Number.isNaN(observedAt) ? null : formatDuration(nowMs - observedAt);
+  const lastUpdate = age === null ? "" : ` Last update ${age} ago.`;
+  return `Position data is stale. Order placement is suspended until a fresh read lands.${lastUpdate}`;
 }
 
 /** The order-rejected surface, when the latest execution was refused. */

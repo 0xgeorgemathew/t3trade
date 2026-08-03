@@ -20,6 +20,7 @@
 import type { OrchestrationEvent, ThreadId } from "@t3tools/contracts";
 import { CommandId, TradingMissionId } from "@t3tools/contracts";
 import type { TradingMissionStatus, TradingProvider } from "@t3tools/trading-contracts";
+import { PENDING_EXECUTION_STATUSES } from "@t3tools/trading-contracts/execution";
 import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
 import {
   checkStopReplacement,
@@ -63,7 +64,6 @@ import { AutoMissionConfig } from "./AutoMissionConfig.ts";
 import { resolveMissionCapitalUsd } from "./MissionCapital.ts";
 import { ALL_MISSION_STATUSES, isActiveMissionStatus } from "./MissionTransitions.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
-import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
 import { evaluateLossBudget } from "@t3tools/trading-contracts/loss-accounting";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -410,6 +410,26 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * Whether this mission ever traded.
+   *
+   * A fill is the whole difference between the two permanent terminals. A
+   * mission that opened a thread, published nothing, and was settled has no
+   * result to report and is simply `revoked`; one that entered, traded, and came
+   * back flat has a realised result, and calling that `revoked` too made
+   * `completed` unreachable — the UI's completion summary and the binding
+   * query's terminal set were both written against a status nothing ever set.
+   */
+  const hasRealizedResult = Effect.fn("TradingMissionReactor.hasRealizedResult")(function* (
+    missionId: TradingMissionId,
+  ) {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ fill_count: number }>`
+      SELECT COUNT(*) AS fill_count FROM trading_fills WHERE mission_id = ${missionId}
+    `;
+    return (rows[0]?.fill_count ?? 0) > 0;
+  });
+
+  /**
    * Give a newly opened thread a mission of its own.
    *
    * Off unless the shortcut is enabled (see `AutoMissionConfig`: an armed
@@ -538,12 +558,27 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* Effect.logInfo("settle revoked a flat mission", { missionId, threadId });
+    // §11.1's two permanent terminals say different things, and only one of
+    // them was ever reachable. A flat mission that traded and hit no
+    // deterministic block ended cleanly: that is `completed`. A blocked one did
+    // not — its authority was withdrawn by a safety condition, and reporting
+    // that as a completed objective would be the more expensive lie.
+    const traded = yield* hasRealizedResult(missionId);
+    const terminal: TradingMissionStatus =
+      traded && mission.status !== "blocked" ? "completed" : "revoked";
+
+    yield* Effect.logInfo("settle ended a flat mission", {
+      missionId,
+      threadId,
+      terminal,
+      traded,
+      status: mission.status,
+    });
     yield* advance({
       missionId,
       threadId,
       from: ALL_MISSION_STATUSES.filter(isActiveMissionStatus),
-      to: "revoked",
+      to: terminal,
       reason: "thread_settled",
     });
   });
@@ -1041,7 +1076,7 @@ const make = Effect.gen(function* () {
     }>`
       SELECT cloid, action_type, status, updated_at FROM trading_execution_records
       WHERE mission_id = ${missionId}
-        AND status IN ('previewed', 'reserved', 'signed', 'submitted')
+        AND ${sql.in("status", PENDING_EXECUTION_STATUSES)}
       ORDER BY updated_at ASC
       LIMIT 1
     `;
