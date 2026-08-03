@@ -206,7 +206,7 @@ function toPosition(
   p: WireClearinghouseStateResponse["assetPositions"][number]["position"],
 ): AccountPosition {
   return {
-    market: coin as AccountPosition["market"],
+    market: coin,
     size: num(p.szi),
     entryPrice: num(p.entryPx),
     unrealisedPnl: num(p.unrealizedPnl),
@@ -232,7 +232,7 @@ function toOpenOrder(o: WireFrontendOpenOrder): AgentOpenOrder {
   const remaining = num(o.sz);
   const triggerPrice = num(o.triggerPx);
   return {
-    market: o.coin as AgentOpenOrder["market"],
+    market: o.coin,
     orderId: o.oid,
     cloid: o.cloid ?? undefined,
     side: o.side === "B" ? "buy" : "sell",
@@ -393,7 +393,7 @@ const makeHyperliquidGateway = Effect.gen(function* () {
       // every `trading_get_position` call fail to encode while flat, which is
       // exactly when the harness asks.
       const flat: AgentNetPosition = {
-        market: symbol as AgentNetPosition["market"],
+        market: symbol,
         size: 0,
         unrealisedPnl: 0,
         cumulativeFunding: 0,

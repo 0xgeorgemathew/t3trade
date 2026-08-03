@@ -15,7 +15,14 @@
  * @module AccountReads
  */
 import { Schema } from "effect";
-import { EvmAddress, Price, TradingMarket, UnixMillis, UsdAmount } from "./primitives.ts";
+import {
+  EvmAddress,
+  ExchangeMarket,
+  Price,
+  TradingMarket,
+  UnixMillis,
+  UsdAmount,
+} from "./primitives.ts";
 import { FreshnessMeta, MARKET_FRESHNESS } from "./market.ts";
 
 /** §13: account state is stale after 5 seconds during execution. */
@@ -23,9 +30,14 @@ export const ACCOUNT_FRESHNESS = {
   accountStateStaleAfterMillis: 5_000,
 } as const;
 
-/** A net position row returned by the exchange clearinghouse state. */
+/**
+ * A net position row returned by the exchange clearinghouse state.
+ *
+ * The clearinghouse reports the whole wallet, so `market` is whatever the
+ * exchange named — not necessarily the mission's mandate.
+ */
 export const AccountPosition = Schema.Struct({
-  market: TradingMarket,
+  market: ExchangeMarket,
   /** Signed net size; positive long, negative short, in base units. */
   size: Schema.Number,
   /** Average entry price. */
@@ -48,7 +60,8 @@ export type AccountPosition = typeof AccountPosition.Type;
  * `size` is signed so the harness sees direction without inferring it.
  */
 export const AgentNetPosition = Schema.Struct({
-  market: TradingMarket,
+  /** Echoes the market that was asked for, as the exchange spells it. */
+  market: ExchangeMarket,
   size: Schema.Number,
   /**
    * Absent when the account is flat.
@@ -85,9 +98,15 @@ export const AgentAccountSnapshot = Schema.Struct({
 });
 export type AgentAccountSnapshot = typeof AgentAccountSnapshot.Type;
 
-/** A canonicalised open order keyed by canonical identity. */
+/**
+ * A canonicalised open order keyed by canonical identity.
+ *
+ * Open orders are read per wallet, not per market, so `market` carries whatever
+ * the exchange reported. Callers acting on an order must filter by the mission's
+ * market first — an order in another market is not this mission's to touch.
+ */
 export const AgentOpenOrder = Schema.Struct({
-  market: TradingMarket,
+  market: ExchangeMarket,
   /** Exchange-assigned order id. */
   orderId: Schema.Number,
   /** Client order id, when supplied. */

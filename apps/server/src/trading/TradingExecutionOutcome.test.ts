@@ -9,9 +9,15 @@
  */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+
+import { TradingRequestEntryResult } from "@t3tools/trading-contracts/tools";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
@@ -52,6 +58,18 @@ const migrated = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_execution_records`;
   yield* sql`DELETE FROM trading_event_inbox`;
 });
+
+/**
+ * Encode a result the way the MCP toolkit does before answering the harness.
+ *
+ * This is the assertion that matters as much as the field values: the toolkit
+ * encodes every tool result against its schema, so a result the schema refuses
+ * does not reach the harness at all — it becomes "an internal server error"
+ * with the reason stripped off. Reporting `executionId: ""` for the two
+ * outcomes that have no record did exactly that, turning every refusal into a
+ * mystery the harness could only resolve by waiting for the next wakeup.
+ */
+const encodeForHarness = Schema.encodeUnknownSync(TradingRequestEntryResult);
 
 const input: AwaitOutcomeInput = {
   missionId: MISSION_ID,
@@ -126,9 +144,29 @@ layer("TradingExecutionOutcome", (it) => {
       // No record exists: nothing was signed and no order was placed. The
       // harness has to be able to tell that apart from an exchange rejection.
       assert.equal(outcome.status, "rejected");
-      assert.equal(outcome.executionId, "");
+      assert.equal(outcome.executionId, undefined);
       assert.equal(outcome.cloid, "");
       assert.match(outcome.detail ?? "", /mission_active/);
+      assert.doesNotThrow(() => encodeForHarness(outcome));
+    }),
+  );
+
+  it.effect("says it does not know yet when nothing has concluded, encodably", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+
+      // No record and no refusal: `awaitOutcome` polls to its deadline. Drive
+      // the test clock past it rather than waiting twenty real seconds.
+      const outcomes = yield* TradingExecutionOutcome;
+      const fiber = yield* outcomes.awaitOutcome(input).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(Duration.seconds(30));
+      const outcome = yield* Fiber.join(fiber);
+
+      assert.equal(outcome.status, "submitted");
+      assert.equal(outcome.executionId, undefined);
+      assert.match(outcome.detail ?? "", /still being executed/);
+      assert.doesNotThrow(() => encodeForHarness(outcome));
     }),
   );
 });

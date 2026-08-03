@@ -417,6 +417,31 @@ describe("§10.6 market- and account-read contracts (Phase 2 pin)", () => {
     expect(decoded.positions[0]?.market).toBe("ETH");
   });
 
+  it("decodes an AgentAccountSnapshot holding a market the mission cannot trade", () => {
+    // The clearinghouse reports the whole wallet. When `market` was the "ETH"
+    // literal, one BTC position made the snapshot undecodable — and since the
+    // snapshot rides inside every wakeup payload, that killed the wake itself
+    // rather than the one position nobody asked about.
+    const decoded = decodeAgentAccountSnapshot({
+      address: "0xabc",
+      accountValue: 1_000,
+      marginUsed: 250,
+      withdrawable: 750,
+      positions: [
+        {
+          market: "BTC",
+          size: 0.01,
+          entryPrice: 61_400,
+          unrealisedPnl: -2.5,
+          cumulativeFunding: 0,
+          marginUsed: 250,
+        },
+      ],
+      freshness: accountFreshness(1_753_000_000_000, "info_api"),
+    });
+    expect(decoded.positions[0]?.market).toBe("BTC");
+  });
+
   it("decodes an AgentNetPosition with a signed (short) size", () => {
     const decoded = decodeAgentNetPosition({
       market: "ETH",

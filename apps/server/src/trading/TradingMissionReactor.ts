@@ -928,6 +928,46 @@ const make = Effect.gen(function* () {
     }
   }).pipe(Effect.forkScoped);
 
+  /**
+   * Follow a position the mission no longer holds back to `waiting`.
+   *
+   * §11.1 leaves `position_open` on two paths the reactor drives: the next
+   * execution request, and a user control. A stop-out drives neither — the
+   * exchange flattens the position, §18's `after_fill` converges the snapshot,
+   * and the mission goes on reporting `position_open` to every
+   * `trading_get_mission` until the harness happens to ask for another entry. A
+   * harness that reads its own status as the answer to "am I in a trade" is then
+   * wrong for as long as it waits, which is precisely when it should be looking
+   * for the next entry.
+   *
+   * Reads the reconciled snapshot only, so this costs no exchange round-trip,
+   * and `advance` declines to move a mission that has since left
+   * `position_open` — an execution in progress owns the status until it settles.
+   */
+  const settleFlatPosition = Effect.fn("TradingMissionReactor.settleFlatPosition")(function* () {
+    const active = yield* missions.findActiveMission(LOCAL_TRADING_USER_ID);
+    if (Option.isNone(active)) return;
+    const mission = active.value;
+    if (mission.status !== "position_open") return;
+
+    const missionId = TradingMissionId.make(mission.id);
+    if (yield* holdsPosition(missionId)) return;
+
+    yield* advance({
+      missionId,
+      threadId: mission.harness.threadId as ThreadId,
+      from: ["position_open"],
+      to: "waiting",
+    });
+  });
+
+  yield* Effect.gen(function* () {
+    while (true) {
+      yield* Effect.sleep("5 seconds");
+      yield* settleFlatPosition().pipe(Effect.catchCause(() => Effect.void));
+    }
+  }).pipe(Effect.forkScoped);
+
   const start: TradingMissionReactorShape["start"] = Effect.fn("start")(function* () {
     yield* Effect.forkScoped(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>

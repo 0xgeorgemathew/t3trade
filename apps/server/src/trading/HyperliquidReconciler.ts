@@ -380,6 +380,84 @@ function persistOpenOrders(
   );
 }
 
+/**
+ * How long a record may sit mid-submission before canonical silence settles it.
+ *
+ * Long enough that a slow round-trip is never mistaken for a lost one — the
+ * whole submit sequence is a handful of exchange calls — and short enough that
+ * the next entry attempt, minutes later, is not still blocked by it.
+ */
+const ABANDONED_EXECUTION_AFTER_MS = 60_000;
+
+/**
+ * Settle execution records the exchange has no memory of.
+ *
+ * A record is written at `reserved` before signing and moved to `submitted`
+ * before the POST, so a failure anywhere in between — a signer error, a dropped
+ * connection, a server restart — leaves it non-terminal forever. Preview item 16
+ * refuses every new entry while one exists, so one failed submit quietly ends
+ * the mission's ability to trade: hours later it is still answering
+ * `no_conflicting_execution_pending` to a request that conflicts with nothing.
+ *
+ * Silence alone is not proof. An order can be a second old and simply not
+ * visible yet, and settling that one would let a duplicate go out on the next
+ * request. Proof is silence that has lasted: no resting order under the cloid,
+ * no fill ever recorded under the cloid, and a full minute since the record last
+ * moved. Then the submission never reached the book, and `failed` is what
+ * happened.
+ */
+function settleAbandonedExecutions(
+  input: ReconcileInput,
+  canonicalOrders: ReadonlyArray<AgentOpenOrder>,
+  observedAt: number,
+): Effect.Effect<void, TradingReconciliationError, SqlClient.SqlClient> {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const stale = yield* sql<{ readonly execution_id: string; readonly cloid: string }>`
+      SELECT execution_id, cloid
+      FROM trading_execution_records
+      WHERE mission_id = ${input.missionId}
+        AND status IN ('previewed', 'reserved', 'signed', 'submitted')
+        AND updated_at <= ${observedAt - ABANDONED_EXECUTION_AFTER_MS}
+    `;
+    if (stale.length === 0) return;
+
+    const resting = new Set(
+      canonicalOrders.flatMap((order) => (order.cloid === undefined ? [] : [order.cloid])),
+    );
+
+    for (const record of stale) {
+      if (resting.has(record.cloid)) continue;
+      // `persistFills` ran already this pass, so the table is current.
+      const filled = yield* sql<{ readonly fill_id: string }>`
+        SELECT fill_id FROM trading_fills
+        WHERE mission_id = ${input.missionId} AND cloid = ${record.cloid}
+        LIMIT 1
+      `;
+      if (filled.length > 0) continue;
+
+      yield* sql`
+        UPDATE trading_execution_records
+        SET status = 'failed', updated_at = ${observedAt}
+        WHERE execution_id = ${record.execution_id}
+      `;
+      yield* Effect.logWarning("trading reconcile settled an abandoned execution record", {
+        missionId: input.missionId,
+        executionId: record.execution_id,
+        cloid: record.cloid,
+      });
+    }
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new TradingReconciliationError({
+          reason: "persist_failed",
+          detail: cause instanceof Error ? cause.message : String(cause),
+        }),
+    ),
+  );
+}
+
 export const makeHyperliquidReconciler = Effect.gen(function* () {
   const reconcile = (
     input: ReconcileInput,
@@ -428,6 +506,9 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
       // here so the projection and loss-budget accounting read reconciled truth.
       yield* persistFills(fills);
       yield* persistOpenOrders(openOrders, input);
+      // Before the release below, so a record settled here has its reservation
+      // released in the same pass.
+      yield* settleAbandonedExecutions(input, canonicalOrders, observedAt);
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
         UPDATE trading_risk_reservations

@@ -25,6 +25,22 @@ const TrimmedString = Schema.String.pipe(
 export const TradingId = TrimmedString.check(Schema.isNonEmpty());
 export type TradingId = typeof TradingId.Type;
 
+/**
+ * A market symbol as the exchange reports it. Declared type: `string`.
+ *
+ * `TradingMarket` is the mandate — the one market a mission is authorized to
+ * act on. A wallet's contents are not a mandate: the master wallet can hold a
+ * position or a resting order in any market, left by faucet play or an earlier
+ * session, and a snapshot schema that admits only "ETH" cannot represent the
+ * wallet at all. One BTC position used to make the whole account snapshot
+ * undecodable, which killed every wakeup that carried it.
+ *
+ * Use this for what the exchange reports back; use `TradingMarket` for what the
+ * mission asks for.
+ */
+export const ExchangeMarket = TrimmedString.check(Schema.isNonEmpty());
+export type ExchangeMarket = typeof ExchangeMarket.Type;
+
 /** Free-form narrative supplied by the harness. Declared type: `string`. */
 export const TradingText = Schema.String;
 export type TradingText = typeof TradingText.Type;

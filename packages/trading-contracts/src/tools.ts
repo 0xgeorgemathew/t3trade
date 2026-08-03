@@ -176,7 +176,16 @@ export const TradingRequestEntryInput = Schema.Struct({
 export type TradingRequestEntryInput = typeof TradingRequestEntryInput.Type;
 
 export const TradingRequestEntryResult = Schema.Struct({
-  executionId: TradingId,
+  /**
+   * The execution record this request wrote, when it wrote one.
+   *
+   * Absent for the two outcomes that have no record: a request refused before
+   * signing, and a request still in flight when the tool gave up waiting.
+   * `TradingId` is a non-empty string, so reporting those as `""` made the
+   * result unencodable — and an unencodable result reaches the harness as a
+   * generic internal error, hiding the refusal reason it most needed to read.
+   */
+  executionId: Schema.optional(TradingId),
   status: Schema.Literals(["submitted", "accepted", "rejected"]),
   cloid: Schema.String,
   orderResults: Schema.Array(Schema.Unknown),

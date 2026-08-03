@@ -152,9 +152,10 @@ const make = Effect.gen(function* () {
 
         const refusal = yield* findRefusal(input.missionId, input.executionSequence);
         if (refusal !== null) {
-          // Refused before signing: no record, no nonce spent, no order.
+          // Refused before signing: no record, no nonce spent, no order. The
+          // record and cloid fields are left off rather than blanked — there is
+          // no execution to name, and a blank id is not a valid `TradingId`.
           return {
-            executionId: "",
             status: "rejected" as const,
             cloid: "",
             orderResults: [],
@@ -169,7 +170,6 @@ const make = Effect.gen(function* () {
       // Still in flight. "submitted" is the one status that says exactly that,
       // and the detail keeps the harness from reading it as a fill.
       return {
-        executionId: "",
         status: "submitted" as const,
         cloid: "",
         orderResults: [],
