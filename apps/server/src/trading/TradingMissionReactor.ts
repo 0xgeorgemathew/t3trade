@@ -29,8 +29,9 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
-import type * as Scope from "effect/Scope";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -897,36 +898,68 @@ const make = Effect.gen(function* () {
   // at layer build, so local tables reflect truth before any request runs. Forked
   // here (not in `start`) so its read/SQL requirements resolve from the services
   // this layer already captured, keeping `start`'s context narrow (Scope only).
+  /**
+   * The mission `follow` is currently subscribed for, with the scope that owns
+   * its fibers. Held outside the loop so the layer's own teardown can close it.
+   */
+  let followed: { readonly missionId: string; readonly scope: Scope.Scope } | null = null;
+
+  const stopFollowing = Effect.suspend(() => {
+    if (followed === null) return Effect.void;
+    const closing = Scope.close(followed.scope, Exit.void);
+    followed = null;
+    return closing.pipe(Effect.ignore);
+  });
+
   yield* Effect.gen(function* () {
-    // Poll until an active mission exists, then start following it. The original
-    // build-time check only followed a mission that already existed at layer
-    // build; a mission created later never got a fill/reconnect subscription.
-    // The poll is cheap (one indexed read every 5s) and stops once a mission is
-    // found — `follow` then owns its own lifetime under this scope.
+    // Follow whichever mission is active *right now*, not whichever was active
+    // first. Two earlier shapes of this loop both went wrong: the build-time
+    // check never picked up a mission created later, and the poll that replaced
+    // it stopped at the first mission it found and stayed there. A mission that
+    // succeeds a revoked one then inherited none of §18.2 — no `after_fill`, no
+    // reconnect convergence, no periodic backstop — so its position card kept
+    // the mark it was opened at and no fill ever woke the harness. Meanwhile the
+    // revoked mission went on polling the exchange forever.
+    //
+    // Each `follow` gets its own scope so switching missions can close the old
+    // subscriptions; the reconcile before it converges the new mission's tables
+    // before anything reads them.
     const fillReconciler = yield* TradingFillReconciler;
-    let started = false;
-    while (!started) {
-      const active = yield* missions
-        .findActiveMission(LOCAL_TRADING_USER_ID)
-        .pipe(Effect.catch(() => Effect.succeed(Option.none())));
-      if (active._tag === "None") {
-        yield* Effect.sleep("5 seconds");
-        continue;
+
+    // One pass: retarget `follow` if the active mission changed. Failures here
+    // are logged and retried on the next tick — a transient read error must not
+    // leave the server permanently unsubscribed.
+    const syncFollowedMission = Effect.gen(function* () {
+      const active = yield* missions.findActiveMission(LOCAL_TRADING_USER_ID);
+      const activeId = Option.isSome(active) ? active.value.id : null;
+
+      if (followed !== null && followed.missionId !== activeId) {
+        yield* stopFollowing;
       }
+      if (Option.isNone(active) || followed !== null) return;
+
       const mission = active.value;
       const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
-      yield* reconciler
-        .reconcile(
-          { missionId: mission.id, masterAddress, market: mission.market },
-          "server_startup",
-        )
-        .pipe(Effect.catch(() => Effect.void));
-      yield* fillReconciler
-        .follow({ missionId: mission.id, masterAddress, market: mission.market })
-        .pipe(Effect.forkScoped);
-      started = true;
+      const input = { missionId: mission.id, masterAddress, market: mission.market };
+      yield* reconciler.reconcile(input, "server_startup").pipe(Effect.catch(() => Effect.void));
+      const scope = yield* Scope.make("sequential");
+      yield* fillReconciler.follow(input).pipe(Scope.provide(scope), Effect.forkScoped);
+      followed = { missionId: mission.id, scope };
+      yield* Effect.logInfo("trading following mission", { missionId: mission.id });
+    }).pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+        return Effect.logWarning("trading could not follow the active mission", {
+          cause: Cause.pretty(cause),
+        });
+      }),
+    );
+
+    while (true) {
+      yield* syncFollowedMission;
+      yield* Effect.sleep("5 seconds");
     }
-  }).pipe(Effect.forkScoped);
+  }).pipe(Effect.ensuring(stopFollowing), Effect.forkScoped);
 
   /**
    * Follow a position the mission no longer holds back to `waiting`.

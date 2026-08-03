@@ -38,6 +38,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { type PersistenceSqlError } from "../persistence/Errors.ts";
@@ -162,6 +163,7 @@ const make = Effect.gen(function* () {
   const inbox = yield* TradingEventInbox;
   const engine = yield* OrchestrationEngineService;
   const crypto = yield* Crypto.Crypto;
+  const sql = yield* SqlClient.SqlClient;
 
   const announceFired = Effect.fn("WatchEvaluator.announceFired")(function* (input: {
     readonly missionId: TradingMissionId;
@@ -334,6 +336,95 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /**
+   * What the last sweep saw for a `position_update` / `order_update` watch.
+   *
+   * These two watch types are differential — they fire on a *change*, so each
+   * needs a baseline. The first sweep that sees a watch records the current
+   * value and fires nothing; a later sweep that reads something different
+   * fires. Keyed per watch, so two watches on the same market are independent.
+   *
+   * In-memory and per-process, like `lastDelivered` above: a restart re-seeds
+   * from whatever is canonical at that moment, which costs at most the one
+   * change that happened while the server was down. The reconciled tables it
+   * reads are durable, so nothing here is the system of record.
+   */
+  const lastObserved = new Map<string, string>();
+
+  /**
+   * Fire when the reconciled state a watch names has changed since the last
+   * sweep. `signature` is the value being watched, reduced to a string: the
+   * position's size and entry for `position_update`, the order's remaining size
+   * for `order_update`, and `"gone"` when the row no longer exists.
+   */
+  const fireOnChange = (tracked: TrackedWatch, signature: string, describe: () => string) =>
+    Effect.gen(function* () {
+      const key = tracked.watch.id;
+      const previous = lastObserved.get(key);
+      lastObserved.set(key, signature);
+      if (previous === undefined || previous === signature) return;
+
+      yield* enqueueFire(tracked, `${tracked.watch.watch.type}:${key}:${signature}`, describe(), {
+        watchId: key,
+        previous,
+        current: signature,
+      });
+    });
+
+  /**
+   * Evaluate a `position_update` watch against the reconciled position snapshot.
+   *
+   * Reads the reconciler's table rather than the exchange: the reconciler is
+   * already converging it on fills, reconnects, and the periodic backstop, and
+   * a watch that re-read the exchange every two seconds would multiply that
+   * traffic by the number of armed watches.
+   */
+  const evaluatePositionUpdate = Effect.fn("WatchEvaluator.evaluatePositionUpdate")(function* (
+    tracked: TrackedWatch,
+  ) {
+    const watch = tracked.watch.watch;
+    if (watch.type !== "position_update") return;
+
+    const rows = yield* sql<{
+      readonly size: number;
+      readonly entry_price: number | null;
+    }>`
+      SELECT size, entry_price FROM trading_position_snapshots
+      WHERE mission_id = ${tracked.missionId} AND market = ${watch.market}
+    `.pipe(Effect.orDie);
+
+    const row = rows[0];
+    const signature = row === undefined ? "flat" : `${row.size}@${row.entry_price ?? ""}`;
+    yield* fireOnChange(
+      tracked,
+      signature,
+      () => `${watch.market} position changed to ${signature}`,
+    );
+  });
+
+  /**
+   * Evaluate an `order_update` watch against the reconciled order table.
+   *
+   * A cloid that has left the table has been filled or cancelled, which is the
+   * update the harness most needs to hear about — so a missing row is a change,
+   * not a reason to stay silent.
+   */
+  const evaluateOrderUpdate = Effect.fn("WatchEvaluator.evaluateOrderUpdate")(function* (
+    tracked: TrackedWatch,
+  ) {
+    const watch = tracked.watch.watch;
+    if (watch.type !== "order_update") return;
+
+    const rows = yield* sql<{ readonly remaining_size: number }>`
+      SELECT remaining_size FROM trading_orders
+      WHERE mission_id = ${tracked.missionId} AND cloid = ${watch.cloid}
+    `.pipe(Effect.orDie);
+
+    const row = rows[0];
+    const signature = row === undefined ? "gone" : `resting:${row.remaining_size}`;
+    yield* fireOnChange(tracked, signature, () => `order ${watch.cloid} is now ${signature}`);
+  });
+
   /** Fire a `scheduled_reassessment` watch whose `runAt` has passed. */
   const evaluateScheduled = (tracked: TrackedWatch, observedAt: number) =>
     Effect.gen(function* () {
@@ -377,6 +468,12 @@ const make = Effect.gen(function* () {
           break;
         case "scheduled_reassessment":
           yield* evaluateScheduled(t, observedAt);
+          break;
+        case "position_update":
+          yield* evaluatePositionUpdate(t);
+          break;
+        case "order_update":
+          yield* evaluateOrderUpdate(t);
           break;
         default:
           break;

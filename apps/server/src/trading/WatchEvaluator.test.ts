@@ -94,13 +94,42 @@ const candleCloseWatch: MarketWatch = {
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 37 });
+  // Through 40: `trading_orders` arrives in 038, and the `order_update` watch
+  // reads it.
+  yield* runMigrations({ toMigrationInclusive: 40 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
   yield* sql`DELETE FROM momentum_strategy_versions`;
   yield* sql`DELETE FROM trading_event_inbox`;
+  yield* sql`DELETE FROM trading_position_snapshots`;
+  yield* sql`DELETE FROM trading_orders`;
 });
+
+/** Write the reconciled position row the `position_update` watch reads. */
+const writePosition = (size: number, entryPrice: number) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`DELETE FROM trading_position_snapshots WHERE mission_id = 'mission_1'`;
+    yield* sql`
+      INSERT INTO trading_position_snapshots (
+        mission_id, market, size, entry_price, unrealised_pnl,
+        margin_used, protected_size, observed_at
+      ) VALUES ('mission_1', 'ETH', ${size}, ${entryPrice}, 0, 10, ${size}, ${PAST_CLOSE})
+    `;
+  });
+
+/** Write the reconciled order row the `order_update` watch reads. */
+const writeOrder = (cloid: string, remainingSize: number) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO trading_orders (
+        mission_id, cloid, order_id, market, side,
+        limit_price, remaining_size, reduce_only, observed_at
+      ) VALUES ('mission_1', ${cloid}, 1, 'ETH', 'buy', 3000, ${remainingSize}, 0, ${PAST_CLOSE})
+    `;
+  });
 
 /** Create the mission, publish strategy v1, and register `watch`. */
 const seed = (watch: MarketWatch) =>
@@ -355,6 +384,69 @@ layer("WatchEvaluator", (it) => {
       assert.equal(claimed.length, 1);
       assert.equal(claimed[0]?.deduplicationKey, `scheduled_reassessment:${due.id}`);
       assert.equal(claimed[0]?.category, "timer");
+    }),
+  );
+
+  /**
+   * `position_update` and `order_update` are published on the watch union, so
+   * the harness can and does arm them — and for a while nothing evaluated
+   * either one. A mission whose only remaining watch was `position_update` was
+   * simply deaf: the position moved, the harness was never woken, and its own
+   * answer to the user ("any position update also wakes it") was false.
+   */
+  it.effect("fires a position-update watch when the reconciled size changes, not before", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* writePosition(0.5, 3_000);
+      const watch = yield* seed({ type: "position_update", market: "ETH" });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+
+      // First sweep only records the baseline — an unchanged position is not an
+      // update, and firing here would wake the harness for nothing.
+      yield* evaluator.sweep;
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+      const inbox = yield* TradingEventInbox;
+      assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+
+      yield* writePosition(1.25, 3_010);
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const claimed = yield* inbox.claimPending("mission_1");
+      assert.equal(claimed.length, 1);
+      assert.equal(claimed[0]?.category, "market");
+
+      const strategies = yield* TradingStrategyService;
+      const persisted = (yield* strategies.listWatches("mission_1")).find((w) => w.id === watch.id);
+      assert.equal(persisted?.status, "triggered");
+    }),
+  );
+
+  it.effect("fires an order-update watch when the order leaves the book", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* writeOrder("0xabc", 0.5);
+      yield* seed({ type: "order_update", cloid: "0xabc" });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+      const inbox = yield* TradingEventInbox;
+      assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+
+      // Filled or cancelled, the row is gone — which is the update the harness
+      // most needs to hear, so a missing row must fire rather than stay silent.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM trading_orders WHERE cloid = '0xabc'`;
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const claimed = yield* inbox.claimPending("mission_1");
+      assert.equal(claimed.length, 1);
+      assert.match(claimed[0]?.summary ?? "", /gone/);
     }),
   );
 });
