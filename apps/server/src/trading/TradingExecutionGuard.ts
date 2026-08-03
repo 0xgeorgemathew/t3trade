@@ -23,8 +23,12 @@ import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
 
 import { TradingMissionService } from "./TradingMissionService.ts";
-import { HyperliquidExecutionService, type ExecutionInput } from "./HyperliquidExecutionService.ts";
-import { HyperliquidReconciler } from "./HyperliquidReconciler.ts";
+import {
+  HyperliquidExecutionService,
+  TradingExecutionError,
+  type ExecutionInput,
+} from "./HyperliquidExecutionService.ts";
+import { HyperliquidReconciler, TradingReconciliationError } from "./HyperliquidReconciler.ts";
 
 /** The guard rejected an action under §16.4. */
 export class TradingExhaustionError extends Schema.TaggedErrorClass<TradingExhaustionError>()(
@@ -43,6 +47,22 @@ export class TradingExhaustionError extends Schema.TaggedErrorClass<TradingExhau
     return `TradingExhaustionError(${this.reason})${this.detail ? `: ${this.detail}` : ""}`;
   }
 }
+
+/**
+ * What a reduce-only exit can fail with.
+ *
+ * Deliberately three errors rather than one. `TradingExhaustionError` is a
+ * §16.4 verdict — the budget says no — and an LLM harness is expected to act on
+ * that word: stop trying to trade, wait for relief. A preview rejection or a
+ * failed canonical read is neither of those things, and relabelling one as
+ * `budget_exhausted` sends the harness down a recovery path that cannot work.
+ * It happened live: a stuck execution record was reported to the harness as
+ * `budget_exhausted` inside a payload that also said `exhausted: false`.
+ */
+export type ReduceOnlyError =
+  | TradingExhaustionError
+  | TradingExecutionError
+  | TradingReconciliationError;
 
 /**
  * The execution guard. Enforces §16.4 exhaustion before any signable action,
@@ -89,18 +109,46 @@ export class TradingExecutionGuard extends Context.Service<
     ) => Effect.Effect<void, TradingExhaustionError>;
 
     /**
-     * Reduce-only close (§17.2). Submits a reduce-only IOC that brings the
-     * position to flat, then reconciles canonical state to confirm flat.
+     * Reduce-only close (§17.2). Submits a reduce-only IOC for the whole
+     * canonical position, then reconciles canonical state to confirm flat.
+     * Fails with `close_did_not_flatten` if anything remains.
      */
     readonly reduceOnlyClose: (
       executionInput: ExecutionInput,
     ) => Effect.Effect<
-      void,
-      TradingExhaustionError,
+      ReduceOnlyOutcome,
+      ReduceOnlyError,
+      SqlClient.SqlClient | HyperliquidGateway | HyperliquidInfoClient
+    >;
+
+    /**
+     * Sized reduce-only exit — the scale-out path.
+     *
+     * Takes the size the intent asked for, clamped to the canonical position,
+     * and submits it reduce-only. Unlike `reduceOnlyClose` this is not
+     * required to end flat: taking half off and keeping half is the point, and
+     * an IOC that filled less than requested is a normal outcome the harness
+     * reads back from the reconciled position rather than an error.
+     */
+    readonly reduceOnlySized: (
+      executionInput: ExecutionInput,
+    ) => Effect.Effect<
+      ReduceOnlyOutcome,
+      ReduceOnlyError,
       SqlClient.SqlClient | HyperliquidGateway | HyperliquidInfoClient
     >;
   }
 >()("t3/trading/TradingExecutionGuard") {}
+
+/** What one reduce-only exit did, measured against canonical state. */
+export interface ReduceOnlyOutcome {
+  /** Size the intent asked to remove. */
+  readonly requestedSize: number;
+  /** Size actually submitted, after clamping to the canonical position. */
+  readonly submittedSize: number;
+  /** Signed canonical position size after the post-submit reconcile. */
+  readonly remainingSize: number;
+}
 
 export const makeTradingExecutionGuard = Effect.gen(function* () {
   const missions = yield* TradingMissionService;
@@ -145,7 +193,7 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
         FROM trading_orders o
         JOIN trading_execution_records e ON e.cloid = o.cloid
         WHERE o.mission_id = ${missionId}
-          AND e.action_type NOT IN ('cancel', 'reduce', 'close')
+          AND e.action_type NOT IN ('cancel', 'reduce', 'close', 'modify_stop')
       `.pipe(
         Effect.mapError(
           (cause) =>
@@ -215,90 +263,101 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
       }
     });
 
-  const reduceOnlyClose = (
+  /**
+   * The shared reduce-only exit.
+   *
+   * `requestedSize` is what the caller wants removed; the size that actually
+   * goes on the wire is that clamped to the canonical position, because the
+   * exchange is the authority on what there is to reduce. The side is likewise
+   * derived from the canonical position rather than taken from the intent — a
+   * reduce named with the wrong side would otherwise be an increase wearing a
+   * reduce's name, which is the hazard `reduceOnly: true` here also closes.
+   */
+  const submitReduceOnly = (
     executionInput: ExecutionInput,
+    request: number | "all",
+    actionType: "reduce" | "close",
   ): Effect.Effect<
-    void,
-    TradingExhaustionError,
+    ReduceOnlyOutcome,
+    ReduceOnlyError,
     SqlClient.SqlClient | HyperliquidGateway | HyperliquidInfoClient
   > =>
     Effect.gen(function* () {
-      const before = yield* reconciler
-        .reconcile(
-          {
-            missionId: executionInput.intent.missionId,
-            masterAddress: executionInput.masterAddress,
-            market: executionInput.intent.market,
-          },
-          "before_execution",
-        )
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new TradingExhaustionError({
-                reason: "budget_exhausted",
-                detail: `reconcile failed before close: ${cause.reason}`,
-              }),
-          ),
-        );
+      const { intent, masterAddress } = executionInput;
+      // Every failure below travels as itself. A reduce that preview refused,
+      // or a canonical read that did not answer, is not the budget saying no —
+      // and the harness acts on that word.
+      const before = yield* reconciler.reconcile(
+        { missionId: intent.missionId, masterAddress, market: intent.market },
+        "before_execution",
+      );
+
       const position = before.position;
-      if (position === null || position.size === 0) return yield* Effect.void;
-      const closeIntent = {
-        ...executionInput.intent,
-        actionType: "close" as const,
+      const exposure = position === null ? 0 : Math.abs(position.size);
+      const requestedSize = request === "all" ? exposure : request;
+      if (position === null || position.size === 0) {
+        return { requestedSize, submittedSize: 0, remainingSize: 0 } satisfies ReduceOnlyOutcome;
+      }
+
+      const submittedSize = Math.min(requestedSize, exposure);
+      if (submittedSize <= 0) {
+        return {
+          requestedSize,
+          submittedSize: 0,
+          remainingSize: position.size,
+        } satisfies ReduceOnlyOutcome;
+      }
+
+      const exitIntent = {
+        ...intent,
+        actionType,
         side: position.size > 0 ? ("sell" as const) : ("buy" as const),
-        size: Math.abs(position.size),
+        size: submittedSize,
         orderPreference: "marketable_ioc" as const,
         reduceOnly: true,
       };
-      // A reduce-only close is permitted under exhaustion (§16.4). Always
-      // submit the canonical position as an IOC, regardless of caller input.
-      yield* execution.submitOrder({ ...executionInput, intent: closeIntent }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new TradingExhaustionError({
-              reason: "budget_exhausted",
-              detail: cause instanceof Error ? cause.message : String(cause),
-            }),
-        ),
+      // Reduce-only exits are permitted under exhaustion (§16.4).
+      yield* execution.submitOrder({ ...executionInput, intent: exitIntent });
+
+      // Reconcile to read what the exit actually left. The master address is
+      // the §10.6 identity for canonical reads — resolved by the caller through
+      // the mission's trading account, threaded here via a closure-built input.
+      const state = yield* reconciler.reconcile(
+        { missionId: intent.missionId, masterAddress, market: intent.market },
+        "after_position_update",
       );
-      const { intent } = { intent: closeIntent };
-      // Reconcile to confirm flat. The master address is the §10.6 identity
-      // for canonical reads — resolved by the caller through the mission's
-      // trading account, threaded here via a closure-built input.
-      const state = yield* reconciler
-        .reconcile(
-          {
-            missionId: intent.missionId,
-            masterAddress: executionInput.masterAddress,
-            market: intent.market,
-          },
-          "after_position_update",
-        )
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new TradingExhaustionError({
-                reason: "budget_exhausted",
-                detail: `reconcile failed after close: ${cause.reason}`,
-              }),
-          ),
-        );
+
+      return {
+        requestedSize,
+        submittedSize,
+        remainingSize: state.position?.size ?? 0,
+      } satisfies ReduceOnlyOutcome;
+    });
+
+  const reduceOnlyClose: TradingExecutionGuard["Service"]["reduceOnlyClose"] = (executionInput) =>
+    Effect.gen(function* () {
+      // The whole canonical position, regardless of the size the caller named.
+      const outcome = yield* submitReduceOnly(executionInput, "all", "close");
       // §17.2: never assume the close landed. Escalate if the canonical
       // position is not flat rather than marking the mission closed on a lie.
-      if (state.position !== null && state.position.size !== 0) {
+      if (outcome.remainingSize !== 0) {
         return yield* new TradingExhaustionError({
           reason: "close_did_not_flatten",
-          detail: `close_did_not_flatten: size ${state.position.size} remains`,
+          detail: `close_did_not_flatten: size ${outcome.remainingSize} remains`,
         });
       }
+      return outcome;
     });
+
+  const reduceOnlySized: TradingExecutionGuard["Service"]["reduceOnlySized"] = (executionInput) =>
+    submitReduceOnly(executionInput, executionInput.intent.size, "reduce");
 
   return TradingExecutionGuard.of({
     guardAction,
     blockForExhaustion,
     guardResume,
     reduceOnlyClose,
+    reduceOnlySized,
   });
 });
 

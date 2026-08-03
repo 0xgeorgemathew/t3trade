@@ -3,11 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { POC_DEFAULT_INSTRUCTION } from "@t3tools/trading-contracts/strategy";
 
-import {
-  AUTO_MISSION_DEFAULT_ACCOUNT_ID,
-  AUTO_MISSION_DEFAULT_CAPITAL_USD,
-  resolveAutoMission,
-} from "./AutoMissionConfig.ts";
+import { AUTO_MISSION_DEFAULT_ACCOUNT_ID, resolveAutoMission } from "./AutoMissionConfig.ts";
 
 const ARMED = true;
 const UNARMED = false;
@@ -36,7 +32,9 @@ describe("resolveAutoMission", () => {
     expect(Option.getOrThrow(resolveAutoMission({}, ARMED))).toEqual({
       workspaceRoot: null,
       instruction: POC_DEFAULT_INSTRUCTION,
-      allocatedCapitalUsd: AUTO_MISSION_DEFAULT_CAPITAL_USD,
+      // Unset means "size the mandate from the live account value at
+      // creation" — see `MissionCapital`.
+      allocatedCapitalUsd: null,
       tradingAccountId: AUTO_MISSION_DEFAULT_ACCOUNT_ID,
     });
   });
@@ -71,14 +69,19 @@ describe("resolveAutoMission", () => {
   });
 
   // A capital value that is not a positive number would create a mission whose
-  // whole mandate is derived from it — a $0 or NaN mandate. The documented
-  // default is a better answer than either.
-  it("falls back to the default mandate for an unusable capital value", () => {
+  // whole mandate is derived from it — a $0 or NaN mandate. Falling through to
+  // the account value is a better answer than either.
+  it("defers to the account for an unusable capital value", () => {
     for (const raw of ["", "0", "-100", "abc"]) {
       const settings = resolveAutoMission({ T3_TRADES_AUTO_MISSION_CAPITAL_USD: raw }, ARMED);
-      expect(Option.getOrThrow(settings).allocatedCapitalUsd).toBe(
-        AUTO_MISSION_DEFAULT_CAPITAL_USD,
-      );
+      expect(Option.getOrThrow(settings).allocatedCapitalUsd).toBe(null);
     }
+  });
+
+  // The whole point of an explicit grant: it is the operator's statement of a
+  // mandate, not a request to be checked against the balance.
+  it("takes an explicit capital value verbatim, however large", () => {
+    const settings = resolveAutoMission({ T3_TRADES_AUTO_MISSION_CAPITAL_USD: "5000" }, ARMED);
+    expect(Option.getOrThrow(settings).allocatedCapitalUsd).toBe(5000);
   });
 });

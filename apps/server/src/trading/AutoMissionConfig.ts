@@ -25,7 +25,11 @@
  *                                            threads in the project at this
  *                                            workspace root; unset means every
  *                                            new thread.
- *   - `T3_TRADES_AUTO_MISSION_CAPITAL_USD` — optional mandate size, default 50.
+ *   - `T3_TRADES_AUTO_MISSION_CAPITAL_USD` — optional mandate size, used
+ *                                            verbatim. Unset means the mandate
+ *                                            is sized from the live account
+ *                                            value at creation time (see
+ *                                            `MissionCapital`).
  *   - `T3_TRADES_AUTO_MISSION_INSTRUCTION` — optional instruction, default
  *                                            `POC_DEFAULT_INSTRUCTION`.
  *   - `T3_TRADES_AUTO_MISSION_ACCOUNT`     — optional trading account id.
@@ -50,11 +54,13 @@ export interface AutoMissionSettings {
    */
   readonly workspaceRoot: string | null;
   readonly instruction: string;
-  readonly allocatedCapitalUsd: number;
+  /**
+   * The operator's explicit mandate size, or `null` for "resolve it from the
+   * live account value at creation" — see `MissionCapital`.
+   */
+  readonly allocatedCapitalUsd: number | null;
   readonly tradingAccountId: string;
 }
-
-export const AUTO_MISSION_DEFAULT_CAPITAL_USD = 50;
 
 /**
  * The account row the server provisions from the interim signer.
@@ -80,10 +86,10 @@ export class AutoMissionConfig extends Context.Service<
  * `signerArmed` is the default answer to "is this a trading lab"; the explicit
  * knob overrides it in both directions.
  *
- * A capital value that is not a positive finite number falls back to the
- * default rather than failing: this is a convenience knob, and refusing to
- * start the whole feature over a typo'd number would be a worse trade than
- * quietly using the documented default.
+ * A capital value that is not a positive finite number resolves to `null` —
+ * the same as unset, so the mandate is sized from the account. This is a
+ * convenience knob, and refusing to start the whole feature over a typo'd
+ * number would be a worse trade than falling through to the live balance.
  */
 export const resolveAutoMission = (
   env: Record<string, string | undefined>,
@@ -94,8 +100,7 @@ export const resolveAutoMission = (
   if (!enabled) return Option.none();
 
   const capital = Number(env.T3_TRADES_AUTO_MISSION_CAPITAL_USD);
-  const allocatedCapitalUsd =
-    Number.isFinite(capital) && capital > 0 ? capital : AUTO_MISSION_DEFAULT_CAPITAL_USD;
+  const allocatedCapitalUsd = Number.isFinite(capital) && capital > 0 ? capital : null;
 
   const workspaceRoot = env.T3_TRADES_AUTO_MISSION_WORKSPACE?.trim();
   const instruction = env.T3_TRADES_AUTO_MISSION_INSTRUCTION?.trim();

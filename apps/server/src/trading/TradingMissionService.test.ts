@@ -41,7 +41,7 @@ const migrated = Effect.gen(function* () {
 });
 
 layer("TradingMissionService", (it) => {
-  it.effect("creates an ETH momentum mission with the POC authority defaults", () =>
+  it.effect("creates an ETH momentum mission with the testnet authority defaults", () =>
     Effect.gen(function* () {
       yield* migrated;
       const service = yield* TradingMissionService;
@@ -55,7 +55,12 @@ layer("TradingMissionService", (it) => {
       assert.equal(mission.authorityVersion, 1);
       assert.equal(mission.strategyVersion, 0);
       assert.equal(mission.authority.allocatedCapitalUsd, 1_000);
-      assert.equal(mission.authority.maximumGrossNotionalUsd, 3_000);
+      // The testnet preset, not the spec's $1,000 worked example: 8x capital
+      // gross, 20x leverage ceiling. See `testnetAuthorityDefaults`.
+      assert.equal(mission.authority.maximumGrossNotionalUsd, 8_000);
+      assert.equal(mission.authority.maximumLeverage, 20);
+      assert.equal(mission.authority.maximumCumulativeLossUsd, 350);
+      assert.equal(mission.authority.maximumPlannedRiskPerPositionUsd, 70);
       assert.deepStrictEqual(mission.authority.marginModes, ["isolated"]);
       assert.equal(mission.harness.provider, "claude");
       assert.equal(mission.control.entriesAllowed, true);

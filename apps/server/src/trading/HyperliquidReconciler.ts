@@ -458,6 +458,93 @@ function settleAbandonedExecutions(
   );
 }
 
+/**
+ * Settle acknowledged records the exchange has since resolved.
+ *
+ * `accepted` means the exchange took the order and it rests on the book. That
+ * is a live state, not a terminal one, and nothing about it settles itself: the
+ * submit response is the last word the submit path ever hears. So a resting
+ * order that later fills, or that the user cancels, leaves its record parked at
+ * `accepted` — holding a risk reservation the loss budget keeps counting on top
+ * of the position that reservation was for.
+ *
+ * Canonical state answers it, and live state is the strongest truth there is:
+ *
+ *   - still resting on the book → leave it, whatever fills exist. A partial
+ *     fill is not the end of an order: settling on the first fill would take
+ *     the record terminal and release its risk reservation while the remainder
+ *     is still working, leaving live size with nothing reserved behind it;
+ *   - gone from the book, with a fill under the record's cloid → `filled`;
+ *   - gone, no fill, and the record has not moved for a full minute →
+ *     `cancelled`. The order left the book without filling. Which agent removed
+ *     it — the user, the exchange, an expiry — is not knowable from here and
+ *     does not change the answer;
+ *   - gone, no fill, and recent → leave it for the next pass.
+ *
+ * The grace window is the same one the abandoned settler uses, and for the same
+ * reason: an order can be a second old and simply not visible yet.
+ */
+function settleAcceptedExecutions(
+  input: ReconcileInput,
+  canonicalOrders: ReadonlyArray<AgentOpenOrder>,
+  observedAt: number,
+): Effect.Effect<void, TradingReconciliationError, SqlClient.SqlClient> {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const accepted = yield* sql<{
+      readonly execution_id: string;
+      readonly cloid: string;
+      readonly updated_at: number;
+    }>`
+      SELECT execution_id, cloid, updated_at
+      FROM trading_execution_records
+      WHERE mission_id = ${input.missionId} AND status = 'accepted'
+    `;
+    if (accepted.length === 0) return;
+
+    const resting = new Set(
+      canonicalOrders.flatMap((order) => (order.cloid === undefined ? [] : [order.cloid])),
+    );
+
+    for (const record of accepted) {
+      // Live beats everything: a resting order is not done, however much of it
+      // has filled so far.
+      if (resting.has(record.cloid)) continue;
+
+      // `persistFills` ran already this pass, so the table is current.
+      const filled = yield* sql<{ readonly fill_id: string }>`
+        SELECT fill_id FROM trading_fills
+        WHERE mission_id = ${input.missionId} AND cloid = ${record.cloid}
+        LIMIT 1
+      `;
+      if (filled.length === 0 && record.updated_at > observedAt - ABANDONED_EXECUTION_AFTER_MS) {
+        continue;
+      }
+      const settled = filled.length > 0 ? "filled" : "cancelled";
+
+      yield* sql`
+        UPDATE trading_execution_records
+        SET status = ${settled}, updated_at = ${observedAt}
+        WHERE execution_id = ${record.execution_id}
+      `;
+      yield* Effect.logInfo("trading reconcile settled an accepted execution record", {
+        missionId: input.missionId,
+        executionId: record.execution_id,
+        cloid: record.cloid,
+        status: settled,
+      });
+    }
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new TradingReconciliationError({
+          reason: "persist_failed",
+          detail: cause instanceof Error ? cause.message : String(cause),
+        }),
+    ),
+  );
+}
+
 export const makeHyperliquidReconciler = Effect.gen(function* () {
   const reconcile = (
     input: ReconcileInput,
@@ -509,6 +596,7 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
       // Before the release below, so a record settled here has its reservation
       // released in the same pass.
       yield* settleAbandonedExecutions(input, canonicalOrders, observedAt);
+      yield* settleAcceptedExecutions(input, canonicalOrders, observedAt);
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
         UPDATE trading_risk_reservations

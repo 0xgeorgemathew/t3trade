@@ -353,3 +353,74 @@ it.effect("does not cancel the parent when the filled slice cannot be protected"
     assert.deepEqual(fake.cancels, []);
   }),
 );
+
+// --- §17.4 stop replacement: moving a stop that is already good -------------
+//
+// `reconcileProtection` stops at `already_protected` — its job is to close a
+// coverage gap, and a covered position has none. Trailing a stop is the case
+// where coverage is fine and the price is wrong, which is why it needs its own
+// entry point rather than a flag on that one.
+
+it.effect("moves the stop and cancels the old one only after the new one is confirmed", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ positionSize: 0.5, orders: [restingStop("0xold", 0.5)] });
+    const outcome = yield* runWithClock(fake, (service) =>
+      service.replaceProtection({ ...INPUT, stopPrice: 2_980 }),
+    );
+
+    assert.equal(outcome.status, "protected");
+    // A fully covered position did not stop it: the new stop went out.
+    assert.equal(fake.placements.length, 1);
+    // And the order is the whole point — place, then cancel. Never the reverse.
+    assert.deepEqual(fake.log, ["place", "cancel"]);
+    assert.deepEqual(fake.cancels, ["0xold"]);
+    assert.deepEqual(outcome.replacedCloids, ["0xold"]);
+  }),
+);
+
+it.effect("leaves the old stop in place when the replacement never confirms", () =>
+  Effect.gen(function* () {
+    // The replacement is accepted but never appears in canonical state. Total
+    // coverage still reads "fine" because the OLD stop is resting — which is
+    // exactly the trap: a confirm that asks "is anything covering this?" would
+    // answer yes and then cancel the only thing that was.
+    const fake = makeFake({
+      positionSize: 0.5,
+      orders: [restingStop("0xold", 0.5)],
+      swallowPlacements: true,
+    });
+    const outcome = yield* runWithClock(fake, (service) =>
+      service.replaceProtection({ ...INPUT, stopPrice: 2_980 }),
+    );
+
+    assert.deepEqual(fake.cancels, []);
+    // Reported as a failed adjustment, not as an uncovered position — the two
+    // lead to very different places, one of them a forced close.
+    assert.equal(outcome.status, "already_protected");
+    assert.equal(outcome.protectedSize, 0.5);
+  }),
+);
+
+it.effect("escalates when the replacement fails and nothing else covers the position", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ positionSize: 0.5, swallowPlacements: true });
+    const outcome = yield* runWithClock(fake, (service) =>
+      service.replaceProtection({ ...INPUT, stopPrice: 2_980 }),
+    );
+
+    assert.equal(outcome.status, "escalate");
+    assert.equal(outcome.protectedSize, 0);
+  }),
+);
+
+it.effect("has nothing to move on a flat position", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ positionSize: 0 });
+    const outcome = yield* runWithClock(fake, (service) =>
+      service.replaceProtection({ ...INPUT, stopPrice: 2_980 }),
+    );
+
+    assert.equal(outcome.status, "flat");
+    assert.equal(fake.placements.length, 0);
+  }),
+);

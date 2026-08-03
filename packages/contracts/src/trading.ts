@@ -178,7 +178,8 @@ export const TradingMissionCreateCommand = Schema.Struct({
   missionId: TradingMissionId,
   tradingAccountId: TrimmedNonEmptyString,
   instruction: TrimmedNonEmptyString,
-  allocatedCapitalUsd: Schema.Number,
+  /** Omit to have the server resolve the mandate from the live account value. */
+  allocatedCapitalUsd: Schema.optional(Schema.Number),
   createdAt: IsoDateTime,
 });
 
@@ -375,7 +376,14 @@ export const TradingMissionCreateRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   tradingAccountId: TrimmedNonEmptyString,
   instruction: TrimmedNonEmptyString,
-  allocatedCapitalUsd: Schema.Number,
+  /**
+   * The operator's explicit mandate size, or absent for "resolve it from the
+   * live account balance at creation time" — see `MissionCapital`. Optional
+   * rather than a sentinel number so the two cases stay distinguishable in the
+   * event stream: a mission created without a stated capital records that it
+   * was created without one.
+   */
+  allocatedCapitalUsd: Schema.optional(Schema.Number),
   requestedAt: IsoDateTime,
 });
 

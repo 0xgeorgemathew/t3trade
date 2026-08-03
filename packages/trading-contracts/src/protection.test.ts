@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  checkStopReplacement,
   checkStopInformation,
   confirmedProtectedSize,
   describeStopGateDefect,
@@ -276,5 +277,45 @@ describe("confirmedProtectedSize", () => {
     const input = { market: "ETH", positionSize: 0, referencePrice: 3_750, openOrders: [] };
     expect(confirmedProtectedSize(input)).toBe(0);
     expect(isFullyProtected(input)).toBe(true);
+  });
+});
+
+describe("checkStopReplacement", () => {
+  it("accepts a stop below the mark on a long and above it on a short", () => {
+    expect(
+      checkStopReplacement({ positionSize: 0.5, referencePrice: 3_000, stopPrice: 2_950 }),
+    ).toBeNull();
+    expect(
+      checkStopReplacement({ positionSize: -0.5, referencePrice: 3_000, stopPrice: 3_050 }),
+    ).toBeNull();
+  });
+
+  it("rejects a stop that would trigger the instant it rests", () => {
+    // A long stopped above the mark, and a short stopped below it. Neither is
+    // protection; both are an immediate exit at whatever the book pays.
+    expect(
+      checkStopReplacement({ positionSize: 0.5, referencePrice: 3_000, stopPrice: 3_050 }),
+    ).toBe("stop_on_wrong_side_of_entry");
+    expect(
+      checkStopReplacement({ positionSize: -0.5, referencePrice: 3_000, stopPrice: 2_950 }),
+    ).toBe("stop_on_wrong_side_of_entry");
+  });
+
+  it("rejects a stop exactly at the mark", () => {
+    expect(
+      checkStopReplacement({ positionSize: 0.5, referencePrice: 3_000, stopPrice: 3_000 }),
+    ).toBe("stop_on_wrong_side_of_entry");
+  });
+
+  it("rejects a non-positive stop price", () => {
+    expect(checkStopReplacement({ positionSize: 0.5, referencePrice: 3_000, stopPrice: 0 })).toBe(
+      "stop_price_not_positive",
+    );
+  });
+
+  it("treats moving a stop as exposure-reducing, so it needs no stop of its own", () => {
+    // `modify_stop` replaces one reduce-only trigger with another; the
+    // mandatory-stop gate must not demand a stop for the action that IS one.
+    expect(isPositionIncreasing("modify_stop")).toBe(false);
   });
 });

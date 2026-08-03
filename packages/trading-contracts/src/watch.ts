@@ -75,3 +75,75 @@ export const PersistedWatch = Schema.Struct({
   updatedAt: UnixMillis,
 });
 export type PersistedWatch = typeof PersistedWatch.Type;
+
+// ---------------------------------------------------------------------------
+// The armed-coverage floor for a mission holding a position
+// ---------------------------------------------------------------------------
+
+/**
+ * How far ahead a scheduled reassessment may sit and still count as coverage.
+ *
+ * Ten minutes is ten bars on the POC's 1m default timeframe: long enough that
+ * a mission with well-placed watches is never woken for nothing, short enough
+ * that a mission whose thesis has quietly gone stale gets one turn to notice
+ * before the move is over.
+ */
+export const WATCH_COVERAGE_FLOOR_MILLIS = 10 * 60 * 1000;
+
+/** Which directions a mission's armed watches can actually fire in. */
+export interface WatchCoverage {
+  /** An armed watch that fires if price rises from here. */
+  readonly coversUpside: boolean;
+  /** An armed watch that fires if price falls from here. */
+  readonly coversDownside: boolean;
+  /** An armed reassessment due within the floor. */
+  readonly coversByReassessment: boolean;
+}
+
+/**
+ * Read what a mission's watches can actually wake it for.
+ *
+ * Only `price_cross` and `candle_close` carry a direction and a level, so only
+ * they can cover a side. `order_update` and `position_update` fire on a change
+ * in size — real events, but a position whose only armed watches are those can
+ * watch its own mark run away and never hear about it, which is exactly the
+ * session this rule exists because of.
+ *
+ * A level on the wrong side of the mark does not count either. A "cross above
+ * 1850" armed while price is already 1860 is not upside coverage; it is a
+ * condition that was true before it was written.
+ */
+export function readWatchCoverage(input: {
+  readonly watches: ReadonlyArray<PersistedWatch>;
+  readonly markPrice: number;
+  readonly nowMillis: number;
+  readonly floorMillis?: number;
+}): WatchCoverage {
+  const floor = input.floorMillis ?? WATCH_COVERAGE_FLOOR_MILLIS;
+  const active = input.watches.filter((w) => w.status === "active");
+
+  let coversUpside = false;
+  let coversDownside = false;
+  let coversByReassessment = false;
+
+  for (const persisted of active) {
+    const watch = persisted.watch;
+    if (watch.type === "price_cross" || watch.type === "candle_close") {
+      if (watch.direction === "above" && watch.price >= input.markPrice) coversUpside = true;
+      if (watch.direction === "below" && watch.price <= input.markPrice) coversDownside = true;
+    } else if (watch.type === "scheduled_reassessment") {
+      if (watch.runAt <= input.nowMillis + floor) coversByReassessment = true;
+    }
+  }
+
+  return { coversUpside, coversDownside, coversByReassessment };
+}
+
+/**
+ * True when a mission holding a position would hear nothing: no level armed on
+ * one of the two sides it could move, and no reassessment due inside the floor.
+ */
+export function isDeafWhileHoldingPosition(coverage: WatchCoverage): boolean {
+  if (coverage.coversByReassessment) return false;
+  return !(coverage.coversUpside && coverage.coversDownside);
+}

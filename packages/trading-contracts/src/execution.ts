@@ -48,6 +48,13 @@ export type TradingOrderTimeInForce = typeof TradingOrderTimeInForce.Type;
  * The action-type discriminator fed into the deterministic cloid (§15.5) and
  * the execution-sequence counter. Retries of the *same* action reuse the
  * same `(executionSequence, actionType)` and therefore the same cloid.
+ *
+ * Two of these never place a position-taking order. `cancel` withdraws one
+ * resting order named by `targetCloid`; `modify_stop` moves the reduce-only
+ * protection on an open position to a new trigger price. Both are exposure-
+ * reducing, so they carry no stop requirement and stay permitted under §16.4
+ * exhaustion — see `isPositionIncreasing` and `isPermittedUnderExhaustion`,
+ * which read the same names.
  */
 export const TradingExecutionActionType = Schema.Literals([
   "open",
@@ -55,8 +62,28 @@ export const TradingExecutionActionType = Schema.Literals([
   "reduce",
   "close",
   "cancel",
+  "modify_stop",
 ]);
 export type TradingExecutionActionType = typeof TradingExecutionActionType.Type;
+
+// ---------------------------------------------------------------------------
+// §15.5 · Client order id (cloid) — deterministic, 16 bytes
+// ---------------------------------------------------------------------------
+
+/**
+ * The deterministic client order id (§15.5).
+ *
+ * `derive16Bytes(missionId, strategyVersion, executionSequence, actionType)`
+ * — SHA-256 of the concatenated inputs, truncated to the first 16 bytes,
+ * hex-encoded as a `0x`-prefixed 34-character string.
+ *
+ * The `0x` prefix is the Hyperliquid wire convention (the exchange validates
+ * `len(cloid[2:]) == 32`). An unprefixed cloid is accepted on submission and
+ * then silently stored as `null`, which is how the Gate-E entry ended up
+ * unjoinable to its own fill — see `HyperliquidCloid` for that finding.
+ */
+export const TradingCloid = Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{32}$/));
+export type TradingCloid = typeof TradingCloid.Type;
 
 // ---------------------------------------------------------------------------
 // §14.4 / §15.4 · The order intent the harness requests and T3 validates
@@ -116,27 +143,17 @@ export const TradingOrderIntent = Schema.Struct({
   stop: Schema.optional(TradingStopInfo),
 
   reduceOnly: Schema.Boolean,
+
+  /**
+   * The resting order a `cancel` withdraws, as its client order id.
+   *
+   * Required for `cancel` and meaningless for every other action type; the
+   * reactor rejects a `cancel` without one rather than guessing which of the
+   * mission's orders was meant.
+   */
+  targetCloid: Schema.optional(TradingCloid),
 });
 export type TradingOrderIntent = typeof TradingOrderIntent.Type;
-
-// ---------------------------------------------------------------------------
-// §15.5 · Client order id (cloid) — deterministic, 16 bytes
-// ---------------------------------------------------------------------------
-
-/**
- * The deterministic client order id (§15.5).
- *
- * `derive16Bytes(missionId, strategyVersion, executionSequence, actionType)`
- * — SHA-256 of the concatenated inputs, truncated to the first 16 bytes,
- * hex-encoded as a `0x`-prefixed 34-character string.
- *
- * The `0x` prefix is the Hyperliquid wire convention (the exchange validates
- * `len(cloid[2:]) == 32`). An unprefixed cloid is accepted on submission and
- * then silently stored as `null`, which is how the Gate-E entry ended up
- * unjoinable to its own fill — see `HyperliquidCloid` for that finding.
- */
-export const TradingCloid = Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{32}$/));
-export type TradingCloid = typeof TradingCloid.Type;
 
 // ---------------------------------------------------------------------------
 // §15.3 / §15.4 · The wire-shaped order the mapper produces

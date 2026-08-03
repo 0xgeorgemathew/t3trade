@@ -116,6 +116,24 @@ export class TradingProtectionService extends Context.Service<
     ) => Effect.Effect<ProtectionOutcome, TradingProtectionError>;
 
     /**
+     * Move the stop on an open position to a new trigger price (§17.4).
+     *
+     * `reconcileProtection` deliberately stops at `already_protected` — its job
+     * is to close a coverage gap, and a fully covered position has none. This
+     * one exists for the case where coverage is fine and the *price* is wrong:
+     * trailing a stop up behind a winner, or pulling it to break-even.
+     *
+     * Same ordering rule, enforced more strictly. The replacement is placed and
+     * confirmed by its own cloid before any old stop is cancelled, because here
+     * "some protection is resting" is not enough evidence — the old stop would
+     * satisfy that check and then be the thing cancelled. A replacement that
+     * cannot be confirmed leaves the old stop exactly where it was.
+     */
+    readonly replaceProtection: (
+      input: ProtectionInput,
+    ) => Effect.Effect<ProtectionOutcome, TradingProtectionError>;
+
+    /**
      * Cancel entry orders in the order §17.3 requires: protect first, cancel
      * second, reconcile again third.
      *
@@ -383,6 +401,140 @@ export const makeTradingProtectionService = Effect.gen(function* () {
       } satisfies ProtectionOutcome;
     });
 
+  /** Confirmed size resting under one specific cloid, per `isProtectiveOrder`. */
+  const coverageUnderCloid = (input: ProtectionInput, view: CanonicalView, cloid: string): number =>
+    view.openOrders
+      .filter((order) => order.cloid === cloid)
+      .filter((order) =>
+        isProtectiveOrder(order, {
+          market: input.market,
+          positionSize: view.positionSize,
+          referencePrice: view.referencePrice,
+          openOrders: view.openOrders,
+        }),
+      )
+      .reduce((sum, order) => sum + order.remainingSize, 0);
+
+  const replaceProtection: TradingProtectionService["Service"]["replaceProtection"] = (input) =>
+    Effect.gen(function* () {
+      let view = yield* readCanonical(input);
+      let exposure = Math.abs(view.positionSize);
+      if (exposure <= PROTECTION_SIZE_EPSILON) {
+        return {
+          status: "flat",
+          positionSize: 0,
+          protectedSize: 0,
+          replacedCloids: [],
+        } satisfies ProtectionOutcome;
+      }
+
+      const replacedCloids: string[] = [];
+      let lastFailure = "";
+
+      for (
+        let attempt = 0;
+        attempt < PROTECTION_RECONCILIATION.maximumPlacementAttempts;
+        attempt++
+      ) {
+        const cloid = protectionCloid(input, attempt);
+
+        const failure = yield* execution
+          .submitProtectiveStop({
+            market: input.market,
+            cloid,
+            positionSize: view.positionSize,
+            stopPrice: input.stopPrice,
+          })
+          .pipe(
+            Effect.match({
+              onSuccess: (rows) =>
+                rows
+                  .filter((row) => row.status === "error")
+                  .map((row) => row.reason ?? "rejected")
+                  .join("; "),
+              onFailure: (cause) => cause.message,
+            }),
+          );
+        if (failure !== "") lastFailure = failure;
+
+        // Poll for the NEW cloid specifically. Total coverage is the wrong
+        // question here: the stop being replaced already answers it yes.
+        let covered = coverageUnderCloid(input, view, cloid);
+        for (
+          let poll = 1;
+          poll <
+          PROTECTION_RECONCILIATION.windowMillis / PROTECTION_RECONCILIATION.confirmPollMillis;
+          poll++
+        ) {
+          exposure = Math.abs(view.positionSize);
+          if (exposure <= PROTECTION_SIZE_EPSILON) break;
+          if (covered >= exposure - PROTECTION_SIZE_EPSILON) break;
+          yield* Effect.sleep(`${PROTECTION_RECONCILIATION.confirmPollMillis} millis`);
+          view = yield* readCanonical(input);
+          covered = coverageUnderCloid(input, view, cloid);
+        }
+
+        exposure = Math.abs(view.positionSize);
+        if (exposure <= PROTECTION_SIZE_EPSILON) {
+          return {
+            status: "flat",
+            positionSize: 0,
+            protectedSize: 0,
+            replacedCloids,
+          } satisfies ProtectionOutcome;
+        }
+
+        if (covered >= exposure - PROTECTION_SIZE_EPSILON) {
+          for (const stale of staleProtection(input, view, cloid)) {
+            yield* execution.submitCancel({ market: input.market, cloid: stale }).pipe(
+              Effect.matchEffect({
+                onSuccess: () => Effect.sync(() => replacedCloids.push(stale)),
+                onFailure: (cause) =>
+                  Effect.logWarning(
+                    "protection: could not cancel the superseded stop; overlapping " +
+                      `reduce-only protection remains (cloid=${stale}): ${cause.message}`,
+                  ),
+              }),
+            );
+          }
+          return {
+            status: "protected",
+            positionSize: view.positionSize,
+            protectedSize: covered,
+            replacedCloids,
+          } satisfies ProtectionOutcome;
+        }
+      }
+
+      // The replacement never confirmed. The old stop was never cancelled, so
+      // the position may well still be covered — say which, because the two
+      // read very differently: one is a failed adjustment, the other is an
+      // uncovered position that §17.5 has to take over.
+      const stillCovered = coverageOf(input, view);
+      if (stillCovered >= exposure - PROTECTION_SIZE_EPSILON) {
+        return {
+          status: "already_protected",
+          positionSize: view.positionSize,
+          protectedSize: stillCovered,
+          replacedCloids,
+          escalationReason:
+            `could not place a stop at ${input.stopPrice}; the previous stop is still in place` +
+            (lastFailure === "" ? "" : `; last failure: ${lastFailure}`),
+        } satisfies ProtectionOutcome;
+      }
+
+      return {
+        status: "escalate",
+        positionSize: view.positionSize,
+        protectedSize: stillCovered,
+        replacedCloids,
+        escalationReason:
+          `stop replacement at ${input.stopPrice} left ${exposure} ${input.market} covered ` +
+          `only ${stillCovered}` +
+          (lastFailure === "" ? "" : `; last failure: ${lastFailure}`),
+      } satisfies ProtectionOutcome;
+    });
+
   const cancelEntriesWithProtection: TradingProtectionService["Service"]["cancelEntriesWithProtection"] =
     (input) =>
       Effect.gen(function* () {
@@ -414,7 +566,11 @@ export const makeTradingProtectionService = Effect.gen(function* () {
         return yield* reconcileProtection(input);
       });
 
-  return TradingProtectionService.of({ reconcileProtection, cancelEntriesWithProtection });
+  return TradingProtectionService.of({
+    reconcileProtection,
+    replaceProtection,
+    cancelEntriesWithProtection,
+  });
 });
 
 export const TradingProtectionServiceLive = Layer.effect(

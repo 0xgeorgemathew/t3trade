@@ -113,3 +113,50 @@ export const pocAuthorityDefaults = (allocatedCapitalUsd: number): TradingAuthor
 
   validUntil: "until_revoked",
 });
+
+/**
+ * Testnet lab authority defaults — the mandate a ~$100 account can actually
+ * trade under.
+ *
+ * `pocAuthorityDefaults` is written for the spec's $1,000 worked example and
+ * does not scale down. On $100 it yields $2 of planned risk per position, and
+ * $2 does not survive contact with the accounting: a $300 entry already spends
+ * $0.75 on the 25 bps stop-slippage reserve and $0.30 on the two 5 bps fee
+ * estimates before a single dollar of stop distance is bought. Entries come
+ * back refused as unviable, or the harness compresses the stop until it sits
+ * inside the noise and gets taken out by a wick.
+ *
+ * The four numbers, and why each is where it is (C = allocated capital):
+ *
+ * - `maximumLeverage: 20` — the operator's stated testnet ceiling. ETH on
+ *   Hyperliquid testnet allows 25x, so this is T3's limit rather than the
+ *   exchange's. Note that preview measures leverage as notional ÷ *mandate*,
+ *   not notional ÷ margin, so in practice the gross cap below binds first;
+ *   this number is the documented ceiling, not the working constraint.
+ * - `maximumGrossNotionalUsd: 8 × C` — $800 on $100. At 20x that is $40 of
+ *   isolated margin, leaving most of the account as headroom. Sized to what
+ *   the loss budget can protect rather than to what the margin allows: the
+ *   ~$2,000 the exchange would permit is notional the $35 budget cannot stand
+ *   behind.
+ * - `maximumCumulativeLossUsd: 0.35 × C` — $35 on $100. Roughly four full
+ *   per-position risks, so a losing streak ends the mission rather than the
+ *   account.
+ * - `maximumPlannedRiskPerPositionUsd: 0.07 × C` — $7 on $100. At the largest
+ *   allowed $800 entry (0.267 ETH near $3,000) that funds a stop 0.9% away;
+ *   at a more typical $400 entry, 1.75%. Both are real distances on a 1m
+ *   momentum timeframe, which is the whole test.
+ *
+ * Everything else — isolated margin only, reversal off, the risk policy — is
+ * the POC mandate unchanged. This widens size, not permissions.
+ */
+export const testnetAuthorityDefaults = (allocatedCapitalUsd: number): TradingAuthority => ({
+  ...pocAuthorityDefaults(allocatedCapitalUsd),
+
+  maximumLeverage: 20,
+  maximumGrossNotionalUsd: allocatedCapitalUsd * 8,
+  // Written as percentages rather than as `× 0.35` / `× 0.07`: the decimal
+  // forms land on 35.000000000000004 and 7.000000000000001, and a mandate the
+  // user reads should not have a float artifact in it.
+  maximumCumulativeLossUsd: (allocatedCapitalUsd * 35) / 100,
+  maximumPlannedRiskPerPositionUsd: (allocatedCapitalUsd * 7) / 100,
+});

@@ -21,7 +21,7 @@ import type { OrchestrationEvent, ThreadId } from "@t3tools/contracts";
 import { CommandId, TradingMissionId } from "@t3tools/contracts";
 import type { TradingMissionStatus, TradingProvider } from "@t3tools/trading-contracts";
 import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
-import { isPositionIncreasing } from "@t3tools/trading-contracts/protection";
+import { checkStopReplacement, isPositionIncreasing } from "@t3tools/trading-contracts/protection";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -43,7 +43,10 @@ import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
 import { TradingExecutionGuard } from "./TradingExecutionGuard.ts";
-import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
+import {
+  HyperliquidExecutionService,
+  TradingExecutionError,
+} from "./HyperliquidExecutionService.ts";
 import { HyperliquidReconciler } from "./HyperliquidReconciler.ts";
 import { TradingProtectionService } from "./TradingProtectionService.ts";
 import { TradingEmergencyCloseService } from "./TradingEmergencyCloseService.ts";
@@ -52,6 +55,7 @@ import { TradingBudgetReader } from "./TradingBudgetReader.ts";
 import { TradingFillReconciler } from "./TradingFillReconciler.ts";
 import { InterimSignerConfig } from "./InterimSignerConfig.ts";
 import { AutoMissionConfig } from "./AutoMissionConfig.ts";
+import { resolveMissionCapitalUsd } from "./MissionCapital.ts";
 import { ALL_MISSION_STATUSES, isActiveMissionStatus } from "./MissionTransitions.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
@@ -259,12 +263,25 @@ const make = Effect.gen(function* () {
 
     const harness = yield* resolveHarnessBinding(threadId);
 
+    // No stated capital means "size the mandate from the account". Resolved
+    // here rather than in `TradingMissionService` because this is where the
+    // exchange gateway already is; the service stays SQL-only. See
+    // `MissionCapital` for the precedence and why an unreadable account warns
+    // instead of blocking.
+    const resolvedCapitalUsd = yield* resolveMissionCapitalUsd({
+      explicitUsd: allocatedCapitalUsd,
+      readAccountValueUsd: missions.getMasterWalletAddress(tradingAccountId).pipe(
+        Effect.flatMap((address) => gateway.getAccountSnapshot(address)),
+        Effect.map((snapshot) => snapshot.accountValue),
+      ),
+    });
+
     yield* missions.createMission({
       missionId,
       userId: LOCAL_TRADING_USER_ID,
       tradingAccountId,
       instruction,
-      allocatedCapitalUsd,
+      allocatedCapitalUsd: resolvedCapitalUsd,
       harness,
     });
 
@@ -373,7 +390,11 @@ const make = Effect.gen(function* () {
       missionId: TradingMissionId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie)),
       tradingAccountId: settings.value.tradingAccountId,
       instruction: settings.value.instruction,
-      allocatedCapitalUsd: settings.value.allocatedCapitalUsd,
+      // Omitted when the knob is unset, which is what tells `create` to size
+      // the mandate from the live account value.
+      ...(settings.value.allocatedCapitalUsd === null
+        ? {}
+        : { allocatedCapitalUsd: settings.value.allocatedCapitalUsd }),
       createdAt: yield* nowIso,
     });
   });
@@ -595,6 +616,180 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * Withdraw one resting order the harness placed (`actionType: "cancel"`).
+   *
+   * The order is named by `targetCloid` and looked up against this mission's
+   * own rows — the harness may only cancel what its mission owns, and the
+   * lookup is what enforces that rather than trusting the cloid it was handed.
+   *
+   * A position-increasing parent goes through §17.3's protect-then-cancel
+   * ordering, because cancelling a partially filled parent takes its linked
+   * TP/SL children with it and would strip the filled slice of its only stop.
+   * Anything else — a resting order with no recorded stop — is cancelled
+   * plainly.
+   */
+  const cancelRestingOrder = Effect.fn("TradingMissionReactor.cancelRestingOrder")(
+    function* (input: {
+      readonly missionId: TradingMissionId;
+      readonly intent: TradingOrderIntent;
+      readonly masterAddress: string;
+    }) {
+      const { missionId, intent, masterAddress } = input;
+      const targetCloid = intent.targetCloid;
+      if (targetCloid === undefined) {
+        return yield* new TradingExecutionError({
+          stage: "intent_invalid",
+          detail:
+            "a cancel names the order it withdraws: supply targetCloid, the client order id " +
+            "read from trading_get_open_orders",
+        });
+      }
+
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{
+        readonly action_type: string;
+        readonly stop_price: number | null;
+      }>`
+      SELECT e.action_type, e.stop_price
+      FROM trading_orders o
+      JOIN trading_execution_records e ON e.cloid = o.cloid
+      WHERE o.mission_id = ${missionId} AND o.cloid = ${targetCloid}
+    `;
+      const order = rows[0];
+      if (order === undefined) {
+        return yield* new TradingExecutionError({
+          stage: "intent_invalid",
+          detail: `no resting order ${targetCloid} belongs to this mission`,
+        });
+      }
+
+      if (isPositionIncreasing(order.action_type) && order.stop_price !== null) {
+        const outcome = yield* protection.cancelEntriesWithProtection({
+          missionId,
+          strategyVersion: intent.strategyVersion,
+          executionSequence: intent.executionSequence,
+          masterAddress,
+          market: intent.market,
+          stopPrice: order.stop_price,
+          cloids: [targetCloid],
+        });
+        if (outcome.status === "escalate") {
+          return yield* new TradingExecutionError({
+            stage: "intent_invalid",
+            detail:
+              `order ${targetCloid} was left resting: the already-filled size could not be ` +
+              `protected first (${outcome.escalationReason ?? "protection unconfirmed"})`,
+          });
+        }
+        return;
+      }
+
+      yield* execution.submitCancel({ market: intent.market, cloid: targetCloid });
+    },
+  );
+
+  /**
+   * Move the stop on an open position (`actionType: "modify_stop"`).
+   *
+   * The whole reason this exists: protection is placed once at entry, so
+   * trailing a stop or pulling it to break-even had no path at all. The new
+   * price is checked against a fresh mid before anything is submitted — an
+   * unreachable stop would otherwise fail to confirm, and a failure to confirm
+   * escalates to a close, which is a violent answer to a typo'd number.
+   */
+  const modifyStop = Effect.fn("TradingMissionReactor.modifyStop")(function* (input: {
+    readonly missionId: TradingMissionId;
+    readonly threadId: ThreadId;
+    readonly intent: TradingOrderIntent;
+    readonly masterAddress: string;
+    readonly bbo: {
+      readonly bidPrice?: number | undefined;
+      readonly askPrice?: number | undefined;
+    };
+  }) {
+    const { missionId, threadId, intent, masterAddress, bbo } = input;
+    const stop = intent.stop;
+    if (stop === undefined) {
+      return yield* new TradingExecutionError({
+        stage: "intent_invalid",
+        detail: "modify_stop carries the new protection: supply stop.stopPrice",
+      });
+    }
+
+    // A one-sided book gives no usable mid, and this check is the only thing
+    // standing between a typo'd stop and an escalation to a forced close.
+    // Refuse rather than pick a side.
+    const { bidPrice, askPrice } = bbo;
+    if (bidPrice === undefined || askPrice === undefined) {
+      return yield* new TradingExecutionError({
+        stage: "intent_invalid",
+        detail: "no two-sided book to price the new stop against; retry when the book is quoted",
+      });
+    }
+    const midPrice = (bidPrice + askPrice) / 2;
+
+    // The position this protects, as the `before_execution` reconcile left it.
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ readonly size: number }>`
+      SELECT size FROM trading_position_snapshots
+      WHERE mission_id = ${missionId} AND market = ${intent.market}
+    `;
+    const positionSize = rows[0]?.size ?? 0;
+    if (positionSize === 0) {
+      return yield* new TradingExecutionError({
+        stage: "intent_invalid",
+        detail: "modify_stop needs an open position; this mission is flat",
+      });
+    }
+
+    const defect = checkStopReplacement({
+      positionSize,
+      referencePrice: midPrice,
+      stopPrice: stop.stopPrice,
+    });
+    if (defect !== null) {
+      return yield* new TradingExecutionError({
+        stage: "intent_invalid",
+        detail:
+          `${defect}: stop ${stop.stopPrice} against mid ${midPrice} for a ` +
+          `${positionSize > 0 ? "long" : "short"} of ${positionSize}`,
+      });
+    }
+
+    const outcome = yield* protection.replaceProtection({
+      missionId,
+      strategyVersion: intent.strategyVersion,
+      executionSequence: intent.executionSequence,
+      masterAddress,
+      market: intent.market,
+      stopPrice: stop.stopPrice,
+    });
+
+    if (outcome.status !== "escalate") {
+      yield* Effect.logInfo("trading stop replaced", {
+        missionId,
+        status: outcome.status,
+        stopPrice: stop.stopPrice,
+        protectedSize: outcome.protectedSize,
+        replacedCloids: outcome.replacedCloids,
+      });
+      return;
+    }
+
+    yield* Effect.logError("trading stop replacement left the position uncovered; escalating", {
+      missionId,
+      reason: outcome.escalationReason,
+    });
+    yield* emergency.emergencyClose({
+      missionId,
+      masterAddress,
+      market: intent.market,
+      reason: outcome.escalationReason ?? "stop replacement could not be confirmed",
+    });
+    yield* announceStatus({ missionId, threadId, status: "blocked" });
+  });
+
+  /**
    * A workspace button pressed one of §14.7's exchange-touching controls.
    *
    * The whole point of these is that they do not need a harness turn, so this
@@ -686,10 +881,17 @@ const make = Effect.gen(function* () {
     const orderBook = yield* gateway.getOrderBook(intent.market);
     const budget = evaluateLossBudget(budgetInput);
     const sql = yield* SqlClient.SqlClient;
+    // Preview item 16 exists to stop two submit sequences racing one nonce and
+    // idempotency window, and that is all it should stop. "In flight" is
+    // therefore the mid-submission statuses only: a record the exchange has
+    // already acknowledged is resting on the book, which is visible, manageable
+    // state — the harness must be able to reduce, close, cancel, or move a stop
+    // while an entry rests. Counting `accepted` here is what made one filled
+    // entry permanently lock the mission out of every subsequent write.
     const pendingRows = yield* sql<{ readonly count: number }>`
       SELECT COUNT(*) AS count FROM trading_execution_records
       WHERE mission_id = ${missionId}
-        AND status NOT IN ('filled', 'rejected', 'cancelled', 'failed')
+        AND status IN ('previewed', 'reserved', 'signed', 'submitted')
     `;
     // The interim signer IS the approved execution wallet for the POC (Privy
     // replaces it in PROMPT-06). Resolve its address so preview item 8 can
@@ -724,8 +926,25 @@ const make = Effect.gen(function* () {
       },
       allowedSlippageBps: 50,
     };
-    if (intent.actionType === "close" || (intent.actionType === "reduce" && intent.reduceOnly)) {
+    // Which of the five write paths this intent is. `reduce` and `close` never
+    // reach `submitOrder`: both go through the guard, which forces reduce-only
+    // on the wire and sizes the exit against the canonical position. That is
+    // what stops a `reduce` with `reduceOnly: false` from crossing through flat
+    // into an unprotected reversal `allowDirectionReversal: false` forbids.
+    if (intent.actionType === "close") {
       yield* guard.reduceOnlyClose(executionInput);
+    } else if (intent.actionType === "reduce") {
+      yield* guard.reduceOnlySized(executionInput);
+    } else if (intent.actionType === "cancel") {
+      yield* cancelRestingOrder({ missionId, intent, masterAddress });
+    } else if (intent.actionType === "modify_stop") {
+      yield* modifyStop({
+        missionId,
+        threadId,
+        intent,
+        masterAddress,
+        bbo: orderBook.bestBidOffer,
+      });
     } else {
       yield* execution.submitOrder(executionInput);
     }

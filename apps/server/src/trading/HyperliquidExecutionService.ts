@@ -77,6 +77,8 @@ export class TradingExecutionError extends Schema.TaggedErrorClass<TradingExecut
       "submit_failed",
       "inspect_failed",
       "missing_stop",
+      /** The intent could not be acted on as written — a malformed request. */
+      "intent_invalid",
     ]),
     detail: Schema.optional(Schema.String),
   },
@@ -643,9 +645,23 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       // and reading that as "accepted" across the batch is exactly the batch-
       // atomicity assumption §17.1 forbids. A rejected child is recorded in
       // `orderResults` and left for protection reconciliation to repair.
+      //
+      // A response that says `filled` is recorded as `filled`, not `accepted`.
+      // The exchange is the authority on the outcome of its own submit, and an
+      // IOC reports that outcome in the submit response itself — there is no
+      // later reconciliation question to leave open. Recording it as `accepted`
+      // parked every successful IOC in a non-terminal status forever: nothing
+      // in the system ever wrote `filled`, so the record stayed "in flight",
+      // its risk reservation stayed reserved, and preview item 16 refused every
+      // subsequent intent for the mission. `accepted` now means only what it
+      // says — acknowledged and resting on the book.
       const entryResult = orderResults.find((r) => r.role !== "protection") ?? orderResults[0];
-      const accepted = entryResult?.status === "filled" || entryResult?.status === "resting";
-      const finalStatus: TradingExecutionRecord["status"] = accepted ? "accepted" : "rejected";
+      const finalStatus: TradingExecutionRecord["status"] =
+        entryResult?.status === "filled"
+          ? "filled"
+          : entryResult?.status === "resting"
+            ? "accepted"
+            : "rejected";
       const updatedAt = yield* now();
       yield* updateExecutionRecord(persistedExecutionId, finalStatus, orderResults, updatedAt);
       if (finalStatus === "rejected") {

@@ -41,7 +41,9 @@ import {
   type ReconciliationTrigger,
 } from "./HyperliquidReconciler.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
+import { FALLBACK_MISSION_CAPITAL_USD } from "./MissionCapital.ts";
 import { TradingLayerLive } from "./runtimeLayer.ts";
+import { HyperliquidGateway } from "@t3tools/hyperliquid";
 
 const THREAD_ID = ThreadId.make("thread-trading-reactor");
 const MISSION_ID = TradingMissionId.make("mission-trading-reactor");
@@ -91,6 +93,49 @@ const createMission = Effect.gen(function* () {
     createdAt: NOW,
   });
   yield* settle;
+});
+
+/**
+ * The same create, with no capital stated — the path that resolves the mandate
+ * from the account. Absent rather than zero: the two are different requests.
+ */
+const createMissionWithoutCapital = Effect.gen(function* () {
+  const engine = yield* OrchestrationEngineService;
+  yield* engine.dispatch({
+    type: "trading.mission.create",
+    commandId: yield* commandId,
+    threadId: THREAD_ID,
+    missionId: MISSION_ID,
+    tradingAccountId: "acct-trading-reactor",
+    instruction: "Trade ETH momentum",
+    createdAt: NOW,
+  });
+  yield* settle;
+});
+
+/** The master-wallet identity account reads resolve through (§10.6). */
+const MASTER_ADDRESS = "0x000000000000000000000000000000000000beef";
+
+/**
+ * Provision the account row the mission names, so `getMasterWalletAddress`
+ * resolves and the account read is actually reached. The wallet JSON shape is
+ * the published `TradingMasterWallet` contract (§10.1).
+ */
+const seedTradingAccount = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const masterWalletJson =
+    '{"privyWalletId":"wallet-trading-reactor",' +
+    `"address":"${MASTER_ADDRESS}",` +
+    '"ownership":"user"}';
+  yield* sql`
+    INSERT INTO trading_accounts (
+      account_id, user_id, environment, master_wallet_json,
+      execution_wallet_json, status, created_at, updated_at
+    ) VALUES (
+      'acct-trading-reactor', 'local', 'hyperliquid_testnet', ${masterWalletJson},
+      ${masterWalletJson}, 'ready', 0, 0
+    )
+  `;
 });
 
 const control = (
@@ -460,10 +505,10 @@ it.layer(TestLayer)("trading mission reactor", (it) => {
       assert.equal(projected.value.status, "analysing");
       assert.equal(projected.value.strategyVersion, 0);
       assert.equal(projected.value.strategy, null);
-      // The mandate is the POC authority defaults over the allocated capital.
+      // The mandate is the testnet authority defaults over the allocated capital.
       assert.equal(projected.value.authorityVersion, 1);
       assert.equal(projected.value.authority.allocatedCapitalUsd, 1_000);
-      assert.equal(projected.value.authority.maximumGrossNotionalUsd, 3_000);
+      assert.equal(projected.value.authority.maximumGrossNotionalUsd, 8_000);
       // Migration 035 stores epoch millis; the read model is ISO.
       assert.match(projected.value.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
     }),
@@ -733,4 +778,85 @@ it.live("reconciles before resuming a paused mission", () =>
       assert.equal(resumed.value.status, "analysing");
     }).pipe(Effect.scoped, Effect.provide(StubbedLayer));
   }),
+);
+
+/**
+ * The mandate's size comes from the account, not from a constant.
+ *
+ * A create request that states no capital is the ordinary case — the form's
+ * capital field left empty, or `T3_TRADES_AUTO_MISSION_CAPITAL_USD` unset. The
+ * reactor resolves it from the live account value at creation time, and the
+ * whole §10.4 envelope scales from what it resolved: a $1,000 account yields a
+ * $350 cumulative loss budget rather than the $17.50 a hardcoded $50 produced.
+ */
+it.live("sizes a mission with no stated capital from the live account value", () =>
+  Effect.gen(function* () {
+    const stubGateway = Layer.succeed(HyperliquidGateway, {
+      resolveMarket: () => Effect.die("not used"),
+      getMarketSnapshot: () => Effect.die("not used"),
+      getMarketHistory: () => Effect.die("not used"),
+      getOrderBook: () => Effect.die("not used"),
+      getAccountSnapshot: () =>
+        Effect.succeed({
+          address: MASTER_ADDRESS,
+          accountValue: 1_000,
+          marginUsed: 0,
+          withdrawable: 1_000,
+          positions: [],
+          freshness: { observedAt: 0, source: "info_api", staleness: "fresh" },
+        } as never),
+      getPosition: () => Effect.die("not used"),
+      getOpenOrders: () => Effect.die("not used"),
+      getTakerFeeRateBps: () => Effect.die("not used"),
+    });
+
+    const StubbedLayer = TradingMissionReactorLive.pipe(
+      Layer.provide(stubGateway),
+      Layer.provideMerge(TradingLayerLive),
+      Layer.provideMerge(OrchestrationEngineLive),
+      Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+      Layer.provideMerge(OrchestrationProjectionPipelineLive),
+      Layer.provideMerge(OrchestrationEventStoreLive),
+      Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+      Layer.provideMerge(RepositoryIdentityResolver.layer),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-capital-" })),
+      Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    yield* Effect.gen(function* () {
+      yield* started;
+      yield* seedTradingAccount;
+      yield* createMissionWithoutCapital;
+
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.authority.allocatedCapitalUsd, 1_000);
+      // The §10.4 envelope the resolved capital scales: 8x gross, 35% budget.
+      assert.equal(projected.value.authority.maximumGrossNotionalUsd, 8_000);
+      assert.equal(projected.value.authority.maximumCumulativeLossUsd, 350);
+      assert.equal(projected.value.authority.maximumPlannedRiskPerPositionUsd, 70);
+    }).pipe(Effect.scoped, Effect.provide(StubbedLayer));
+  }),
+);
+
+/**
+ * An unreadable account is a warning, not a refusal.
+ *
+ * Here the mission names a trading account that was never provisioned, so the
+ * master address — and with it the account read — fails outright. The mission
+ * must still be created, on the documented fallback mandate: a dead info
+ * endpoint is not a reason to stop a testnet lab from starting, and the
+ * operator's cue is the warning plus a mandate visibly smaller than expected.
+ */
+it.live("still creates the mission when the account cannot be read", () =>
+  Effect.gen(function* () {
+    yield* started;
+    // No trading_accounts row seeded: getMasterWalletAddress fails.
+    yield* createMissionWithoutCapital;
+
+    const projected = yield* projectedMission;
+    assert.ok(Option.isSome(projected));
+    assert.equal(projected.value.authority.allocatedCapitalUsd, FALLBACK_MISSION_CAPITAL_USD);
+  }).pipe(Effect.scoped, Effect.provide(TestLayer)),
 );

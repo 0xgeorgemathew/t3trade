@@ -364,7 +364,11 @@ export function selectableMissionThreads(
 export function newMissionBlocker(input: {
   readonly threadId: string | null;
   readonly instruction: string;
-  readonly allocatedCapitalUsd: number;
+  /**
+   * The typed grant, or `null` for "resolve it from the account balance at
+   * creation" — an empty field is a valid submission, not a missing one.
+   */
+  readonly allocatedCapitalUsd: number | null;
   readonly tradingAccountId: string;
   /** A mission already exists in a status other than revoked/completed. */
   readonly hasActiveMission: boolean;
@@ -376,7 +380,8 @@ export function newMissionBlocker(input: {
   if (input.threadId === null) return "Pick a thread to bind the mission to.";
   if (input.instruction.trim().length === 0)
     return "Write the instruction the harness will act on.";
-  if (!(input.allocatedCapitalUsd > 0)) return "Allocated capital must be greater than zero.";
+  if (input.allocatedCapitalUsd !== null && !(input.allocatedCapitalUsd > 0))
+    return "Allocated capital must be greater than zero, or empty to use the account balance.";
   if (input.tradingAccountId.trim().length === 0) return "Name the trading account.";
   return null;
 }

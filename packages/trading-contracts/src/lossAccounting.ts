@@ -142,7 +142,15 @@ export function evaluateLossBudget(input: LossBudgetInput): TradingLossBudget {
  * actions (open, scale_in) and reversals/re-entries are blocked, while
  * cancellation, reduction, close, and revocation remain permitted.
  */
-const EXHAUSTION_PERMITTED_ACTIONS: ReadonlySet<string> = new Set(["cancel", "reduce", "close"]);
+const EXHAUSTION_PERMITTED_ACTIONS: ReadonlySet<string> = new Set([
+  "cancel",
+  "reduce",
+  "close",
+  // Repairing or tightening protection is exactly what an exhausted mission
+  // still needs to be able to do; §16.4 blocks taking on risk, not managing
+  // the risk already open.
+  "modify_stop",
+]);
 
 /** True when `actionType` is permitted under exhaustion (§16.4). */
 export function isPermittedUnderExhaustion(actionType: string): boolean {

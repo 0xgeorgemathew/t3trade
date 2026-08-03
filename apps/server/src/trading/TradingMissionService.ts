@@ -24,9 +24,9 @@ import {
   TradingMissionVersionConflictError,
 } from "./Errors.ts";
 import { isActiveMissionStatus, validateTransition } from "./MissionTransitions.ts";
+import { resolveTestnetAuthority } from "./TestnetAuthority.ts";
 import {
   EvmAddress,
-  pocAuthorityDefaults,
   TradingAuthority,
   TradingHarnessBinding,
   TradingMasterWallet,
@@ -87,7 +87,8 @@ export type TradingMissionServiceError =
 
 export interface TradingMissionServiceShape {
   /**
-   * Create a mission with the POC authority defaults applied to the mandate.
+   * Create a mission with the testnet authority defaults applied to the mandate
+   * (`TestnetAuthority`, env-overridable).
    *
    * Fails with `TradingMissionAlreadyActiveError` when the user already holds a
    * mission that is not in a permanent terminal state.
@@ -341,7 +342,9 @@ const makeTradingMissionService = Effect.gen(function* () {
         });
       }
 
-      const authority = pocAuthorityDefaults(input.allocatedCapitalUsd);
+      // The testnet lab preset, not the spec's $1,000 worked example — see
+      // `TestnetAuthority` for the sizing and the env knobs that adjust it.
+      const authority = resolveTestnetAuthority(process.env, input.allocatedCapitalUsd);
       const control: TradingMissionControl = {
         entriesAllowed: true,
         reentryAllowed: authority.allowReentry,

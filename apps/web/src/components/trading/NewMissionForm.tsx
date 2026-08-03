@@ -22,7 +22,18 @@ import { newMissionBlocker, selectableMissionThreads } from "./tradingPresentati
 const LOCAL_TRADING_ACCOUNT_ID = "local-hyperliquid-testnet";
 
 const DEFAULT_INSTRUCTION = POC_DEFAULT_INSTRUCTION;
-const DEFAULT_CAPITAL_USD = 50;
+
+/**
+ * Capital starts empty, and empty means "size the mandate from the live
+ * account value at creation".
+ *
+ * It used to default to 50, which quietly became the mandate the whole risk
+ * envelope scaled from — a $400 notional ceiling on a $1,000 account, chosen by
+ * a constant rather than by the operator. A typed number is still taken
+ * verbatim and is never clamped against the balance; leaving the field alone
+ * defers to the account. See `MissionCapital` on the server.
+ */
+const CAPITAL_PLACEHOLDER = "Allocated capital (USD) — empty uses the account balance";
 
 /**
  * Seeds a mission onto a thread (development builds only).
@@ -48,7 +59,7 @@ export function NewMissionForm({
 
   const [threadId, setThreadId] = useState<string | null>(null);
   const [instruction, setInstruction] = useState(DEFAULT_INSTRUCTION);
-  const [capital, setCapital] = useState(String(DEFAULT_CAPITAL_USD));
+  const [capital, setCapital] = useState("");
   const [accountId, setAccountId] = useState(LOCAL_TRADING_ACCOUNT_ID);
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,7 +70,9 @@ export function NewMissionForm({
     return selectableMissionThreads(shells, boundThreadIds);
   }, [threadRefs, allShells, boundThreadIds]);
 
-  const allocatedCapitalUsd = Number(capital);
+  // An empty field is not zero — it is the absence of a grant, which the server
+  // reads as "use the account value".
+  const allocatedCapitalUsd = capital.trim() === "" ? null : Number(capital);
   const blocker = newMissionBlocker({
     threadId,
     instruction,
@@ -78,7 +91,7 @@ export function NewMissionForm({
         threadId: threadId as ThreadId,
         tradingAccountId: accountId.trim(),
         instruction: instruction.trim(),
-        allocatedCapitalUsd,
+        ...(allocatedCapitalUsd === null ? {} : { allocatedCapitalUsd }),
       },
     })
       .then(() => {
@@ -137,8 +150,13 @@ export function NewMissionForm({
           value={capital}
           inputMode="decimal"
           onChange={(event) => setCapital(event.target.value)}
-          placeholder="Allocated capital (USD)"
+          placeholder={CAPITAL_PLACEHOLDER}
         />
+        <p className="text-xs text-muted-foreground">
+          {allocatedCapitalUsd === null
+            ? "Mandate: sized from the account balance when the mission is created."
+            : `Mandate: $${allocatedCapitalUsd.toLocaleString()} exactly, whatever the account holds.`}
+        </p>
         <Input
           aria-label="Trading account"
           value={accountId}

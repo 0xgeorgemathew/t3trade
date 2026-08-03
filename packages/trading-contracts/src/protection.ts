@@ -25,7 +25,15 @@ import type { TradingOrderSide, TradingStopInfo } from "./execution.ts";
  * exhaustion-permitted set, and `TradingExecutionGuard.blockForExhaustion`
  * reads the same three names out of SQL.
  */
-const EXPOSURE_REDUCING_ACTIONS: ReadonlySet<string> = new Set(["cancel", "reduce", "close"]);
+const EXPOSURE_REDUCING_ACTIONS: ReadonlySet<string> = new Set([
+  "cancel",
+  "reduce",
+  "close",
+  // Moving a stop replaces one reduce-only trigger with another. It cannot
+  // open or extend a position, and demanding a stop *for* a stop would reject
+  // the only action that repairs one.
+  "modify_stop",
+]);
 
 /**
  * True when `actionType` can increase exposure and therefore requires a stop.
@@ -79,6 +87,36 @@ export function checkStopInformation(input: StopGateInput): StopGateDefect | nul
   const onLosingSide = isLong
     ? stop.stopPrice < input.referencePrice
     : stop.stopPrice > input.referencePrice;
+  return onLosingSide ? null : "stop_on_wrong_side_of_entry";
+}
+
+/**
+ * The same gate, for a stop being moved onto a position that already exists.
+ *
+ * `checkStopInformation` measures against the entry a request is about to make
+ * and passes reducing actions straight through, which is right for it and
+ * useless here: a `modify_stop` is a reducing action whose whole payload is the
+ * stop. This measures against the position and the current reference price
+ * instead.
+ *
+ * It matters more than it looks. A stop on the wrong side of the mark triggers
+ * the instant it rests, so a typo'd number would not be caught by a failed
+ * placement — it would be caught by the position closing, or by the placement
+ * never confirming and escalating to a forced close. Both are violent answers
+ * to a bad digit.
+ */
+export function checkStopReplacement(input: {
+  /** Signed canonical position size; positive long, negative short. */
+  readonly positionSize: number;
+  /** Current mark or mid the new stop is measured against. */
+  readonly referencePrice: number;
+  readonly stopPrice: number;
+}): StopGateDefect | null {
+  if (!(input.stopPrice > 0)) return "stop_price_not_positive";
+  const isLong = input.positionSize > 0;
+  const onLosingSide = isLong
+    ? input.stopPrice < input.referencePrice
+    : input.stopPrice > input.referencePrice;
   return onLosingSide ? null : "stop_on_wrong_side_of_entry";
 }
 

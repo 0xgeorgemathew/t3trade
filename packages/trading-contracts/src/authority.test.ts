@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   pocAuthorityDefaults,
+  testnetAuthorityDefaults,
   pocRiskPolicyDefaults,
   TradingAuthority,
   TradingRiskPolicy,
@@ -106,5 +107,62 @@ describe("pocRiskPolicyDefaults (§10.4)", () => {
 
   it("decodes as a TradingRiskPolicy", () => {
     expect(decodeRiskPolicy(pocRiskPolicyDefaults)).toEqual(pocRiskPolicyDefaults);
+  });
+});
+
+/**
+ * The testnet lab preset. The POC defaults are written for the spec's $1,000
+ * worked example and do not scale down: on $100 they leave $2 of planned risk
+ * per position, which the 25 bps slippage reserve and the two 5 bps fee
+ * estimates eat before any stop distance is bought.
+ */
+describe("testnetAuthorityDefaults", () => {
+  const authority = testnetAuthorityDefaults(100);
+
+  it("sizes a $100 account for the operator's 20x testnet ceiling", () => {
+    expect(authority.maximumLeverage).toBe(20);
+    expect(authority.maximumGrossNotionalUsd).toBe(800);
+    expect(authority.maximumCumulativeLossUsd).toBe(35);
+    expect(authority.maximumPlannedRiskPerPositionUsd).toBe(7);
+  });
+
+  // The funding level the testnet lab actually runs at, now that mission
+  // capital is resolved from the live account rather than a constant. Pinned so
+  // the mandate a 1,000 USDC account grants is a number someone chose and can
+  // see, not an incidental product of the ratios.
+  it("grants a 1,000 USDC account an $8,000 / $350 / $70 envelope", () => {
+    const funded = testnetAuthorityDefaults(1_000);
+    expect(funded.maximumLeverage).toBe(20);
+    expect(funded.maximumGrossNotionalUsd).toBe(8_000);
+    expect(funded.maximumCumulativeLossUsd).toBe(350);
+    expect(funded.maximumPlannedRiskPerPositionUsd).toBe(70);
+  });
+
+  it("leaves room for a real stop distance after fees and the slippage reserve", () => {
+    // The check the POC defaults fail. A $400 entry costs $0.20 in estimated
+    // entry fee, $0.20 in exit fee, and $1.00 in the 25 bps stop-slippage
+    // reserve; what is left has to buy a stop far enough away to survive noise.
+    const notional = 400;
+    const feePerSide = (notional * authority.riskPolicy.fallbackTakerFeeBpsPerSide) / 10_000;
+    const slippageReserve = (notional * authority.riskPolicy.stopSlippageReserveBps) / 10_000;
+    const fixedCost = feePerSide * 2 + slippageReserve;
+
+    const stopDistanceFraction =
+      (authority.maximumPlannedRiskPerPositionUsd - fixedCost) / notional;
+    // Better than 1% of the entry — a real distance on a 1m momentum bar.
+    expect(stopDistanceFraction).toBeGreaterThan(0.01);
+  });
+
+  it("widens size without widening permission", () => {
+    const poc = pocAuthorityDefaults(100);
+    expect(authority.marginModes).toEqual(poc.marginModes);
+    expect(authority.allowDirectionReversal).toBe(poc.allowDirectionReversal);
+    expect(authority.allowedDirections).toEqual(poc.allowedDirections);
+    expect(authority.riskPolicy).toEqual(poc.riskPolicy);
+    expect(authority.validUntil).toBe(poc.validUntil);
+  });
+
+  it("decodes as a TradingAuthority", () => {
+    expect(decodeAuthority(authority)).toEqual(authority);
   });
 });

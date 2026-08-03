@@ -343,7 +343,7 @@ layer("HyperliquidExecutionService", (it) => {
   );
 
   it.effect(
-    "retry idempotency on the ACCEPTED path: a retry of a live order never reaches the exchange twice",
+    "retry idempotency on the successful path: a retry of a live order never reaches the exchange twice",
     () =>
       Effect.gen(function* () {
         yield* migrated;
@@ -360,15 +360,17 @@ layer("HyperliquidExecutionService", (it) => {
           masterAddress: "0xmaster",
         };
 
+        // The canned response reports the entry leg filled, so the record
+        // settles terminal at `filled` straight from the submit response.
         const first = yield* service.submitOrder(execInput);
-        assert.equal(first.status, "accepted");
+        assert.equal(first.status, "filled");
 
         // The retry must stop at the persisted record. Nothing downstream will
         // catch it if it does not: the live testnet run shows a resubmitted
         // marketable IOC opening a SECOND order under the same cloid and
         // filling again, doubling the position.
         const second = yield* service.submitOrder(execInput);
-        assert.equal(second.status, "accepted");
+        assert.equal(second.status, "filled");
         assert.equal(second.executionId, first.executionId);
         assert.equal(recordingExchange.submitted.length, 1);
       }),
@@ -509,7 +511,7 @@ layer("HyperliquidExecutionService", (it) => {
         masterAddress: "0xmaster",
       });
 
-      assert.equal(record.status, "accepted");
+      assert.equal(record.status, "filled");
       assert.equal(record.stopPrice, undefined);
       assert.equal(recordingExchange.submitted.length, 1);
     }),

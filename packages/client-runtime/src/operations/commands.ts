@@ -322,7 +322,8 @@ export interface TradingMissionCreateInput {
   readonly missionId?: TradingMissionId;
   readonly tradingAccountId: string;
   readonly instruction: string;
-  readonly allocatedCapitalUsd: number;
+  /** Omit to have the server size the mandate from the live account value. */
+  readonly allocatedCapitalUsd?: number;
 }
 
 export const tradingMissionCreate: (input: TradingMissionCreateInput) => CommandEffect = Effect.fn(
@@ -339,7 +340,9 @@ export const tradingMissionCreate: (input: TradingMissionCreateInput) => Command
     missionId,
     tradingAccountId: input.tradingAccountId,
     instruction: input.instruction,
-    allocatedCapitalUsd: input.allocatedCapitalUsd,
+    ...(input.allocatedCapitalUsd === undefined
+      ? {}
+      : { allocatedCapitalUsd: input.allocatedCapitalUsd }),
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
   });

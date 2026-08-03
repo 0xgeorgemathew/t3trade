@@ -1191,7 +1191,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           tradingAccountId: command.tradingAccountId,
           instruction: command.instruction,
-          allocatedCapitalUsd: command.allocatedCapitalUsd,
+          // Absent stays absent: the reactor reads "no stated capital" as
+          // "resolve it from the account", and a default injected here would
+          // erase that distinction before it reaches the reactor.
+          ...(command.allocatedCapitalUsd === undefined
+            ? {}
+            : { allocatedCapitalUsd: command.allocatedCapitalUsd }),
           requestedAt: command.createdAt,
         },
       };

@@ -470,6 +470,162 @@ layer("HyperliquidReconciler", (it) => {
   );
 
   // -------------------------------------------------------------------------
+  // 3c. Accepted executions: `accepted` means the exchange took the order and
+  //     it rests. Nothing about that settles itself — the submit response is
+  //     the last word the submit path hears — so the reconciler has to carry
+  //     the record to a terminal once canonical state resolves it.
+  // -------------------------------------------------------------------------
+
+  /** Seed one acknowledged (resting) execution record + its reservation. */
+  const seedAccepted = (execId: string, cloid: string, updatedAt: number) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO trading_execution_records (
+          execution_id, mission_id, strategy_version, execution_sequence, action_type,
+          cloid, idempotency_key, market, side, size, limit_price, time_in_force,
+          reduce_only, signer_address, status, order_results_json, created_at, updated_at,
+          stop_price, planned_loss_at_stop_usd
+        ) VALUES (
+          ${execId}, ${MISSION}, ${1}, ${8}, ${"open"},
+          ${cloid}, ${`idem_${execId}`}, ${"ETH"}, ${"buy"}, ${1}, ${3000},
+          ${"gtc"}, ${0}, ${"0xsigner"}, ${"accepted"}, ${"[]"}, ${updatedAt}, ${updatedAt},
+          ${null}, ${null}
+        )
+      `;
+      yield* sql`
+        INSERT INTO trading_risk_reservations (
+          reservation_id, mission_id, execution_id, cloid, action_type,
+          reserved_risk_usd, status, reserved_at
+        ) VALUES (
+          ${`res_${execId}`}, ${MISSION}, ${execId}, ${cloid}, ${"open"},
+          ${10}, ${"reserved"}, ${updatedAt}
+        )
+      `;
+    });
+
+  const reservationStatusOf = (execId: string) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly status: string }>`
+        SELECT status FROM trading_risk_reservations WHERE execution_id = ${execId}
+      `;
+      return rows[0]?.status;
+    });
+
+  it.effect(
+    "settles an accepted record that filled and left the book, releasing its reservation",
+    () =>
+      Effect.gen(function* () {
+        yield* migrated;
+        const execId = "exec_accepted_filled";
+        const cloid = "d".repeat(32);
+        yield* seedAccepted(execId, cloid, yield* Clock.currentTimeMillis);
+
+        // The order is gone from the book and a canonical fill carries its cloid.
+        yield* setState({
+          account: snapshotFromClearinghouse(longClearinghouse),
+          orders: [],
+          fills: [fillAt(5_000, cloid, "1", 910, "0xhash_accepted")],
+        });
+        const reconciler = yield* HyperliquidReconciler;
+        yield* reconciler.reconcile(input, "after_fill");
+
+        assert.equal(yield* statusOf(execId), "filled");
+        // Same pass: the settler runs before the reservation release.
+        assert.equal(yield* reservationStatusOf(execId), "released");
+      }),
+  );
+
+  it.effect("leaves an accepted record alone while its order still rests, unfilled", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const execId = "exec_accepted_resting";
+      yield* seedAccepted(execId, "e".repeat(32), yield* Clock.currentTimeMillis);
+      yield* TestClock.adjust(Duration.minutes(2));
+
+      yield* setState({
+        account: snapshotFromClearinghouse(flatClearinghouse),
+        orders: [order("e", 911, "buy", 2950, 1)],
+        fills: [],
+      });
+      const reconciler = yield* HyperliquidReconciler;
+      yield* reconciler.reconcile(input, "periodic_while_position_open");
+
+      assert.equal(yield* statusOf(execId), "accepted");
+      assert.equal(yield* reservationStatusOf(execId), "reserved");
+    }),
+  );
+
+  // The precedence case: a PARTIALLY filled order that is still resting. A
+  // fill exists, so a fill-first settler would call it `filled` and release the
+  // reservation while the remainder is still working — live size with nothing
+  // reserved behind it. Live state has to win.
+  it.effect("leaves an accepted record alone while it rests PARTIALLY filled", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const execId = "exec_accepted_partial";
+      const cloid = "1".repeat(32);
+      yield* seedAccepted(execId, cloid, yield* Clock.currentTimeMillis);
+      yield* TestClock.adjust(Duration.minutes(2));
+
+      yield* setState({
+        account: snapshotFromClearinghouse(longClearinghouse),
+        // Half filled; the other half is still on the book under the cloid.
+        orders: [{ ...order("1", 912, "buy", 2950, 1), remainingSize: 0.5 }],
+        fills: [fillAt(5_000, cloid, "0.5", 912, "0xhash_partial")],
+      });
+      const reconciler = yield* HyperliquidReconciler;
+      yield* reconciler.reconcile(input, "after_fill");
+
+      assert.equal(yield* statusOf(execId), "accepted");
+      assert.equal(yield* reservationStatusOf(execId), "reserved");
+    }),
+  );
+
+  it.effect("cancels an accepted record that left the book without filling", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const execId = "exec_accepted_cancelled";
+      yield* seedAccepted(execId, "2".repeat(32), yield* Clock.currentTimeMillis);
+      // Past the grace window, so absence from the book counts as evidence.
+      yield* TestClock.adjust(Duration.minutes(2));
+
+      yield* setState({
+        account: snapshotFromClearinghouse(flatClearinghouse),
+        orders: [],
+        fills: [],
+      });
+      const reconciler = yield* HyperliquidReconciler;
+      yield* reconciler.reconcile(input, "periodic_while_position_open");
+
+      assert.equal(yield* statusOf(execId), "cancelled");
+      assert.equal(yield* reservationStatusOf(execId), "released");
+    }),
+  );
+
+  it.effect("leaves an accepted record alone when it vanished only moments ago", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const execId = "exec_accepted_recent";
+      yield* seedAccepted(execId, "3".repeat(32), yield* Clock.currentTimeMillis);
+
+      // Not yet visible is not the same as gone; settling here would call a
+      // live order cancelled and release the risk behind it.
+      yield* setState({
+        account: snapshotFromClearinghouse(flatClearinghouse),
+        orders: [],
+        fills: [],
+      });
+      const reconciler = yield* HyperliquidReconciler;
+      yield* reconciler.reconcile(input, "after_submission");
+
+      assert.equal(yield* statusOf(execId), "accepted");
+      assert.equal(yield* reservationStatusOf(execId), "reserved");
+    }),
+  );
+
+  // -------------------------------------------------------------------------
   // 4. Order replace: persist one set, then another ⇒ the new set wins
   //    (delete + re-insert — local rows never survive a canonical read that
   //    omits them).

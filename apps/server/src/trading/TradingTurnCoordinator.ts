@@ -45,6 +45,11 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
 import { POC_DEFAULT_TIMEFRAME } from "@t3tools/trading-contracts/strategy";
+import {
+  isDeafWhileHoldingPosition,
+  readWatchCoverage,
+  WATCH_COVERAGE_FLOOR_MILLIS,
+} from "@t3tools/trading-contracts/watch";
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import {
@@ -58,6 +63,7 @@ import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
 import { TradingWakeupComposer } from "./TradingWakeupComposer.ts";
+import { TradingWatchService } from "./TradingWatchService.ts";
 import { isActiveMissionStatus } from "./MissionTransitions.ts";
 
 export interface TradingTurnCoordinatorShape {
@@ -115,6 +121,7 @@ const make = Effect.gen(function* () {
   const inbox = yield* TradingEventInbox;
   const engine = yield* OrchestrationEngineService;
   const composer = yield* TradingWakeupComposer;
+  const watches = yield* TradingWatchService;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
@@ -220,6 +227,76 @@ const make = Effect.gen(function* () {
               }),
             ),
           );
+
+          yield* ensureNotDeaf(missionId);
+        }),
+      ),
+    );
+
+  /**
+   * Never let a run end holding a position with nothing armed that can wake it.
+   *
+   * The failure this closes was observed live: a position open, one downside
+   * `candle_close` armed, price ran 25 points the profitable way, and the
+   * harness was never woken to do anything about it. The mission was not
+   * broken — it was deaf, which looks identical from the outside and is much
+   * worse, because a deaf mission still holds exposure.
+   *
+   * The rule is a floor, not a policy: if the run left levels armed on both
+   * sides of the mark, or a reassessment due inside the window, nothing
+   * happens. Otherwise one reassessment is registered so the mission gets at
+   * least one more turn. That turn is also the staleness backstop — waking to
+   * find nothing has changed is the harness's cue to republish at v(n+1) with a
+   * different mode, wider levels, or no thesis at all.
+   *
+   * It never blocks the settlement. The lease is already released by the time
+   * this runs, and a mission that could not be given a watch is still better
+   * off settled with a logged warning than held open behind a bookkeeping
+   * failure.
+   */
+  const ensureNotDeaf = (missionId: string) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{ readonly size: number; readonly mark_px: number | null }>`
+        SELECT size, mark_px FROM trading_position_snapshots
+        WHERE mission_id = ${missionId} AND size != 0
+      `.pipe(Effect.mapError(sqlFail("ensureNotDeaf:position")));
+
+      const position = rows[0];
+      // Flat: the mission's next move is an entry, and an entry is the
+      // harness's own business to time. No floor applies.
+      if (position === undefined) return;
+
+      const now = yield* Clock.currentTimeMillis;
+      const markPrice = position.mark_px;
+      const armed = yield* strategies.listWatches(missionId);
+
+      // With no mark there is no "each side of" anything to measure. Treat that
+      // as uncovered rather than as covered: an unreadable mark is not evidence
+      // the mission can hear.
+      const coverage =
+        markPrice === null
+          ? { coversUpside: false, coversDownside: false, coversByReassessment: false }
+          : readWatchCoverage({ watches: armed, markPrice, nowMillis: now });
+
+      if (!isDeafWhileHoldingPosition(coverage)) return;
+
+      const runAt = now + WATCH_COVERAGE_FLOOR_MILLIS;
+      const watch = yield* watches.registerWatch({
+        missionId,
+        watch: { type: "scheduled_reassessment", runAt },
+      });
+      yield* Effect.logInfo("TradingTurnCoordinator: armed a reassessment for a deaf mission", {
+        missionId,
+        watchId: watch.id,
+        runAt,
+        positionSize: position.size,
+        coverage,
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("TradingTurnCoordinator: could not check watch coverage", {
+          missionId,
+          cause: String(cause),
         }),
       ),
     );

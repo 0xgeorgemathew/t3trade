@@ -16,6 +16,7 @@ import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissi
 import { TradingStrategyService, TradingStrategyServiceLive } from "./TradingStrategyService.ts";
 import { TradingTurnCoordinator, TradingTurnCoordinatorLive } from "./TradingTurnCoordinator.ts";
 import { TradingWakeupComposer } from "./TradingWakeupComposer.ts";
+import { TradingWatchServiceLive } from "./TradingWatchService.ts";
 
 /**
  * A no-op `OrchestrationEngineService` for the coordinator's unit tests. These
@@ -42,6 +43,7 @@ const layer = it.layer(
     Layer.provideMerge(TradingMissionServiceLive),
     Layer.provideMerge(TradingStrategyServiceLive),
     Layer.provideMerge(TradingEventInboxLive),
+    Layer.provideMerge(TradingWatchServiceLive),
     Layer.provideMerge(stubComposer),
     Layer.provideMerge(stubEngine),
     Layer.provideMerge(NodeSqliteClient.layerMemory()),
@@ -283,6 +285,7 @@ it.live("releases the lease and consumes claimed inbox events when the turn ends
       Layer.provideMerge(TradingMissionServiceLive),
       Layer.provideMerge(TradingStrategyServiceLive),
       Layer.provideMerge(TradingEventInboxLive),
+      Layer.provideMerge(TradingWatchServiceLive),
       Layer.provideMerge(stubComposer),
       Layer.provideMerge(queueEngine),
       Layer.provideMerge(NodeSqliteClient.layerMemory()),

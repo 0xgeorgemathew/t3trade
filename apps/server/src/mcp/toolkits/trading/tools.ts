@@ -77,7 +77,8 @@ const dependencies = [
 
 export const TradingGetMissionTool = Tool.make("trading_get_mission", {
   description:
-    "Read the current state of the trading mission this agent session is bound to: status, mandate (authority and risk policy), the published momentum strategy and its version, registered watches, and the user's control flags. Call this at the start of every turn before deciding anything.",
+    "Read the current state of the trading mission this agent session is bound to: status, mandate (authority and risk policy), the published momentum strategy and its version, registered watches, and the user's control flags. Call this at the start of every turn before deciding anything. " +
+    "The mandate is the user's hard rails, not a balance: `authority.allocatedCapitalUsd` and the maximums derived from it are ceilings you may never exceed, and they do not move when the account value does. What is actually free to trade right now is `accountSnapshot.withdrawable` from trading_get_account_state. Sizing within the rails, against the live balance, is your judgement to exercise.",
   parameters: TradingGetMissionInput,
   success: TradingGetMissionResult,
   failure: TradingToolRejectedError,
@@ -91,7 +92,9 @@ export const TradingGetMissionTool = Tool.make("trading_get_mission", {
 
 export const TradingPublishMomentumStrategyTool = Tool.make("trading_publish_momentum_strategy", {
   description:
-    "Publish the momentum strategy this mission should now be executed against. Supply expectedVersion as the strategy version you read from trading_get_mission (0 before any publish). A stale expectedVersion is rejected with the server's current version and leaves the published strategy untouched; an accepted publish increments the version and supersedes the watches registered by the previous one.",
+    "Publish the momentum strategy this mission should now be executed against. Supply expectedVersion as the strategy version you read from trading_get_mission (0 before any publish). A stale expectedVersion is rejected with the server's current version and leaves the published strategy untouched; an accepted publish increments the version and supersedes the watches registered by the previous one — re-arm the watches you still want, and cancel any resting order from the old thesis with trading_request_entry actionType `cancel`, which a publish does not touch. " +
+    "This is also how you switch strategies: republish at the next version with a different mode or direction when the thesis fails or the market goes stale. " +
+    "Every entry in `strategy.entryPlan.conditions[]` REQUIRES a non-empty `description` — the prose conclusion is the field that matters; `timeframe`, `priceLevel`, and `invalidatedBy` are optional display hints. A conditions entry without a description is rejected.",
   parameters: TradingPublishMomentumStrategyInput,
   success: TradingPublishMomentumStrategyResult,
   failure: TradingToolRejectedError,
@@ -165,7 +168,8 @@ export const TradingGetOrderBookTool = Tool.make("trading_get_order_book", {
 
 export const TradingGetAccountStateTool = Tool.make("trading_get_account_state", {
   description:
-    "Read the canonical account state for this mission's trading account: account value, margin used, withdrawable, and open positions. Account state is always queried with the user-owned master-wallet address — the execution-wallet address is never used as identity.",
+    "Read the canonical account state for this mission's trading account: account value, margin used, withdrawable, and open positions. Account state is always queried with the user-owned master-wallet address — the execution-wallet address is never used as identity. " +
+    "This is the live balance, not your mandate: `withdrawable` is what is actually free right now, while the ceilings you must stay under live in the mission's `authority`. The mandate was sized from this account when the mission was created and does not follow it afterwards, so a balance that has moved changes what you can afford, never what you are allowed.",
   parameters: TradingGetAccountStateInput,
   success: AgentAccountSnapshot,
   failure: TradingToolRejectedError,
@@ -209,7 +213,9 @@ export const TradingGetOpenOrdersTool = Tool.make("trading_get_open_orders", {
 
 export const TradingRegisterWatchTool = Tool.make("trading_register_watch", {
   description:
-    "Register a typed market watch bound to the mission's current strategy version. The watch is created active; it fires when its predicate matches (a candle's final close, a price cross against a fresh mark/mid, an order or position update) and is superseded automatically on the next strategy publish. Use this to arm the conditions that should wake the next run.",
+    "Register a typed market watch bound to the mission's current strategy version. The watch is created active; it fires when its predicate matches (a candle's final close, a price cross against a fresh mark/mid, an order or position update). " +
+    "Watches do NOT survive a strategy publish — publishing supersedes every watch the previous version armed, so re-arm what you still need after switching. " +
+    "While a position is open, arm levels on BOTH sides of the mark: `order_update` and `position_update` fire on a change in size and will not wake you for a move in your favour. A run that ends holding a position with nothing armed above and below, and no reassessment due within ten minutes, gets a reassessment registered for it automatically — treat that wake as a prompt to re-level or republish.",
   parameters: TradingRegisterWatchInput,
   success: TradingRegisterWatchResult,
   failure: TradingToolRejectedError,
@@ -265,7 +271,16 @@ export const TradingCancelWatchTool = Tool.make("trading_cancel_watch", {
 
 export const TradingRequestEntryTool = Tool.make("trading_request_entry", {
   description:
-    "Submit one execution intent for the bound mission. The server validates the authority version, harness run, mandatory stop information, budget, and exchange freshness before signing, then waits for the result. `accepted` means the order reached the exchange — read `orderResults` for whether it filled or rested. `rejected` means no order was placed and `detail` says why. `submitted` means the outcome was not yet known when this returned; read the position and open orders before assuming anything filled.",
+    "Submit one execution intent for the bound mission. Despite the name this is the whole position lifecycle, not just entries — `intent.actionType` selects which: " +
+    "`open` starts a position and `scale_in` adds to one; both are position-increasing and are REFUSED without valid `intent.stop` (a stopPrice on the losing side of entry, plus plannedLossAtStopUsd). " +
+    "`reduce` takes part of the position off — set `size` to the amount to remove and the server clamps it to the canonical position, submits it reduce-only, and reports what remains; this is how you scale out or take partial profit. " +
+    "`close` flattens the whole position regardless of the size you name. " +
+    "`cancel` withdraws one resting order named by `intent.targetCloid` (read the cloid from trading_get_open_orders); use it to retire a stale resting entry, since publishing a new strategy supersedes watches but does NOT cancel orders already working on the exchange. " +
+    "`modify_stop` moves the protection on an open position to a new `intent.stop.stopPrice` — the replacement is confirmed on-exchange before the old stop is cancelled — which is how you trail a stop or pull it to break-even. " +
+    "`reduce`, `close`, `cancel`, and `modify_stop` need no stop of their own and stay available even when the loss budget is exhausted. " +
+    "PRICING: there is no market order. `marketable_ioc` still needs an explicit `intent.limitPrice`, priced to cross the book — buy: at or above the best ask; sell: at or below the best bid (read them from trading_get_order_book). " +
+    "That price is the slippage bound the fill cannot exceed, so `limitPrice: 0` is not market semantics and is rejected: `limitPrice` must be greater than 0. " +
+    "The server validates the authority version, harness run, mandatory stop, budget, and exchange freshness before signing, then waits for the result. `accepted` means the order reached the exchange — read `orderResults` for whether it filled or rested. `rejected` means no order was placed and `detail` says why. `submitted` means the outcome was not yet known when this returned; read the position and open orders before assuming anything filled.",
   parameters: TradingRequestEntryInput,
   success: TradingRequestEntryResult,
   failure: TradingToolRejectedError,

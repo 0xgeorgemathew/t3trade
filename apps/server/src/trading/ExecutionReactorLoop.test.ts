@@ -308,6 +308,26 @@ const closeIntent = (executionSequence: number): ExecutionInput["intent"] =>
     reduceOnly: true,
   }) as ExecutionInput["intent"];
 
+/**
+ * A partial-reduce intent. `reduceOnly` is deliberately left FALSE: the guard
+ * is what forces reduce-only onto the wire, and a test that pre-set it true
+ * would prove nothing about the hazard that mattered — a "reduce" large enough
+ * to cross through flat into an unprotected reversal.
+ */
+const reduceIntent = (executionSequence: number, size: number): ExecutionInput["intent"] =>
+  ({
+    missionId: MISSION,
+    strategyVersion: 1,
+    executionSequence,
+    actionType: "reduce",
+    market: "ETH",
+    side: "sell",
+    size,
+    orderPreference: "marketable_ioc",
+    limitPrice: 3000,
+    reduceOnly: false,
+  }) as ExecutionInput["intent"];
+
 const previewContext = {
   mission: { id: MISSION } as never,
   currentStrategyVersion: 1,
@@ -619,6 +639,73 @@ layer("TradingExecutionReactorLoop (D1 keystone)", (it) => {
       }),
   );
 
+  // --- Sized partial reduce: the scale-out path ------------------------------
+  //
+  // The bug these pin: `reduceOnlyClose` always submitted `Math.abs(position
+  // .size)`, and the reactor routed every reduce through it, so an agent asking
+  // to take 50% off got flattened 100%. Scaling out was impossible.
+
+  const lastOrderLeg = () => {
+    const action = recordingExchange.submitted[recordingExchange.submitted.length - 1]!.action as {
+      type?: string;
+      orders?: Array<{ b: boolean; s: string; r: boolean; t: { limit: { tif: string } } }>;
+    };
+    assert.equal(action.type, "order");
+    return action.orders![0]!;
+  };
+
+  it.effect("reduceOnlySized submits only the requested size, not the whole position", () =>
+    // Canonical state is an ETH long of 0.5. A reduce of 0.2 must put 0.2 on
+    // the wire and leave the rest alone.
+    Effect.gen(function* () {
+      yield* migrated;
+      recordingExchange.submitted.length = 0;
+
+      const guard = yield* TradingExecutionGuard;
+      const outcome = yield* guard.reduceOnlySized({
+        intent: reduceIntent(40, 0.2),
+        previewContext,
+        allowedSlippageBps: 50,
+        masterAddress: MASTER_ADDR,
+      });
+
+      const leg = lastOrderLeg();
+      assert.equal(Number(leg.s), 0.2);
+      // Opposite side of the long, reduce-only on the wire despite the intent
+      // carrying `reduceOnly: false`, and IOC.
+      assert.equal(leg.b, false);
+      assert.equal(leg.r, true);
+      assert.equal(leg.t.limit.tif, "Ioc");
+
+      assert.equal(outcome.requestedSize, 0.2);
+      assert.equal(outcome.submittedSize, 0.2);
+      // A partial reduce is not required to end flat; the canonical read is
+      // reported rather than escalated.
+      assert.equal(outcome.remainingSize, 0.5);
+    }),
+  );
+
+  it.effect("reduceOnlySized clamps an oversized reduce to the canonical position", () =>
+    // Asking to remove 5 ETH from a 0.5 ETH long must submit 0.5, never 5 —
+    // which is what would cross flat into a reversal the mandate forbids.
+    Effect.gen(function* () {
+      yield* migrated;
+      recordingExchange.submitted.length = 0;
+
+      const guard = yield* TradingExecutionGuard;
+      const outcome = yield* guard.reduceOnlySized({
+        intent: reduceIntent(41, 5),
+        previewContext,
+        allowedSlippageBps: 50,
+        masterAddress: MASTER_ADDR,
+      });
+
+      assert.equal(Number(lastOrderLeg().s), 0.5);
+      assert.equal(outcome.requestedSize, 5);
+      assert.equal(outcome.submittedSize, 0.5);
+    }),
+  );
+
   // --- Task 6: reduceOnlyClose on the real guard + real execution service ---
   it.effect(
     "reduceOnlyClose submits a reduce-only IOC at the canonical size (opposite side, reduce-only, IOC)",
@@ -668,9 +755,13 @@ layer("TradingExecutionReactorLoop (D1 keystone)", (it) => {
         // Canonical size from the fresh reconcile (0.5 long → close 0.5).
         assert.equal(Number(leg.s), 0.5);
 
-        // And the guard honestly escalated (did not silently succeed).
+        // And the guard honestly escalated (did not silently succeed). The
+        // failure channel is the three-error `ReduceOnlyError` union now, so
+        // the tag check is what narrows to the §16.4 verdict.
         assert.equal(result._tag, "TradingExhaustionError");
-        assert.equal(result.reason, "close_did_not_flatten");
+        if (result._tag === "TradingExhaustionError") {
+          assert.equal(result.reason, "close_did_not_flatten");
+        }
       }),
   );
 
@@ -699,7 +790,9 @@ layer("TradingExecutionReactorLoop (D1 keystone)", (it) => {
           .pipe(Effect.flip);
 
         assert.equal(result._tag, "TradingExhaustionError");
-        assert.equal(result.reason, "close_did_not_flatten");
+        if (result._tag === "TradingExhaustionError") {
+          assert.equal(result.reason, "close_did_not_flatten");
+        }
       }),
   );
 });

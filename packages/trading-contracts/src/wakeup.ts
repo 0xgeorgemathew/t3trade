@@ -53,8 +53,19 @@ export const TradingHarnessWakeup = Schema.Struct({
   /** The user message that woke the run, when the cause is `user_message`. */
   userMessage: Schema.optional(TradingText),
   marketSnapshot: AgentMarketSnapshot,
+  /**
+   * The live balance: what the account actually holds right now, refreshed
+   * every wakeup. This is information for sizing, never a limit — the limits
+   * are in `authority`.
+   */
   accountSnapshot: AgentAccountSnapshot,
   activeStrategy: MomentumStrategyState,
+  /**
+   * The user's mandate: hard rails, fixed for the life of the mission. Sized
+   * from the account value when the mission was created and deliberately not
+   * re-scaled since, so a balance that moves changes what the harness can
+   * afford, never what it is allowed.
+   */
   authority: TradingAuthority,
   pendingEvents: Schema.Array(TradingDomainEventSummary),
   instruction: TradingText,
