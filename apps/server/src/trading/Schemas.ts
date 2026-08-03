@@ -69,9 +69,11 @@ export {
   PublishMomentumStrategyRejection,
   TRADING_GET_MISSION_TOOL,
   TRADING_PUBLISH_MOMENTUM_STRATEGY_TOOL,
+  TradingBoundMissionResult,
   TradingGetMissionInput,
   TradingGetMissionResult,
   TradingPendingExecution,
+  TradingUnboundMissionResult,
   TradingPublishMomentumStrategyInput,
   TradingPublishMomentumStrategyResult,
   TradingToolRejectedError,
@@ -82,13 +84,16 @@ export {
   MarketWatch,
   PersistedWatch,
   PersistedWatchStatus,
+  WatchArmedReason,
 } from "@t3tools/trading-contracts/watch";
 
 export {
+  describeArmedWatch,
   HarnessRunRequest,
   HarnessRunOutcome,
   TradingDomainEventSummary,
   TradingHarnessWakeup,
+  WakeupArmedWatch,
 } from "@t3tools/trading-contracts/wakeup";
 
 export {

@@ -158,6 +158,19 @@ export interface TradingMissionServiceShape {
   ) => Effect.Effect<Option.Option<TradingMission>, PersistenceSqlError>;
 
   /**
+   * The newest mission ever bound to `threadId`, terminal ones included.
+   *
+   * `findMissionByThreadId` is the authorization query and deliberately stops
+   * seeing a mission the moment it is revoked or completed. That leaves a thread
+   * whose mission has ended unable to learn anything at all about it, which is
+   * the one moment it most wants to. This is the read that answers "what
+   * happened to mine" — it grants nothing.
+   */
+  readonly findLastMissionByThreadId: (
+    threadId: string,
+  ) => Effect.Effect<Option.Option<TradingMission>, PersistenceSqlError>;
+
+  /**
    * The mission's mid-submission executions, oldest first.
    *
    * This is the set preview item 16 refuses a new intent against. Published so
@@ -345,6 +358,22 @@ const makeTradingMissionService = Effect.gen(function* () {
       return Option.some(yield* hydrate(row).pipe(Effect.orDie));
     });
 
+  const findLastMissionByThreadId: TradingMissionServiceShape["findLastMissionByThreadId"] = (
+    threadId,
+  ) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<MissionRow>`
+        SELECT * FROM trading_missions
+        WHERE json_extract(harness_json, '$.threadId') = ${threadId}
+        ORDER BY created_at DESC
+        LIMIT 1
+      `.pipe(Effect.mapError(sqlFail("findLastMissionByThreadId")));
+
+      const row = rows[0];
+      if (row === undefined) return Option.none();
+      return Option.some(yield* hydrate(row).pipe(Effect.orDie));
+    });
+
   // Decode the master-wallet JSON column. The address is the identity for
   // account reads (§10.6); the wallet's privy id is never sent to the exchange.
   const decodeMasterWalletJson = Schema.decodeUnknownEffect(
@@ -499,6 +528,7 @@ const makeTradingMissionService = Effect.gen(function* () {
     getMissionVersion,
     findActiveMission,
     findMissionByThreadId,
+    findLastMissionByThreadId,
     listPendingExecutions,
     getMasterWalletAddress,
   } satisfies TradingMissionServiceShape;

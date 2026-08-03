@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { describe, expect, it } from "vite-plus/test";
+import { assert, describe, expect, it } from "vite-plus/test";
 
 import packageJson from "../package.json" with { type: "json" };
 import { TradingAccount } from "./account.ts";
@@ -297,6 +297,7 @@ describe("§14.3 mission tool contracts", () => {
 
   it("decodes a trading_get_mission result", () => {
     const decoded = decodeGetMissionResult({
+      bound: true,
       mission,
       authority: mission.authority,
       authorityVersion: 1,
@@ -309,9 +310,27 @@ describe("§14.3 mission tool contracts", () => {
         { cloid: "0xblocking", actionType: "open", status: "submitted", ageMillis: 45_000 },
       ],
     });
+    assert(decoded.bound);
     expect(decoded.watches).toEqual([]);
     // The lock a `no_conflicting_execution_pending` rejection names.
     expect(decoded.pendingExecutions[0]?.cloid).toBe("0xblocking");
+  });
+
+  it("decodes the unbound answer a thread gets once its mission has ended", () => {
+    const decoded = decodeGetMissionResult({
+      bound: false,
+      lastMission: { ...mission, status: "revoked" },
+      activeMissionId: "mission_2",
+    });
+    assert(!decoded.bound);
+    expect(decoded.lastMission?.status).toBe("revoked");
+    expect(decoded.activeMissionId).toBe("mission_2");
+  });
+
+  it("decodes an unbound answer for a thread that never held a mission", () => {
+    const decoded = decodeGetMissionResult({ bound: false });
+    assert(!decoded.bound);
+    expect(decoded.lastMission).toBeUndefined();
   });
 });
 
@@ -347,7 +366,6 @@ describe("§10.6 market- and account-read contracts (Phase 2 pin)", () => {
       },
       freshness: { observedAt: 1_753_000_000_000, source: "websocket", staleAfterMillis: 5_000 },
       change24hPercent: 1.4,
-      sparkline: [3_700, 3_720, 3_750],
     });
     expect(decoded.bestBidOffer.freshness.staleAfterMillis).toBe(
       MARKET_FRESHNESS.bboStaleAfterMillis,

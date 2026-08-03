@@ -40,6 +40,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { HyperliquidExchangeClient, type SignedAction } from "@t3tools/hyperliquid/ExchangeClient";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidNonceCoordinatorLive } from "@t3tools/hyperliquid/NonceCoordinator";
+import { IocSlippageConfigLive } from "./IocSlippageConfig.ts";
 import { addressFromPrivateKey } from "@t3tools/hyperliquid/Signing";
 import type {
   MarketBestBidOffer,
@@ -273,6 +274,7 @@ const layer = it.layer(
     Layer.provideMerge(stubPreview(25)),
     Layer.provideMerge(recordingExchangeLayer),
     Layer.provideMerge(armedSignerConfig),
+    Layer.provideMerge(IocSlippageConfigLive),
     Layer.provideMerge(HyperliquidNonceCoordinatorLive()),
     Layer.provideMerge(NodeCrypto.layer),
     Layer.provideMerge(NodeSqliteClient.layerMemory()),

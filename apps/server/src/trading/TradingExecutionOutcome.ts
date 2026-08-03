@@ -69,6 +69,8 @@ interface RecordRow {
   readonly action_type: string;
   readonly status: string;
   readonly order_results_json: string;
+  /** The limit the server placed — for an IOC, derived from BBO, not the intent. */
+  readonly limit_price: number;
 }
 
 /**
@@ -94,7 +96,7 @@ const make = Effect.gen(function* () {
   const findRecord = (missionId: string, executionSequence: number) =>
     Effect.gen(function* () {
       const rows = yield* sql<RecordRow>`
-        SELECT execution_id, cloid, action_type, status, order_results_json
+        SELECT execution_id, cloid, action_type, status, order_results_json, limit_price
         FROM trading_execution_records
         WHERE mission_id = ${missionId} AND execution_sequence = ${executionSequence}
         ORDER BY updated_at DESC
@@ -126,6 +128,31 @@ const make = Effect.gen(function* () {
     `.pipe(
       Effect.map((rows) => rows[0]?.size ?? 0),
       Effect.orElseSucceed(() => 0),
+    );
+
+  /**
+   * Size-weighted average price of the fills recorded under one cloid.
+   *
+   * Returns null when nothing filled — which is the honest answer for a
+   * rejected order and for an IOC that crossed nothing. The reconcile that runs
+   * after submission is what puts the fills in this table, so by the time a
+   * record is terminal they are here.
+   */
+  const readAvgFillPrice = (missionId: string, cloid: string) =>
+    sql<{ readonly filled_size: number; readonly avg_fill_price: number }>`
+      SELECT filled_size, avg_fill_price FROM trading_fills
+      WHERE mission_id = ${missionId} AND cloid = ${cloid}
+    `.pipe(
+      Effect.map((rows) => {
+        const size = rows.reduce((total, row) => total + row.filled_size, 0);
+        if (size <= 0) return null;
+        const notional = rows.reduce(
+          (total, row) => total + row.filled_size * row.avg_fill_price,
+          0,
+        );
+        return notional / size;
+      }),
+      Effect.orElseSucceed(() => null),
     );
 
   const readBudget = (input: AwaitOutcomeInput) =>
@@ -164,6 +191,7 @@ const make = Effect.gen(function* () {
         const record = yield* findRecord(input.missionId, input.executionSequence);
         if (record !== null && REPORTABLE_STATUSES.has(record.status)) {
           const reducing = REDUCING_ACTIONS.has(record.action_type);
+          const avgFillPrice = yield* readAvgFillPrice(input.missionId, record.cloid);
           return {
             executionId: record.execution_id,
             // The record's own word for what happened. Reporting a cancelled
@@ -175,6 +203,10 @@ const make = Effect.gen(function* () {
             budget: yield* readBudget(input),
             detail: record.status,
             ...(reducing ? { remainingSize: yield* readRemainingSize(input.missionId) } : {}),
+            // The limit the server placed, so the harness can see the crossing
+            // bound its IOC was priced with rather than the one it asked for.
+            limitPrice: record.limit_price,
+            ...(avgFillPrice === null ? {} : { avgFillPrice }),
           };
         }
 

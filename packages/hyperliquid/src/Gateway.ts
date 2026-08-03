@@ -61,7 +61,7 @@ export class HyperliquidGateway extends Context.Service<
   {
     /** Resolve canonical market identifiers from live metadata. */
     readonly resolveMarket: (symbol: string) => Effect.Effect<ResolvedMarket, GatewayError>;
-    /** Mark/mid/oracle/funding/OI/day-volume/BBO + computed 24h change + sparkline. */
+    /** Mark/mid/oracle/funding/OI/day-volume/BBO + computed 24h change. */
     readonly getMarketSnapshot: (
       symbol: string,
     ) => Effect.Effect<AgentMarketSnapshot, GatewayError>;
@@ -133,9 +133,7 @@ function assetFreshness(observedAt: number, source: "info_api" | "websocket" | "
  * Map a wire asset context + prev-day price into the snapshot fields.
  *
  * `change24hPercent` is computed from `prevDayPx` → mark (the gateway owns this
- * derivation; the exchange does not return a precomputed change). `sparkline`
- * is left empty here — the thread-surface fills it from candle history (Step 8);
- * the gateway returns the snapshot's scalar fields only.
+ * derivation; the exchange does not return a precomputed change).
  */
 function toMarketSnapshotFields(
   symbol: string,
@@ -160,7 +158,6 @@ function toMarketSnapshotFields(
     bestBidOffer: book,
     freshness: assetFreshness(observedAt, source),
     change24hPercent,
-    sparkline: [] as ReadonlyArray<number>,
   };
 }
 

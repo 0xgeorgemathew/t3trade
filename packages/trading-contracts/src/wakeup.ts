@@ -16,7 +16,7 @@ import { AgentMarketSnapshot } from "./market.ts";
 import { TradingHarnessRunCause } from "./mission.ts";
 import { TradingId, TradingText, UnixMillis } from "./primitives.ts";
 import { MomentumStrategyState, TradingTimeframe } from "./strategy.ts";
-import { PersistedWatch } from "./watch.ts";
+import { PersistedWatch, WatchArmedReason } from "./watch.ts";
 
 /**
  * A coalesced inbox event as a resumed run sees it - spec §18.1.
@@ -31,6 +31,45 @@ export const TradingDomainEventSummary = Schema.Struct({
   summary: Schema.String,
 });
 export type TradingDomainEventSummary = typeof TradingDomainEventSummary.Type;
+
+/**
+ * One armed watch, with how far the market is from firing it.
+ *
+ * A resumed run used to see only the watch that fired and had to call
+ * `trading_list_watches` — and then do the arithmetic itself — to learn what
+ * else was armed and whether any of it was close. Both numbers are signed
+ * against the direction the watch fires in: positive means the market still has
+ * that far to travel, negative means the level is already behind the mark.
+ *
+ * Only `price_cross` and `candle_close` carry a level, so only they carry a
+ * distance; the other three watch types report none.
+ */
+export const WakeupArmedWatch = Schema.Struct({
+  watch: PersistedWatch,
+  distanceUsd: Schema.optional(Schema.Number),
+  distanceBps: Schema.optional(Schema.Number),
+});
+export type WakeupArmedWatch = typeof WakeupArmedWatch.Type;
+
+/**
+ * Measure one armed watch against the current mark.
+ *
+ * The sign follows the direction the watch fires in, so a positive distance
+ * always reads as "this far still to go" whichever way the level sits.
+ */
+export function describeArmedWatch(persisted: PersistedWatch, markPrice: number): WakeupArmedWatch {
+  const watch = persisted.watch;
+  if (watch.type !== "price_cross" && watch.type !== "candle_close") {
+    return { watch: persisted };
+  }
+  const distanceUsd =
+    watch.direction === "above" ? watch.price - markPrice : markPrice - watch.price;
+  return {
+    watch: persisted,
+    distanceUsd,
+    distanceBps: markPrice > 0 ? (distanceUsd / markPrice) * 10_000 : 0,
+  };
+}
 
 /**
  * The authoritative mission snapshot a resumed run starts with - spec §12.2.
@@ -50,6 +89,13 @@ export const TradingHarnessWakeup = Schema.Struct({
   occurredAt: UnixMillis,
   /** The watch whose predicate matched, when this run was woken by a watch. */
   triggeringWatch: Schema.optional(PersistedWatch),
+  /**
+   * Why the runtime woke this run, when the answer is not the harness's own
+   * doing. `staleness_floor` means the triggering reassessment was auto-armed
+   * because nothing else could have woken the mission — nothing crossed, and
+   * the thesis is the thing to reconsider.
+   */
+  wakeReason: Schema.optional(WatchArmedReason),
   /** The user message that woke the run, when the cause is `user_message`. */
   userMessage: Schema.optional(TradingText),
   marketSnapshot: AgentMarketSnapshot,
@@ -60,6 +106,19 @@ export const TradingHarnessWakeup = Schema.Struct({
    */
   accountSnapshot: AgentAccountSnapshot,
   activeStrategy: MomentumStrategyState,
+  /**
+   * How long ago the active strategy was published, in milliseconds.
+   *
+   * A thesis has a shelf life and the harness cannot read one from a version
+   * number. This is the number that says "you wrote this forty minutes ago on a
+   * 1m chart" without a second tool call.
+   */
+  strategyAgeMillis: Schema.Number,
+  /**
+   * Every watch still armed for this mission, with the distance from the
+   * current mark for the two types that carry a level.
+   */
+  armedWatches: Schema.Array(WakeupArmedWatch),
   /**
    * The user's mandate: hard rails, fixed for the life of the mission. Sized
    * from the account value when the mission was created and deliberately not

@@ -26,6 +26,7 @@ import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingExecutionOutcomeLive } from "./TradingExecutionOutcome.ts";
 import { TradingExecutionGuardLive } from "./TradingExecutionGuard.ts";
 import { InterimSignerConfigLive } from "./InterimSignerConfig.ts";
+import { IocSlippageConfigLive } from "./IocSlippageConfig.ts";
 import { AutoMissionConfigLive } from "./AutoMissionConfig.ts";
 import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
@@ -70,6 +71,8 @@ const composerWithDeps = TradingWakeupComposerLive.pipe(
   Layer.provide(HyperliquidReadLayerLive),
   Layer.provideMerge(TradingMissionServiceLive),
   Layer.provideMerge(TradingWatchServiceLive),
+  // The wakeup publishes the full armed-watch list, which `listWatches` owns.
+  Layer.provideMerge(TradingStrategyServiceLive),
 );
 
 const coordinatorWithDeps = TradingTurnCoordinatorLive.pipe(
@@ -88,6 +91,8 @@ const exchangeWithHttp = HyperliquidExchangeClientLive.pipe(Layer.provide(httpWi
 const TradingFoundation = Layer.mergeAll(
   TradingCoreLayerLive,
   InterimSignerConfigLive,
+  // Both IOC crossing allowances, read per call so a testnet run can move them.
+  IocSlippageConfigLive,
   // The shortcut reads the signer to decide whether this checkout is a trading
   // lab, so it is built on top of the signer rather than beside it.
   AutoMissionConfigLive.pipe(Layer.provide(InterimSignerConfigLive)),
@@ -102,7 +107,9 @@ const TradingWithPreview = Layer.mergeAll(TradingPreviewServiceLive, TradingBudg
 
 const TradingExecutionCore = Layer.mergeAll(
   HyperliquidExecutionServiceLive,
-  HyperliquidReconcilerLive,
+  // The reconciler writes an inbox event when the exchange moved a position no
+  // order of T3's explains, so it needs the inbox at build.
+  HyperliquidReconcilerLive.pipe(Layer.provide(TradingEventInboxLive)),
 ).pipe(Layer.provideMerge(TradingWithPreview));
 
 const TradingProtectionLayerLive = TradingProtectionServiceLive.pipe(

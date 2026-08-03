@@ -58,6 +58,7 @@ const migrated = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_execution_records`;
   yield* sql`DELETE FROM trading_event_inbox`;
   yield* sql`DELETE FROM trading_position_snapshots`;
+  yield* sql`DELETE FROM trading_fills`;
 });
 
 /**
@@ -111,7 +112,54 @@ const writePosition = (size: number) =>
     `;
   });
 
+/** Two partial fills under the record's cloid, for the weighted-average ack. */
+const writeFills = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    INSERT INTO trading_fills (
+      fill_id, mission_id, cloid, order_id, market, side, filled_size,
+      avg_fill_price, fee_usd, fee_token, closed_pnl, traded_at, observed_at
+    ) VALUES
+      ('fill-1', ${MISSION_ID}, '0xcloid', 1, 'ETH', 'buy', 0.25, 3000, 0.1, 'USDC', 0, 900, 900),
+      ('fill-2', ${MISSION_ID}, '0xcloid', 1, 'ETH', 'buy', 0.25, 3010, 0.1, 'USDC', 0, 950, 950)
+  `;
+});
+
 layer("TradingExecutionOutcome", (it) => {
+  /**
+   * §15.4: the IOC limit is derived server-side from the BBO, so the price the
+   * intent named and the price that was placed are two different numbers, and
+   * neither is the fill. Reporting only "accepted" left the harness modelling
+   * its loss against a price nothing used.
+   */
+  it.effect("reports the placed limit and the size-weighted average fill price", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* insertRecord("filled");
+      yield* writeFills;
+
+      const outcome = yield* (yield* TradingExecutionOutcome).awaitOutcome(input);
+
+      assert.equal(outcome.limitPrice, 3001);
+      assert.equal(outcome.avgFillPrice, 3005);
+      // And it survives the schema the toolkit encodes against.
+      encodeForHarness(outcome);
+    }),
+  );
+
+  it.effect("leaves the average fill price off when nothing filled", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* insertRecord("rejected");
+
+      const outcome = yield* (yield* TradingExecutionOutcome).awaitOutcome(input);
+
+      assert.equal(outcome.limitPrice, 3001);
+      assert.equal(outcome.avgFillPrice, undefined);
+      encodeForHarness(outcome);
+    }),
+  );
+
   it.effect("reports the exchange outcome when a record reached a terminal status", () =>
     Effect.gen(function* () {
       yield* migrated;

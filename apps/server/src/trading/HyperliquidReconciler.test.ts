@@ -34,6 +34,8 @@ import type {
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import {
   HyperliquidReconciler,
   HyperliquidReconcilerLive,
@@ -51,12 +53,14 @@ const input: ReconcileInput = {
 /** Migrate the shared in-memory db to 040, then truncate the 038 tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 40 });
+  yield* runMigrations({ toMigrationInclusive: 44 });
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM trading_orders`;
   yield* sql`DELETE FROM trading_risk_reservations`;
   yield* sql`DELETE FROM trading_execution_records`;
+  yield* sql`DELETE FROM trading_event_inbox`;
+  yield* sql`DELETE FROM trading_account_observations`;
 });
 
 // ---------------------------------------------------------------------------
@@ -217,6 +221,8 @@ const layer = it.layer(
   HyperliquidReconcilerLive.pipe(
     Layer.provideMerge(makeMutableGateway(stateRef)),
     Layer.provideMerge(makeMutableInfo(stateRef)),
+    Layer.provideMerge(TradingEventInboxLive),
+    Layer.provideMerge(NodeCrypto.layer),
     Layer.provideMerge(NodeSqliteClient.layerMemory()),
   ),
 );
@@ -655,6 +661,99 @@ layer("HyperliquidReconciler", (it) => {
       `;
       assert.equal(rows.length, 1);
       assert.equal(rows[0]?.cloid, "c".repeat(32));
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // §18.2 external actions: a position that moved with no order of T3's behind
+  // it is somebody acting on the exchange directly, and the harness has to be
+  // told — it is still managing a position that may no longer exist.
+  // -------------------------------------------------------------------------
+  it.effect("classifies a hand-closed position as external_close and writes it to the inbox", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const reconciler = yield* HyperliquidReconciler;
+      const sql = yield* SqlClient.SqlClient;
+
+      // Baseline: long 2 ETH, and the fill that opened it carries T3's cloid.
+      yield* setState({
+        account: snapshotFromClearinghouse(longClearinghouse),
+        fills: [fillAt(1_000, "c0ffee".padEnd(32, "0"), "2", 100, "0xopen")],
+      });
+      const opened = yield* reconciler.reconcile(input, "after_fill");
+      assert.deepEqual([...opened.externalChanges], []);
+
+      // Now the exchange reports flat, and no NEW fill carries a cloid — the
+      // position was closed from the Hyperliquid UI.
+      yield* setState({ account: snapshotFromClearinghouse(flatClearinghouse) });
+      const closed = yield* reconciler.reconcile(input, "periodic_while_position_open");
+
+      assert.equal(closed.externalChanges.length, 1);
+      assert.equal(closed.externalChanges[0]?.kind, "external_close");
+
+      const events = yield* sql<{ readonly summary: string; readonly category: string }>`
+        SELECT summary, category FROM trading_event_inbox WHERE mission_id = ${MISSION}
+      `;
+      assert.equal(events.length, 1);
+      assert.equal(events[0]?.category, "exchange");
+      assert.include(events[0]?.summary ?? "", "external_close");
+    }),
+  );
+
+  it.effect("attributes a change to T3 when a fill under one of its cloids explains it", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const reconciler = yield* HyperliquidReconciler;
+
+      yield* setState({
+        account: snapshotFromClearinghouse(longClearinghouse),
+        fills: [fillAt(1_000, "c0ffee".padEnd(32, "0"), "2", 100, "0xopen")],
+      });
+      const opened = yield* reconciler.reconcile(input, "after_fill");
+
+      // Flat again — but this time a fill with T3's cloid landed after the
+      // previous observation, which is a stop-out or a close T3 asked for.
+      yield* setState({
+        account: snapshotFromClearinghouse(flatClearinghouse),
+        fills: [
+          fillAt(1_000, "c0ffee".padEnd(32, "0"), "2", 100, "0xopen"),
+          fillAt(opened.observedAt + 1, "beefed".padEnd(32, "0"), "2", 101, "0xclose"),
+        ],
+      });
+      const closed = yield* reconciler.reconcile(input, "after_fill");
+
+      assert.deepEqual([...closed.externalChanges], []);
+    }),
+  );
+
+  it.effect("says nothing on the first pass, when there is no baseline to diff", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const reconciler = yield* HyperliquidReconciler;
+      yield* setState({ account: snapshotFromClearinghouse(longClearinghouse), fills: [] });
+
+      const first = yield* reconciler.reconcile(input, "server_startup");
+      assert.deepEqual([...first.externalChanges], []);
+    }),
+  );
+
+  it.effect("reports a balance jump on a flat mission as an external_transfer", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const reconciler = yield* HyperliquidReconciler;
+      yield* setState({ account: snapshotFromClearinghouse(flatClearinghouse), fills: [] });
+      yield* reconciler.reconcile(input, "server_startup");
+
+      const funded: WireClearinghouseStateResponse = {
+        ...flatClearinghouse,
+        marginSummary: { accountValue: "1500", totalMarginUsed: "0" },
+        withdrawable: "1500",
+      };
+      yield* setState({ account: snapshotFromClearinghouse(funded) });
+      const after = yield* reconciler.reconcile(input, "periodic_while_position_open");
+
+      assert.equal(after.externalChanges.length, 1);
+      assert.equal(after.externalChanges[0]?.kind, "external_transfer");
     }),
   );
 });

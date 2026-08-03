@@ -82,6 +82,60 @@ const resolveBoundCall = Effect.fn("TradingToolkit.resolveBoundCall")(function* 
   return { threadId: scope.threadId, mission: bound.value };
 });
 
+/**
+ * The same gate, for the reads that do not need a live mission.
+ *
+ * Market data is not mission state: resolving a market, reading a snapshot,
+ * candles, or the book is the same answer whoever asks. Routing those through
+ * `resolveBoundCall` meant that the moment a mission went terminal every tool on
+ * the thread failed, including the ones that would have explained why — the
+ * agent could not even read the price it had just been trading. The capability
+ * is still required; only the binding is optional, and `null` is what a write
+ * tool would still refuse on.
+ */
+const resolveReadCall = Effect.fn("TradingToolkit.resolveReadCall")(function* (
+  missionId: string,
+): Effect.fn.Return<
+  { readonly threadId: string; readonly mission: TradingMission | null },
+  TradingToolRejectedError,
+  McpInvocationContext.McpInvocationContext | TradingMissionService
+> {
+  const scope = yield* McpInvocationContext.requireCapability(
+    "trading",
+    (denial) =>
+      new TradingToolRejectedError({
+        reason: "capability_not_granted",
+        threadId: denial.threadId,
+        missionId,
+      }),
+  );
+
+  const missions = yield* TradingMissionService;
+  const bound = yield* missions.findMissionByThreadId(scope.threadId).pipe(Effect.orDie);
+  return { threadId: scope.threadId, mission: Option.isNone(bound) ? null : bound.value };
+});
+
+/**
+ * What `trading_get_mission` answers when the thread has no live mission: the
+ * last one it held and, if the slot has moved on, who holds it now.
+ */
+const readUnboundMission = Effect.fn("TradingToolkit.readUnboundMission")(function* (
+  threadId: string,
+) {
+  const missions = yield* TradingMissionService;
+  const last = yield* missions.findLastMissionByThreadId(threadId).pipe(Effect.orDie);
+  if (Option.isNone(last)) return { bound: false as const };
+
+  const active = yield* missions.findActiveMission(last.value.userId).pipe(Effect.orDie);
+  return {
+    bound: false as const,
+    lastMission: last.value,
+    ...(Option.isSome(active) && active.value.id !== last.value.id
+      ? { activeMissionId: active.value.id }
+      : {}),
+  };
+});
+
 const readMission = Effect.fn("TradingToolkit.readMission")(function* (mission: TradingMission) {
   const strategies = yield* TradingStrategyService;
   const strategy = yield* strategies.getCurrentStrategy(mission.id).pipe(Effect.orDie);
@@ -92,6 +146,7 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (mission: 
   const pendingExecutions = yield* missions.listPendingExecutions(mission.id).pipe(Effect.orDie);
 
   return {
+    bound: true,
     mission,
     authority: mission.authority,
     authorityVersion: mission.authorityVersion,
@@ -247,7 +302,20 @@ const announceWatchCancelled = Effect.fn("TradingToolkit.announceWatchCancelled"
 
 const handlers = {
   trading_get_mission: (input) =>
-    resolveBoundCall(input.missionId).pipe(Effect.flatMap(({ mission }) => readMission(mission))),
+    Effect.gen(function* () {
+      const call = yield* resolveReadCall(input.missionId);
+      if (call.mission === null) return yield* readUnboundMission(call.threadId);
+      // A live mission on this thread that is not the one named is still a
+      // mismatch, not an unbound read.
+      if (call.mission.id !== input.missionId) {
+        return yield* new TradingToolRejectedError({
+          reason: "mission_not_bound_to_thread",
+          threadId: call.threadId,
+          missionId: input.missionId,
+        });
+      }
+      return yield* readMission(call.mission);
+    }),
 
   trading_publish_momentum_strategy: (input) =>
     Effect.gen(function* () {
@@ -338,21 +406,24 @@ const handlers = {
 
   trading_resolve_market: (input) =>
     Effect.gen(function* () {
-      yield* resolveBoundCall(input.missionId);
+      // Market data, not mission state: an unbound thread reads it too.
+      yield* resolveReadCall(input.missionId);
       const gateway = yield* HyperliquidGateway;
       return yield* gateway.resolveMarket(input.market).pipe(Effect.orDie);
     }),
 
   trading_get_market_snapshot: (input) =>
     Effect.gen(function* () {
-      yield* resolveBoundCall(input.missionId);
+      // Market data, not mission state: an unbound thread reads it too.
+      yield* resolveReadCall(input.missionId);
       const gateway = yield* HyperliquidGateway;
       return yield* gateway.getMarketSnapshot(input.market).pipe(Effect.orDie);
     }),
 
   trading_get_market_history: (input) =>
     Effect.gen(function* () {
-      yield* resolveBoundCall(input.missionId);
+      // Market data, not mission state: an unbound thread reads it too.
+      yield* resolveReadCall(input.missionId);
       const gateway = yield* HyperliquidGateway;
       return yield* gateway
         .getMarketHistory({
@@ -367,7 +438,8 @@ const handlers = {
 
   trading_get_order_book: (input) =>
     Effect.gen(function* () {
-      yield* resolveBoundCall(input.missionId);
+      // Market data, not mission state: an unbound thread reads it too.
+      yield* resolveReadCall(input.missionId);
       const gateway = yield* HyperliquidGateway;
       return yield* gateway.getOrderBook(input.market).pipe(Effect.orDie);
     }),

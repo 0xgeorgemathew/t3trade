@@ -27,6 +27,7 @@ import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import { HyperliquidReconciler, type ReconciledState } from "./HyperliquidReconciler.ts";
 import { TradingFillReconciler, TradingFillReconcilerLive } from "./TradingFillReconciler.ts";
+import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
 
 const MASTER = "0x00000000000000000000000000000000000000ff";
 
@@ -39,13 +40,29 @@ const emptyState: ReconciledState = {
   canonicalOrders: [],
   fills: [],
   observedAt: 0,
+  externalChanges: [],
 };
+
+/** What the reconciler reports next; a test sets this to fake an external act. */
+let nextExternalChanges: ReconciledState["externalChanges"] = [];
+
+/** Run causes the stub coordinator was asked for, in order. */
+const requestedCauses: Array<string> = [];
+
+const recordingCoordinator = Layer.succeed(TradingTurnCoordinator)({
+  requestRun: (input: { readonly cause: string }) =>
+    Effect.sync(() => {
+      requestedCauses.push(input.cause);
+      return { status: "started", harnessRunId: "run_1" } as const;
+    }),
+  requestUserMessageRun: () => Effect.succeed(false),
+} as unknown as TradingTurnCoordinator["Service"]);
 
 const countingReconciler = Layer.succeed(HyperliquidReconciler)({
   reconcile: () =>
     Effect.sync(() => {
       reconcileCount += 1;
-      return emptyState;
+      return { ...emptyState, externalChanges: nextExternalChanges };
     }),
 } as unknown as HyperliquidReconciler["Service"]);
 
@@ -65,6 +82,7 @@ const gatewayFlat = Layer.succeed(HyperliquidGateway)({
 
 const flatLayer = TradingFillReconcilerLive.pipe(
   Layer.provideMerge(countingReconciler),
+  Layer.provideMerge(recordingCoordinator),
   Layer.provideMerge(gatewayFlat),
   Layer.provideMerge(stubInfoClient),
   Layer.provideMerge(fakeWebSocketClientLayer([])),
@@ -88,9 +106,21 @@ const insertStrandedExecution = Effect.gen(function* () {
   `;
 });
 
+/** The same composition the suite layer uses, usable from a top-level test. */
+const holdingLayer = TradingFillReconcilerLive.pipe(
+  Layer.provideMerge(countingReconciler),
+  Layer.provideMerge(recordingCoordinator),
+  Layer.provideMerge(gatewayHoldingPosition),
+  Layer.provideMerge(stubInfoClient),
+  Layer.provideMerge(fakeWebSocketClientLayer([])),
+  Layer.provideMerge(NodeSqliteClient.layerMemory()),
+  Layer.provideMerge(NodeServices.layer),
+);
+
 const layer = it.layer(
   TradingFillReconcilerLive.pipe(
     Layer.provideMerge(countingReconciler),
+    Layer.provideMerge(recordingCoordinator),
     Layer.provideMerge(gatewayHoldingPosition),
     Layer.provideMerge(stubInfoClient),
     Layer.provideMerge(fakeWebSocketClientLayer([])),
@@ -137,7 +167,7 @@ layer("TradingFillReconciler", (it) => {
 it.effect("leaves a flat mission with nothing outstanding alone", () =>
   Effect.gen(function* () {
     reconcileCount = 0;
-    yield* runMigrations({ toMigrationInclusive: 43 });
+    yield* runMigrations({ toMigrationInclusive: 44 });
     const reconcilers = yield* TradingFillReconciler;
 
     const scope = yield* Scope.make("sequential");
@@ -154,7 +184,7 @@ it.effect("leaves a flat mission with nothing outstanding alone", () =>
 it.effect("settles a stranded execution record on a flat mission", () =>
   Effect.gen(function* () {
     reconcileCount = 0;
-    yield* runMigrations({ toMigrationInclusive: 43 });
+    yield* runMigrations({ toMigrationInclusive: 44 });
     yield* insertStrandedExecution;
     const reconcilers = yield* TradingFillReconciler;
 
@@ -164,6 +194,84 @@ it.effect("settles a stranded execution record on a flat mission", () =>
       .pipe(Scope.provide(scope));
     yield* TestClock.adjust(Duration.seconds(30));
     yield* Scope.close(scope, Exit.void);
+
+    assert.isAbove(reconcileCount, 0);
+  }).pipe(Effect.provide(flatLayer)),
+);
+
+/**
+ * §18.2 external actions: a reconcile that found the exchange moved a position
+ * T3 did not move has to wake the mission within the interval, not on whatever
+ * event happens next. Until it does, the harness is still managing a position
+ * that may no longer exist.
+ */
+it.effect("wakes the mission when a reconcile reports an external change", () =>
+  Effect.gen(function* () {
+    reconcileCount = 0;
+    requestedCauses.length = 0;
+    nextExternalChanges = [{ kind: "external_close", summary: "external_close: 2 → 0" }];
+    yield* runMigrations({ toMigrationInclusive: 44 });
+    const reconcilers = yield* TradingFillReconciler;
+
+    const scope = yield* Scope.make("sequential");
+    yield* reconcilers
+      .follow({ missionId: "mission_1", masterAddress: MASTER, market: "ETH" })
+      .pipe(Scope.provide(scope));
+    yield* TestClock.adjust(Duration.seconds(10));
+    yield* Scope.close(scope, Exit.void);
+    nextExternalChanges = [];
+
+    assert.isAbove(reconcileCount, 0);
+    assert.isAbove(requestedCauses.length, 0);
+    assert.equal(requestedCauses[0], "position_updated");
+  }).pipe(Effect.provide(holdingLayer)),
+);
+
+it.effect("wakes nobody when the pass found nothing external", () =>
+  Effect.gen(function* () {
+    reconcileCount = 0;
+    requestedCauses.length = 0;
+    yield* runMigrations({ toMigrationInclusive: 44 });
+    const reconcilers = yield* TradingFillReconciler;
+
+    const scope = yield* Scope.make("sequential");
+    yield* reconcilers
+      .follow({ missionId: "mission_1", masterAddress: MASTER, market: "ETH" })
+      .pipe(Scope.provide(scope));
+    yield* TestClock.adjust(Duration.seconds(10));
+    yield* Scope.close(scope, Exit.void);
+
+    assert.isAbove(reconcileCount, 0);
+    assert.deepEqual(requestedCauses, []);
+  }).pipe(Effect.provide(holdingLayer)),
+);
+
+/**
+ * The periodic gate reads the exchange, so a hand-closed position reads as
+ * "flat, nothing to do" — and the pass that would have classified the close
+ * never ran. While T3's own tables still believe it holds something, one more
+ * reconcile is always worth it.
+ */
+it.effect("still reconciles a flat exchange while T3's tables believe it holds a position", () =>
+  Effect.gen(function* () {
+    reconcileCount = 0;
+    yield* runMigrations({ toMigrationInclusive: 44 });
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO trading_position_snapshots (
+        mission_id, market, size, entry_price, unrealised_pnl,
+        margin_used, protected_size, observed_at
+      ) VALUES ('mission_1', 'ETH', 0.5, 3000, 0, 100, 0.5, 1000)
+    `;
+
+    const reconcilers = yield* TradingFillReconciler;
+    const scope = yield* Scope.make("sequential");
+    yield* reconcilers
+      .follow({ missionId: "mission_1", masterAddress: MASTER, market: "ETH" })
+      .pipe(Scope.provide(scope));
+    yield* TestClock.adjust(Duration.seconds(10));
+    yield* Scope.close(scope, Exit.void);
+    yield* sql`DELETE FROM trading_position_snapshots`;
 
     assert.isAbove(reconcileCount, 0);
   }).pipe(Effect.provide(flatLayer)),

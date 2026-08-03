@@ -114,8 +114,8 @@ export type MarketBestBidOffer = typeof MarketBestBidOffer.Type;
 /**
  * Fields shared by the gateway snapshot and the agent-facing snapshot.
  *
- * `change24hPercent` and `sparkline` are computed by the gateway, not read
- * verbatim from the exchange, so they live only on `AgentMarketSnapshot`.
+ * `change24hPercent` is computed by the gateway, not read verbatim from the
+ * exchange, so it lives only on `AgentMarketSnapshot`.
  */
 const marketSnapshotFields = {
   market: TradingMarket,
@@ -142,16 +142,19 @@ export type MarketSnapshot = typeof MarketSnapshot.Type;
 /**
  * Agent-facing market snapshot - spec §10.6 + §14.2 `trading_get_market_snapshot`.
  *
- * Extends the raw snapshot with the computed features the harness and the chat
- * header need (24h change, sparkline). Computed fields are derived, never read
+ * Extends the raw snapshot with the one computed feature the harness and the
+ * chat header need: the 24h change. It is derived by the gateway, never read
  * verbatim from the exchange.
+ *
+ * There was a `sparkline` here too, and it was always `[]` — the gateway had no
+ * candle series to fill it from and nothing else ever wrote it. A field that is
+ * empty on every wakeup is not a bounded snapshot of anything; candle history
+ * has its own tool.
  */
 export const AgentMarketSnapshot = Schema.Struct({
   ...marketSnapshotFields,
   /** 24h percentage change, derived from prior-day open to current mark. */
   change24hPercent: Schema.Number,
-  /** Recent close series for sparkline rendering, oldest to newest. */
-  sparkline: Schema.Array(Price),
 });
 export type AgentMarketSnapshot = typeof AgentMarketSnapshot.Type;
 

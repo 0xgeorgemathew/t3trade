@@ -230,4 +230,37 @@ layer("TradingMissionService", (it) => {
       assert.ok(Option.isNone(active));
     }),
   );
+
+  /**
+   * The authorization query stops seeing a mission the moment it ends, which
+   * left a thread whose mission had finished unable to learn anything about it.
+   * This is the read that answers "what happened to mine"; it grants nothing.
+   */
+  it.effect("finds the last mission a thread held, terminal ones included", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingMissionService;
+
+      const mission = yield* service.createMission(createInput());
+      const version = yield* service.getMissionVersion(mission.id);
+      yield* service.transition({ missionId: mission.id, to: "revoked", expectedVersion: version });
+
+      // The binding query no longer sees it...
+      assert.isTrue(Option.isNone(yield* service.findMissionByThreadId("thread_1")));
+
+      // ...but the history read does, with the status it ended in.
+      const last = yield* service.findLastMissionByThreadId("thread_1");
+      assert.isTrue(Option.isSome(last));
+      assert.equal(Option.getOrThrow(last).id, "mission_1");
+      assert.equal(Option.getOrThrow(last).status, "revoked");
+    }),
+  );
+
+  it.effect("finds nothing for a thread that never held a mission", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingMissionService;
+      assert.isTrue(Option.isNone(yield* service.findLastMissionByThreadId("thread_unknown")));
+    }),
+  );
 });

@@ -40,6 +40,7 @@ import {
   type ReconcileInput,
   type ReconciliationTrigger,
 } from "./HyperliquidReconciler.ts";
+import { TradingProtectionService } from "./TradingProtectionService.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
 import { FALLBACK_MISSION_CAPITAL_USD } from "./MissionCapital.ts";
 import { TradingLayerLive } from "./runtimeLayer.ts";
@@ -716,7 +717,14 @@ it.live("reconciles before resuming a paused mission", () =>
         Effect.sync(() => {
           triggers.push(trigger);
           assert.equal(input.missionId, MISSION_ID);
-          return { position: null, openOrders: [], canonicalOrders: [], fills: [], observedAt: 0 };
+          return {
+            position: null,
+            openOrders: [],
+            canonicalOrders: [],
+            fills: [],
+            observedAt: 0,
+            externalChanges: [],
+          };
         }),
     });
 
@@ -860,4 +868,113 @@ it.live("still creates the mission when the account cannot be read", () =>
     assert.ok(Option.isSome(projected));
     assert.equal(projected.value.authority.allocatedCapitalUsd, FALLBACK_MISSION_CAPITAL_USD);
   }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+);
+
+/**
+ * §17: a stop pulled by hand in the exchange UI leaves the position naked, and
+ * nothing outside an execution ever compared the confirmed protected size to
+ * the position again. The watchdog is that comparison. It runs on the same 5s
+ * pass that settles a flat position, so this test waits for a real tick.
+ */
+it.live(
+  "re-places protection when the reconciled position outgrows its confirmed stop",
+  () =>
+    Effect.gen(function* () {
+      const runs: Array<HarnessRunRequest> = [];
+      const stubCoordinator = Layer.succeed(TradingTurnCoordinator, {
+        requestRun: (input) =>
+          Effect.sync(() => {
+            runs.push(input);
+            return { status: "started", harnessRunId: `run_${runs.length}` } as const;
+          }),
+        requestUserMessageRun: () => Effect.succeed(false),
+      });
+
+      const protectionCalls: Array<{ readonly stopPrice: number }> = [];
+      const stubProtection = Layer.succeed(TradingProtectionService, {
+        reconcileProtection: (input: { readonly stopPrice: number }) =>
+          Effect.sync(() => {
+            protectionCalls.push({ stopPrice: input.stopPrice });
+            return {
+              status: "protected" as const,
+              positionSize: 0.5,
+              protectedSize: 0.5,
+              replacedCloids: [],
+            };
+          }),
+        replaceProtection: () => Effect.die("not used"),
+        cancelEntriesWithProtection: () => Effect.die("not used"),
+      } as unknown as TradingProtectionService["Service"]);
+
+      const StubbedLayer = TradingMissionReactorLive.pipe(
+        Layer.provide(stubCoordinator),
+        Layer.provide(stubProtection),
+        Layer.provideMerge(TradingLayerLive),
+        Layer.provideMerge(OrchestrationEngineLive),
+        Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+        Layer.provideMerge(OrchestrationProjectionPipelineLive),
+        Layer.provideMerge(OrchestrationEventStoreLive),
+        Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+        Layer.provideMerge(RepositoryIdentityResolver.layer),
+        Layer.provideMerge(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-protection-" }),
+        ),
+        Layer.provideMerge(SqlitePersistenceMemory),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      yield* Effect.gen(function* () {
+        yield* started;
+        yield* seedTradingAccount;
+        yield* createMission;
+
+        // Walk the mission to `position_open`, the only status the watchdog acts in.
+        const missions = yield* TradingMissionService;
+        for (const to of ["waiting", "executing", "position_open"] as const) {
+          const expectedVersion = yield* missions.getMissionVersion(MISSION_ID);
+          yield* missions.transition({ missionId: MISSION_ID, to, expectedVersion });
+        }
+
+        // Half an ETH open with nothing confirmed protecting it, and an approved
+        // stop price on the record that opened it.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+        INSERT INTO trading_position_snapshots (
+          mission_id, market, size, entry_price, unrealised_pnl,
+          margin_used, protected_size, observed_at
+        ) VALUES (${MISSION_ID}, 'ETH', 0.5, 3000, 0, 100, 0, 1000)
+      `;
+        yield* sql`
+        INSERT INTO trading_execution_records (
+          execution_id, mission_id, strategy_version, execution_sequence, action_type,
+          cloid, idempotency_key, market, side, size, limit_price, time_in_force,
+          reduce_only, signer_address, status, order_results_json, created_at, updated_at,
+          stop_price
+        ) VALUES (
+          'exec-protect', ${MISSION_ID}, 1, 1, 'open',
+          '0xcloid', 'idem-protect', 'ETH', 'buy', 0.5, 3001, 'ioc',
+          0, ${MASTER_ADDRESS}, 'filled', '[]', 1000, 1000, 2900
+        )
+      `;
+
+        // The watchdog rides the 5s settle pass.
+        for (let attempt = 0; attempt < 800 && protectionCalls.length === 0; attempt++) {
+          yield* Effect.sleep("10 millis");
+        }
+
+        assert.equal(protectionCalls.length > 0, true, "the watchdog must re-place the stop");
+        assert.equal(protectionCalls[0]?.stopPrice, 2900);
+
+        // And the harness is told its stop was pulled out from under it.
+        const woken = runs.filter((run) => run.cause === "order_updated");
+        assert.equal(woken.length > 0, true, "the harness must be woken");
+
+        const events = yield* sql<{ readonly summary: string }>`
+        SELECT summary FROM trading_event_inbox
+        WHERE mission_id = ${MISSION_ID} AND deduplication_key LIKE 'protection_lost:%'
+      `;
+        assert.equal(events.length > 0, true, "the loss must be recorded where the harness reads");
+      }).pipe(Effect.scoped, Effect.provide(StubbedLayer));
+    }),
+  { timeout: 30_000 },
 );

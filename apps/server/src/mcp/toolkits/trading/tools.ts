@@ -77,8 +77,10 @@ const dependencies = [
 
 export const TradingGetMissionTool = Tool.make("trading_get_mission", {
   description:
-    "Read the current state of the trading mission this agent session is bound to: status, mandate (authority and risk policy), the published momentum strategy and its version, registered watches, and the user's control flags. Call this at the start of every turn before deciding anything. " +
-    "The mandate is the user's hard rails, not a balance: `authority.allocatedCapitalUsd` and the maximums derived from it are ceilings you may never exceed, and they do not move when the account value does. What is actually free to trade right now is `accountSnapshot.withdrawable` from trading_get_account_state. Sizing within the rails, against the live balance, is your judgement to exercise.",
+    "Read the current state of the trading mission this agent session is bound to: status, mandate (authority and risk policy), the published momentum strategy and its version, registered watches, the user's control flags, and any executions still in flight. Call this at the start of every turn before deciding anything. " +
+    "The mandate is the user's hard rails, not a balance: `authority.allocatedCapitalUsd` and the maximums derived from it are ceilings you may never exceed, and they do not move when the account value does. What is actually free to trade right now is `accountSnapshot.withdrawable` from trading_get_account_state. Sizing within the rails, against the live balance, is your judgement to exercise. " +
+    "`pendingExecutions[]` is the lock behind the `no_conflicting_execution_pending` refusal: while any entry is listed there, trading_request_entry refuses every new intent. Each entry names the cloid, the action, its status, and how long it has sat there. " +
+    "When the mission this thread held has ended, this returns `bound: false` instead of failing — with `lastMission` (its terminal status is the answer to what happened) and `activeMissionId` when a newer mission holds the slot. Market reads keep working on an unbound thread; nothing that writes does.",
   parameters: TradingGetMissionInput,
   success: TradingGetMissionResult,
   failure: TradingToolRejectedError,
@@ -140,7 +142,8 @@ export const TradingGetMarketSnapshotTool = Tool.make("trading_get_market_snapsh
 
 export const TradingGetMarketHistoryTool = Tool.make("trading_get_market_history", {
   description:
-    "Read bounded candle history for a market and interval (1m, 3m, 5m, 15m, or 1h — no local synthesis). One response is capped at 500 bars. The response marks the most-recent finalised close, which is processed at most once.",
+    "Read bounded candle history for a market and interval (1m, 3m, 5m, 15m, or 1h — no local synthesis). One response is capped at 500 bars — about 8h20m on 1m, five days on 1h — and `maxBars` only lowers that ceiling. Page further back with `startTime`/`endTime` (Unix millis) rather than asking for more. The response marks the most-recent finalised close, which is processed at most once. " +
+    "Form a thesis on enough bars to see the structure you are claiming: fewer than about 60 on the mission's timeframe is a guess about a chart you have not looked at, and a momentum claim from a handful of candles is the one the market punishes first.",
   parameters: TradingGetMarketHistoryInput,
   success: MarketHistory,
   failure: TradingToolRejectedError,
@@ -213,9 +216,11 @@ export const TradingGetOpenOrdersTool = Tool.make("trading_get_open_orders", {
 
 export const TradingRegisterWatchTool = Tool.make("trading_register_watch", {
   description:
-    "Register a typed market watch bound to the mission's current strategy version. The watch is created active; it fires when its predicate matches (a candle's final close, a price cross against a fresh mark/mid, an order or position update). " +
-    "Watches do NOT survive a strategy publish — publishing supersedes every watch the previous version armed, so re-arm what you still need after switching. " +
-    "While a position is open, arm levels on BOTH sides of the mark: `order_update` and `position_update` fire on a change in size and will not wake you for a move in your favour. A run that ends holding a position with nothing armed above and below, and no reassessment due within ten minutes, gets a reassessment registered for it automatically — treat that wake as a prompt to re-level or republish.",
+    "Register a typed market watch bound to the mission's current strategy version. The watch is created active; it fires when its predicate matches (a candle's final close, a price cross against a fresh mark/mid, an order or position update). The evaluator sweeps every 2 seconds, so a fire lands within a couple of seconds of the condition — not on the tick. " +
+    "A watch fires EXACTLY ONCE and is then terminal. A level you want to keep standing has to be re-registered after it fires; nothing re-arms it for you. " +
+    "Watches also do NOT survive a strategy publish — publishing supersedes every watch the previous version armed, so re-arm what you still need after switching. " +
+    "`position_update` and `order_update` read T3's reconciled local tables, not the exchange directly: they fire on a change in the size the last reconcile recorded, so they follow fills and cancels rather than quotes. " +
+    'While a position is open, arm levels on BOTH sides of the mark: the two differential types fire on a change in size and will not wake you for a move in your favour. A run that ends holding a position with nothing armed above and below, and no reassessment due within ten minutes, gets a reassessment registered for it automatically — and so does a FLAT mission that still has a published thesis. That automatic wake carries `wakeReason: "staleness_floor"`: it means nothing crossed and nothing fired, so the thing to reconsider is the thesis — re-level, republish at the next version, or stand down.',
   parameters: TradingRegisterWatchInput,
   success: TradingRegisterWatchResult,
   failure: TradingToolRejectedError,
@@ -229,7 +234,7 @@ export const TradingRegisterWatchTool = Tool.make("trading_register_watch", {
 
 export const TradingScheduleReassessmentTool = Tool.make("trading_schedule_reassessment", {
   description:
-    "Schedule a time-based reassessment of this mission at a future Unix-millisecond timestamp. This registers a scheduled_reassessment watch through the same path as trading_register_watch; the evaluator fires it when the timestamp passes. Use this when the harness should wake at a known time (e.g. a funding settlement) rather than on a market signal.",
+    "Schedule a time-based reassessment of this mission at a future Unix-millisecond timestamp. This registers a scheduled_reassessment watch through the same path as trading_register_watch; the evaluator fires it when the timestamp passes. Use this when the harness should wake at a known time (e.g. a funding settlement) rather than on a market signal. Like every watch it fires once and is then terminal — schedule the next one from the turn it wakes.",
   parameters: TradingScheduleReassessmentInput,
   success: TradingScheduleReassessmentResult,
   failure: TradingToolRejectedError,
@@ -276,11 +281,11 @@ export const TradingRequestEntryTool = Tool.make("trading_request_entry", {
     "`reduce` takes part of the position off — set `size` to the amount to remove and the server clamps it to the canonical position, submits it reduce-only, and reports what remains; this is how you scale out or take partial profit. " +
     "`close` flattens the whole position regardless of the size you name. " +
     "`cancel` withdraws one resting order named by `intent.targetCloid` (read the cloid from trading_get_open_orders); use it to retire a stale resting entry, since publishing a new strategy supersedes watches but does NOT cancel orders already working on the exchange. " +
-    "`modify_stop` moves the protection on an open position to a new `intent.stop.stopPrice` — the replacement is confirmed on-exchange before the old stop is cancelled — which is how you trail a stop or pull it to break-even. " +
+    "`modify_stop` moves the protection on an open position to a new `intent.stop.stopPrice` — the replacement is confirmed on-exchange before the old stop is cancelled — which is how you trail a stop or pull it to break-even. A stop on the wrong side of the current mid is REFUSED outright before anything is submitted, because a stop that cannot be confirmed escalates to §17.5's emergency close: the position is flattened and the mission is blocked. Check the number against trading_get_order_book before sending it. " +
     "`reduce`, `close`, `cancel`, and `modify_stop` need no stop of their own and stay available even when the loss budget is exhausted. " +
-    "PRICING: there is no market order. `marketable_ioc` still needs an explicit `intent.limitPrice`, priced to cross the book — buy: at or above the best ask; sell: at or below the best bid (read them from trading_get_order_book). " +
-    "That price is the slippage bound the fill cannot exceed, so `limitPrice: 0` is not market semantics and is rejected: `limitPrice` must be greater than 0. " +
-    "The server validates the authority version, harness run, mandatory stop, budget, and exchange freshness before signing, then waits for the result. `accepted` means the order reached the exchange — read `orderResults` for whether it filled or rested. `rejected` means no order was placed and `detail` says why. `submitted` means the outcome was not yet known when this returned; read the position and open orders before assuming anything filled.",
+    'PRICING: there is no market order, and for `marketable_ioc` the SERVER prices the crossing limit — it takes the fresh best bid/offer and pushes it through by the configured slippage allowance (50 bps by default). Your `intent.limitPrice` is NOT that bound: it feeds the preview arithmetic only, and is still required and still must be greater than 0, priced to cross (buy: at or above the best ask; sell: at or below the best bid). The result reports `limitPrice` — the bound actually placed — and `avgFillPrice`, what it actually filled at. The Hyperliquid UI\'s "Price" column for an IOC shows the placed limit bound, not the fill, which is why that column reads about half a percent away from the fill T3 reports. ' +
+    "VALIDATION before signing: the mission must be in an admitting status (`mission_active` — waiting or position_open), the strategy version must be current (`strategy_version_current` — republish and retry if it has moved), the market must be ETH (`market_is_eth`), a position-increasing intent must carry a valid stop, the loss budget must admit it, the exchange reads must be fresh, and NO other execution of this mission may be mid-submission (`no_conflicting_execution_pending` — read `pendingExecutions[]` from trading_get_mission to see what is holding it and how stale). " +
+    "Then it waits for the real outcome. `filled`, `cancelled`, `rejected`, and `failed` are the record's terminal word. `accepted` means the order reached the exchange and rests on the book — read `orderResults`. `succeeded` is a `cancel` or `modify_stop` that did what it was asked; `detail` says what. `rejected` with no cloid means the request was refused before signing and no order exists. `submitted` means the outcome was not yet known when this returned; read the position and open orders before assuming anything filled. A `reduce` or `close` also reports `remainingSize`, the signed canonical position left.",
   parameters: TradingRequestEntryInput,
   success: TradingRequestEntryResult,
   failure: TradingToolRejectedError,

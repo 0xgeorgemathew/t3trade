@@ -30,11 +30,13 @@ import type { MomentumStrategyState } from "./Schemas.ts";
 import type { PersistedWatch } from "./Schemas.ts";
 import type { TradingMission } from "./Schemas.ts";
 import {
+  describeArmedWatch,
   TradingDomainEventSummary,
   TradingHarnessWakeup,
   type TradingHarnessRunCause,
 } from "./Schemas.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
+import { TradingStrategyService } from "./TradingStrategyService.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
 
 /** The wakeup serialized as the resumed turn's `message.text`. */
@@ -107,6 +109,7 @@ const make = Effect.gen(function* () {
   const gateway = yield* HyperliquidGateway;
   const missions = yield* TradingMissionService;
   const watches = yield* TradingWatchService;
+  const strategies = yield* TradingStrategyService;
 
   const resolveTriggeringWatch = (
     watchId: string | undefined,
@@ -138,6 +141,17 @@ const make = Effect.gen(function* () {
 
       const triggeringWatch = yield* resolveTriggeringWatch(input.triggeringWatchId);
 
+      // What is still armed, and how far the market has to travel to fire each
+      // one. Without this a woken run has to call `trading_list_watches` and do
+      // the arithmetic itself before it can tell a near miss from a level it
+      // armed an hour ago and forgot.
+      const armed = yield* strategies
+        .listWatches(mission.id)
+        .pipe(Effect.mapError((error) => fail("watch_list_failed", error)));
+      const armedWatches = armed
+        .filter((persisted) => persisted.status === "active")
+        .map((persisted) => describeArmedWatch(persisted, marketSnapshot.markPrice));
+
       const authority: TradingAuthority = mission.authority;
 
       const wakeup: TradingHarnessWakeup = {
@@ -146,10 +160,15 @@ const make = Effect.gen(function* () {
         cause,
         occurredAt,
         triggeringWatch: Option.isSome(triggeringWatch) ? triggeringWatch.value : undefined,
+        // Only a watch the runtime armed itself carries a reason; a watch the
+        // harness registered woke it for the reason the harness already knows.
+        wakeReason: Option.isSome(triggeringWatch) ? triggeringWatch.value.armedReason : undefined,
         userMessage: input.userMessage,
         marketSnapshot,
         accountSnapshot,
         activeStrategy,
+        strategyAgeMillis: Math.max(0, occurredAt - activeStrategy.updatedAt),
+        armedWatches,
         authority,
         pendingEvents: [...pendingEvents],
         instruction: mission.instruction,

@@ -21,7 +21,11 @@ import type { OrchestrationEvent, ThreadId } from "@t3tools/contracts";
 import { CommandId, TradingMissionId } from "@t3tools/contracts";
 import type { TradingMissionStatus, TradingProvider } from "@t3tools/trading-contracts";
 import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
-import { checkStopReplacement, isPositionIncreasing } from "@t3tools/trading-contracts/protection";
+import {
+  checkStopReplacement,
+  isPositionIncreasing,
+  PROTECTION_SIZE_EPSILON,
+} from "@t3tools/trading-contracts/protection";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -54,6 +58,7 @@ import { TradingControlService } from "./TradingControlService.ts";
 import { TradingBudgetReader } from "./TradingBudgetReader.ts";
 import { TradingFillReconciler } from "./TradingFillReconciler.ts";
 import { InterimSignerConfig } from "./InterimSignerConfig.ts";
+import { IocSlippageConfig } from "./IocSlippageConfig.ts";
 import { AutoMissionConfig } from "./AutoMissionConfig.ts";
 import { resolveMissionCapitalUsd } from "./MissionCapital.ts";
 import { ALL_MISSION_STATUSES, isActiveMissionStatus } from "./MissionTransitions.ts";
@@ -163,6 +168,7 @@ const make = Effect.gen(function* () {
   const emergency = yield* TradingEmergencyCloseService;
   const controls = yield* TradingControlService;
   const autoMission = yield* AutoMissionConfig;
+  const iocSlippage = yield* IocSlippageConfig;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
@@ -976,7 +982,7 @@ const make = Effect.gen(function* () {
         stopSlippageReserveBps,
         nowMs: budgetInput.observedAt,
       },
-      allowedSlippageBps: 50,
+      allowedSlippageBps: (yield* iocSlippage.resolve).entryBps,
     };
     // Which of the five write paths this intent is. `reduce` and `close` never
     // reach `submitOrder`: both go through the guard, which forces reduce-only
@@ -1267,10 +1273,119 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Notice a stop that is no longer there, and put it back.
+   *
+   * Protection is placed and confirmed at entry, on a `modify_stop`, and on a
+   * cancel-with-protection — all of them executions. Outside an execution
+   * nothing ever compared the confirmed protected size to the position again,
+   * so a stop cancelled by hand in the exchange UI left the position naked for
+   * as long as it stayed open, with every local read still reporting the
+   * protected size the last execution confirmed.
+   *
+   * The comparison is against the reconciled snapshot the fill reconciler keeps
+   * current, so this costs no exchange round-trip on the common path where
+   * nothing is wrong. When it is wrong, `reconcileProtection` is the same
+   * routine every other protection repair runs, and the same §17.5 escalation
+   * applies when it cannot confirm a replacement.
+   */
+  const guardProtection = Effect.fn("TradingMissionReactor.guardProtection")(function* () {
+    const active = yield* missions.findActiveMission(LOCAL_TRADING_USER_ID);
+    if (Option.isNone(active)) return;
+    const mission = active.value;
+    // Only while the mission is simply holding a position. An execution in
+    // progress owns protection for the duration and reconciles it itself.
+    if (mission.status !== "position_open") return;
+
+    const missionId = TradingMissionId.make(mission.id);
+    const threadId = mission.harness.threadId as ThreadId;
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ readonly size: number; readonly protected_size: number }>`
+      SELECT size, protected_size FROM trading_position_snapshots
+      WHERE mission_id = ${missionId} AND market = ${mission.market}
+    `;
+    const snapshot = rows[0];
+    if (snapshot === undefined) return;
+
+    const exposed = Math.abs(snapshot.size);
+    if (exposed === 0) return;
+    if (snapshot.protected_size >= exposed - PROTECTION_SIZE_EPSILON) return;
+
+    // The price the last approved stop was set at. Without one there is nothing
+    // to re-place — a position that never had a stop is not this loop's problem.
+    const stops = yield* sql<{ readonly stop_price: number }>`
+      SELECT stop_price FROM trading_execution_records
+      WHERE mission_id = ${missionId} AND stop_price IS NOT NULL
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `;
+    const stopPrice = stops[0]?.stop_price;
+    if (stopPrice === undefined) return;
+
+    const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+    const summary =
+      `protection_lost: ${exposed} of ${mission.market} is open with only ` +
+      `${snapshot.protected_size} confirmed protected; re-placing the stop at ${stopPrice}`;
+    yield* inbox
+      .persist({
+        missionId,
+        category: "exchange",
+        deduplicationKey: `protection_lost:${occurredAt}`,
+        payload: { size: snapshot.size, protectedSize: snapshot.protected_size, stopPrice },
+        occurredAt,
+        summary,
+      })
+      .pipe(Effect.ignore);
+    yield* Effect.logWarning("trading protection watchdog found an uncovered position", {
+      missionId,
+      size: snapshot.size,
+      protectedSize: snapshot.protected_size,
+    });
+
+    const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+    const outcome = yield* protection.reconcileProtection({
+      missionId,
+      strategyVersion: mission.strategyVersion,
+      // Not a harness execution, so there is no sequence to borrow. Epoch
+      // seconds keeps each watchdog placement's cloid distinct from the last
+      // one's and from every harness sequence, which are small counters.
+      executionSequence: Math.floor(occurredAt / 1000),
+      masterAddress,
+      market: mission.market,
+      stopPrice,
+    });
+
+    if (outcome.status === "escalate") {
+      yield* Effect.logError("trading protection watchdog could not re-place the stop; §17.5", {
+        missionId,
+        reason: outcome.escalationReason,
+      });
+      yield* emergency.emergencyClose({
+        missionId,
+        masterAddress,
+        market: mission.market,
+        reason: outcome.escalationReason ?? "protection was removed and could not be re-placed",
+      });
+      yield* announceStatus({ missionId, threadId, status: "blocked" });
+    }
+
+    // Either way the harness is told: its stop was pulled out from under it.
+    yield* coordinator.requestRun({ missionId, cause: "order_updated" }).pipe(Effect.ignore);
+  });
+
   yield* Effect.gen(function* () {
     while (true) {
       yield* Effect.sleep("5 seconds");
       yield* settleFlatPosition().pipe(Effect.catchCause(() => Effect.void));
+      yield* guardProtection().pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logWarning("trading protection watchdog pass failed", {
+                cause: Cause.pretty(cause),
+              }),
+        ),
+      );
     }
   }).pipe(Effect.forkScoped);
 
