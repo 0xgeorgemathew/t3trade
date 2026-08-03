@@ -372,7 +372,18 @@ layer("TradingExecutionReactorLoop (D1 keystone)", (it) => {
       yield* execution.submitOrder(input);
       // Same intent ⇒ same idempotency_key + cloid. The second call must NOT
       // create a second order — the retry fast-path returns the terminal record.
+      recordingExchange.submitted.length = 0; // reset so we can count the 2nd call's submits
       yield* execution.submitOrder(input);
+
+      // The duplicate must not reach the exchange at all — local idempotency-key
+      // convergence returns the existing terminal record without re-signing. This
+      // is the primary retry-dedup guarantee for production (exchange-side cloid
+      // dedup only helps when an order is still resting; a filled IOC is gone).
+      assert.equal(
+        recordingExchange.submitted.length,
+        0,
+        "duplicate submitOrder must not reach the exchange (local idempotency)",
+      );
 
       const sql = yield* SqlClient.SqlClient;
       const recRows = yield* sql<{ readonly c: number }>`
