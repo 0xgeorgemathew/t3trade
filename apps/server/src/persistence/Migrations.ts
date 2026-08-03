@@ -56,6 +56,7 @@ import Migration0040 from "./Migrations/040_TradingExecutionStopAndMark.ts";
 import Migration0041 from "./Migrations/041_TradingInboxSummaryRepair.ts";
 import Migration0042 from "./Migrations/042_TradingAuthorityValidUntil.ts";
 import Migration0043 from "./Migrations/043_TradingWatchProvenance.ts";
+import Migration0044 from "./Migrations/044_TradingAccountObservations.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -111,6 +112,7 @@ export const migrationEntries = [
   [41, "TradingInboxSummaryRepair", Migration0041],
   [42, "TradingAuthorityValidUntil", Migration0042],
   [43, "TradingWatchProvenance", Migration0043],
+  [44, "TradingAccountObservations", Migration0044],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

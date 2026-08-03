@@ -62,7 +62,6 @@ const stubSnapshot: AgentMarketSnapshot = {
   bestBidOffer: { bidPrice: 3_089, bidSize: 1, askPrice: 3_091, askSize: 1, freshness },
   freshness,
   change24hPercent: 1.2,
-  sparkline: [3_000, 3_100],
 };
 
 const unusedRead = () => Effect.die("not used by WatchEvaluator tests");

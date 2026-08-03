@@ -353,6 +353,7 @@ import {
 } from "../src/trading/TradingPreviewService.ts";
 import { TradingTurnCoordinatorLive } from "../src/trading/TradingTurnCoordinator.ts";
 import { TradingWakeupComposerLive } from "../src/trading/TradingWakeupComposer.ts";
+import { IocSlippageConfigLive } from "../src/trading/IocSlippageConfig.ts";
 import { InterimSignerConfigLive } from "../src/trading/InterimSignerConfig.ts";
 import { AutoMissionConfigLive } from "../src/trading/AutoMissionConfig.ts";
 import { HyperliquidExecutionServiceLive } from "../src/trading/HyperliquidExecutionService.ts";
@@ -367,6 +368,7 @@ const tradingFoundationWithFakes = Layer.mergeAll(
   TradingMissionServiceLive,
   TradingStrategyServiceLive,
   InterimSignerConfigLive,
+  IocSlippageConfigLive,
   AutoMissionConfigLive.pipe(Layer.provide(InterimSignerConfigLive)),
   recordingExchangeLayer,
   fakeGatewayLayer,

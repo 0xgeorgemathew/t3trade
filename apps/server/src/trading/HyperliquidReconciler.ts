@@ -30,6 +30,8 @@ import type {
   TradingPositionSnapshot,
 } from "@t3tools/trading-contracts/execution";
 
+import { TradingEventInbox } from "./TradingEventInbox.ts";
+
 /** The reconciler failed at a named stage. */
 export class TradingReconciliationError extends Schema.TaggedErrorClass<TradingReconciliationError>()(
   "TradingReconciliationError",
@@ -83,6 +85,11 @@ export interface ReconciledState {
   readonly canonicalOrders: ReadonlyArray<AgentOpenOrder>;
   readonly fills: ReadonlyArray<TradingFill>;
   readonly observedAt: number;
+  /**
+   * Changes this pass observed that no order of this mission's explains. The
+   * caller wakes the harness for them — the reconciler only names them.
+   */
+  readonly externalChanges: ReadonlyArray<ExternalChange>;
 }
 
 /**
@@ -106,15 +113,22 @@ export class HyperliquidReconciler extends Context.Service<
 
 const now = (): Effect.Effect<number> => Clock.currentTimeMillis;
 
+/** The canonical account read: this mission's position, plus the account value. */
+interface CanonicalAccount {
+  readonly position: TradingPositionSnapshot | null;
+  readonly accountValue: number;
+}
+
 /**
  * Read canonical position + account state via the gateway (master address),
  * returning a `TradingPositionSnapshot` or null when flat. Reads the full
- * account snapshot so the liquidation price surfaces to the position card.
+ * account snapshot so the liquidation price surfaces to the position card, and
+ * carries the account value out so the transfer detector has something to diff.
  */
-function readCanonicalPosition(
+function readCanonicalAccount(
   input: ReconcileInput,
   observedAt: number,
-): Effect.Effect<TradingPositionSnapshot | null, TradingReconciliationError, HyperliquidGateway> {
+): Effect.Effect<CanonicalAccount, TradingReconciliationError, HyperliquidGateway> {
   return Effect.gen(function* () {
     const gateway = yield* HyperliquidGateway;
     const snapshot = yield* gateway.getAccountSnapshot(input.masterAddress as `0x${string}`).pipe(
@@ -126,8 +140,9 @@ function readCanonicalPosition(
           }),
       ),
     );
+    const accountValue = snapshot.accountValue;
     const position = snapshot.positions.find((p) => p.market === input.market);
-    if (position === undefined || position.size === 0) return null;
+    if (position === undefined || position.size === 0) return { position: null, accountValue };
     // The clearinghouse position payload carries no mark price field; the mark
     // lives on the asset context (metaAndAssetCtxs.markPx). Rather than make a
     // second network call per reconcile, derive it from the unrealised PnL the
@@ -135,19 +150,22 @@ function readCanonicalPosition(
     // mirror for shorts, so mark = entry + upnl/size (sign carried by size).
     const markPx = position.entryPrice + position.unrealisedPnl / position.size;
     return {
-      missionId: input.missionId,
-      market: input.market,
-      size: position.size,
-      entryPrice: position.entryPrice,
-      unrealisedPnl: position.unrealisedPnl,
-      marginUsed: position.marginUsed,
-      // Filled in by `reconcile` once the canonical open orders are in hand
-      // (§17.2 steps 7–8) — a position read on its own cannot know it.
-      protectedSize: 0,
-      liquidationPrice: position.liquidationPx,
-      markPx,
-      observedAt,
-    } as TradingPositionSnapshot;
+      accountValue,
+      position: {
+        missionId: input.missionId,
+        market: input.market,
+        size: position.size,
+        entryPrice: position.entryPrice,
+        unrealisedPnl: position.unrealisedPnl,
+        marginUsed: position.marginUsed,
+        // Filled in by `reconcile` once the canonical open orders are in hand
+        // (§17.2 steps 7–8) — a position read on its own cannot know it.
+        protectedSize: 0,
+        liquidationPrice: position.liquidationPx,
+        markPx,
+        observedAt,
+      } as TradingPositionSnapshot,
+    };
   });
 }
 
@@ -545,7 +563,175 @@ function settleAcceptedExecutions(
   );
 }
 
+// ---------------------------------------------------------------------------
+// §18.2 · External actions: what the exchange did that T3 did not ask for
+// ---------------------------------------------------------------------------
+
+/** How an observed position change is attributed when T3 did not cause it. */
+export type ExternalChangeKind =
+  | "external_close"
+  | "external_reduce"
+  | "external_increase"
+  | "external_transfer";
+
+/** One classified change, ready to be written to the inbox. */
+export interface ExternalChange {
+  readonly kind: ExternalChangeKind;
+  readonly summary: string;
+}
+
+/**
+ * Name a position change by what it did to the exposure.
+ *
+ * A reversal counts as an increase: crossing through flat opens new exposure in
+ * the other direction, which is the thing that needs a stop and a decision, not
+ * a reduction of anything.
+ */
+export function classifyPositionChange(before: number, after: number): ExternalChangeKind | null {
+  if (before === after) return null;
+  if (after === 0) return "external_close";
+  if (before === 0) return "external_increase";
+  if (Math.sign(before) !== Math.sign(after)) return "external_increase";
+  return Math.abs(after) < Math.abs(before) ? "external_reduce" : "external_increase";
+}
+
+/**
+ * How far the account value may move on a flat mission before it is a transfer.
+ *
+ * Fees and funding move it by cents; a deposit or a withdrawal moves it by
+ * dollars. A dollar is the line, and it is only ever consulted while the
+ * mission is flat both before and after — with a position open the account
+ * value tracks unrealised PnL continuously and a diff means nothing.
+ */
+const TRANSFER_TOLERANCE_USD = 1;
+
 export const makeHyperliquidReconciler = Effect.gen(function* () {
+  const inbox = yield* TradingEventInbox;
+
+  /** The position size and observation time the previous pass left behind. */
+  const readPreviousPosition = (input: ReconcileInput) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly size: number; readonly observed_at: number }>`
+        SELECT size, observed_at FROM trading_position_snapshots
+        WHERE mission_id = ${input.missionId} AND market = ${input.market}
+      `;
+      return rows[0] ?? null;
+    }).pipe(Effect.orElseSucceed(() => null));
+
+  const readPreviousAccountValue = (missionId: string) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly account_value: number }>`
+        SELECT account_value FROM trading_account_observations WHERE mission_id = ${missionId}
+      `;
+      return rows[0]?.account_value ?? null;
+    }).pipe(Effect.orElseSucceed(() => null));
+
+  const persistAccountValue = (missionId: string, accountValue: number, observedAt: number) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO trading_account_observations (mission_id, account_value, observed_at)
+        VALUES (${missionId}, ${accountValue}, ${observedAt})
+        ON CONFLICT(mission_id) DO UPDATE SET
+          account_value = ${accountValue}, observed_at = ${observedAt}
+      `;
+    }).pipe(Effect.ignore);
+
+  /**
+   * Whether a fill T3 placed explains a change since `since`.
+   *
+   * Every order T3 signs carries a deterministic cloid; an order placed in the
+   * Hyperliquid UI carries none. So the cloid is the attribution — a fill with
+   * one is T3's own work (including a protective stop firing), a fill without
+   * one came from somewhere else.
+   */
+  const hasAttributedFill = (missionId: string, since: number) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly fill_id: string }>`
+        SELECT fill_id FROM trading_fills
+        WHERE mission_id = ${missionId} AND cloid IS NOT NULL AND traded_at >= ${since}
+        LIMIT 1
+      `;
+      return rows.length > 0;
+    }).pipe(Effect.orElseSucceed(() => true));
+
+  /**
+   * Classify what happened between two reconciles that T3 did not do, and write
+   * it where the harness will read it.
+   *
+   * Closing a position in the exchange UI used to produce nothing at all: the
+   * snapshot was blanked, the mission was walked back to `waiting`, and the
+   * harness went on managing a position that no longer existed until something
+   * else happened to wake it. The event is the fix; the wake is the caller's.
+   */
+  const recordExternalChanges = (
+    input: ReconcileInput,
+    previous: { readonly size: number; readonly observed_at: number } | null,
+    accountValue: number,
+    previousAccountValue: number | null,
+    newSize: number,
+    observedAt: number,
+  ): Effect.Effect<ReadonlyArray<ExternalChange>, never, SqlClient.SqlClient> =>
+    Effect.gen(function* () {
+      const changes: Array<ExternalChange> = [];
+
+      // The position diff needs a previous snapshot to measure against; the
+      // first pass for a mission has none and reports nothing.
+      const kind = previous === null ? null : classifyPositionChange(previous.size, newSize);
+      if (
+        previous !== null &&
+        kind !== null &&
+        !(yield* hasAttributedFill(input.missionId, previous.observed_at))
+      ) {
+        changes.push({
+          kind,
+          summary:
+            `${kind}: the ${input.market} position moved from ${previous.size} to ${newSize} ` +
+            `with no order of this mission's behind it — someone acted on the exchange directly`,
+        });
+      }
+
+      // A flat mission never writes a position row, so the transfer check hangs
+      // off the account observation alone.
+      if (
+        previousAccountValue !== null &&
+        (previous === null || previous.size === 0) &&
+        newSize === 0 &&
+        Math.abs(accountValue - previousAccountValue) > TRANSFER_TOLERANCE_USD
+      ) {
+        changes.push({
+          kind: "external_transfer",
+          summary:
+            `external_transfer: account value moved from ${previousAccountValue} to ` +
+            `${accountValue} with no position open. Your mandate is unchanged; what you can ` +
+            `afford is not`,
+        });
+      }
+
+      for (const change of changes) {
+        yield* inbox
+          .persist({
+            missionId: input.missionId,
+            category: "exchange",
+            deduplicationKey: `${change.kind}:${observedAt}`,
+            payload: { kind: change.kind, beforeSize: previous?.size ?? 0, afterSize: newSize },
+            occurredAt: observedAt,
+            summary: change.summary,
+          })
+          .pipe(Effect.ignore);
+        yield* Effect.logWarning("trading observed an external exchange action", {
+          missionId: input.missionId,
+          kind: change.kind,
+          summary: change.summary,
+        });
+      }
+
+      return changes;
+    });
+
   const reconcile = (
     input: ReconcileInput,
     trigger: ReconciliationTrigger,
@@ -556,16 +742,22 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
   > =>
     Effect.gen(function* () {
       const observedAt = yield* now();
+      // What the previous pass left behind, read before anything overwrites it —
+      // the only baseline an external change can be measured against.
+      const previousPosition = yield* readPreviousPosition(input);
+      const previousAccountValue = yield* readPreviousAccountValue(input.missionId);
+
       // Read all canonical state in parallel, then persist. Local state never
       // outranks Hyperliquid — the canonical reads are the source of truth.
-      const [rawPosition, canonicalOrders, fills] = yield* Effect.all(
+      const [account, canonicalOrders, fills] = yield* Effect.all(
         [
-          readCanonicalPosition(input, observedAt),
+          readCanonicalAccount(input, observedAt),
           readCanonicalOpenOrders(input),
           readCanonicalFills(input, observedAt),
         ],
         { concurrency: "unbounded" },
       );
+      const rawPosition = account.position;
 
       // §17.2 steps 7–8: the protected size is CONFIRMED from canonical state —
       // resting reduce-only triggers on the losing side of the position — not
@@ -617,8 +809,26 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
         ),
       );
 
+      // After the fills are persisted, so attribution reads the current table.
+      const externalChanges = yield* recordExternalChanges(
+        input,
+        previousPosition,
+        account.accountValue,
+        previousAccountValue,
+        position?.size ?? 0,
+        observedAt,
+      );
+      yield* persistAccountValue(input.missionId, account.accountValue, observedAt);
+
       yield* Effect.logInfo("trading reconciled", { missionId: input.missionId, trigger });
-      return { position, openOrders, canonicalOrders, fills, observedAt } as ReconciledState;
+      return {
+        position,
+        openOrders,
+        canonicalOrders,
+        fills,
+        observedAt,
+        externalChanges,
+      } as ReconciledState;
     });
 
   return HyperliquidReconciler.of({ reconcile });

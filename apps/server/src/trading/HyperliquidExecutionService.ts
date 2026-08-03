@@ -61,6 +61,7 @@ import {
 } from "@t3tools/trading-contracts/protection";
 
 import { InterimSignerConfig, InterimSignerError } from "./InterimSignerConfig.ts";
+import { IocSlippageConfig } from "./IocSlippageConfig.ts";
 import { TradingPreviewService, type PreviewContext } from "./TradingPreviewService.ts";
 
 /** The execution service failed at a named stage. */
@@ -169,15 +170,6 @@ export class HyperliquidExecutionService extends Context.Service<
     }) => Effect.Effect<ReadonlyArray<TradingOrderResult>, TradingExecutionError>;
   }
 >()("t3/trading/HyperliquidExecutionService") {}
-
-/**
- * Slippage allowance on a deterministic reduce-only exit.
- *
- * Wider than an entry's, deliberately. An entry that misses can be retried at
- * leisure; an exit that misses leaves exposure open, which is the thing being
- * escaped. 1% of the crossing price buys the fill.
- */
-export const REDUCE_ONLY_EXIT_SLIPPAGE_BPS = 100;
 
 /**
  * Suffix appended to an action type when deriving the cloid of its linked
@@ -384,6 +376,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
   const nonceCoord = yield* HyperliquidNonceCoordinator;
   const exchange = yield* HyperliquidExchangeClient;
   const crypto = yield* Crypto.Crypto;
+  const iocSlippage = yield* IocSlippageConfig;
 
   const submitOrder = (
     input: ExecutionInput,
@@ -845,7 +838,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       // book so the IOC actually crosses.
       const isLong = input.positionSize > 0;
       const side = isLong ? ("sell" as const) : ("buy" as const);
-      const slippage = REDUCE_ONLY_EXIT_SLIPPAGE_BPS / 10_000;
+      const slippage = (yield* iocSlippage.resolve).exitBps / 10_000;
       const rawLimit = isLong
         ? input.referencePrice * (1 - slippage)
         : input.referencePrice * (1 + slippage);

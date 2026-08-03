@@ -114,7 +114,9 @@ export const TradingPendingExecution = Schema.Struct({
 export type TradingPendingExecution = typeof TradingPendingExecution.Type;
 
 /** Current mission, authority, strategy, watches, and control flags. */
-export const TradingGetMissionResult = Schema.Struct({
+export const TradingBoundMissionResult = Schema.Struct({
+  /** Discriminates this from the unbound-thread answer below. */
+  bound: Schema.Literal(true),
   mission: TradingMission,
   authority: TradingAuthority,
   authorityVersion: Schema.Number,
@@ -126,6 +128,30 @@ export const TradingGetMissionResult = Schema.Struct({
   /** Executions written but not yet answered — what a lock rejection means. */
   pendingExecutions: Schema.Array(TradingPendingExecution),
 });
+export type TradingBoundMissionResult = typeof TradingBoundMissionResult.Type;
+
+/**
+ * What `trading_get_mission` answers on a thread no live mission owns.
+ *
+ * A mission that ends — revoked, completed — stops matching the binding query,
+ * and every tool on the thread then failed with `thread_not_bound_to_mission`,
+ * including the reads that would have explained why. The agent could not learn
+ * that its own mission had finished. This says so, names the terminal status it
+ * finished in, and points at the mission that took the slot if one did.
+ */
+export const TradingUnboundMissionResult = Schema.Struct({
+  bound: Schema.Literal(false),
+  /** The last mission this thread was bound to, when there was one. */
+  lastMission: Schema.optional(TradingMission),
+  /** The mission that holds the active slot now, when a newer one does. */
+  activeMissionId: Schema.optional(TradingId),
+});
+export type TradingUnboundMissionResult = typeof TradingUnboundMissionResult.Type;
+
+export const TradingGetMissionResult = Schema.Union([
+  TradingBoundMissionResult,
+  TradingUnboundMissionResult,
+]);
 export type TradingGetMissionResult = typeof TradingGetMissionResult.Type;
 
 // -- trading_publish_momentum_strategy ---------------------------------------
@@ -251,6 +277,21 @@ export const TradingRequestEntryResult = Schema.Struct({
    * much it still holds, and the guess is what it then sizes its stop against.
    */
   remainingSize: Schema.optional(Schema.Number),
+  /**
+   * The limit price the server actually placed, not the one the intent named.
+   *
+   * A `marketable_ioc` limit is derived from the fresh BBO ± the configured
+   * slippage allowance, so the intent's `limitPrice` and the order's are two
+   * different numbers. Reporting only the intent's is what left a standing gap
+   * between the fills T3 reported and the price column in the Hyperliquid UI.
+   */
+  limitPrice: Schema.optional(Schema.Number),
+  /**
+   * Size-weighted average price of the fills recorded under this execution's
+   * cloid, when any filled. This is what the position was actually opened or
+   * closed at — the limit above is only the bound it could not cross.
+   */
+  avgFillPrice: Schema.optional(Schema.Number),
 });
 export type TradingRequestEntryResult = typeof TradingRequestEntryResult.Type;
 

@@ -327,24 +327,19 @@ it.effect("supersedes the prior version's active watches on an accepted publish"
   ),
 );
 
-it.effect("rejects a thread with no active mission binding with a typed rejection", () =>
+it.effect("answers an unbound thread instead of failing every tool on it", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
+      // A thread with no live mission is not an authorization failure for a
+      // read: `trading_get_mission` says so in-band, so the agent can learn
+      // that its mission ended rather than seeing every tool error.
       const unbound = yield* callTool(UNBOUND_THREAD, "trading_get_mission", {
         missionId: MISSION_ID,
       });
-      // A declared tool failure reaches the harness as its own message; an
-      // undeclared error or defect is flattened to INTERNAL_ERROR_TEXT. Asserting
-      // the exact text is therefore what proves the rejection is typed.
-      assert.equal(unbound.result.isError, true);
-      assert.deepStrictEqual(unbound.result.content, [
-        {
-          type: "text",
-          text: `TradingToolRejectedError: thread_not_bound_to_mission (thread=${UNBOUND_THREAD}, mission=${MISSION_ID})`,
-        },
-      ]);
+      assert.notEqual(unbound.result.isError, true);
+      assert.equal(unbound.result.structuredContent.bound, false);
 
-      // A bound thread naming someone else's mission is refused just as firmly.
+      // A bound thread naming someone else's mission is still refused, firmly.
       const wrongMission = yield* callTool(BOUND_THREAD, "trading_get_mission", {
         missionId: "mission_belonging_to_someone_else",
       });
@@ -356,6 +351,25 @@ it.effect("rejects a thread with no active mission binding with a typed rejectio
         },
       ]);
       assert.notEqual(wrongMission.result.content[0].text, INTERNAL_ERROR_TEXT);
+    }),
+  ),
+);
+
+it.effect("keeps write tools closed on an unbound thread", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      const published = yield* callTool(UNBOUND_THREAD, "trading_publish_momentum_strategy", {
+        missionId: MISSION_ID,
+        expectedVersion: 0,
+        strategy: strategyBody("v1"),
+      });
+      assert.equal(published.result.isError, true);
+      assert.deepStrictEqual(published.result.content, [
+        {
+          type: "text",
+          text: `TradingToolRejectedError: thread_not_bound_to_mission (thread=${UNBOUND_THREAD}, mission=${MISSION_ID})`,
+        },
+      ]);
     }),
   ),
 );
