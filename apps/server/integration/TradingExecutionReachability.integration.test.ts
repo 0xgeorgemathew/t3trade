@@ -367,7 +367,7 @@ const tradingFoundationWithFakes = Layer.mergeAll(
   TradingMissionServiceLive,
   TradingStrategyServiceLive,
   InterimSignerConfigLive,
-  AutoMissionConfigLive,
+  AutoMissionConfigLive.pipe(Layer.provide(InterimSignerConfigLive)),
   recordingExchangeLayer,
   fakeGatewayLayer,
   fakeInfoClientLayer,

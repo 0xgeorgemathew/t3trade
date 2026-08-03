@@ -1,3 +1,4 @@
+import type { TradingMissionStatus } from "@t3tools/trading-contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -15,6 +16,7 @@ import {
   newMissionBlocker,
   selectableMissionThreads,
   shouldShowMissionStrip,
+  visibleMissions,
 } from "./tradingPresentation";
 
 describe("mission status labels", () => {
@@ -380,5 +382,33 @@ describe("newMissionBlocker", () => {
   it("blocks non-positive and unparseable capital", () => {
     expect(newMissionBlocker({ ...valid, allocatedCapitalUsd: 0 })).toMatch(/capital/i);
     expect(newMissionBlocker({ ...valid, allocatedCapitalUsd: Number.NaN })).toMatch(/capital/i);
+  });
+});
+
+describe("visibleMissions", () => {
+  const mission = (id: string, status: TradingMissionStatus) => ({ id, status });
+
+  it("keeps the live missions and the most recently finished one", () => {
+    const visible = visibleMissions([
+      mission("revoked-newest", "revoked"),
+      mission("live", "position_open"),
+      mission("revoked-older", "revoked"),
+      mission("completed-oldest", "completed"),
+    ]);
+
+    expect(visible.map((m) => m.id)).toEqual(["live", "revoked-newest"]);
+  });
+
+  it("still shows the last mission when every one of them has finished", () => {
+    const visible = visibleMissions([
+      mission("revoked-newest", "revoked"),
+      mission("revoked-older", "revoked"),
+    ]);
+
+    expect(visible.map((m) => m.id)).toEqual(["revoked-newest"]);
+  });
+
+  it("has nothing to show before the first mission exists", () => {
+    expect(visibleMissions([])).toEqual([]);
   });
 });

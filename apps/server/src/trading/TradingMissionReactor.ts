@@ -64,9 +64,11 @@ type TradingRequestEvent = Extract<
   | { type: "trading.mission-risk-control-requested" }
   | { type: "trading.mission-watch-fired" }
   | { type: "trading.execution-requested" }
-  // Not a trading intent: the auto-mission shortcut watches for a thread opened
-  // in the configured lab workspace. See `AutoMissionConfig`.
+  // Not trading intents: a thread's own lifecycle is what opens and closes a
+  // mission on a lab server. Created gives the thread a mission, settled takes
+  // it away. See `AutoMissionConfig`.
   | { type: "thread.created" }
+  | { type: "thread.settled" }
 >;
 
 const HANDLED_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -76,6 +78,7 @@ const HANDLED_EVENT_TYPES: ReadonlySet<string> = new Set([
   "trading.mission-watch-fired",
   "trading.execution-requested",
   "thread.created",
+  "thread.settled",
 ]);
 
 /**
@@ -305,11 +308,11 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Give a thread opened in the lab workspace a mission of its own.
+   * Give a newly opened thread a mission of its own.
    *
-   * Off unless `T3_TRADES_AUTO_MISSION_WORKSPACE` names a workspace root, and
-   * scoped to exactly that root — a thread in any other project is untouched.
-   * See `AutoMissionConfig` for why the shortcut exists.
+   * Off unless the shortcut is enabled (see `AutoMissionConfig`: an armed
+   * interim signer, or the explicit knob), and narrowed to one workspace root
+   * when the config names one.
    *
    * One active mission per user is a domain invariant (§10.1), so claiming the
    * slot means retiring whoever holds it. That is safe only while the incumbent
@@ -324,9 +327,12 @@ const make = Effect.gen(function* () {
     const settings = yield* autoMission.resolve;
     if (Option.isNone(settings)) return;
 
-    const project = yield* snapshotQuery.getProjectShellById(event.payload.projectId);
-    if (Option.isNone(project)) return;
-    if (project.value.workspaceRoot !== settings.value.workspaceRoot) return;
+    const scopedRoot = settings.value.workspaceRoot;
+    if (scopedRoot !== null) {
+      const project = yield* snapshotQuery.getProjectShellById(event.payload.projectId);
+      if (Option.isNone(project)) return;
+      if (project.value.workspaceRoot !== scopedRoot) return;
+    }
 
     const threadId = event.payload.threadId;
     const active = yield* missions.findActiveMission(LOCAL_TRADING_USER_ID);
@@ -368,6 +374,63 @@ const make = Effect.gen(function* () {
       instruction: settings.value.instruction,
       allocatedCapitalUsd: settings.value.allocatedCapitalUsd,
       createdAt: yield* nowIso,
+    });
+  });
+
+  /**
+   * Settling a thread ends its mission.
+   *
+   * Settle is the sidebar's "I am done with this thread", and a thread bound to
+   * a mission cannot be done while the mission still holds authority to trade
+   * on its behalf — it would keep waking, keep placing orders, and keep holding
+   * the one active-mission slot the next thread needs.
+   *
+   * Exposure decides how it ends. A flat mission is simply revoked. A mission
+   * that still holds a position goes through §17.5's close-and-revoke, which
+   * cancels resting entries and flattens the position before dropping the
+   * authority — the same thing the workspace's destructive button does, and the
+   * only ordering that does not leave a position nobody is authorized to manage.
+   *
+   * `findMissionByThreadId` returns only a still-authoritative mission, so a
+   * settle on an already-revoked thread is a no-op rather than an error.
+   */
+  const processThreadSettled = Effect.fn("TradingMissionReactor.threadSettled")(function* (
+    event: Extract<TradingRequestEvent, { type: "thread.settled" }>,
+  ) {
+    const threadId = event.payload.threadId;
+    const found = yield* missions.findMissionByThreadId(threadId);
+    if (Option.isNone(found)) return;
+
+    const mission = found.value;
+    const missionId = TradingMissionId.make(mission.id);
+
+    if (yield* holdsPosition(missionId)) {
+      const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+      const outcome = yield* controls.closeAndRevoke({
+        missionId,
+        masterAddress,
+        market: mission.market,
+      });
+      yield* Effect.logInfo("settle closed and revoked a mission holding a position", {
+        missionId,
+        threadId,
+        summary: outcome.summary,
+      });
+      if (outcome.status !== undefined) {
+        yield* announceStatus({
+          missionId,
+          threadId,
+          status: outcome.status as TradingMissionStatus,
+        });
+      }
+      return;
+    }
+
+    yield* advance({
+      missionId,
+      threadId,
+      from: ALL_MISSION_STATUSES.filter(isActiveMissionStatus),
+      to: "revoked",
     });
   });
 
@@ -789,6 +852,8 @@ const make = Effect.gen(function* () {
         yield* processWatchFired(event);
       } else if (event.type === "thread.created") {
         yield* processThreadCreated(event);
+      } else if (event.type === "thread.settled") {
+        yield* processThreadSettled(event);
       } else {
         yield* processExecutionRequested(event).pipe(
           Effect.tapCause((cause) =>
@@ -817,7 +882,7 @@ const make = Effect.gen(function* () {
         // projection keeps the state the domain still holds.
         return Effect.logWarning("trading mission reactor could not apply a requested intent", {
           eventType: event.type,
-          // `thread.created` is the one handled event with no mission on it.
+          // The two thread-lifecycle events carry no mission on the payload.
           missionId: "missionId" in event.payload ? event.payload.missionId : undefined,
           cause: Cause.pretty(cause),
         });

@@ -88,7 +88,9 @@ const exchangeWithHttp = HyperliquidExchangeClientLive.pipe(Layer.provide(httpWi
 const TradingFoundation = Layer.mergeAll(
   TradingCoreLayerLive,
   InterimSignerConfigLive,
-  AutoMissionConfigLive,
+  // The shortcut reads the signer to decide whether this checkout is a trading
+  // lab, so it is built on top of the signer rather than beside it.
+  AutoMissionConfigLive.pipe(Layer.provide(InterimSignerConfigLive)),
   exchangeWithHttp,
   HyperliquidNonceCoordinatorLive(),
   HyperliquidWebSocketClientLive,

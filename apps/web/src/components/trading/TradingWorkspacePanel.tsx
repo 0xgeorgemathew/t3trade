@@ -25,6 +25,7 @@ import {
   isPositionDataStale,
   MISSION_STATUS_LABELS,
   shouldShowMissionStrip,
+  visibleMissions,
   type MissionStripTone,
   type RejectedOrderNotice,
 } from "./tradingPresentation";
@@ -520,7 +521,7 @@ function TradingWorkspaceForEnvironment({ environmentId }: { environmentId: Envi
         />
       ) : null}
 
-      {missions.map((mission) => (
+      {visibleMissions(missions).map((mission) => (
         <MissionWithControls key={mission.id} mission={mission} environmentId={environmentId} />
       ))}
     </SettingsPageContainer>

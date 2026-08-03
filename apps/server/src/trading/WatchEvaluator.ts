@@ -82,6 +82,13 @@ export interface WatchEvaluatorShape {
    * sweep loop calls this on `SWEEP_INTERVAL`; exposed for tests.
    */
   readonly sweep: Effect.Effect<void, PersistenceSqlError>;
+  /**
+   * Forget the last candle seen per subscription, so the next delivery starts a
+   * fresh rollover comparison. For tests, which share one long-lived evaluator
+   * across cases and would otherwise see one case's candle finalised by the
+   * next case's first delivery.
+   */
+  readonly forgetDeliveredCandles: Effect.Effect<void>;
 }
 
 export class WatchEvaluator extends Context.Service<WatchEvaluator, WatchEvaluatorShape>()(
@@ -125,17 +132,25 @@ const field = (data: unknown, key: string): unknown => {
   return (data as Record<string, unknown>)[key];
 };
 
+/** One delivered candle, reduced to the three fields finality and matching need. */
+interface DeliveredCandle {
+  readonly openTime: number;
+  readonly closeTime: number;
+  readonly close: number;
+}
+
 /**
  * The candle payload delivered over the WS `candle` channel is an array whose
  * first element carries `{t, T, s, i, o, c, h, l, v, n}` (per the wire schema).
  */
-const candleFromDelivery = (delivery: WsDelivery) => {
+const candleFromDelivery = (delivery: WsDelivery): DeliveredCandle | undefined => {
   const data = delivery.data;
   const candle = Array.isArray(data) ? data[0] : data;
+  const openTime = num(field(candle, "t"));
   const closeTime = num(field(candle, "T"));
   const close = num(field(candle, "c"));
-  if (closeTime === undefined || close === undefined) return undefined;
-  return { closeTime, close };
+  if (openTime === undefined || closeTime === undefined || close === undefined) return undefined;
+  return { openTime, closeTime, close };
 };
 
 const make = Effect.gen(function* () {
@@ -231,34 +246,63 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Evaluate a `candle_close` watch against a delivered candle.
+   * The last candle delivered per `coin:interval`, so a rollover is visible.
    *
-   * Fires only on a final close (close time has passed). The predicate is a
-   * directional price comparison against the candle's close; the dedupe key is
-   * scoped per watch and close so a replay cannot wake the harness twice.
+   * In-memory and per-process on purpose: it holds one small record per
+   * subscription and its only job is to compare consecutive deliveries. A
+   * restart loses at most the candle in flight, and the next rollover restores
+   * it.
    */
-  const evaluateCandleClose = (tracked: TrackedWatch, delivery: WsDelivery) =>
+  const lastDelivered = new Map<string, DeliveredCandle>();
+
+  /**
+   * Which candle, if any, this delivery proves is final.
+   *
+   * The wall-clock test alone is not enough, and that is what stalled the wake
+   * loop. Hyperliquid pushes a candle only when a trade updates it, so the last
+   * delivery a candle ever receives lands *before* its close time — measured on
+   * testnet ETH 1m, not one candle in a three-minute capture was ever delivered
+   * again after its `T`. A watch armed on `1m` therefore waited for a message
+   * that only arrives when a trade happens to land in the final milliseconds,
+   * which is why runs woke every three to five minutes instead of every minute.
+   *
+   * A rollover is the proof that was missing: the exchange starting candle N+1
+   * means it has stopped updating candle N, whatever the clock says. The
+   * wall-clock test is kept as the second path, for a delivery that does land
+   * after its own close.
+   */
+  const finalizedCandle = (
+    previous: DeliveredCandle | undefined,
+    current: DeliveredCandle,
+  ): Effect.Effect<DeliveredCandle | undefined> =>
+    Effect.gen(function* () {
+      if (previous !== undefined && previous.openTime < current.openTime) return previous;
+      const observedAt = yield* nowMs;
+      return current.closeTime <= observedAt ? current : undefined;
+    });
+
+  /**
+   * Evaluate a `candle_close` watch against a candle already known to be final.
+   *
+   * The predicate is a directional price comparison against the candle's close;
+   * the dedupe key is scoped per watch and close so a replay cannot wake the
+   * harness twice.
+   */
+  const evaluateCandleClose = (tracked: TrackedWatch, interval: string, candle: DeliveredCandle) =>
     Effect.gen(function* () {
       const watch = tracked.watch.watch;
       if (watch.type !== "candle_close") return;
-      if (delivery.subscription.interval !== watch.interval) return;
-
-      const parsed = candleFromDelivery(delivery);
-      if (parsed === undefined) return;
-
-      const observedAt = yield* nowMs;
-      // §13: a candle is finalised only after its close time has passed.
-      if (parsed.closeTime > observedAt) return;
+      if (interval !== watch.interval) return;
 
       const matched =
-        watch.direction === "above" ? parsed.close >= watch.price : parsed.close <= watch.price;
+        watch.direction === "above" ? candle.close >= watch.price : candle.close <= watch.price;
       if (!matched) return;
 
       yield* enqueueFire(
         tracked,
-        `candle_close:${tracked.watch.id}:${parsed.closeTime}`,
-        `${watch.interval} candle closed ${parsed.close} (${watch.direction} ${watch.price})`,
-        { closeTime: parsed.closeTime, close: parsed.close, watchId: tracked.watch.id },
+        `candle_close:${tracked.watch.id}:${candle.closeTime}`,
+        `${watch.interval} candle closed ${candle.close} (${watch.direction} ${watch.price})`,
+        { closeTime: candle.closeTime, close: candle.close, watchId: tracked.watch.id },
       );
     });
 
@@ -309,8 +353,18 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const interval = delivery.subscription.interval;
       if (interval === undefined) return;
+      const candle = candleFromDelivery(delivery);
+      if (candle === undefined) return;
+
+      const key = `${delivery.subscription.coin ?? POC_MARKET}:${interval}`;
+      const previous = lastDelivered.get(key);
+      lastDelivered.set(key, candle);
+
+      const finalized = yield* finalizedCandle(previous, candle);
+      if (finalized === undefined) return;
+
       const tracked = yield* activeTrackedWatches();
-      yield* Effect.forEach(tracked, (t) => evaluateCandleClose(t, delivery));
+      yield* Effect.forEach(tracked, (t) => evaluateCandleClose(t, interval, finalized));
     });
 
   const sweep: WatchEvaluatorShape["sweep"] = Effect.gen(function* () {
@@ -357,7 +411,13 @@ const make = Effect.gen(function* () {
       );
     });
 
-  return { start, drain: worker.drain, evaluateDelivery, sweep } satisfies WatchEvaluatorShape;
+  return {
+    start,
+    drain: worker.drain,
+    evaluateDelivery,
+    sweep,
+    forgetDeliveredCandles: Effect.sync(() => lastDelivered.clear()),
+  } satisfies WatchEvaluatorShape;
 });
 
 export const WatchEvaluatorLive = Layer.effect(WatchEvaluator, make);

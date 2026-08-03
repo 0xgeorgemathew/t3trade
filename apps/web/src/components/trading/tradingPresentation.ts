@@ -230,6 +230,26 @@ export function isMissionComplete(status: TradingMissionStatus): boolean {
   return status === "completed" || status === "revoked";
 }
 
+/**
+ * The missions worth a card in the workspace.
+ *
+ * Every mission ever created stays in the projection, and since a thread now
+ * opens one and settling it revokes one, that is a growing wall of Revoked
+ * cards — each with no controls, because a mission with no authority has
+ * nothing left to press. The live missions are the work. The most recent
+ * finished one is kept because it is where a mission that just ended reports
+ * its result, and losing it the instant it ends would be worse than the wall.
+ *
+ * Input order is the projection's: newest first.
+ */
+export function visibleMissions<T extends { readonly status: TradingMissionStatus }>(
+  missions: ReadonlyArray<T>,
+): ReadonlyArray<T> {
+  const live = missions.filter((mission) => !isMissionComplete(mission.status));
+  const lastFinished = missions.find((mission) => isMissionComplete(mission.status));
+  return lastFinished === undefined ? live : [...live, lastFinished];
+}
+
 export function deriveCompletionSummary(mission: {
   readonly result: {
     readonly realizedPnlUsd: number;

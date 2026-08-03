@@ -192,29 +192,39 @@ const started = Effect.gen(function* () {
 });
 
 /**
- * The auto-mission shortcut (`AutoMissionConfig`): a thread opened in a
- * configured lab workspace gets a mission without anyone visiting Settings.
+ * The auto-mission shortcut (`AutoMissionConfig`): a new thread gets a mission
+ * without anyone visiting Settings.
  *
  * The env is set inside the test rather than around the layer because
  * `AutoMissionConfigLive` reads `process.env` on every resolve, not at build
  * time — and because `started` creates its own thread, which must be drained
  * before the shortcut is armed or it would claim the slot first.
+ *
+ * The explicit knob rather than an armed signer: these tests are about which
+ * threads the shortcut claims, and the test server has no signer to arm.
+ * `T3_TRADES_AUTO_MISSION_WORKSPACE` narrows it to the lab project so the
+ * suite's own thread (at `process.cwd()`) stays outside it.
  */
 const LAB_ROOT = "/tmp/t3-trading-reactor-lab";
 const LAB_PROJECT_ID = ProjectId.make("project-trading-reactor-lab");
 
+const AUTO_MISSION_ENV = ["T3_TRADES_AUTO_MISSION", "T3_TRADES_AUTO_MISSION_WORKSPACE"] as const;
+
 const withAutoMissionArmed = <A, E, R>(body: Effect.Effect<A, E, R>) =>
   Effect.acquireUseRelease(
     Effect.sync(() => {
-      const previous = process.env.T3_TRADES_AUTO_MISSION_WORKSPACE;
+      const previous = AUTO_MISSION_ENV.map((name) => [name, process.env[name]] as const);
+      process.env.T3_TRADES_AUTO_MISSION = "1";
       process.env.T3_TRADES_AUTO_MISSION_WORKSPACE = LAB_ROOT;
       return previous;
     }),
     () => body,
     (previous) =>
       Effect.sync(() => {
-        if (previous === undefined) delete process.env.T3_TRADES_AUTO_MISSION_WORKSPACE;
-        else process.env.T3_TRADES_AUTO_MISSION_WORKSPACE = previous;
+        for (const [name, value] of previous) {
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        }
       }),
   );
 
@@ -315,6 +325,121 @@ it.layer(TestLayer)("auto-mission shortcut", (it) => {
       const incumbent = yield* projectedMission;
       assert.ok(Option.isSome(incumbent));
       assert.notEqual(incumbent.value.status, "revoked", "the incumbent must keep its authority");
+    }).pipe(Effect.scoped),
+  );
+});
+
+/**
+ * Create the mission without starting its first run.
+ *
+ * `createMission` goes through the reactor, which starts the first harness run,
+ * which queues a turn start — and upstream refuses to settle a thread inside
+ * the queued-turn grace window. That refusal is correct (settling would hide
+ * just-requested work) and it is not what these tests are about, so the mission
+ * is written straight to the domain and announced, the way `blockMission` does.
+ */
+const createQuietMission = Effect.gen(function* () {
+  const missions = yield* TradingMissionService;
+  yield* missions.createMission({
+    missionId: MISSION_ID,
+    userId: "local",
+    tradingAccountId: "acct-trading-reactor",
+    instruction: "Trade ETH momentum",
+    allocatedCapitalUsd: 1_000,
+    harness: {
+      provider: "claude",
+      providerInstanceId: "claude",
+      threadId: THREAD_ID,
+      status: "available",
+    },
+  });
+  const engine = yield* OrchestrationEngineService;
+  yield* engine.dispatch({
+    type: "trading.mission.status-set",
+    commandId: yield* commandId,
+    threadId: THREAD_ID,
+    missionId: MISSION_ID,
+    status: "analysing",
+    createdAt: NOW,
+  });
+  yield* settle;
+});
+
+/** Settle a thread the way the sidebar's Settle does, then drain the reactor. */
+const settleThread = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const engine = yield* OrchestrationEngineService;
+    yield* engine.dispatch({
+      type: "thread.settle",
+      commandId: yield* commandId,
+      threadId,
+    });
+    yield* settle;
+  });
+
+it.layer(TestLayer)("settling a mission-bound thread", (it) => {
+  // Settle is the way out of a mission. A thread the user has finished with
+  // must not keep an authority that wakes, trades, and holds the one active
+  // slot the next thread needs.
+  it.effect("revokes the mission bound to the settled thread", () =>
+    Effect.gen(function* () {
+      yield* started;
+      yield* createQuietMission;
+
+      yield* settleThread(THREAD_ID);
+
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.status, "revoked");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("leaves a mission alone when some other thread is settled", () =>
+    Effect.gen(function* () {
+      yield* started;
+      yield* createQuietMission;
+
+      const otherThread = ThreadId.make("thread-trading-reactor-unbound");
+      const engine = yield* OrchestrationEngineService;
+      yield* engine
+        .dispatch({
+          type: "thread.create",
+          commandId: yield* commandId,
+          threadId: otherThread,
+          projectId: PROJECT_ID,
+          title: "Unbound thread",
+          modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "sonnet" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: NOW,
+        })
+        .pipe(Effect.ignore);
+      yield* settle;
+
+      yield* settleThread(otherThread);
+
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.notEqual(projected.value.status, "revoked");
+    }).pipe(Effect.scoped),
+  );
+
+  // `findMissionByThreadId` returns only a still-authoritative mission, so the
+  // second settle has nothing to act on. Settle is a bulk action in the sidebar
+  // and must stay a silent no-op the second time.
+  it.effect("is a no-op when the mission is already revoked", () =>
+    Effect.gen(function* () {
+      yield* started;
+      yield* createQuietMission;
+
+      yield* settleThread(THREAD_ID);
+      yield* settleThread(THREAD_ID);
+
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.status, "revoked");
     }).pipe(Effect.scoped),
   );
 });
