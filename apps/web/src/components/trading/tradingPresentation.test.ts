@@ -17,6 +17,12 @@ import {
   formatUsd,
   humanizeLiteral,
   isMissionComplete,
+  deriveFillSlippagePercent,
+  deriveMissionPhases,
+  derivePausedExposure,
+  describeStaleness,
+  formatSignedPercent,
+  hyperliquidTradeUrl,
   isPositionDataStale,
   isLiveMission,
   newMissionBlocker,
@@ -308,6 +314,158 @@ describe("stale-data banner", () => {
     expect(
       isPositionDataStale({ status: "completed", position: { size: 0.5, observedAt: old } }, now),
     ).toBe(false);
+  });
+
+  // The banner's whole job is telling a read that is a second late from one
+  // that stopped four minutes ago, and it could not: both read "stale".
+  it("says how long ago the last read landed", () => {
+    expect(
+      describeStaleness({ status: "position_open", position: { size: 0.5, observedAt: old } }, now),
+    ).toBe(
+      "Position data is stale. Order placement is suspended until a fresh read lands. " +
+        "Last update 6s ago.",
+    );
+
+    expect(
+      describeStaleness(
+        {
+          status: "position_open",
+          position: { size: 0.5, observedAt: new Date(now - 254_000).toISOString() },
+        },
+        now,
+      ),
+    ).toContain("Last update 4m 14s ago.");
+  });
+
+  it("says nothing at all while the read is fresh", () => {
+    expect(
+      describeStaleness(
+        { status: "position_open", position: { size: 0.5, observedAt: fresh } },
+        now,
+      ),
+    ).toBeNull();
+    expect(describeStaleness({ status: "waiting", position: null }, now)).toBeNull();
+  });
+});
+
+describe("deriveFillSlippagePercent", () => {
+  const intent = { cloid: "0xabc", limitPrice: 4_000 };
+
+  it("reads a buy that filled above its limit as a cost", () => {
+    expect(
+      deriveFillSlippagePercent({ side: "buy", avgFillPrice: 4_004, cloid: "0xabc" }, intent),
+    ).toBeCloseTo(0.1, 6);
+  });
+
+  it("reads a sell that filled below its limit as a cost", () => {
+    expect(
+      deriveFillSlippagePercent({ side: "sell", avgFillPrice: 3_996, cloid: "0xabc" }, intent),
+    ).toBeCloseTo(0.1, 6);
+  });
+
+  it("reads a fill better than the limit as negative", () => {
+    expect(
+      deriveFillSlippagePercent({ side: "buy", avgFillPrice: 3_990, cloid: "0xabc" }, intent),
+    ).toBeCloseTo(-0.25, 6);
+  });
+
+  // A receipt with a figure nothing backs is worse than a receipt without one.
+  it("reports nothing it cannot attribute to a known intent", () => {
+    expect(deriveFillSlippagePercent({ side: "buy", avgFillPrice: 4_004 }, intent)).toBeNull();
+    expect(
+      deriveFillSlippagePercent({ side: "buy", avgFillPrice: 4_004, cloid: "0xother" }, intent),
+    ).toBeNull();
+    expect(
+      deriveFillSlippagePercent({ side: "buy", avgFillPrice: 4_004, cloid: "0xabc" }, null),
+    ).toBeNull();
+    expect(
+      deriveFillSlippagePercent(
+        { side: "buy", avgFillPrice: 4_004, cloid: "0xabc" },
+        {
+          cloid: "0xabc",
+          limitPrice: 0,
+        },
+      ),
+    ).toBeNull();
+  });
+
+  it("signs the formatted percentage", () => {
+    expect(formatSignedPercent(0.1)).toBe("+0.10%");
+    expect(formatSignedPercent(-0.25)).toBe("-0.25%");
+    expect(formatSignedPercent(0)).toBe("0.00%");
+  });
+});
+
+describe("derivePausedExposure", () => {
+  it("reports what pausing did not stand down", () => {
+    expect(
+      derivePausedExposure({ size: -0.5, unrealisedPnl: -12.4, liquidationPrice: 4_400 }),
+    ).toEqual({
+      exposureLabel: "Short 0.5",
+      unrealisedUsd: -12.4,
+      liquidationLabel: "4,400",
+    });
+  });
+
+  it("leaves the liquidation slot empty rather than guessing at one", () => {
+    expect(derivePausedExposure({ size: 0.5, unrealisedPnl: 3 })?.liquidationLabel).toBe("—");
+  });
+
+  it("says nothing when the mission holds nothing", () => {
+    expect(derivePausedExposure(null)).toBeNull();
+    expect(derivePausedExposure({ size: 0, unrealisedPnl: 0 })).toBeNull();
+  });
+});
+
+describe("hyperliquidTradeUrl", () => {
+  it("links at the network the account names", () => {
+    expect(hyperliquidTradeUrl("ETH", "hyperliquid_testnet")).toBe(
+      "https://app.hyperliquid-testnet.xyz/trade/ETH",
+    );
+    expect(hyperliquidTradeUrl("BTC", "acct-MAINNET-1")).toBe(
+      "https://app.hyperliquid.xyz/trade/BTC",
+    );
+  });
+
+  // Linking a testnet mission at the mainnet book is the expensive direction to
+  // be wrong in, so an id that names neither gets no link.
+  it("offers no link when the account does not name a network", () => {
+    expect(hyperliquidTradeUrl("ETH", "acct_1")).toBeNull();
+  });
+});
+
+describe("deriveMissionPhases", () => {
+  const states = (status: Parameters<typeof deriveMissionPhases>[0]) =>
+    deriveMissionPhases(status).map((phase) => phase.state);
+
+  it("walks the §11.1 loop in order", () => {
+    expect(deriveMissionPhases("analysing").map((phase) => phase.label)).toEqual([
+      "Analyse",
+      "Wait",
+      "Execute",
+      "Position",
+    ]);
+    expect(states("analysing")).toEqual(["current", "pending", "pending", "pending"]);
+    expect(states("waiting")).toEqual(["done", "current", "pending", "pending"]);
+    expect(states("executing")).toEqual(["done", "done", "current", "pending"]);
+    expect(states("position_open")).toEqual(["done", "done", "done", "current"]);
+  });
+
+  it("puts a fresh mission before the first step rather than on it", () => {
+    expect(states("initializing")).toEqual(["pending", "pending", "pending", "pending"]);
+  });
+
+  it("marks a completed mission as having walked all of it", () => {
+    expect(states("completed")).toEqual(["done", "done", "done", "done"]);
+  });
+
+  // A paused or blocked mission has stepped off the loop. Guessing where it
+  // stands would put the breadcrumb at odds with the status beside it.
+  it("renders nothing for a mission that is not on the loop", () => {
+    expect(deriveMissionPhases("paused")).toEqual([]);
+    expect(deriveMissionPhases("blocked")).toEqual([]);
+    expect(deriveMissionPhases("agent_unavailable")).toEqual([]);
+    expect(deriveMissionPhases("revoked")).toEqual([]);
   });
 });
 

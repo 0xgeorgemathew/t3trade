@@ -200,6 +200,7 @@ const started = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM projection_trading_missions`;
+  yield* sql`DELETE FROM trading_fills`;
 
   const reactor = yield* TradingMissionReactor;
   yield* reactor.start();
@@ -411,6 +412,21 @@ const createQuietMission = Effect.gen(function* () {
   yield* settle;
 });
 
+/** One reconciled fill: the proof the mission has a realised result to report. */
+const recordFill = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    INSERT INTO trading_fills (
+      fill_id, mission_id, execution_id, cloid, order_id, market, side,
+      filled_size, avg_fill_price, fee_usd, fee_token, traded_at, observed_at,
+      closed_pnl
+    ) VALUES (
+      'fill-settle', ${MISSION_ID}, 'exec-settle', '0xcloid-settle', 1, 'ETH', 'buy',
+      0.5, 3000, 1.5, 'USDC', 1000, 1000, 12.5
+    )
+  `;
+});
+
 /** Settle a thread the way the sidebar's Settle does, then drain the reactor. */
 const settleThread = (threadId: ThreadId) =>
   Effect.gen(function* () {
@@ -431,6 +447,42 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
     Effect.gen(function* () {
       yield* started;
       yield* createQuietMission;
+
+      yield* settleThread(THREAD_ID);
+
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.status, "revoked");
+    }).pipe(Effect.scoped),
+  );
+
+  // §11.1 has two permanent terminals and only one of them was reachable, so
+  // `completed` sat in the contract, the transition table, and the UI's
+  // completion summary while nothing ever set it. A fill is the difference: a
+  // mission that traded and came back flat finished, and says so.
+  it.effect("completes a flat mission that actually traded", () =>
+    Effect.gen(function* () {
+      yield* started;
+      yield* createQuietMission;
+      yield* recordFill;
+
+      yield* settleThread(THREAD_ID);
+
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.status, "completed");
+    }).pipe(Effect.scoped),
+  );
+
+  // A blocked mission's authority was withdrawn by a deterministic safety
+  // condition. It traded, but it did not finish — reporting that as a completed
+  // objective is the more expensive of the two lies.
+  it.effect("still revokes a mission that traded and then blocked", () =>
+    Effect.gen(function* () {
+      yield* started;
+      yield* createQuietMission;
+      yield* recordFill;
+      yield* blockMission;
 
       yield* settleThread(THREAD_ID);
 

@@ -24,6 +24,7 @@ import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
 import type { AgentOpenOrder } from "@t3tools/trading-contracts/account-snapshot";
 import { confirmedProtectedSize } from "@t3tools/trading-contracts/protection";
+import { PENDING_EXECUTION_STATUSES } from "@t3tools/trading-contracts/execution";
 import type {
   TradingFill,
   TradingOpenOrderRecord,
@@ -435,7 +436,7 @@ function settleAbandonedExecutions(
       SELECT execution_id, cloid
       FROM trading_execution_records
       WHERE mission_id = ${input.missionId}
-        AND status IN ('previewed', 'reserved', 'signed', 'submitted')
+        AND ${sql.in("status", PENDING_EXECUTION_STATUSES)}
         AND updated_at <= ${observedAt - ABANDONED_EXECUTION_AFTER_MS}
     `;
     if (stale.length === 0) return;

@@ -1153,7 +1153,10 @@ function ChatViewContent(props: ChatViewProps) {
   const routeThreadKey = useMemo(() => scopedThreadKey(routeThreadRef), [routeThreadRef]);
   // Phase 2: the mission bound to this thread, if any (§10.2). Gates the
   // pinned snapshot card above the timeline. Non-trading threads resolve null.
-  const boundMission = useTradingMissionForThread(environmentId, threadId);
+  const { mission: boundMission, error: missionFeedError } = useTradingMissionForThread(
+    environmentId,
+    threadId,
+  );
   const updateProject = useAtomCommand(projectEnvironment.update, { reportFailure: false });
   const upsertKeybinding = useAtomCommand(serverEnvironment.upsertKeybinding, {
     reportFailure: false,
@@ -5742,7 +5745,11 @@ function ChatViewContent(props: ChatViewProps) {
           onDismiss={() => setThreadError(activeThread.id, null)}
         />
         {boundMission && (
-          <MissionThreadStrip mission={boundMission} environmentId={environmentId} />
+          <MissionThreadStrip
+            mission={boundMission}
+            environmentId={environmentId}
+            feedError={missionFeedError}
+          />
         )}
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">

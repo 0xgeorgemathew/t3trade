@@ -90,6 +90,41 @@ layer("TradingMissionService", (it) => {
     }),
   );
 
+  // The service's pre-insert check is a race away from being wrong: two
+  // concurrent creates both read "no active mission" and both insert. The
+  // partial unique index from migration 035 is what actually makes the
+  // invariant true, so it is asserted against a raw insert that skips the
+  // service entirely — the only way to prove the database, not the read, is
+  // holding the line.
+  it.effect("refuses a second active mission row at the database", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const service = yield* TradingMissionService;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* service.createMission(createInput());
+
+      const smuggled = yield* Effect.result(sql`
+        INSERT INTO trading_missions (
+          mission_id, user_id, trading_account_id, instruction, market,
+          strategy_family, harness_json, status, control_json,
+          authority_version, strategy_version, version, created_at, updated_at
+        ) VALUES (
+          'mission_smuggled', 'user_1', 'acct_1', 'Trade ETH momentum', 'ETH',
+          'momentum', '{}', 'waiting', '{}', 1, 0, 1, 0, 0
+        )
+      `);
+
+      assert.equal(smuggled._tag, "Failure");
+
+      // And the one mission that does hold the slot is still the one the
+      // service reports, deterministically.
+      const active = yield* service.findActiveMission("user_1");
+      assert.ok(Option.isSome(active));
+      assert.equal(Option.getOrThrow(active).id, "mission_1");
+    }),
+  );
+
   it.effect("allows a different user to hold their own active mission", () =>
     Effect.gen(function* () {
       yield* migrated;

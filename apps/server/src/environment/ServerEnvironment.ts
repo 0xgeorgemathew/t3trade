@@ -13,6 +13,7 @@ import packageJson from "../../package.json" with { type: "json" };
 import { resolveServerSelfUpdateCapability } from "../cloud/selfUpdate.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import { resolveServerBuildIdentifier } from "./ServerBuildIdentifier.ts";
 import { resolveServerEnvironmentLabel } from "./ServerEnvironmentLabel.ts";
 
 export class ServerEnvironmentIdPersistenceError extends Schema.TaggedErrorClass<ServerEnvironmentIdPersistenceError>()(
@@ -129,6 +130,16 @@ export const make = Effect.gen(function* () {
   const serverSelfUpdate = yield* resolveServerSelfUpdateCapability({
     desktopManaged: serverConfig.mode === "desktop",
   });
+  const serverBuild = yield* resolveServerBuildIdentifier({ cwd: serverConfig.cwd });
+
+  // Once, at boot. The log is where a discrepancy gets traced back from, and it
+  // is the only place the build is recorded for a session that has already
+  // ended by the time anyone goes looking.
+  yield* Effect.logInfo("server environment resolved", {
+    serverVersion: packageJson.version,
+    serverBuild: serverBuild ?? "unknown",
+    fork: T3_FORK_NAME,
+  });
 
   const descriptor: ExecutionEnvironmentDescriptor = {
     environmentId,
@@ -140,6 +151,7 @@ export const make = Effect.gen(function* () {
     serverVersion: packageJson.version,
     fork: T3_FORK_NAME,
     t3UpstreamCommit: T3_UPSTREAM_COMMIT,
+    ...(serverBuild === null ? {} : { serverBuild }),
     capabilities: {
       repositoryIdentity: true,
       connectionProbe: true,

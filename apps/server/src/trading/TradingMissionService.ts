@@ -15,6 +15,8 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { PENDING_EXECUTION_STATUSES } from "@t3tools/trading-contracts/execution";
+
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import {
   TradingHarnessBindingImmutableError,
@@ -299,9 +301,16 @@ const makeTradingMissionService = Effect.gen(function* () {
 
   const findActiveMission: TradingMissionServiceShape["findActiveMission"] = (userId) =>
     Effect.gen(function* () {
+      // The partial unique index (migration 035) makes at most one row match,
+      // so the ordering can never actually choose between two missions. It is
+      // here because "at most one" is a database guarantee and reading a row
+      // out of an unordered result set is a habit that outlives the guarantee:
+      // drop the index and this quietly starts picking a mission at random.
       const rows = yield* sql<MissionRow>`
         SELECT * FROM trading_missions
         WHERE user_id = ${userId} AND status NOT IN ('revoked', 'completed')
+        ORDER BY created_at DESC
+        LIMIT 1
       `.pipe(Effect.mapError(sqlFail("findActiveMission")));
 
       const row = rows[0];
@@ -333,7 +342,7 @@ const makeTradingMissionService = Effect.gen(function* () {
       }>`
         SELECT cloid, action_type, status, updated_at FROM trading_execution_records
         WHERE mission_id = ${missionId}
-          AND status IN ('previewed', 'reserved', 'signed', 'submitted')
+          AND ${sql.in("status", PENDING_EXECUTION_STATUSES)}
         ORDER BY updated_at ASC
       `.pipe(Effect.mapError(sqlFail("listPendingExecutions")));
 

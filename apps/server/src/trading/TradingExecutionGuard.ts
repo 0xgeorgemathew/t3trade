@@ -19,6 +19,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { isPermittedUnderExhaustion } from "@t3tools/trading-contracts/loss-accounting";
 import type { TradingLossBudget } from "@t3tools/trading-contracts/execution";
+import { EXPOSURE_REDUCING_ACTION_TYPES } from "@t3tools/trading-contracts/protection";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
 
@@ -186,8 +187,10 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
       // §16.4 item 1: cancel mission-owned position-increasing resting orders.
       // Identify "increasing" from the execution record's action_type (not
       // trading_orders.reduce_only — the reconciler hardcodes that to false;
-      // PROMPT-05 fixes the column). An action not in the permitted-under-
-      // exhaustion set {cancel, reduce, close} is position-increasing.
+      // PROMPT-05 fixes the column). Anything outside the exposure-reducing set
+      // is position-increasing — the same rule `isPositionIncreasing` applies in
+      // TypeScript, read from the same contract list rather than spelled out
+      // again in SQL.
       //
       // Protection preservation is vacuous until PROMPT-05 places protection
       // orders; this cancel path only targets increasing orders today.
@@ -197,7 +200,7 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
         FROM trading_orders o
         JOIN trading_execution_records e ON e.cloid = o.cloid
         WHERE o.mission_id = ${missionId}
-          AND e.action_type NOT IN ('cancel', 'reduce', 'close', 'modify_stop')
+          AND NOT ${sql.in("e.action_type", EXPOSURE_REDUCING_ACTION_TYPES)}
       `.pipe(
         Effect.mapError(
           // A SQL read that failed is not the budget saying no. Labelling it

@@ -12,6 +12,7 @@ import {
   checkStopInformation,
   confirmedProtectedSize,
   describeStopGateDefect,
+  EXPOSURE_REDUCING_ACTION_TYPES,
   isFullyProtected,
   isPositionIncreasing,
   isProtectiveOrder,
@@ -42,6 +43,15 @@ describe("isPositionIncreasing", () => {
     // A new action added later inherits the stop gate rather than slipping
     // past it, which is the direction a safety gate has to fail in.
     expect(isPositionIncreasing("reverse")).toBe(true);
+  });
+
+  it("agrees with the exported list the exhaustion SQL reads", () => {
+    // `TradingExecutionGuard.blockForExhaustion` cancels everything outside
+    // this list. If the two ever disagree, that query starts cancelling the
+    // protective orders it is meant to leave alone.
+    for (const actionType of EXPOSURE_REDUCING_ACTION_TYPES) {
+      expect(isPositionIncreasing(actionType)).toBe(false);
+    }
   });
 });
 

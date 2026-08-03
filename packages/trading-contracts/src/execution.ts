@@ -197,6 +197,39 @@ export const TradingExecutionStatus = Schema.Literals([
 export type TradingExecutionStatus = typeof TradingExecutionStatus.Type;
 
 /**
+ * The statuses an execution attempt sits in while it is still in flight.
+ *
+ * A record is written at `previewed`, reserved, signed, and moved to
+ * `submitted` before the POST; nothing after that is pending, because
+ * `accepted`, `filled`, `rejected`, `cancelled` and `failed` all mean the
+ * exchange has answered. Preview item 16 refuses a new entry while one of these
+ * exists, the reconciler settles them, and the mission service reports them —
+ * three readers of one set, which is why it lives here and not in three SQL
+ * literals free to disagree about, say, whether `previewed` counts.
+ */
+export const PENDING_EXECUTION_STATUSES = [
+  "previewed",
+  "reserved",
+  "signed",
+  "submitted",
+] as const satisfies ReadonlyArray<TradingExecutionStatus>;
+
+/**
+ * Pending, plus `accepted`: an accepted order rests on the book and has not
+ * reached a terminal status either, so a settlement pass has to look at it even
+ * though a new entry is no longer blocked by it.
+ */
+export const NON_TERMINAL_EXECUTION_STATUSES = [
+  ...PENDING_EXECUTION_STATUSES,
+  "accepted",
+] as const satisfies ReadonlyArray<TradingExecutionStatus>;
+
+/** True while an execution attempt is still in flight (§18). */
+export function isPendingExecutionStatus(status: string): boolean {
+  return (PENDING_EXECUTION_STATUSES as ReadonlyArray<string>).includes(status);
+}
+
+/**
  * Per-order status as returned by the exchange, recorded verbatim (§17.2
  * step 4: inspect EVERY per-order status; do not assume batch atomicity).
  */

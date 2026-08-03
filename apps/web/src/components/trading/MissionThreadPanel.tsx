@@ -30,9 +30,12 @@ import type {
 } from "@t3tools/contracts";
 import type { ReactNode } from "react";
 
+import { MissionFeedErrorBanner, MissionStalenessBanner } from "./MissionStalenessBanner";
 import { MissionStripBar } from "./MissionStripBar";
 import {
+  deriveFillSlippagePercent,
   formatPrice,
+  formatSignedPercent,
   formatSignedUsd,
   humanizeLiteral,
   shouldShowMissionStrip,
@@ -133,7 +136,16 @@ function OrderIntentCard({ exec }: { exec: TradingExecutionView }) {
 }
 
 /** A fill receipt: what filled, at what price, and what it cost (§10). */
-function FillReceipt({ fill }: { fill: TradingFillView }) {
+function FillReceipt({
+  fill,
+  intent,
+}: {
+  fill: TradingFillView;
+  /** The execution this fill can be attributed to, for the slippage figure. */
+  intent: TradingExecutionView | null;
+}) {
+  const slippagePercent = deriveFillSlippagePercent(fill, intent);
+
   return (
     <Card
       title="Filled"
@@ -142,6 +154,15 @@ function FillReceipt({ fill }: { fill: TradingFillView }) {
     >
       <StatLine>
         <Stat label="Average fill" value={formatPrice(fill.avgFillPrice)} />
+        {slippagePercent === null ? null : (
+          // Positive means the fill spent some of the slippage bound the server
+          // priced the limit at; negative means it did better than the bound.
+          <Stat
+            label="Slippage"
+            value={formatSignedPercent(slippagePercent)}
+            tone={slippagePercent > 0 ? "loss" : slippagePercent < 0 ? "profit" : undefined}
+          />
+        )}
         <Stat label="Fee" value={formatSignedUsd(-fill.feeUsd)} />
         <Stat
           label="Realized"
@@ -211,17 +232,32 @@ function Cell({ label, value, tone }: { label: string; value: string; tone?: Ton
  *
  * Renders nothing at all once the mission is settled: a strip with no exposure
  * to unwind and no watch to report is a band of border with nothing in it.
+ *
+ * The two banners sit with the strip rather than with the cards below, because
+ * both say the same kind of thing the strip does — something about this mission
+ * needs attention right now — and both must stay on screen when the timeline
+ * has scrolled away from the cards.
  */
 export function MissionThreadStrip({
   mission,
   environmentId,
+  feedError,
 }: {
   readonly mission: OrchestrationTradingMission;
   readonly environmentId: EnvironmentId;
+  /** The projection poll's failure, when the feed itself has stopped. */
+  readonly feedError: string | null;
 }) {
   const controls = useMissionControls(mission, environmentId);
   if (!shouldShowMissionStrip(mission)) return null;
-  return <MissionStripBar mission={mission} controls={controls} />;
+
+  return (
+    <>
+      <MissionStripBar mission={mission} controls={controls} />
+      {feedError === null ? null : <MissionFeedErrorBanner message={feedError} />}
+      <MissionStalenessBanner mission={mission} />
+    </>
+  );
 }
 
 /**
@@ -243,7 +279,11 @@ export function MissionThreadCards({ mission }: { readonly mission: Orchestratio
       {mission.inFlightExecution && <OrderIntentCard exec={mission.inFlightExecution} />}
       {mission.position && <PositionCard position={mission.position} />}
       {mission.recentFills.slice(0, 3).map((fill) => (
-        <FillReceipt key={`${fill.orderId}-${fill.tradedAt}`} fill={fill} />
+        <FillReceipt
+          key={`${fill.orderId}-${fill.tradedAt}`}
+          fill={fill}
+          intent={mission.inFlightExecution}
+        />
       ))}
     </div>
   );

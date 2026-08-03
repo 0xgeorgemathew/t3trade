@@ -7,19 +7,23 @@ import { useTradingMissions } from "../../lib/tradingMissionsState";
 import { useProjects } from "../../state/entities";
 import { SettingsPageContainer, SettingsSection } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
+import { MissionStalenessBanner } from "./MissionStalenessBanner";
 import { MissionStripBar } from "./MissionStripBar";
 import { useMissionControls, type MissionControls } from "./useMissionControls";
 import { NewMissionForm } from "./NewMissionForm";
 import {
   deriveCompletionSummary,
+  deriveMissionPhases,
+  derivePausedExposure,
   deriveRejectedOrder,
   describeWatch,
   formatDuration,
+  formatSignedUsd,
   formatUsd as usd,
   humanizeLiteral,
+  hyperliquidTradeUrl,
   isLiveMission,
   isMissionComplete,
-  isPositionDataStale,
   MISSION_STATUS_LABELS,
   shouldShowMissionStrip,
   visibleMissions,
@@ -44,8 +48,11 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 function MissionStatus({ mission }: { mission: OrchestrationTradingMission }) {
+  const exchangeUrl = hyperliquidTradeUrl(mission.market, mission.tradingAccountId);
+
   return (
     <SettingsSection title="Mission" icon={<TrendingUpIcon className="size-4" />}>
+      <PhaseBreadcrumb status={mission.status} />
       <Field label="Status" value={MISSION_STATUS_LABELS[mission.status]} />
       {mission.blockedReason === null ? null : (
         <Field label="Blocked because" value={humanizeLiteral(mission.blockedReason)} />
@@ -54,6 +61,22 @@ function MissionStatus({ mission }: { mission: OrchestrationTradingMission }) {
       <Field label="Market" value={mission.market} />
       <Field label="Harness" value={`${mission.harness.provider} · ${mission.harness.status}`} />
       <Field label="Thread" value={mission.harness.threadId} />
+      {/* The exchange is the other half of every reconciliation question, and
+          finding the right book by hand means knowing which network the mission
+          is on. Absent when the account id does not name one. */}
+      {exchangeUrl === null ? null : (
+        <div className="flex items-baseline justify-between gap-4 px-3 py-1.5 sm:px-4">
+          <span className="text-sm text-muted-foreground">Exchange</span>
+          <a
+            href={exchangeUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-sm font-medium text-foreground underline underline-offset-2"
+          >
+            Open on Hyperliquid
+          </a>
+        </div>
+      )}
     </SettingsSection>
   );
 }
@@ -178,14 +201,56 @@ function Watches({ mission }: { mission: OrchestrationTradingMission }) {
  * The paused card. Its one job is to say the thing a paused user most needs to
  * know and would otherwise have to guess: the stop is still on the exchange.
  */
-function PausedCard() {
+function PausedCard({ mission }: { mission: OrchestrationTradingMission }) {
+  const exposure = derivePausedExposure(mission.position);
+
   return (
     <SettingsSection title="Paused">
       <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">
         New entries, scale-ins, and re-entry are blocked. Any protective stop stays live on-exchange
         — pausing does not stand it down.
       </p>
+      {/* And this is what the stop is still standing over. The sentence above
+          says pausing changed nothing about the exposure; these are the
+          figures that make that concrete. */}
+      {exposure === null ? null : (
+        <>
+          <Field label="Exposure" value={exposure.exposureLabel} />
+          <Field label="Unrealised" value={formatSignedUsd(exposure.unrealisedUsd)} />
+          <Field label="Liquidation" value={exposure.liquidationLabel} />
+        </>
+      )}
     </SettingsSection>
+  );
+}
+
+/** The mission's progress through the §11.1 loop. Absent once it steps off it. */
+function PhaseBreadcrumb({ status }: { status: OrchestrationTradingMission["status"] }) {
+  const phases = deriveMissionPhases(status);
+  if (phases.length === 0) return null;
+
+  return (
+    <div
+      className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 text-xs sm:px-4"
+      data-testid="mission-phase-breadcrumb"
+    >
+      {phases.map((phase, index) => (
+        <span key={phase.label} className="flex items-center gap-2">
+          {index === 0 ? null : <span className="text-muted-foreground/50">›</span>}
+          <span
+            className={
+              phase.state === "current"
+                ? "font-medium text-foreground"
+                : phase.state === "done"
+                  ? "text-muted-foreground"
+                  : "text-muted-foreground/50"
+            }
+          >
+            {phase.label}
+          </span>
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -227,18 +292,6 @@ function OrderRejectedCard({
         </Button>
       </div>
     </SettingsSection>
-  );
-}
-
-/** The stale-data banner, shown while order placement is suspended. */
-function StaleDataBanner() {
-  return (
-    <div
-      className="border-b border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-foreground sm:px-4"
-      data-testid="stale-data-banner"
-    >
-      Position data is stale. Order placement is suspended until a fresh read lands.
-    </div>
   );
 }
 
@@ -319,6 +372,14 @@ function RiskControls({
           Close and revoke
         </Button>
       </div>
+      {controls.error === null ? null : (
+        <p
+          className="px-3 pb-3 text-sm text-destructive sm:px-4"
+          data-testid="mission-control-error"
+        >
+          {controls.error}
+        </p>
+      )}
     </SettingsSection>
   );
 }
@@ -359,9 +420,6 @@ function MissionView({
   controls: MissionControls;
 }) {
   const rejected = deriveRejectedOrder(mission);
-  // Recomputed on each render rather than on a timer: the projection push is
-  // what moves this, so a timer would only make it disagree with the data.
-  const stale = isPositionDataStale(mission, Date.now());
 
   return (
     <>
@@ -372,8 +430,8 @@ function MissionView({
           className="sticky top-0 z-10 rounded-md bg-background/95 backdrop-blur"
         />
       ) : null}
-      {stale ? <StaleDataBanner /> : null}
-      {mission.status === "paused" ? <PausedCard /> : null}
+      <MissionStalenessBanner mission={mission} />
+      {mission.status === "paused" ? <PausedCard mission={mission} /> : null}
       {rejected === null ? null : <OrderRejectedCard notice={rejected} controls={controls} />}
       <MissionStatus mission={mission} />
       {/* A revoked or completed mission has no authority left to exercise, so
