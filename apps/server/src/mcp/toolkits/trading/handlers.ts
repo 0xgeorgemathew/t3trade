@@ -35,6 +35,26 @@ interface BoundCall {
 }
 
 /**
+ * Refuse a tool call, and say so in the log.
+ *
+ * A rejection here is invisible everywhere except the agent's own transcript:
+ * the server log showed a mission sitting still with no explanation, and the
+ * operator had no way to tell "the agent stopped calling tools" from "every
+ * call it made was refused". One line per refusal closes that gap.
+ */
+const rejectCall = (input: {
+  readonly reason:
+    | "capability_not_granted"
+    | "thread_not_bound_to_mission"
+    | "mission_not_bound_to_thread";
+  readonly threadId: string;
+  readonly missionId: string;
+}) =>
+  Effect.logInfo("trading tool call rejected", input).pipe(
+    Effect.andThen(new TradingToolRejectedError(input)),
+  );
+
+/**
  * Resolve the mission a trading tool call is authorized to act on.
  *
  * Capability is granted per session; authorization is resolved per call. §10.2
@@ -50,21 +70,21 @@ const resolveBoundCall = Effect.fn("TradingToolkit.resolveBoundCall")(function* 
   TradingToolRejectedError,
   McpInvocationContext.McpInvocationContext | TradingMissionService
 > {
-  const scope = yield* McpInvocationContext.requireCapability(
-    "trading",
-    (denial) =>
-      new TradingToolRejectedError({
+  const scope = yield* McpInvocationContext.requireCapability("trading", (denial) => denial).pipe(
+    Effect.catch((denial) =>
+      rejectCall({
         reason: "capability_not_granted",
         threadId: denial.threadId,
         missionId,
       }),
+    ),
   );
 
   const missions = yield* TradingMissionService;
   const bound = yield* missions.findMissionByThreadId(scope.threadId).pipe(Effect.orDie);
 
   if (Option.isNone(bound)) {
-    return yield* new TradingToolRejectedError({
+    return yield* rejectCall({
       reason: "thread_not_bound_to_mission",
       threadId: scope.threadId,
       missionId,
@@ -72,7 +92,7 @@ const resolveBoundCall = Effect.fn("TradingToolkit.resolveBoundCall")(function* 
   }
 
   if (bound.value.id !== missionId) {
-    return yield* new TradingToolRejectedError({
+    return yield* rejectCall({
       reason: "mission_not_bound_to_thread",
       threadId: scope.threadId,
       missionId,
@@ -100,14 +120,14 @@ const resolveReadCall = Effect.fn("TradingToolkit.resolveReadCall")(function* (
   TradingToolRejectedError,
   McpInvocationContext.McpInvocationContext | TradingMissionService
 > {
-  const scope = yield* McpInvocationContext.requireCapability(
-    "trading",
-    (denial) =>
-      new TradingToolRejectedError({
+  const scope = yield* McpInvocationContext.requireCapability("trading", (denial) => denial).pipe(
+    Effect.catch((denial) =>
+      rejectCall({
         reason: "capability_not_granted",
         threadId: denial.threadId,
         missionId,
       }),
+    ),
   );
 
   const missions = yield* TradingMissionService;
@@ -308,7 +328,7 @@ const handlers = {
       // A live mission on this thread that is not the one named is still a
       // mismatch, not an unbound read.
       if (call.mission.id !== input.missionId) {
-        return yield* new TradingToolRejectedError({
+        return yield* rejectCall({
           reason: "mission_not_bound_to_thread",
           threadId: call.threadId,
           missionId: input.missionId,

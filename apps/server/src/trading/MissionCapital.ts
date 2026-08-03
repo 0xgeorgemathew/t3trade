@@ -41,6 +41,21 @@ const isPositiveFinite = (value: number | undefined): value is number =>
   value !== undefined && Number.isFinite(value) && value > 0;
 
 /**
+ * Which of the three precedence rules produced the mandate.
+ *
+ * Reported alongside the number because the number alone does not say whether
+ * the operator granted it, the account sized it, or nobody could read the
+ * account — and that is the first thing to check when a mission turns out to be
+ * trading a mandate nobody expected.
+ */
+export type MissionCapitalSource = "explicit" | "account" | "fallback";
+
+export interface ResolvedMissionCapital {
+  readonly allocatedCapitalUsd: number;
+  readonly source: MissionCapitalSource;
+}
+
+/**
  * Resolve the capital a new mission is created under.
  *
  * `readAccountValueUsd` is only run when there is no explicit grant, so the
@@ -50,9 +65,11 @@ const isPositiveFinite = (value: number | undefined): value is number =>
 export const resolveMissionCapitalUsd = <E, R>(input: {
   readonly explicitUsd: number | undefined;
   readonly readAccountValueUsd: Effect.Effect<number, E, R>;
-}): Effect.Effect<number, never, R> =>
+}): Effect.Effect<ResolvedMissionCapital, never, R> =>
   Effect.gen(function* () {
-    if (isPositiveFinite(input.explicitUsd)) return input.explicitUsd;
+    if (isPositiveFinite(input.explicitUsd)) {
+      return { allocatedCapitalUsd: input.explicitUsd, source: "explicit" as const };
+    }
 
     const accountValueUsd = yield* input.readAccountValueUsd.pipe(
       Effect.catchCause((cause) =>
@@ -64,7 +81,9 @@ export const resolveMissionCapitalUsd = <E, R>(input: {
     );
 
     // The read failed and already warned.
-    if (accountValueUsd === null) return FALLBACK_MISSION_CAPITAL_USD;
+    if (accountValueUsd === null) {
+      return { allocatedCapitalUsd: FALLBACK_MISSION_CAPITAL_USD, source: "fallback" as const };
+    }
 
     // A read that succeeded with a zero or nonsense value is its own warning:
     // the account exists and holds nothing usable.
@@ -73,11 +92,8 @@ export const resolveMissionCapitalUsd = <E, R>(input: {
         accountValueUsd,
         fallbackUsd: FALLBACK_MISSION_CAPITAL_USD,
       });
-      return FALLBACK_MISSION_CAPITAL_USD;
+      return { allocatedCapitalUsd: FALLBACK_MISSION_CAPITAL_USD, source: "fallback" as const };
     }
 
-    yield* Effect.logInfo("mission capital resolved from the live account value", {
-      allocatedCapitalUsd: accountValueUsd,
-    });
-    return accountValueUsd;
+    return { allocatedCapitalUsd: accountValueUsd, source: "account" as const };
   });

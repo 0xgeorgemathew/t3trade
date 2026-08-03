@@ -820,7 +820,21 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
       );
       yield* persistAccountValue(input.missionId, account.accountValue, observedAt);
 
-      yield* Effect.logInfo("trading reconciled", { missionId: input.missionId, trigger });
+      // The periodic backstop runs every five seconds for as long as a position
+      // is open, and says the same thing every time. That belongs at debug: the
+      // seven event-driven triggers each happen once for a reason worth
+      // reading, and burying them under twelve identical lines a minute is what
+      // made the mission log unreadable.
+      const summary = {
+        missionId: input.missionId,
+        trigger,
+        positionSize: position?.size ?? 0,
+        openOrders: openOrders.length,
+        externalChanges: externalChanges.length,
+      };
+      yield* trigger === "periodic_while_position_open" && externalChanges.length === 0
+        ? Effect.logDebug("trading reconciled", summary)
+        : Effect.logInfo("trading reconciled", summary);
       return {
         position,
         openOrders,

@@ -110,6 +110,7 @@ describe("TradingHarnessWakeup", () => {
   };
 
   const base = {
+    kind: "trading-harness-wakeup",
     missionId: "mission_1",
     harnessRunId: "run_1",
     cause: "scheduled_reassessment",
@@ -161,6 +162,7 @@ describe("TradingHarnessWakeup", () => {
     expect(decoded.wakeReason).toBe("staleness_floor");
     expect(decoded.armedWatches).toHaveLength(1);
     expect(decoded.armedWatches[0]?.watch.armedReason).toBe("staleness_floor");
+    expect(decoded.kind).toBe("trading-harness-wakeup");
   });
 
   it("requires the new fields rather than treating them as optional", () => {
@@ -168,5 +170,14 @@ describe("TradingHarnessWakeup", () => {
     expect(() => decode(withoutAge)).toThrow();
     const { armedWatches: _armed, ...withoutArmed } = base;
     expect(() => decode(withoutArmed)).toThrow();
+  });
+
+  // The discriminator is what lets the chat timeline tell a wakeup from
+  // something the operator typed. A wakeup without it would render as raw JSON,
+  // which is the thing it exists to stop.
+  it("refuses a payload that does not declare itself a wakeup", () => {
+    const { kind: _kind, ...withoutKind } = base;
+    expect(() => decode(withoutKind)).toThrow();
+    expect(() => decode({ ...base, kind: "something-else" })).toThrow();
   });
 });

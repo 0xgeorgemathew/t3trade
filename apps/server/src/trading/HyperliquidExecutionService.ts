@@ -661,6 +661,22 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
         yield* releaseReservation(persistedExecutionId, updatedAt);
       }
 
+      // What actually reached the exchange, and what it answered. Everything
+      // upstream of this line is intent; this is the one place an order becomes
+      // a fact, and it logged nothing at all.
+      yield* Effect.logInfo("trading order hit the wire", {
+        missionId: intent.missionId,
+        cloid: wireOrder.cloid,
+        actionType: intent.actionType,
+        side: wireOrder.side,
+        size: wireOrder.size,
+        limitPrice: wireOrder.limitPrice,
+        timeInForce: wireOrder.timeInForce,
+        reduceOnly: wireOrder.reduceOnly,
+        linkedStopPrice: linkedStop?.triggerPrice,
+        status: finalStatus,
+      });
+
       return { ...persistedRecord, status: finalStatus, orderResults, updatedAt };
     });
 
@@ -716,6 +732,10 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
             }),
         ),
       );
+      yield* Effect.logInfo("trading cancel hit the wire", {
+        market: input.market,
+        cloid: input.cloid,
+      });
     });
 
   // §17.2 step 6: independent, explicitly sized reduce-only protection. Shares
@@ -797,6 +817,13 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
           detail: `protective stop rejected by the exchange: ${outcome.actionError}`,
         });
       }
+      yield* Effect.logInfo("trading protective stop hit the wire", {
+        market: input.market,
+        cloid: input.cloid,
+        stopPrice: input.stopPrice,
+        positionSize: input.positionSize,
+        outcomes: outcome.statuses.map((row) => row.outcome),
+      });
       return outcome.statuses.map(
         (row) =>
           ({
@@ -903,6 +930,15 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
           detail: `reduce-only exit rejected by the exchange: ${outcome.actionError}`,
         });
       }
+      yield* Effect.logInfo("trading reduce-only exit hit the wire", {
+        missionId: input.missionId,
+        market: input.market,
+        cloid,
+        side,
+        size,
+        attempt: input.attempt,
+        outcomes: outcome.statuses.map((row) => row.outcome),
+      });
       return outcome.statuses.map(
         (row) =>
           ({

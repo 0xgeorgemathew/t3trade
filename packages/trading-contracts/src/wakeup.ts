@@ -83,6 +83,17 @@ export function describeArmedWatch(persisted: PersistedWatch, markPrice: number)
  * `mission_created` for the first run.
  */
 export const TradingHarnessWakeup = Schema.Struct({
+  /**
+   * What this message is, for anything reading the serialized payload rather
+   * than the typed value.
+   *
+   * The wakeup is delivered as the resumed turn's user-message text (§12.4), so
+   * the chat timeline receives a JSON blob with no way to tell it from
+   * something the operator typed — and rendered it verbatim, once per wake. The
+   * `mission_created` bootstrap message already carried this discriminator;
+   * the full wakeup now carries the same one.
+   */
+  kind: Schema.Literal("trading-harness-wakeup"),
   missionId: TradingId,
   harnessRunId: TradingId,
   cause: TradingHarnessRunCause,

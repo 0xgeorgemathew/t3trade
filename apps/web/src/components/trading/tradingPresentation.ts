@@ -67,6 +67,90 @@ export function describeWatch(watch: MarketWatch): string {
 }
 
 // ---------------------------------------------------------------------------
+// harness wakeup messages
+// ---------------------------------------------------------------------------
+//
+// A resumed run's turn begins with the wakeup snapshot injected as the user
+// message text (§12.4). Nothing rendered it, so a mission thread read as a wall
+// of JSON blobs — one per wake, several a minute at times — with the operator's
+// own messages lost between them. The card below is the one-line rendering; the
+// payload stays available behind an expander, because the JSON is still the
+// authoritative thing the harness was handed.
+
+/** The one line a wakeup message is rendered as. */
+export interface WakeupCard {
+  /** The §11.2 run cause, humanized. */
+  readonly causeLabel: string;
+  /** True for the `mission_created` bootstrap, which carries no snapshot. */
+  readonly bootstrap: boolean;
+  /** "ETH · 3,142.50" while a snapshot is present; null on the bootstrap. */
+  readonly marketLabel: string | null;
+  /** "Strategy v3" once a strategy exists; null on the bootstrap. */
+  readonly strategyLabel: string | null;
+  /** How many coalesced inbox events the run was started with. */
+  readonly pendingEventCount: number;
+  /** The raw payload, pretty-printed for the expander. */
+  readonly rawJson: string;
+}
+
+const readString = (value: unknown): string | null => (typeof value === "string" ? value : null);
+const readNumber = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? value : null;
+
+/**
+ * Read a wakeup card out of a message's text, or `null` when the text is not a
+ * wakeup at all.
+ *
+ * Deliberately a hand-parse rather than a schema decode: the timeline renders
+ * whatever the server sent, and a wakeup that gained a field the web build does
+ * not know about must still render as a card rather than falling back to raw
+ * JSON. Every field is optional here; only `kind` decides.
+ */
+export function deriveWakeupCard(text: string): WakeupCard | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{") || !trimmed.includes("trading-harness-wakeup")) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+
+  const payload = parsed as Record<string, unknown>;
+  if (payload["kind"] !== "trading-harness-wakeup") return null;
+
+  const market = payload["marketSnapshot"];
+  const marketFields =
+    typeof market === "object" && market !== null ? (market as Record<string, unknown>) : null;
+  const marketName = marketFields === null ? null : readString(marketFields["market"]);
+  const markPrice = marketFields === null ? null : readNumber(marketFields["markPrice"]);
+
+  const strategy = payload["activeStrategy"];
+  const strategyVersion =
+    typeof strategy === "object" && strategy !== null
+      ? readNumber((strategy as Record<string, unknown>)["version"])
+      : null;
+
+  const pendingEvents = payload["pendingEvents"];
+
+  return {
+    causeLabel: humanizeLiteral(readString(payload["cause"]) ?? "wakeup"),
+    bootstrap: payload["bootstrap"] === true,
+    marketLabel:
+      marketName === null
+        ? null
+        : markPrice === null
+          ? marketName
+          : `${marketName} · ${formatPrice(markPrice)}`,
+    strategyLabel: strategyVersion === null ? null : `Strategy v${strategyVersion}`,
+    pendingEventCount: Array.isArray(pendingEvents) ? pendingEvents.length : 0,
+    rawJson: JSON.stringify(parsed, null, 2),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // §14.7 risk chrome
 // ---------------------------------------------------------------------------
 //
