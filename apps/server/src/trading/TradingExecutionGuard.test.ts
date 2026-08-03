@@ -34,7 +34,8 @@ import {
   type ExecutionInput,
 } from "./HyperliquidExecutionService.ts";
 import { HyperliquidReconciler, type ReconciledState } from "./HyperliquidReconciler.ts";
-import { TradingMissionService } from "./TradingMissionService.ts";
+import { TradingMissionVersionConflictError } from "./Errors.ts";
+import { TradingMissionService, type TradingMissionServiceError } from "./TradingMissionService.ts";
 import {
   TradingExecutionGuard,
   TradingExecutionGuardLive,
@@ -97,7 +98,7 @@ const exhausted: TradingLossBudget = {
  * method that reads SQL and writes a transition, and its two failure paths are
  * what these cases pin.
  */
-const blockingLayer = (transition: Effect.Effect<never, Error>) =>
+const blockingLayer = (transition: Effect.Effect<never, TradingMissionServiceError>) =>
   TradingExecutionGuardLive.pipe(
     Layer.provideMerge(
       Layer.succeed(TradingMissionService, {
@@ -236,7 +237,19 @@ it.effect("names a refused transition as one, not as an exhausted budget", () =>
       guard.blockForExhaustion("mission_1", 1, "0x00000000000000000000000000000000000000ff"),
     );
     assert.equal(error.reason, "transition_failed");
-  }).pipe(Effect.provide(blockingLayer(Effect.fail(new Error("version conflict"))))),
+  }).pipe(
+    Effect.provide(
+      blockingLayer(
+        Effect.fail(
+          new TradingMissionVersionConflictError({
+            missionId: "mission_1",
+            expectedVersion: 1,
+            currentVersion: 2,
+          }),
+        ),
+      ),
+    ),
+  ),
 );
 
 // ===========================================================================

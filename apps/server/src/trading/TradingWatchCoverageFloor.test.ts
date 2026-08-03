@@ -49,7 +49,7 @@ const turnEnded = {
   type: "thread.session-set",
   eventId: EventId.make("event_1"),
   sequence: 1,
-  occurredAt: new Date(0).toISOString(),
+  occurredAt: "1970-01-01T00:00:00.000Z",
   payload: {
     threadId: ThreadId.make(THREAD),
     session: { status: "idle", activeTurnId: null },
