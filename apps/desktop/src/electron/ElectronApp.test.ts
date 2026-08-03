@@ -62,7 +62,7 @@ vi.mock("electron", () => ({
     getVersion: getVersionMock,
     isDefaultProtocolClient: isDefaultProtocolClientMock,
     isPackaged: true,
-    name: "T3 Trades",
+    name: "T3 Trade",
     on: onMock,
     quit: quitMock,
     relaunch: relaunchMock,

@@ -63,7 +63,7 @@ export class DesktopSshPromptWindowUnavailableError extends Schema.TaggedErrorCl
 ) {
   override get message(): string {
     const request = this.requestId === null ? "before a request id was assigned" : this.requestId;
-    return `T3 Trades window is unavailable during ${this.stage} for SSH authentication to ${this.destination} (request: ${request}).`;
+    return `T3 Trade window is unavailable during ${this.stage} for SSH authentication to ${this.destination} (request: ${request}).`;
   }
 }
 

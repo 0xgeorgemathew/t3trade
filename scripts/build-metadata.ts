@@ -11,7 +11,7 @@ import { Command } from "effect/unstable/cli";
 import { T3_FORK_NAME } from "@t3tools/shared/buildMetadata";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 
-/** Version metadata a T3 Trades build artifact exposes: the fork's own
+/** Version metadata a T3 Trade build artifact exposes: the fork's own
     product version, alongside the exact upstream T3 Code commit it was
     built against (see docs/upstream/BASELINE.md). */
 export const BuildMetadata = Schema.Struct({
@@ -95,7 +95,7 @@ const command = Command.make("build-metadata", {}, () =>
   }),
 ).pipe(
   Command.withDescription(
-    "Print the T3 Trades build artifact's version metadata (productVersion, t3UpstreamCommit).",
+    "Print the T3 Trade build artifact's version metadata (productVersion, t3UpstreamCommit).",
   ),
 );
 

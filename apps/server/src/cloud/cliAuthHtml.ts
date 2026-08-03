@@ -7,9 +7,9 @@ export function resolveLoopbackAuthorizationStage(): LoopbackAuthorizationStage 
 }
 
 const stageBrands = {
-  dev: "T3 Trades (Dev)",
-  nightly: "T3 Trades (Nightly)",
-  latest: "T3 Trades",
+  dev: "T3 Trade (Dev)",
+  nightly: "T3 Trade (Nightly)",
+  latest: "T3 Trade",
 } as const satisfies Record<LoopbackAuthorizationStage, string>;
 
 export function renderLoopbackAuthorizationCompleteHtml(

@@ -1,5 +1,5 @@
 /**
- * @t3tools/hyperliquid — testnet transport for the T3 Trades POC.
+ * @t3tools/hyperliquid — testnet transport for the T3 Trade POC.
  *
  * Effect-based Info/Exchange (HTTP) and WebSocket clients for Hyperliquid
  * testnet, plus the wire schemas, tagged transport errors, and (Phase 4) the

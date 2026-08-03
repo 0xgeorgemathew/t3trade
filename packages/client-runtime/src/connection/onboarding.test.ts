@@ -49,7 +49,7 @@ function pairingHttpLayer(
             arch: "x64",
           },
           serverVersion: "0.0.0-test",
-          fork: "T3 Trades",
+          fork: "T3 Trade",
           t3UpstreamCommit: "a8e05cbb92633a1351529f2bc402071f615e5051",
           capabilities: {
             repositoryIdentity: true,

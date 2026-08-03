@@ -17,6 +17,6 @@ describe("buildMetadata", () => {
   });
 
   it("T3_FORK_NAME is the fork's product name", () => {
-    expect(T3_FORK_NAME).toBe("T3 Trades");
+    expect(T3_FORK_NAME).toBe("T3 Trade");
   });
 });

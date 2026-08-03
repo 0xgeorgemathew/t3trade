@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>T3 Trades — Trading, Harnesses &amp; MCP — Architecture Overview</title>
+    <title>T3 Trade — Trading, Harnesses &amp; MCP — Architecture Overview</title>
     <style>
       :root {
         --bg: #0b0d10;
@@ -524,7 +524,7 @@
     <div class="wrap">
       <header>
         <h1>
-          T3 Trades — Trading, Harnesses &amp; MCP
+          T3 Trade — Trading, Harnesses &amp; MCP
           <span style="color: var(--muted); font-weight: 400">· Architecture Overview</span>
         </h1>
         <p class="lede">
@@ -559,8 +559,8 @@
         <p class="lede">
           Upstream <b>T3 Code</b> is an open-source GUI that supervises
           <em>coding agents</em> (Codex, Claude, Cursor, Grok, OpenCode) against a git workspace,
-          with desktop/web/mobile clients. This fork — <b>T3 Trades</b> — keeps every bit of that
-          and adds a <b>Hyperliquid trading overlay</b> on top. The clever move: it does
+          with desktop/web/mobile clients. This fork — <b>T3 Trade</b> — keeps every bit of that and
+          adds a <b>Hyperliquid trading overlay</b> on top. The clever move: it does
           <em>not</em> build a second server. It reuses the existing event-sourced orchestration
           engine, so a trading mission is just a new aggregate type flowing through the same decider
           → projector → reactor pipeline that already handles chat threads.
@@ -1555,7 +1555,7 @@
               <td><b>PROMPT-00</b><br /><span class="pill next">fork base</span></td>
               <td>Fork &amp; branding</td>
               <td>
-                Branded "T3 Trades"; bundle IDs, product name, build metadata. README rebrand
+                Branded "T3 Trade"; bundle IDs, product name, build metadata. README rebrand
                 deferred.
               </td>
             </tr>

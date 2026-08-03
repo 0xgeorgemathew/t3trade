@@ -23,7 +23,7 @@
 
 /**
  * Minimum order notional (size * price) accepted by the Hyperliquid testnet
- * during the T3 Trades POC. Live mainnet minimums vary per market and are
+ * during the T3 Trade POC. Live mainnet minimums vary per market and are
  * sourced from metadata in production code; this constant is the POC floor.
  */
 export const MIN_NOTIONAL_USD = 10;

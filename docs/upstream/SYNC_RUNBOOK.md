@@ -8,7 +8,7 @@ that trail.
 
 ## Preconditions
 
-- `origin` resolves to the writable T3 Trades fork
+- `origin` resolves to the writable T3 Trade fork
   (`https://github.com/0xgeorgemathew/t3trade.git`).
 - `upstream` resolves to `https://github.com/pingdotgg/t3code.git`, fetch-only
   (`git remote get-url --push upstream` must NOT return a usable URL).

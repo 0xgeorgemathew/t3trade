@@ -1,7 +1,7 @@
 /**
  * Shared primitive schemas for the trading domain.
  *
- * The published contracts on the T3 Trades spec site declare plain `string` and
+ * The published contracts on the T3 Trade spec site declare plain `string` and
  * `number` for identifiers, timestamps, and money. These primitives preserve
  * those declared types exactly and only add runtime validation that the spec
  * already implies (non-empty identifiers, non-negative epoch millis, positive

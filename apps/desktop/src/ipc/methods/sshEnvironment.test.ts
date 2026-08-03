@@ -44,7 +44,7 @@ describe("SSH environment IPC", () => {
           label: "Remote Devbox",
           platform: { os: "linux", arch: "x64" },
           serverVersion: "1.2.3",
-          fork: "T3 Trades",
+          fork: "T3 Trade",
           t3UpstreamCommit: "a8e05cbb92633a1351529f2bc402071f615e5051",
           capabilities: { repositoryIdentity: true },
         });
@@ -61,7 +61,7 @@ describe("SSH environment IPC", () => {
         label: "Remote Devbox",
         platform: { os: "linux", arch: "x64" },
         serverVersion: "1.2.3",
-        fork: "T3 Trades",
+        fork: "T3 Trade",
         t3UpstreamCommit: "a8e05cbb92633a1351529f2bc402071f615e5051",
         capabilities: { repositoryIdentity: true },
       });

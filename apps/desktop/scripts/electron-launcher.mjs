@@ -1,4 +1,4 @@
-// This file mostly exists because we want dev mode to say "T3 Trades (Dev)" instead of "electron"
+// This file mostly exists because we want dev mode to say "T3 Trade (Dev)" instead of "electron"
 
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
@@ -15,7 +15,7 @@ const repoRoot = NodePath.resolve(desktopDir, "..", "..");
 const devBundleIdSuffix = NodePath.basename(repoRoot)
   .toLowerCase()
   .replaceAll(/[^a-z0-9]+/g, "");
-export const APP_DISPLAY_NAME = isDevelopment ? "T3 Trades (Dev)" : "T3 Trades (Alpha)";
+export const APP_DISPLAY_NAME = isDevelopment ? "T3 Trade (Dev)" : "T3 Trade (Alpha)";
 export const APP_BUNDLE_ID = isDevelopment
   ? `com.t3trades.app.dev.${devBundleIdSuffix || "local"}`
   : "com.t3trades.app";
@@ -346,7 +346,7 @@ function buildMacLauncher(electronBinaryPath) {
   if (isDevelopment) {
     // Keep Electron's native executable inside the branded bundle. Launching the
     // node_modules copy makes macOS associate the process (and Dock label) with
-    // Electron.app even though this bundle's Info.plist has the T3 Trades name.
+    // Electron.app even though this bundle's Info.plist has the T3 Trade name.
     // Its conventional executable name also keeps Electron's default-app runtime
     // in development mode instead of making app.isPackaged report true.
     writeDevelopmentLauncherScript(launcherBinaryPath, runtimeElectronBinaryPath);

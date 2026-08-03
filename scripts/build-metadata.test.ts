@@ -33,7 +33,7 @@ it.effect("asserts the fork name and upstream SHA in resolved build metadata", (
       baselineMarkdown: SAMPLE_BASELINE_MARKDOWN,
     });
 
-    assert.equal(metadata.fork, "T3 Trades");
+    assert.equal(metadata.fork, "T3 Trade");
     assert.equal(metadata.productVersion, "0.0.31");
     assert.equal(metadata.t3UpstreamCommit, "a8e05cbb92633a1351529f2bc402071f615e5051");
   }),

@@ -1,6 +1,6 @@
 # Upstream Baseline
 
-This file records the pinned upstream commit that T3 Trades' fork was built
+This file records the pinned upstream commit that T3 Trade' fork was built
 from, per the Git strategy repository model. See `SPEC_EVIDENCE.md` for the
 separately tracked pin of the requirements/spec commit this baseline's
 acceptance criteria were checked against.
