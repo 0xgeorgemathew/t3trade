@@ -566,6 +566,11 @@ export interface ChatComposerProps {
 
   // Provider / model
   lockedProvider: ProviderDriverKind | null;
+  /**
+   * Extra footer controls for a thread bound to a trading mission. Undefined on
+   * every other thread, which then renders exactly the footer it did before.
+   */
+  missionControls?: ReactNode;
   providerStatuses: ServerProvider[];
   activeProjectDefaultModelSelection: ModelSelection | null | undefined;
   activeThreadModelSelection: ModelSelection | null | undefined;
@@ -661,6 +666,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     runtimeMode,
     interactionMode,
     lockedProvider,
+    missionControls,
     providerStatuses,
     activeProjectDefaultModelSelection,
     activeThreadModelSelection,
@@ -3135,6 +3141,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     />
                   </>
                 )}
+                {missionControls}
               </div>
 
               {/* Right side: send / stop button */}

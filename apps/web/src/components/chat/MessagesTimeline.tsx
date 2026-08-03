@@ -184,6 +184,14 @@ interface MessagesTimelineProps {
   onManualNavigation: () => void;
   hideEmptyPlaceholder?: boolean;
   topFadeEnabled?: boolean;
+  /**
+   * Content pinned to the end of the scroll, after the last message.
+   *
+   * Used by a mission-bound thread for its execution cards: they belong to the
+   * conversation, not to the chrome, so they scroll away with it instead of
+   * standing between the header and the first message.
+   */
+  footerContent?: ReactNode;
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +227,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onManualNavigation,
   hideEmptyPlaceholder = false,
   topFadeEnabled = false,
+  footerContent,
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
@@ -516,7 +525,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               topFadeEnabled && "chat-timeline-scroll-fade",
             )}
             ListHeaderComponent={topFadeEnabled ? TIMELINE_LIST_FADE_HEADER : TIMELINE_LIST_HEADER}
-            ListFooterComponent={TIMELINE_LIST_FOOTER}
+            ListFooterComponent={
+              footerContent === undefined ? (
+                TIMELINE_LIST_FOOTER
+              ) : (
+                <div className="mx-auto w-full max-w-3xl pb-3 sm:pb-4">{footerContent}</div>
+              )
+            }
           />
           <TimelineMinimap
             items={minimapItems}
