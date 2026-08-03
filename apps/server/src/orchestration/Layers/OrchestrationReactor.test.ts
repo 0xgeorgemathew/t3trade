@@ -81,6 +81,7 @@ describe("OrchestrationReactor", () => {
             drain: Effect.void,
             evaluateDelivery: () => Effect.void,
             sweep: Effect.void,
+            forgetDeliveredCandles: Effect.void,
           }),
         ),
         Layer.provideMerge(

@@ -145,7 +145,7 @@ const seed = (watch: MarketWatch) =>
     return yield* watches.registerWatch({ missionId: "mission_1", watch });
   });
 
-/** Build a WS delivery for a 5m candle that closed at `closePrice` at `closeTime`. */
+/** Build a WS delivery for the 5m candle closing at `closeTime`, priced `closePrice`. */
 const candleDelivery = (closeTime: number, closePrice: number): WsDelivery => ({
   subscription: { type: "candle", coin: "ETH", interval: "5m" },
   channel: "candle",
@@ -195,6 +195,7 @@ layer("WatchEvaluator", (it) => {
         const watch = yield* seed(candleCloseWatch);
         yield* TestClock.setTime(NOW);
         const evaluator = yield* WatchEvaluator;
+        yield* evaluator.forgetDeliveredCandles;
 
         // Deliver the same finalised candle twice; the evaluator must fire once.
         yield* evaluator.evaluateDelivery(candleDelivery(PAST_CLOSE, 3_100));
@@ -219,6 +220,7 @@ layer("WatchEvaluator", (it) => {
       yield* seed(candleCloseWatch);
       yield* TestClock.setTime(NOW);
       const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
 
       yield* evaluator.evaluateDelivery(candleDelivery(FUTURE_CLOSE, 3_100));
       yield* evaluator.drain;
@@ -228,12 +230,46 @@ layer("WatchEvaluator", (it) => {
     }),
   );
 
+  // The regression that stalled the wake loop: Hyperliquid stops delivering a
+  // candle before its close time, so a watch that waits for a delivery stamped
+  // after `T` waits minutes. The start of the next candle is the finality proof.
+  it.effect("fires on the candle a rollover finalised, though its own close never arrived", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const watch = yield* seed(candleCloseWatch);
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+
+      // Two in-progress deliveries for the same candle. Both close in the
+      // future, so on the wall-clock test alone neither fires — and no further
+      // delivery for this candle is ever sent.
+      yield* evaluator.evaluateDelivery(candleDelivery(FUTURE_CLOSE, 3_050));
+      yield* evaluator.evaluateDelivery(candleDelivery(FUTURE_CLOSE, 3_100));
+      yield* evaluator.drain;
+
+      const inbox = yield* TradingEventInbox;
+      assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+
+      // The next candle opens. That is the exchange saying the previous one is
+      // done, so it is evaluated at the last close it was delivered with.
+      yield* evaluator.evaluateDelivery(candleDelivery(FUTURE_CLOSE + 300_000, 2_900));
+      yield* evaluator.drain;
+
+      const claimed = yield* inbox.claimPending("mission_1");
+      assert.equal(claimed.length, 1);
+      assert.equal(claimed[0]?.deduplicationKey, `candle_close:${watch.id}:${FUTURE_CLOSE}`);
+      assert.equal(claimed[0]?.summary, "5m candle closed 3100 (above 3000)");
+    }),
+  );
+
   it.effect("does not fire a candle-close watch whose close is below the threshold", () =>
     Effect.gen(function* () {
       yield* migrated;
       yield* seed(candleCloseWatch);
       yield* TestClock.setTime(NOW);
       const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
 
       yield* evaluator.evaluateDelivery(candleDelivery(PAST_CLOSE, 2_900));
       yield* evaluator.drain;
@@ -256,6 +292,7 @@ layer("WatchEvaluator", (it) => {
       });
       yield* TestClock.setTime(NOW);
       const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
 
       // Two sweeps; the triggered watch must not fire a second time.
       yield* evaluator.sweep;
@@ -287,6 +324,7 @@ layer("WatchEvaluator", (it) => {
       });
       yield* TestClock.setTime(NOW);
       const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
 
       yield* evaluator.sweep;
       yield* evaluator.drain;
@@ -307,6 +345,7 @@ layer("WatchEvaluator", (it) => {
       });
       yield* TestClock.setTime(NOW);
       const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
 
       yield* evaluator.sweep;
       yield* evaluator.drain;

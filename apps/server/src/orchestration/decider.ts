@@ -1224,6 +1224,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    // §14.7's exchange-touching controls. Unlike pause/resume/revoke these do
+    // not resolve to a target status here: what the mission becomes depends on
+    // what the exchange does, so the reactor decides it after the fact.
+    case "trading.mission.risk-control": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "mission",
+          aggregateId: command.missionId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "trading.mission-risk-control-requested",
+        payload: {
+          missionId: command.missionId,
+          threadId: command.threadId,
+          control: command.control,
+          ...(command.reductionPercent === undefined
+            ? {}
+            : { reductionPercent: command.reductionPercent }),
+          requestedAt: command.createdAt,
+        },
+      };
+    }
+
     case "trading.mission.status-set": {
       return {
         ...(yield* withEventBase({

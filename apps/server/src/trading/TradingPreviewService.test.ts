@@ -55,7 +55,7 @@ const goodMission = (overrides: Partial<TradingMission> = {}): TradingMission =>
         stopSlippageReserveBps: 25,
         positivePnlExpandsLossBudget: false,
       },
-      validUntil: "revoked",
+      validUntil: "until_revoked",
     },
     strategy: undefined,
     status: "executing",
@@ -343,6 +343,187 @@ describe("previewOrder — §16.3 checklist", () => {
         goodCtx(now),
       );
       expect(item).toBe("valid_stop_defined");
+    }),
+  );
+
+  // --- the mandatory-stop gate, preview half (§16.3 item 17, §17) ----------
+
+  it.effect("item 17: rejects an open carrying no stop at all", () =>
+    Effect.gen(function* () {
+      const rejection = yield* previewOrder(goodIntent({ stop: undefined }), goodCtx(now)).pipe(
+        Effect.flip,
+      );
+      expect(rejection.item).toBe("valid_stop_defined");
+      expect(rejection.detail).toContain("§16.3 item 17");
+    }),
+  );
+
+  it.effect("item 17: rejects a scale-in carrying no stop", () =>
+    Effect.gen(function* () {
+      const item = yield* rejectionItem(
+        goodIntent({ actionType: "scale_in", stop: undefined }),
+        goodCtx(now),
+      );
+      expect(item).toBe("valid_stop_defined");
+    }),
+  );
+
+  it.effect("item 17: admits a reduce-only close carrying no stop", () =>
+    Effect.gen(function* () {
+      // The close IS the exit. Requiring a stop on it would reject the only
+      // action that removes exposure — and reserve nothing, since a close
+      // plans no new loss.
+      const preview = yield* previewOrder(
+        goodIntent({ actionType: "close", side: "sell", stop: undefined, reduceOnly: true }),
+        goodCtx(now),
+      );
+      expect(preview.intent.stop).toBeUndefined();
+      // Only the fee + slippage components remain; no planned loss.
+      expect(preview.reservedRiskUsd).toBeLessThan(12);
+    }),
+  );
+
+  it.effect("item 17: admits a reduce-only close still carrying the entry's stop", () =>
+    Effect.gen(function* () {
+      // The side flips on a close, which makes the entry's stop look
+      // wrong-sided. The gate keys off the action, not the stop's shape.
+      const preview = yield* previewOrder(
+        goodIntent({
+          actionType: "close",
+          side: "sell",
+          reduceOnly: true,
+          stop: { stopPrice: 3_700, plannedLossAtStopUsd: 12 },
+        }),
+        goodCtx(now),
+      );
+      expect(preview.intent.actionType).toBe("close");
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Position management through the authority (§14.5, authority flags)
+// ---------------------------------------------------------------------------
+
+/** An open long of 0.3 ETH entered at 3,700, as the budget snapshot sees it. */
+const openLong = (size = 0.3) => ({
+  missionId: "mission_1",
+  direction: "long" as const,
+  size,
+  weightedEntryPrice: 3_700,
+  stopPrice: 3_650,
+  paidFeesUsd: 0,
+  estimatedExitFeeUsd: 0,
+  stopSlippageReserveUsd: 0,
+});
+
+const withAuthority = (now: number, overrides: Record<string, unknown>, openPositions: unknown[]) =>
+  goodCtx(now, {
+    mission: goodMission({
+      authority: { ...goodMission().authority, ...overrides },
+    }),
+    budget: { ...goodCtx(now).budget, openPositions: openPositions as never },
+  });
+
+describe("position management authority", () => {
+  const now = 1_700_000_000_000;
+
+  it.effect("rejects a reversal when the authority does not grant one (POC default)", () =>
+    Effect.gen(function* () {
+      // The POC default is allowDirectionReversal: false. A short entry against
+      // an open long is a reversal, and nothing read that flag before.
+      const rejection = yield* previewOrder(
+        goodIntent({ side: "sell", stop: { stopPrice: 3_800, plannedLossAtStopUsd: 12 } }),
+        withAuthority(now, { allowDirectionReversal: false }, [openLong()]),
+      ).pipe(Effect.flip);
+
+      expect(rejection.item).toBe("direction_permitted");
+      expect(rejection.detail).toContain("reversing");
+    }),
+  );
+
+  it.effect("admits a reversal when the authority grants one", () =>
+    Effect.gen(function* () {
+      const preview = yield* previewOrder(
+        goodIntent({ side: "sell", stop: { stopPrice: 3_800, plannedLossAtStopUsd: 12 } }),
+        withAuthority(now, { allowDirectionReversal: true }, [openLong()]),
+      );
+      expect(preview.intent.side).toBe("sell");
+    }),
+  );
+
+  it.effect("admits an entry in the same direction as the open position", () =>
+    Effect.gen(function* () {
+      // Adding to a long is a scale-in, not a reversal.
+      const preview = yield* previewOrder(
+        goodIntent({ actionType: "scale_in" }),
+        withAuthority(now, { allowDirectionReversal: false }, [openLong()]),
+      );
+      expect(preview.intent.actionType).toBe("scale_in");
+    }),
+  );
+
+  it.effect("rejects a scale-in when the authority does not allow one", () =>
+    Effect.gen(function* () {
+      const rejection = yield* previewOrder(
+        goodIntent({ actionType: "scale_in" }),
+        withAuthority(now, { allowScaleIn: false }, [openLong()]),
+      ).pipe(Effect.flip);
+
+      expect(rejection.item).toBe("direction_permitted");
+      expect(rejection.detail).toContain("scaling in");
+    }),
+  );
+
+  it.effect("rejects a partial reduction when the authority does not allow one", () =>
+    Effect.gen(function* () {
+      const rejection = yield* previewOrder(
+        goodIntent({
+          actionType: "reduce",
+          side: "sell",
+          size: 0.1,
+          stop: undefined,
+          reduceOnly: true,
+        }),
+        withAuthority(now, { allowPartialReduction: false }, [openLong(0.3)]),
+      ).pipe(Effect.flip);
+
+      expect(rejection.item).toBe("direction_permitted");
+      expect(rejection.detail).toContain("partial reduction");
+    }),
+  );
+
+  it.effect("admits a FULL exit even when partial reduction is disallowed", () =>
+    Effect.gen(function* () {
+      // Refusing the exit is never the safe answer. Only the partial is gated.
+      const preview = yield* previewOrder(
+        goodIntent({
+          actionType: "reduce",
+          side: "sell",
+          size: 0.3,
+          stop: undefined,
+          reduceOnly: true,
+        }),
+        withAuthority(now, { allowPartialReduction: false }, [openLong(0.3)]),
+      );
+      expect(preview.intent.size).toBe(0.3);
+    }),
+  );
+
+  it.effect("admits a close against an open long without calling it a reversal", () =>
+    Effect.gen(function* () {
+      // A close is the exit. It is opposite-direction by definition and must
+      // never be gated by the reversal flag.
+      const preview = yield* previewOrder(
+        goodIntent({
+          actionType: "close",
+          side: "sell",
+          stop: undefined,
+          reduceOnly: true,
+        }),
+        withAuthority(now, { allowDirectionReversal: false }, [openLong()]),
+      );
+      expect(preview.intent.actionType).toBe("close");
     }),
   );
 });

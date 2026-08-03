@@ -52,6 +52,7 @@ import { Tool, Toolkit } from "effect/unstable/ai";
 
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
@@ -69,6 +70,9 @@ const dependencies = [
   Crypto.Crypto,
   // Phase 2 read tools reach Hyperliquid through the gateway.
   HyperliquidGateway,
+  // `trading_request_entry` reports what the reactor actually did with the
+  // request, not that the request was raised.
+  TradingExecutionOutcome,
 ];
 
 export const TradingGetMissionTool = Tool.make("trading_get_mission", {
@@ -175,7 +179,7 @@ export const TradingGetAccountStateTool = Tool.make("trading_get_account_state",
 
 export const TradingGetPositionTool = Tool.make("trading_get_position", {
   description:
-    "Read the canonical net position for a market: signed size (positive long, negative short), entry price, unrealised PnL, cumulative funding, and margin used. Returns a flat zero position when none is open — that is a valid net-zero state, not an error.",
+    "Read the canonical net position for a market: signed size (positive long, negative short), entry price, unrealised PnL, cumulative funding, and margin used. Returns a flat position with size 0 and no entry price when none is open — that is a valid net-zero state, not an error.",
   parameters: TradingGetPositionInput,
   success: AgentNetPosition,
   failure: TradingToolRejectedError,
@@ -261,7 +265,7 @@ export const TradingCancelWatchTool = Tool.make("trading_cancel_watch", {
 
 export const TradingRequestEntryTool = Tool.make("trading_request_entry", {
   description:
-    "Submit one execution intent for the bound mission. The server validates the authority version, harness run, mandatory stop information, budget, and exchange freshness before signing.",
+    "Submit one execution intent for the bound mission. The server validates the authority version, harness run, mandatory stop information, budget, and exchange freshness before signing, then waits for the result. `accepted` means the order reached the exchange — read `orderResults` for whether it filled or rested. `rejected` means no order was placed and `detail` says why. `submitted` means the outcome was not yet known when this returned; read the position and open orders before assuming anything filled.",
   parameters: TradingRequestEntryInput,
   success: TradingRequestEntryResult,
   failure: TradingToolRejectedError,

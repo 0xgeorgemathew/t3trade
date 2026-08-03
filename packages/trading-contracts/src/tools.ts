@@ -176,7 +176,16 @@ export const TradingRequestEntryInput = Schema.Struct({
 export type TradingRequestEntryInput = typeof TradingRequestEntryInput.Type;
 
 export const TradingRequestEntryResult = Schema.Struct({
-  executionId: TradingId,
+  /**
+   * The execution record this request wrote, when it wrote one.
+   *
+   * Absent for the two outcomes that have no record: a request refused before
+   * signing, and a request still in flight when the tool gave up waiting.
+   * `TradingId` is a non-empty string, so reporting those as `""` made the
+   * result unencodable — and an unencodable result reaches the harness as a
+   * generic internal error, hiding the refusal reason it most needed to read.
+   */
+  executionId: Schema.optional(TradingId),
   status: Schema.Literals(["submitted", "accepted", "rejected"]),
   cloid: Schema.String,
   orderResults: Schema.Array(Schema.Unknown),
@@ -184,6 +193,16 @@ export const TradingRequestEntryResult = Schema.Struct({
     remainingCumulativeLossUsd: Schema.Number,
     exhausted: Schema.Boolean,
   }),
+  /**
+   * Why the request ended the way it did — the refusal reason for a
+   * `rejected`, the record's exchange status for an `accepted`, and for a
+   * `submitted` the fact that the outcome is not yet known.
+   *
+   * `status` alone cannot distinguish "refused at preview, no order exists"
+   * from "the exchange rejected the order", and a harness that cannot tell
+   * those apart cannot decide what to do next.
+   */
+  detail: Schema.optional(Schema.String),
 });
 export type TradingRequestEntryResult = typeof TradingRequestEntryResult.Type;
 

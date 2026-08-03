@@ -24,6 +24,7 @@ import type {
   WireClearinghouseStateResponse,
   WireL2BookResponse,
   WireMetaAndAssetCtxsResponse,
+  WireFrontendOpenOrdersResponse,
   WireOpenOrdersResponse,
   WireUserFeesResponse,
   WireUserFillsResponse,
@@ -37,6 +38,7 @@ export interface FakeInfoResponses {
   candleSnapshot?: (req: WireCandleSnapshotRequest) => WireCandleSnapshotResponse;
   clearinghouseState?: (address: string) => WireClearinghouseStateResponse;
   openOrders?: (address: string) => WireOpenOrdersResponse;
+  frontendOpenOrders?: (address: string) => WireFrontendOpenOrdersResponse;
   userFills?: (address: string) => WireUserFillsResponse;
   userFees?: (address: string) => WireUserFeesResponse;
 }
@@ -70,6 +72,10 @@ export function makeFakeInfoClient(responses: FakeInfoResponses): HyperliquidInf
         : fail("clearinghouseState"),
     openOrders: (address) =>
       responses.openOrders ? Effect.succeed(responses.openOrders(address)) : fail("openOrders"),
+    frontendOpenOrders: (address) =>
+      responses.frontendOpenOrders
+        ? Effect.succeed(responses.frontendOpenOrders(address))
+        : fail("frontendOpenOrders"),
     userFills: (address) =>
       responses.userFills ? Effect.succeed(responses.userFills(address)) : fail("userFills"),
     userFees: (address) =>

@@ -20,10 +20,13 @@ import {
   HyperliquidWebSocketClientLive,
 } from "@t3tools/hyperliquid";
 import { HyperliquidExecutionServiceLive } from "./HyperliquidExecutionService.ts";
+import { TradingAccountBootstrapLive } from "./TradingAccountBootstrap.ts";
 import { HyperliquidReconcilerLive } from "./HyperliquidReconciler.ts";
 import { TradingEventInboxLive } from "./TradingEventInbox.ts";
+import { TradingExecutionOutcomeLive } from "./TradingExecutionOutcome.ts";
 import { TradingExecutionGuardLive } from "./TradingExecutionGuard.ts";
 import { InterimSignerConfigLive } from "./InterimSignerConfig.ts";
+import { AutoMissionConfigLive } from "./AutoMissionConfig.ts";
 import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingPreviewServiceLive } from "./TradingPreviewService.ts";
@@ -33,6 +36,9 @@ import { TradingWakeupComposerLive } from "./TradingWakeupComposer.ts";
 import { TradingWatchServiceLive } from "./TradingWatchService.ts";
 import { TradingBudgetReaderLive } from "./TradingBudgetReader.ts";
 import { TradingFillReconcilerLive } from "./TradingFillReconciler.ts";
+import { TradingProtectionServiceLive } from "./TradingProtectionService.ts";
+import { TradingEmergencyCloseServiceLive } from "./TradingEmergencyCloseService.ts";
+import { TradingControlServiceLive } from "./TradingControlService.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
@@ -82,6 +88,9 @@ const exchangeWithHttp = HyperliquidExchangeClientLive.pipe(Layer.provide(httpWi
 const TradingFoundation = Layer.mergeAll(
   TradingCoreLayerLive,
   InterimSignerConfigLive,
+  // The shortcut reads the signer to decide whether this checkout is a trading
+  // lab, so it is built on top of the signer rather than beside it.
+  AutoMissionConfigLive.pipe(Layer.provide(InterimSignerConfigLive)),
   exchangeWithHttp,
   HyperliquidNonceCoordinatorLive(),
   HyperliquidWebSocketClientLive,
@@ -96,10 +105,26 @@ const TradingExecutionCore = Layer.mergeAll(
   HyperliquidReconcilerLive,
 ).pipe(Layer.provideMerge(TradingWithPreview));
 
+const TradingProtectionLayerLive = TradingProtectionServiceLive.pipe(
+  Layer.provideMerge(TradingExecutionCore),
+);
+
+// The control service sits on top of protection: `cancel_entries` routes
+// through `cancelEntriesWithProtection` (§17.3), so protection has to be built
+// first rather than merged alongside.
 const TradingExecutionLayerLive = Layer.mergeAll(
   TradingExecutionGuardLive,
   TradingFillReconcilerLive,
-).pipe(Layer.provideMerge(TradingExecutionCore));
+  TradingEmergencyCloseServiceLive,
+  TradingControlServiceLive,
+  // Provisions the account row a mission names. Merged here because it needs
+  // the resolved interim signer, which the foundation below supplies.
+  TradingAccountBootstrapLive,
+  // Reports an execution's real outcome back to `trading_request_entry`; needs
+  // the budget reader and the gateway the layers below supply, plus the inbox
+  // the reactor records refusals in.
+  TradingExecutionOutcomeLive.pipe(Layer.provide(TradingEventInboxLive)),
+).pipe(Layer.provideMerge(TradingProtectionLayerLive));
 
 export const TradingLayerLive = Layer.mergeAll(
   TradingMissionServiceLive,

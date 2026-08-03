@@ -23,6 +23,7 @@ import {
   WireClearinghouseStateResponse,
   WireL2BookResponse,
   WireMetaAndAssetCtxsResponse,
+  WireFrontendOpenOrdersResponse,
   WireOpenOrdersResponse,
   WireUserFillsResponse,
   WireUserFeesResponse,
@@ -53,6 +54,14 @@ export class HyperliquidInfoClient extends Context.Service<
     ) => Effect.Effect<WireClearinghouseStateResponse, InfoError>;
     /** Open orders for a master-wallet address. */
     readonly openOrders: (address: string) => Effect.Effect<WireOpenOrdersResponse, InfoError>;
+    /**
+     * Open orders with the trigger/reduce-only detail (§17.2 step 7). This is
+     * the only read that can confirm exchange-native protection; `openOrders`
+     * carries neither `isTrigger` nor `reduceOnly`.
+     */
+    readonly frontendOpenOrders: (
+      address: string,
+    ) => Effect.Effect<WireFrontendOpenOrdersResponse, InfoError>;
     /** User fills for a master-wallet address (§18 fills, canonical source). */
     readonly userFills: (address: string) => Effect.Effect<WireUserFillsResponse, InfoError>;
     /**
@@ -146,6 +155,12 @@ const makeHyperliquidInfoClient = Effect.gen(function* () {
       ),
     openOrders: (address) =>
       call("openOrders", { type: "openOrders", user: address }, WireOpenOrdersResponse),
+    frontendOpenOrders: (address) =>
+      call(
+        "frontendOpenOrders",
+        { type: "frontendOpenOrders", user: address },
+        WireFrontendOpenOrdersResponse,
+      ),
     userFills: (address) =>
       call("userFills", { type: "userFills", user: address }, WireUserFillsResponse),
     userFees: (address) =>

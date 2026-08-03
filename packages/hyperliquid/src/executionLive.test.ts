@@ -32,6 +32,7 @@ import { FetchHttpClient } from "effect/unstable/http";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import { HyperliquidExchangeClient, HyperliquidExchangeClientLive } from "./ExchangeClient.ts";
+import { exchangeResponseType } from "./ExchangeResponse.ts";
 import { HyperliquidInfoClient, HyperliquidInfoClientLive } from "./InfoClient.ts";
 import { createL1ActionHash, signL1ActionForWire, addressFromPrivateKey } from "./Signing.ts";
 import { buildOrderAction, buildCancelByCloidAction, mapOrder } from "./OrderMapper.ts";
@@ -157,7 +158,7 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
         const entryResp = yield* exchange.submit({ action, nonce, signature });
         yield* Effect.logInfo("[execution-live] entry response", {
           status: "status" in entryResp ? entryResp.status : undefined,
-          type: entryResp.response.type,
+          type: exchangeResponseType(entryResp),
         });
         expect("status" in entryResp ? entryResp.status : undefined).toBe("ok");
 
@@ -167,7 +168,7 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
         const retryResp = yield* exchange.submit({ action, nonce: nonce2, signature: sig2 });
         yield* Effect.logInfo("[execution-live] retry response", {
           status: "status" in retryResp ? retryResp.status : undefined,
-          type: retryResp.response.type,
+          type: exchangeResponseType(retryResp),
         });
         // Two things are pinned here, and only one of them is good news.
         //
@@ -272,7 +273,7 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
         });
         yield* Effect.logInfo("[execution-live] close response", {
           status: "status" in closeResp ? closeResp.status : undefined,
-          type: closeResp.response.type,
+          type: exchangeResponseType(closeResp),
           cloid: closeWireOrder.cloid,
         });
         expect("status" in closeResp ? closeResp.status : undefined).toBe("ok");
@@ -379,7 +380,7 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
         });
         yield* Effect.logInfo("[execution-live] cancel-by-cloid response", {
           status: "status" in cancelResp ? cancelResp.status : undefined,
-          type: cancelResp.response.type,
+          type: exchangeResponseType(cancelResp),
         });
         expect("status" in cancelResp ? cancelResp.status : undefined).toBe("ok");
 

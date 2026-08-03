@@ -26,6 +26,11 @@ import {
   evaluateLossBudget,
   isPermittedUnderExhaustion,
 } from "@t3tools/trading-contracts/loss-accounting";
+import {
+  checkStopInformation,
+  describeStopGateDefect,
+  isPositionIncreasing,
+} from "@t3tools/trading-contracts/protection";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
 
 /** One of the 17 §16.3 checklist items, in order. */
@@ -166,11 +171,59 @@ const harnessRunOwnsLease: Check = (_intent, ctx) =>
     ? Effect.void
     : reject("harness_run_owns_lease", "no harness run currently owns the decision lease");
 
+/**
+ * The mission's open position in this market, from the reconciled budget
+ * snapshot. Its `direction` and `size` are what tell a scale-in apart from a
+ * reversal.
+ */
+const openPositionOf = (ctx: PreviewContext) => ctx.budget.openPositions.find((p) => p.size > 0);
+
+/**
+ * §16.3 item 6, plus the three authority flags that govern position management.
+ *
+ * The direction the authority allows is only half of it. `allowScaleIn`,
+ * `allowPartialReduction`, and `allowDirectionReversal` are published fields on
+ * `TradingAuthority` that nothing read until now, so an authority that said
+ * "no reversals" — the POC default — did not actually prevent one.
+ *
+ * A reversal is specifically a position-INCREASING action whose direction
+ * opposes the open position. A reduce or a close in the opposite direction is
+ * how you exit, not a reversal, and reduce-only orders cannot flip a position
+ * anyway.
+ */
 const directionPermitted: Check = (intent, ctx) => {
+  const authority = ctx.mission.authority;
   const wants = intent.side === "buy" ? "long" : "short";
-  return ctx.mission.authority.allowedDirections.includes(wants as never)
-    ? Effect.void
-    : reject("direction_permitted", `authority does not permit ${wants}`);
+  if (!authority.allowedDirections.includes(wants as never)) {
+    return reject("direction_permitted", `authority does not permit ${wants}`);
+  }
+
+  const open = openPositionOf(ctx);
+  const increasing = isPositionIncreasing(intent.actionType);
+
+  if (increasing && open !== undefined && open.direction !== wants) {
+    return authority.allowDirectionReversal
+      ? Effect.void
+      : reject(
+          "direction_permitted",
+          `authority does not permit reversing an open ${open.direction} into a ${wants}`,
+        );
+  }
+
+  if (intent.actionType === "scale_in" && !authority.allowScaleIn) {
+    return reject("direction_permitted", "authority does not permit scaling in");
+  }
+
+  // A partial reduction is a reduce that leaves something behind. A full close
+  // is always permitted — refusing the exit is never the safe answer.
+  if (intent.actionType === "reduce" && !authority.allowPartialReduction) {
+    const leavesRemainder = open !== undefined && intent.size < open.size;
+    if (leavesRemainder) {
+      return reject("direction_permitted", "authority does not permit partial reduction");
+    }
+  }
+
+  return Effect.void;
 };
 
 const marketIsEth: Check = (intent, _ctx) =>
@@ -205,9 +258,9 @@ const accountAndBboFresh: Check = (_intent, ctx) => {
 };
 
 const sizeAndPriceValid: Check = (intent, _ctx) =>
-  intent.size > 0 && intent.limitPrice > 0 && intent.stop.stopPrice > 0
+  intent.size > 0 && intent.limitPrice > 0
     ? Effect.void
-    : reject("size_and_price_valid", "size, limit price, and stop price must all be positive");
+    : reject("size_and_price_valid", "size and limit price must both be positive");
 
 const exchangeMinimumMet: Check = (intent, _ctx) => {
   const notional = intent.size * intent.limitPrice;
@@ -251,12 +304,20 @@ const grossNotionalWithinAuthority: Check = (intent, ctx) => {
       );
 };
 
+/**
+ * The loss this intent plans to take if its stop executes. A reduce-only
+ * action carries no stop and plans no new loss, so it contributes zero to the
+ * ceiling, the budget test, and the reservation.
+ */
+const plannedLossOf = (intent: TradingOrderIntent): number =>
+  intent.stop?.plannedLossAtStopUsd ?? 0;
+
 const plannedLossWithinCeiling: Check = (intent, ctx) =>
-  intent.stop.plannedLossAtStopUsd <= ctx.mission.authority.maximumPlannedRiskPerPositionUsd
+  plannedLossOf(intent) <= ctx.mission.authority.maximumPlannedRiskPerPositionUsd
     ? Effect.void
     : reject(
         "planned_loss_within_per_position_ceiling",
-        `$${intent.stop.plannedLossAtStopUsd} exceeds per-position ceiling $${ctx.mission.authority.maximumPlannedRiskPerPositionUsd}`,
+        `$${plannedLossOf(intent)} exceeds per-position ceiling $${ctx.mission.authority.maximumPlannedRiskPerPositionUsd}`,
       );
 
 const reservationsPlusProposedWithinBudget: Check = (intent, ctx) => {
@@ -267,7 +328,7 @@ const reservationsPlusProposedWithinBudget: Check = (intent, ctx) => {
       "budget exhausted; action not permitted under §16.4",
     );
   }
-  const afterProposed = budget.remainingCumulativeLossUsd - intent.stop.plannedLossAtStopUsd;
+  const afterProposed = budget.remainingCumulativeLossUsd - plannedLossOf(intent);
   return afterProposed >= 0
     ? Effect.void
     : reject(
@@ -284,18 +345,25 @@ const noConflictingExecution: Check = (_intent, ctx) =>
         "an execution for this mission is already in flight",
       );
 
+/**
+ * §16.3 item 17 / §17: the mandatory-stop gate, first of its two evaluations.
+ *
+ * The execution service runs the identical `checkStopInformation` again just
+ * before it signs, so an intent that reaches the wire without a stop has had to
+ * defeat both. A reduce-only action is exempt — it is the exit, not an
+ * increase.
+ */
 const validStopDefined: Check = (intent, _ctx) => {
-  // §16.3 item 17: a valid stop is defined. For a long, stop < entry; short, stop > entry.
-  const isLong = intent.side === "buy";
-  const stopOk = isLong
-    ? intent.stop.stopPrice < intent.limitPrice
-    : intent.stop.stopPrice > intent.limitPrice;
-  return stopOk
+  const gateInput = {
+    actionType: intent.actionType,
+    side: intent.side,
+    referencePrice: intent.limitPrice,
+    stop: intent.stop,
+  };
+  const defect = checkStopInformation(gateInput);
+  return defect === null
     ? Effect.void
-    : reject(
-        "valid_stop_defined",
-        `stop ${intent.stop.stopPrice} is on the wrong side of entry ${intent.limitPrice}`,
-      );
+    : reject("valid_stop_defined", describeStopGateDefect(defect, gateInput));
 };
 
 // The ordered list — §16.3 listed order is load-bearing.
@@ -353,10 +421,7 @@ export const previewOrder = (
     const estimatedExitFeeUsd = notional * rate;
     const stopSlippageReserveUsd = notional * bps(ctx.stopSlippageReserveBps);
     const reservedRiskUsd =
-      intent.stop.plannedLossAtStopUsd +
-      estimatedEntryFeeUsd +
-      estimatedExitFeeUsd +
-      stopSlippageReserveUsd;
+      plannedLossOf(intent) + estimatedEntryFeeUsd + estimatedExitFeeUsd + stopSlippageReserveUsd;
     return { intent, reservedRiskUsd } as TradingPreview;
   });
 

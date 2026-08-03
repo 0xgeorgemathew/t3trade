@@ -33,7 +33,7 @@ describe("pocAuthorityDefaults (§10.4 worked example)", () => {
         stopSlippageReserveBps: 25,
         positivePnlExpandsLossBudget: false,
       },
-      validUntil: "revoked",
+      validUntil: "until_revoked",
     });
   });
 
@@ -62,7 +62,16 @@ describe("pocAuthorityDefaults (§10.4 worked example)", () => {
   });
 
   it("stays open-ended until revoked", () => {
-    expect(authority.validUntil).toBe("revoked");
+    expect(authority.validUntil).toBe("until_revoked");
+  });
+
+  // The harness reads the whole authority verbatim in its mission context. The
+  // sentinel was once spelled "revoked", and a live mission's harness reported
+  // its own mandate as revoked and placed no orders. It must name a duration,
+  // never a state the mission might actually be in.
+  it("never spells the open-ended sentinel as a terminal mission status", () => {
+    expect(authority.validUntil).not.toBe("revoked");
+    expect(authority.validUntil).not.toBe("completed");
   });
 
   it("decodes as a TradingAuthority", () => {

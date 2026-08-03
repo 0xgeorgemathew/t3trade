@@ -55,6 +55,7 @@ import type {
   OrderBook,
   ResolvedMarket,
 } from "@t3tools/trading-contracts/market";
+import type { AgentOpenOrder } from "@t3tools/trading-contracts/account-snapshot";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -139,15 +140,73 @@ interface RecordingExchange {
 }
 const recordingExchange: RecordingExchange = { submitted: [] };
 
+/**
+ * The real `/exchange` order response: rows nested under `response.data`,
+ * each a single-key object naming the outcome. The entry request is a
+ * position increase carrying a stop, so it goes out as a grouped normalTpsl
+ * action and comes back with one row per leg (§17.2 steps 3–4).
+ */
 const OK_FILLED = {
   status: "ok",
-  response: { type: "ok", statuses: [{ cloid: "0".repeat(32), rsp: "ok", oid: 999 }] },
+  response: {
+    type: "order",
+    data: {
+      statuses: [
+        { filled: { totalSz: "0.5", avgPx: "3000.0", oid: 999 } },
+        { resting: { oid: 1_000 } },
+      ],
+    },
+  },
 } as const;
+
+/**
+ * Reduce-only triggers the fake exchange has accepted, surfaced back through
+ * `getOpenOrders`.
+ *
+ * Without this the fake would accept a protective stop and then report no
+ * resting orders, so §17.2 step 7 could never confirm protection and the
+ * reactor would (correctly) escalate to the emergency close. Modelling the
+ * accepted stop as resting is what lets this test exercise the whole chain
+ * through to a protected position.
+ */
+const restingProtection: AgentOpenOrder[] = [];
+
+/** Turn a submitted reduce-only trigger leg into the order it becomes. */
+const recordProtectiveLegs = (signed: SignedAction): void => {
+  const orders = (signed.action as { orders?: ReadonlyArray<unknown> }).orders ?? [];
+  for (const leg of orders) {
+    const o = leg as {
+      b?: boolean;
+      s?: string;
+      p?: string;
+      r?: boolean;
+      c?: string;
+      t?: { trigger?: { triggerPx?: string } };
+    };
+    if (o.r !== true || o.t?.trigger === undefined) continue;
+    restingProtection.push({
+      market: "ETH",
+      orderId: 5_000 + restingProtection.length,
+      cloid: o.c,
+      side: o.b === true ? "buy" : "sell",
+      limitPrice: Number(o.p ?? 0),
+      size: Number(o.s ?? 0),
+      remainingSize: Number(o.s ?? 0),
+      status: "open",
+      createdAt: 1_000,
+      reduceOnly: true,
+      isTrigger: true,
+      triggerPrice: Number(o.t.trigger.triggerPx ?? 0),
+      orderType: "Stop Market",
+    } as AgentOpenOrder);
+  }
+};
 
 const recordingExchangeLayer = Layer.succeed(HyperliquidExchangeClient, {
   submit: (signed: SignedAction) =>
     Effect.sync(() => {
       recordingExchange.submitted.push(signed);
+      recordProtectiveLegs(signed);
       return OK_FILLED;
     }),
 } as unknown as HyperliquidExchangeClient["Service"]);
@@ -207,7 +266,7 @@ const fakeGatewayLayer = Layer.succeed(HyperliquidGateway, {
       ],
     }),
   getPosition: (() => Effect.die("not used")) as never,
-  getOpenOrders: () => Effect.succeed([]),
+  getOpenOrders: () => Effect.sync(() => restingProtection),
   getTakerFeeRateBps: () => Effect.succeed({ feeBps: 4.5, observedAt: 1_000 }),
 } as unknown as HyperliquidGateway["Service"]);
 
@@ -284,6 +343,9 @@ import { TradingWatchServiceLive } from "../src/trading/TradingWatchService.ts";
 import { TradingEventInboxLive } from "../src/trading/TradingEventInbox.ts";
 import { TradingExecutionGuardLive } from "../src/trading/TradingExecutionGuard.ts";
 import { TradingFillReconcilerLive } from "../src/trading/TradingFillReconciler.ts";
+import { TradingProtectionServiceLive } from "../src/trading/TradingProtectionService.ts";
+import { TradingEmergencyCloseServiceLive } from "../src/trading/TradingEmergencyCloseService.ts";
+import { TradingControlServiceLive } from "../src/trading/TradingControlService.ts";
 import { TradingBudgetReaderLive } from "../src/trading/TradingBudgetReader.ts";
 import {
   TradingPreviewService,
@@ -292,6 +354,7 @@ import {
 import { TradingTurnCoordinatorLive } from "../src/trading/TradingTurnCoordinator.ts";
 import { TradingWakeupComposerLive } from "../src/trading/TradingWakeupComposer.ts";
 import { InterimSignerConfigLive } from "../src/trading/InterimSignerConfig.ts";
+import { AutoMissionConfigLive } from "../src/trading/AutoMissionConfig.ts";
 import { HyperliquidExecutionServiceLive } from "../src/trading/HyperliquidExecutionService.ts";
 import { HyperliquidReconcilerLive } from "../src/trading/HyperliquidReconciler.ts";
 import { HyperliquidNonceCoordinatorLive } from "@t3tools/hyperliquid/NonceCoordinator";
@@ -304,6 +367,7 @@ const tradingFoundationWithFakes = Layer.mergeAll(
   TradingMissionServiceLive,
   TradingStrategyServiceLive,
   InterimSignerConfigLive,
+  AutoMissionConfigLive.pipe(Layer.provide(InterimSignerConfigLive)),
   recordingExchangeLayer,
   fakeGatewayLayer,
   fakeInfoClientLayer,
@@ -345,11 +409,21 @@ const tradingExecutionCore = Layer.mergeAll(
   HyperliquidReconcilerLive,
 ).pipe(Layer.provideMerge(tradingWithPreview));
 
+// `coordinatorWithDeps` supplies TradingMissionService / HyperliquidGateway /
+// HyperliquidWebSocketClient, which the guard and fill reconciler both need.
+// mergeAll builds in parallel, so it has to be a provideMerge underneath them
+// rather than a sibling in the same merge.
+const tradingProtectionForTest = TradingProtectionServiceLive.pipe(
+  Layer.provideMerge(coordinatorWithDeps),
+  Layer.provideMerge(tradingExecutionCore),
+);
+
 const tradingLayerForTest = Layer.mergeAll(
   TradingExecutionGuardLive,
   TradingFillReconcilerLive,
-  coordinatorWithDeps,
-).pipe(Layer.provideMerge(tradingExecutionCore));
+  TradingEmergencyCloseServiceLive,
+  TradingControlServiceLive,
+).pipe(Layer.provideMerge(tradingProtectionForTest));
 
 // --- layer composition ------------------------------------------------------
 // The real TradingMissionReactorLive provided with the faked trading layer
@@ -524,21 +598,15 @@ it.live(
                     "mission projected after create",
                   );
 
-                  // Walk the mission through the §11.1 status graph to `executing`,
-                  // the only status (besides position_open) the §16.3 preview admits
-                  // an entry from. A real harness drives this via control commands;
-                  // here we transition directly through TradingMissionService (the
-                  // same service the reactor's control handler uses).
-                  const missions = yield* TradingMissionService;
-                  for (const target of ["analysing", "waiting", "executing"] as const) {
-                    const expectedVersion = yield* missions.getMissionVersion(MISSION_ID);
-                    yield* missions.transition({
-                      missionId: MISSION_ID,
-                      to: target,
-                      expectedVersion,
-                    });
-                  }
                   yield* tradingReactor.drain;
+
+                  // §11.1 `initializing → analysing`: creating the mission started
+                  // its first run, and the reactor advanced it. This test used to
+                  // walk the status graph by hand, which hid the fact that nothing
+                  // drove it — a real mission stayed in `initializing` forever and
+                  // §16.3 item 1 refused every entry.
+                  const missions = yield* TradingMissionService;
+                  assert.equal((yield* missions.getMission(MISSION_ID)).status, "analysing");
 
                   // Publish a momentum strategy so the mission's strategyVersion is
                   // 1 (the §16.3 preview rejects an intent whose strategyVersion
@@ -594,6 +662,10 @@ it.live(
                     },
                   });
                   assert.equal(published.outcome, "accepted", "strategy publish must be accepted");
+
+                  // §11.1 `analysing → waiting`: the publish itself ends analysis,
+                  // which is what makes `executing` reachable on the next step.
+                  assert.equal((yield* missions.getMission(MISSION_ID)).status, "waiting");
 
                   // 4. THE KEYSTONE DISPATCH: the command the
                   //    `trading_request_entry` tool handler raises. This is what
@@ -697,7 +769,10 @@ it.live(
                   //    the projection row's mission-level fields are populated too.
                   assert.equal(mission.id, MISSION_ID);
                   assert.equal(mission.threadId, THREAD_ID);
-                  assert.equal(mission.status, "initializing");
+                  // §11.1: the request moved the mission `waiting → executing`, and
+                  // the reactor settled it on the reconciled position — 0.5 long, so
+                  // `position_open` rather than back to `waiting`.
+                  assert.equal(mission.status, "position_open");
 
                   yield* Scope.close(scope, Exit.void);
                 }),

@@ -183,9 +183,23 @@ const makeTradingStrategyService = Effect.gen(function* () {
           AND strategy_version < ${version}
       `.pipe(Effect.mapError(sqlFail("publish:supersedeWatches")));
 
+      // §11.1 `analysing → waiting`: publishing a strategy is what ends
+      // analysis — from here the mission waits on the conditions it just
+      // armed. `analysing` has exactly one outgoing loop edge and this is the
+      // event that takes it, so pinning the source status in the CASE is the
+      // whole legality check; no other status is touched. Folded into the
+      // version bump so the status and the strategy move under one write.
+      //
+      // Without this step a mission never leaves `analysing`, and §16.3 item 1
+      // — which admits an entry only from `executing`/`position_open`, both
+      // reachable only through `waiting` — refuses every entry the harness
+      // ever requests.
       yield* sql`
         UPDATE trading_missions
-        SET strategy_version = ${version}, version = version + 1, updated_at = ${now}
+        SET strategy_version = ${version},
+            status = CASE WHEN status = 'analysing' THEN 'waiting' ELSE status END,
+            version = version + 1,
+            updated_at = ${now}
         WHERE mission_id = ${input.missionId} AND strategy_version = ${input.expectedVersion}
       `.pipe(Effect.mapError(sqlFail("publish:bumpMission")));
 

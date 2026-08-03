@@ -1,7 +1,11 @@
 import {
   CommandId,
   ORCHESTRATION_WS_METHODS,
+  TradingMissionId,
   type ClientOrchestrationCommand,
+  type ThreadId,
+  type TradingReductionPercent,
+  type TradingRiskControl,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -294,6 +298,88 @@ export const stopThreadSession: (input: StopThreadSessionInput) => CommandEffect
   return yield* dispatch({
     ...input,
     type: "thread.session.stop",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+// -- trading controls (§14.7) ------------------------------------------------
+//
+// Two dispatchers, because the two halves are different shapes: pause / resume
+// / revoke are §11.1 status transitions, while the exchange-touching controls
+// carry which control and (for a reduction) how much.
+
+/**
+ * Creates the mission a thread's harness is bound to.
+ *
+ * The POC has no account-onboarding flow yet (Privy owns it, PROMPT-06), so
+ * `tradingAccountId` names the row the server provisioned from the interim
+ * signer rather than one the user picked.
+ */
+export interface TradingMissionCreateInput {
+  readonly threadId: ThreadId;
+  /** Supplied only by tests that need a predictable id; otherwise minted here. */
+  readonly missionId?: TradingMissionId;
+  readonly tradingAccountId: string;
+  readonly instruction: string;
+  readonly allocatedCapitalUsd: number;
+}
+
+export const tradingMissionCreate: (input: TradingMissionCreateInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.tradingMissionCreate",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata({});
+  const crypto = yield* Crypto.Crypto;
+  const missionId =
+    input.missionId ??
+    (yield* crypto.randomUUIDv4.pipe(Effect.orDie, Effect.map(TradingMissionId.make)));
+  return yield* dispatch({
+    type: "trading.mission.create",
+    threadId: input.threadId,
+    missionId,
+    tradingAccountId: input.tradingAccountId,
+    instruction: input.instruction,
+    allocatedCapitalUsd: input.allocatedCapitalUsd,
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+export interface TradingMissionControlInput {
+  readonly type: "trading.mission.pause" | "trading.mission.resume" | "trading.mission.revoke";
+  readonly threadId: ThreadId;
+  readonly missionId: TradingMissionId;
+}
+
+export const tradingMissionControl: (input: TradingMissionControlInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.tradingMissionControl")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata({});
+    return yield* dispatch({
+      type: input.type,
+      threadId: input.threadId,
+      missionId: input.missionId,
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
+
+export interface TradingRiskControlInput {
+  readonly threadId: ThreadId;
+  readonly missionId: TradingMissionId;
+  readonly control: TradingRiskControl;
+  readonly reductionPercent?: TradingReductionPercent;
+}
+
+export const tradingRiskControl: (input: TradingRiskControlInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.tradingRiskControl",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata({});
+  return yield* dispatch({
+    type: "trading.mission.risk-control",
+    threadId: input.threadId,
+    missionId: input.missionId,
+    control: input.control,
+    ...(input.reductionPercent === undefined ? {} : { reductionPercent: input.reductionPercent }),
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
   });

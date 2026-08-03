@@ -144,4 +144,30 @@ layer("TradingEventInbox", (it) => {
       assert.equal(yield* statusOf("timer:2"), "pending");
     }),
   );
+
+  it.effect("finds an event by deduplication key whatever status it reached", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const inbox = yield* TradingEventInbox;
+
+      assert.equal(yield* inbox.findSummary("mission_1", "execution_refused:0"), null);
+
+      yield* inbox.persist({
+        ...baseEvent,
+        category: "system",
+        deduplicationKey: "execution_refused:0",
+        summary: "execution 0 refused: mission_active",
+        occurredAt: 5_000,
+      });
+
+      // Claimed, not pending — the run reporting the refusal is the same run
+      // that claimed it, so `isPending` would already read false by then.
+      yield* inbox.claimPending("mission_1");
+      assert.strictEqual(yield* inbox.isPending("mission_1", "execution_refused:0"), false);
+
+      const found = yield* inbox.findSummary("mission_1", "execution_refused:0");
+      assert.equal(found?.summary, "execution 0 refused: mission_active");
+      assert.equal(found?.category, "system");
+    }),
+  );
 });

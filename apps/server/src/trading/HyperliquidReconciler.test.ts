@@ -13,10 +13,13 @@
  * against the shared db. Mutability avoids rebuilding the layer per test.
  */
 import { assert, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
@@ -98,6 +101,7 @@ const makeMutableInfo = (ref: Ref.Ref<FakeState>) =>
       candleSnapshot: () => Effect.die("not used"),
       clearinghouseState: () => Effect.die("not used"),
       openOrders: () => Effect.die("not used"),
+      frontendOpenOrders: () => Effect.die("not used"),
       userFills: () => Effect.map(Ref.get(ref), (s) => s.fills),
       userFees: () => Effect.die("not used"),
     }),
@@ -194,6 +198,8 @@ const order = (
   remainingSize: size,
   status: "open",
   createdAt: 1_000,
+  reduceOnly: false,
+  isTrigger: false,
 });
 
 const INITIAL_STATE: FakeState = {
@@ -357,6 +363,109 @@ layer("HyperliquidReconciler", (it) => {
         SELECT status FROM trading_risk_reservations WHERE execution_id = ${execId}
       `;
       assert.equal(rows[0]?.status, "released");
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // 3b. Abandoned executions: a record left mid-submission blocks every later
+  //     entry through preview item 16, so a reconcile that finds no trace of it
+  //     on the exchange has to settle it.
+  // -------------------------------------------------------------------------
+
+  /** Seed one mid-submission execution record + its reserved reservation. */
+  const seedMidSubmission = (execId: string, cloid: string, updatedAt: number) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO trading_execution_records (
+          execution_id, mission_id, strategy_version, execution_sequence, action_type,
+          cloid, idempotency_key, market, side, size, limit_price, time_in_force,
+          reduce_only, signer_address, status, order_results_json, created_at, updated_at,
+          stop_price, planned_loss_at_stop_usd
+        ) VALUES (
+          ${execId}, ${MISSION}, ${1}, ${7}, ${"open"},
+          ${cloid}, ${`idem_${execId}`}, ${"ETH"}, ${"buy"}, ${1}, ${3000},
+          ${"ioc"}, ${0}, ${"0xsigner"}, ${"submitted"}, ${"[]"}, ${updatedAt}, ${updatedAt},
+          ${null}, ${null}
+        )
+      `;
+      yield* sql`
+        INSERT INTO trading_risk_reservations (
+          reservation_id, mission_id, execution_id, cloid, action_type,
+          reserved_risk_usd, status, reserved_at
+        ) VALUES (
+          ${`res_${execId}`}, ${MISSION}, ${execId}, ${cloid}, ${"open"},
+          ${10}, ${"reserved"}, ${updatedAt}
+        )
+      `;
+    });
+
+  const statusOf = (execId: string) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly status: string }>`
+        SELECT status FROM trading_execution_records WHERE execution_id = ${execId}
+      `;
+      return rows[0]?.status;
+    });
+
+  it.effect("fails an execution the exchange never saw, and releases its reservation", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const execId = "exec_abandoned";
+      yield* seedMidSubmission(execId, "a".repeat(32), yield* Clock.currentTimeMillis);
+      // Past the one-minute window, so silence now counts as evidence.
+      yield* TestClock.adjust(Duration.minutes(2));
+
+      // Nothing resting, nothing filled — the submission never reached the book.
+      yield* setState({ account: snapshotFromClearinghouse(flatClearinghouse), orders: [] });
+      const reconciler = yield* HyperliquidReconciler;
+      yield* reconciler.reconcile(input, "before_execution");
+
+      assert.equal(yield* statusOf(execId), "failed");
+      const reservations = yield* sql<{ readonly status: string }>`
+        SELECT status FROM trading_risk_reservations WHERE execution_id = ${execId}
+      `;
+      assert.equal(reservations[0]?.status, "released");
+    }),
+  );
+
+  it.effect("leaves a record alone while its order is still resting", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const execId = "exec_resting";
+      const cloid = "b".repeat(32);
+      yield* seedMidSubmission(execId, cloid, yield* Clock.currentTimeMillis);
+      yield* TestClock.adjust(Duration.minutes(2));
+
+      // The exchange is holding the order — it reached the book, so the record
+      // is genuinely in flight no matter how long ago it was written.
+      yield* setState({
+        account: snapshotFromClearinghouse(flatClearinghouse),
+        orders: [order("b", 900, "buy", 3000, 1)],
+      });
+      const reconciler = yield* HyperliquidReconciler;
+      yield* reconciler.reconcile(input, "before_execution");
+
+      assert.equal(yield* statusOf(execId), "submitted");
+    }),
+  );
+
+  it.effect("leaves a record alone that was written moments ago", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const execId = "exec_inflight";
+      const now = yield* Clock.currentTimeMillis;
+      yield* seedMidSubmission(execId, "c".repeat(32), now);
+
+      // Silence this early proves nothing: the POST may still be in the air,
+      // and settling it here is what would let a duplicate order go out.
+      yield* setState({ account: snapshotFromClearinghouse(flatClearinghouse), orders: [] });
+      const reconciler = yield* HyperliquidReconciler;
+      yield* reconciler.reconcile(input, "after_submission");
+
+      assert.equal(yield* statusOf(execId), "submitted");
     }),
   );
 

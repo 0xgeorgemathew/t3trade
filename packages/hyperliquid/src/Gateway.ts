@@ -46,7 +46,7 @@ import type {
   WireCandleSnapshotRequest,
   WireClearinghouseStateResponse,
   WireL2BookResponse,
-  WireOpenOrder,
+  WireFrontendOpenOrder,
 } from "./wire.ts";
 
 /** Combined transport + domain error the gateway can surface. */
@@ -206,7 +206,7 @@ function toPosition(
   p: WireClearinghouseStateResponse["assetPositions"][number]["position"],
 ): AccountPosition {
   return {
-    market: coin as AccountPosition["market"],
+    market: coin,
     size: num(p.szi),
     entryPrice: num(p.entryPx),
     unrealisedPnl: num(p.unrealizedPnl),
@@ -217,21 +217,36 @@ function toPosition(
 }
 
 /** Map a wire open order into the domain AgentOpenOrder. */
-function toOpenOrder(o: WireOpenOrder): AgentOpenOrder {
-  // Hyperliquid sides are "B" (bid) / "A" (ask); normalise to buy/sell.
-  // `sz` is the remaining size, `origSz` the original size.
+/**
+ * Map a `frontendOpenOrders` row to the agent contract.
+ *
+ * Hyperliquid sides are "B" (bid) / "A" (ask); normalise to buy/sell. `sz` is
+ * the remaining size, `origSz` the original size.
+ *
+ * The protective fields are read conservatively: absent means "not confirmable
+ * as protection". A stop that the exchange did not describe as reduce-only and
+ * triggering must never be counted toward protected size (§17.2 step 7), so
+ * the defaults have to fail closed rather than assume.
+ */
+function toOpenOrder(o: WireFrontendOpenOrder): AgentOpenOrder {
   const remaining = num(o.sz);
+  const triggerPrice = num(o.triggerPx);
   return {
-    market: o.coin as AgentOpenOrder["market"],
+    market: o.coin,
     orderId: o.oid,
-    cloid: o.cloid,
+    cloid: o.cloid ?? undefined,
     side: o.side === "B" ? "buy" : "sell",
     limitPrice: num(o.limitPx),
     size: o.origSz === undefined ? remaining : num(o.origSz),
     remainingSize: remaining,
-    // The openOrders endpoint only lists resting orders, so every row is open.
+    // The endpoint only lists resting orders, so every row is open.
     status: "open",
     createdAt: o.timestamp,
+    reduceOnly: o.reduceOnly ?? false,
+    isTrigger: o.isTrigger ?? false,
+    // "0.0" on a non-trigger order; `Price` is strictly positive, so drop it.
+    triggerPrice: triggerPrice > 0 ? triggerPrice : undefined,
+    orderType: o.orderType,
   };
 }
 
@@ -373,18 +388,21 @@ const makeHyperliquidGateway = Effect.gen(function* () {
     const position = snapshot.positions.find((p) => p.market === symbol);
     if (!position) {
       // No open position is a valid net-zero state, not an error. Return a
-      // flat zero position so the harness sees a deterministic shape.
-      return {
-        market: symbol as AgentNetPosition["market"],
+      // flat position so the harness sees a deterministic shape — with no
+      // entry price, because a flat account has none. Reporting `0` here made
+      // every `trading_get_position` call fail to encode while flat, which is
+      // exactly when the harness asks.
+      const flat: AgentNetPosition = {
+        market: symbol,
         size: 0,
-        entryPrice: 0,
         unrealisedPnl: 0,
         cumulativeFunding: 0,
         marginUsed: 0,
         freshness: snapshot.freshness,
-      } as AgentNetPosition;
+      };
+      return flat;
     }
-    return {
+    const open: AgentNetPosition = {
       market: position.market,
       size: position.size,
       entryPrice: position.entryPrice,
@@ -392,7 +410,8 @@ const makeHyperliquidGateway = Effect.gen(function* () {
       cumulativeFunding: position.cumulativeFunding,
       marginUsed: position.marginUsed,
       freshness: snapshot.freshness,
-    } as AgentNetPosition;
+    };
+    return open;
   });
 
   const getOpenOrders = Effect.fn("HyperliquidGateway.getOpenOrders")(function* (
@@ -400,7 +419,9 @@ const makeHyperliquidGateway = Effect.gen(function* () {
   ) {
     const masterAddress = yield* requireMasterAddress(address);
 
-    const wireOrders = yield* info.openOrders(String(masterAddress));
+    // §17.2 step 7: protection is confirmed from trigger + reduce-only flags,
+    // which only `frontendOpenOrders` carries.
+    const wireOrders = yield* info.frontendOpenOrders(String(masterAddress));
     return wireOrders.map(toOpenOrder);
   });
 

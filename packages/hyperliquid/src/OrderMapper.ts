@@ -195,6 +195,157 @@ export function buildOrderAction(
   };
 }
 
+// ---------------------------------------------------------------------------
+// §17 · Protective (reduce-only trigger) orders
+// ---------------------------------------------------------------------------
+
+/**
+ * A reduce-only stop, normalised for the wire.
+ *
+ * `triggerPrice` is where the exchange arms the stop; `limitPrice` is the
+ * price the resulting order is willing to fill at once armed. They are
+ * different numbers on purpose: a stop-market that cannot cross is not
+ * protection, so the limit is pushed past the trigger in the losing direction
+ * by `PROTECTION_FILL_SLIPPAGE_BPS`.
+ */
+export interface ProtectiveStopOrder {
+  readonly cloid: string;
+  readonly coin: string;
+  /** The side that REDUCES the position: sell protects a long, buy a short. */
+  readonly side: TradingOrderIntent["side"];
+  readonly triggerPrice: string;
+  readonly limitPrice: string;
+  readonly size: string;
+}
+
+/**
+ * How far past the trigger the protective order's limit is placed, so a
+ * triggered stop actually crosses instead of resting unfilled at the exact
+ * trigger price.
+ */
+export const PROTECTION_FILL_SLIPPAGE_BPS = 100;
+
+/** Inputs for sizing a reduce-only stop against a canonical position. */
+export interface ProtectiveStopInput {
+  readonly cloid: string;
+  readonly coin: string;
+  /** Signed canonical position size; positive long, negative short. */
+  readonly positionSize: number;
+  readonly stopPrice: number;
+  readonly szDecimals: number;
+}
+
+/**
+ * Size a reduce-only stop to a canonical position (§17.2 step 6, §17.4).
+ *
+ * The size comes from the position the exchange reports, never from the size
+ * that was requested — a partial fill and a scale-in both make those two
+ * numbers differ, and protecting the requested size is exactly the failure
+ * §17.3 and §17.4 exist to prevent.
+ */
+export const mapProtectiveStop = (
+  input: ProtectiveStopInput,
+): Effect.Effect<ProtectiveStopOrder, HyperliquidOrderMapperError> =>
+  Effect.gen(function* () {
+    const size = Math.abs(input.positionSize);
+    if (size <= 0) {
+      return yield* new HyperliquidOrderMapperError({
+        reason: "non_positive_size",
+        detail: "cannot place protection for a flat position",
+      });
+    }
+    const isLong = input.positionSize > 0;
+    // The reducing side is the opposite of the position's direction.
+    const side = isLong ? ("sell" as const) : ("buy" as const);
+    // Push the fill limit past the trigger in the direction the stop is
+    // running away from, so the triggered order crosses.
+    const rawLimit = isLong
+      ? input.stopPrice * (1 - bps(PROTECTION_FILL_SLIPPAGE_BPS))
+      : input.stopPrice * (1 + bps(PROTECTION_FILL_SLIPPAGE_BPS));
+
+    return {
+      cloid: input.cloid,
+      coin: input.coin,
+      side,
+      triggerPrice: formatPrice(input.stopPrice),
+      limitPrice: formatPrice(rawLimit),
+      size: formatSize(size, input.szDecimals),
+    } satisfies ProtectiveStopOrder;
+  });
+
+/** One protective-order leg, in the exchange's insertion-order key sequence. */
+function protectiveLeg(stop: ProtectiveStopOrder, assetIndex: number): Record<string, unknown> {
+  return {
+    a: assetIndex,
+    b: stop.side === "buy",
+    p: stop.limitPrice,
+    s: stop.size,
+    r: true,
+    t: {
+      trigger: {
+        isMarket: true,
+        triggerPx: stop.triggerPrice,
+        tpsl: "sl",
+      },
+    },
+    c: stop.cloid,
+  };
+}
+
+/**
+ * Build a grouped `normalTpsl` action: one entry parent plus one linked
+ * reduce-only stop child (§17.2 step 3).
+ *
+ * The grouping is an optimisation and a linkage mechanism, never the safety
+ * mechanism (§17.1). Submitting this does not mean the child is live: while
+ * the parent is unfilled or partially filled the child may be untriggered, and
+ * cancelling a partial parent cancels it outright. Every caller must still
+ * inspect each per-order status and then confirm protection from canonical
+ * state.
+ */
+export function buildGroupedEntryWithStopAction(
+  entry: TradingWireOrder,
+  stop: ProtectiveStopOrder,
+  assetIndex: number,
+): Record<string, unknown> {
+  return {
+    type: "order",
+    orders: [
+      {
+        a: assetIndex,
+        b: entry.side === "buy",
+        p: entry.limitPrice,
+        s: entry.size,
+        r: entry.reduceOnly,
+        t: { limit: { tif: entry.timeInForce === "ioc" ? "Ioc" : "Gtc" } },
+        c: entry.cloid,
+      },
+      protectiveLeg(stop, assetIndex),
+    ],
+    grouping: "normalTpsl",
+  };
+}
+
+/**
+ * Build a standalone, explicitly sized reduce-only stop (§17.2 step 6).
+ *
+ * This is the independent protection the reconciliation path places when the
+ * canonical position is larger than the confirmed protected size — after a
+ * partial fill, after a scale-in, or after a parent cancellation took its
+ * children with it. Grouping is `na`: it is nobody's child, which is the whole
+ * point. It survives the parent.
+ */
+export function buildProtectiveStopAction(
+  stop: ProtectiveStopOrder,
+  assetIndex: number,
+): Record<string, unknown> {
+  return {
+    type: "order",
+    orders: [protectiveLeg(stop, assetIndex)],
+    grouping: "na",
+  };
+}
+
 /**
  * Build the Hyperliquid `cancelByCloid` action payload (insertion-order keys).
  *

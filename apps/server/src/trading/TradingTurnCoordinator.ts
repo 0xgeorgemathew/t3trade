@@ -44,6 +44,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
+import { POC_DEFAULT_TIMEFRAME } from "@t3tools/trading-contracts/strategy";
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import {
@@ -100,6 +101,9 @@ const BootstrapWakeup = Schema.Struct({
   harnessRunId: Schema.String,
   cause: Schema.String,
   instruction: Schema.String,
+  /** Matches `TradingHarnessWakeup.defaultTimeframe`, so the very first turn
+      authors its strategy on the same candle every later turn wakes on. */
+  defaultTimeframe: Schema.String,
 });
 const encodeBootstrapText = Schema.encodeSync(Schema.fromJsonString(BootstrapWakeup));
 
@@ -278,6 +282,7 @@ const make = Effect.gen(function* () {
         harnessRunId: input.harnessRunId,
         cause: input.cause,
         instruction: mission.instruction,
+        defaultTimeframe: POC_DEFAULT_TIMEFRAME,
       });
     }
 

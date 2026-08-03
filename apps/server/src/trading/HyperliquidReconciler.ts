@@ -22,6 +22,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
+import type { AgentOpenOrder } from "@t3tools/trading-contracts/account-snapshot";
+import { confirmedProtectedSize } from "@t3tools/trading-contracts/protection";
 import type {
   TradingFill,
   TradingOpenOrderRecord,
@@ -71,7 +73,14 @@ export interface ReconcileInput {
 /** A reconciled snapshot of all canonical state for a mission. */
 export interface ReconciledState {
   readonly position: TradingPositionSnapshot | null;
+  /** T3's own orders, keyed by cloid. */
   readonly openOrders: ReadonlyArray<TradingOpenOrderRecord>;
+  /**
+   * Every resting order on the account, including ones T3 did not place.
+   * Protection confirmation reads this, not `openOrders` — a linked TP/SL
+   * child carries a cloid T3 never chose, and it still protects the position.
+   */
+  readonly canonicalOrders: ReadonlyArray<AgentOpenOrder>;
   readonly fills: ReadonlyArray<TradingFill>;
   readonly observedAt: number;
 }
@@ -132,8 +141,8 @@ function readCanonicalPosition(
       entryPrice: position.entryPrice,
       unrealisedPnl: position.unrealisedPnl,
       marginUsed: position.marginUsed,
-      // Protected size is confirmed by the protection path (§17.2 steps 6–8);
-      // the reconciler records zero until that path marks it.
+      // Filled in by `reconcile` once the canonical open orders are in hand
+      // (§17.2 steps 7–8) — a position read on its own cannot know it.
       protectedSize: 0,
       liquidationPrice: position.liquidationPx,
       markPx,
@@ -143,20 +152,19 @@ function readCanonicalPosition(
 }
 
 /**
- * Read canonical open orders via the gateway and map them to records keyed by
- * cloid. Orders without a cloid are skipped (T3 only tracks its own orders).
+ * Read canonical open orders via the gateway.
+ *
+ * Returns the full canonical set, not only T3's own orders: protection
+ * confirmation has to see every resting reduce-only trigger on the position,
+ * including one placed outside T3 (or by a linked TP/SL child whose cloid T3
+ * never chose). The persisted subset is narrowed later, by cloid.
  */
 function readCanonicalOpenOrders(
   input: ReconcileInput,
-  observedAt: number,
-): Effect.Effect<
-  ReadonlyArray<TradingOpenOrderRecord>,
-  TradingReconciliationError,
-  HyperliquidGateway
-> {
+): Effect.Effect<ReadonlyArray<AgentOpenOrder>, TradingReconciliationError, HyperliquidGateway> {
   return Effect.gen(function* () {
     const gateway = yield* HyperliquidGateway;
-    const orders = yield* gateway.getOpenOrders(input.masterAddress as `0x${string}`).pipe(
+    return yield* gateway.getOpenOrders(input.masterAddress as `0x${string}`).pipe(
       Effect.mapError(
         (cause) =>
           new TradingReconciliationError({
@@ -165,23 +173,35 @@ function readCanonicalOpenOrders(
           }),
       ),
     );
-    return orders
-      .filter((o) => o.cloid !== undefined)
-      .map(
-        (o) =>
-          ({
-            missionId: input.missionId,
-            cloid: o.cloid ?? "",
-            orderId: o.orderId,
-            market: o.market,
-            side: o.side,
-            limitPrice: o.limitPrice,
-            remainingSize: o.remainingSize,
-            reduceOnly: false,
-            observedAt,
-          }) as TradingOpenOrderRecord,
-      );
   });
+}
+
+/**
+ * Narrow the canonical orders to the rows T3 persists — its own, keyed by
+ * cloid — carrying the reduce-only flag the exchange reported rather than a
+ * hardcoded `false`.
+ */
+function toOpenOrderRecords(
+  orders: ReadonlyArray<AgentOpenOrder>,
+  input: ReconcileInput,
+  observedAt: number,
+): ReadonlyArray<TradingOpenOrderRecord> {
+  return orders
+    .filter((o) => o.cloid !== undefined)
+    .map(
+      (o) =>
+        ({
+          missionId: input.missionId,
+          cloid: o.cloid ?? "",
+          orderId: o.orderId,
+          market: o.market,
+          side: o.side,
+          limitPrice: o.limitPrice,
+          remainingSize: o.remainingSize,
+          reduceOnly: o.reduceOnly,
+          observedAt,
+        }) as TradingOpenOrderRecord,
+    );
 }
 
 /**
@@ -360,6 +380,84 @@ function persistOpenOrders(
   );
 }
 
+/**
+ * How long a record may sit mid-submission before canonical silence settles it.
+ *
+ * Long enough that a slow round-trip is never mistaken for a lost one — the
+ * whole submit sequence is a handful of exchange calls — and short enough that
+ * the next entry attempt, minutes later, is not still blocked by it.
+ */
+const ABANDONED_EXECUTION_AFTER_MS = 60_000;
+
+/**
+ * Settle execution records the exchange has no memory of.
+ *
+ * A record is written at `reserved` before signing and moved to `submitted`
+ * before the POST, so a failure anywhere in between — a signer error, a dropped
+ * connection, a server restart — leaves it non-terminal forever. Preview item 16
+ * refuses every new entry while one exists, so one failed submit quietly ends
+ * the mission's ability to trade: hours later it is still answering
+ * `no_conflicting_execution_pending` to a request that conflicts with nothing.
+ *
+ * Silence alone is not proof. An order can be a second old and simply not
+ * visible yet, and settling that one would let a duplicate go out on the next
+ * request. Proof is silence that has lasted: no resting order under the cloid,
+ * no fill ever recorded under the cloid, and a full minute since the record last
+ * moved. Then the submission never reached the book, and `failed` is what
+ * happened.
+ */
+function settleAbandonedExecutions(
+  input: ReconcileInput,
+  canonicalOrders: ReadonlyArray<AgentOpenOrder>,
+  observedAt: number,
+): Effect.Effect<void, TradingReconciliationError, SqlClient.SqlClient> {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const stale = yield* sql<{ readonly execution_id: string; readonly cloid: string }>`
+      SELECT execution_id, cloid
+      FROM trading_execution_records
+      WHERE mission_id = ${input.missionId}
+        AND status IN ('previewed', 'reserved', 'signed', 'submitted')
+        AND updated_at <= ${observedAt - ABANDONED_EXECUTION_AFTER_MS}
+    `;
+    if (stale.length === 0) return;
+
+    const resting = new Set(
+      canonicalOrders.flatMap((order) => (order.cloid === undefined ? [] : [order.cloid])),
+    );
+
+    for (const record of stale) {
+      if (resting.has(record.cloid)) continue;
+      // `persistFills` ran already this pass, so the table is current.
+      const filled = yield* sql<{ readonly fill_id: string }>`
+        SELECT fill_id FROM trading_fills
+        WHERE mission_id = ${input.missionId} AND cloid = ${record.cloid}
+        LIMIT 1
+      `;
+      if (filled.length > 0) continue;
+
+      yield* sql`
+        UPDATE trading_execution_records
+        SET status = 'failed', updated_at = ${observedAt}
+        WHERE execution_id = ${record.execution_id}
+      `;
+      yield* Effect.logWarning("trading reconcile settled an abandoned execution record", {
+        missionId: input.missionId,
+        executionId: record.execution_id,
+        cloid: record.cloid,
+      });
+    }
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new TradingReconciliationError({
+          reason: "persist_failed",
+          detail: cause instanceof Error ? cause.message : String(cause),
+        }),
+    ),
+  );
+}
+
 export const makeHyperliquidReconciler = Effect.gen(function* () {
   const reconcile = (
     input: ReconcileInput,
@@ -373,14 +471,34 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
       const observedAt = yield* now();
       // Read all canonical state in parallel, then persist. Local state never
       // outranks Hyperliquid — the canonical reads are the source of truth.
-      const [position, openOrders, fills] = yield* Effect.all(
+      const [rawPosition, canonicalOrders, fills] = yield* Effect.all(
         [
           readCanonicalPosition(input, observedAt),
-          readCanonicalOpenOrders(input, observedAt),
+          readCanonicalOpenOrders(input),
           readCanonicalFills(input, observedAt),
         ],
         { concurrency: "unbounded" },
       );
+
+      // §17.2 steps 7–8: the protected size is CONFIRMED from canonical state —
+      // resting reduce-only triggers on the losing side of the position — not
+      // inferred from what T3 believes it placed. A grouped response, a local
+      // record, and an untriggered child all read as protection if you ask the
+      // wrong source; only this read counts.
+      const position =
+        rawPosition === null
+          ? null
+          : ({
+              ...rawPosition,
+              protectedSize: confirmedProtectedSize({
+                market: input.market,
+                positionSize: rawPosition.size,
+                referencePrice: rawPosition.markPx ?? rawPosition.entryPrice ?? 0,
+                openOrders: canonicalOrders,
+              }),
+            } satisfies TradingPositionSnapshot);
+
+      const openOrders = toOpenOrderRecords(canonicalOrders, input, observedAt);
 
       yield* persistPosition(position, input);
       // Fills append idempotently; open orders are replaced with the canonical
@@ -388,6 +506,9 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
       // here so the projection and loss-budget accounting read reconciled truth.
       yield* persistFills(fills);
       yield* persistOpenOrders(openOrders, input);
+      // Before the release below, so a record settled here has its reservation
+      // released in the same pass.
+      yield* settleAbandonedExecutions(input, canonicalOrders, observedAt);
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
         UPDATE trading_risk_reservations
@@ -409,7 +530,7 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
       );
 
       yield* Effect.logInfo("trading reconciled", { missionId: input.missionId, trigger });
-      return { position, openOrders, fills, observedAt } as ReconciledState;
+      return { position, openOrders, canonicalOrders, fills, observedAt } as ReconciledState;
     });
 
   return HyperliquidReconciler.of({ reconcile });

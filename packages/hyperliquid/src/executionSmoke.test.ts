@@ -24,6 +24,7 @@ import { FetchHttpClient } from "effect/unstable/http";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import { HyperliquidExchangeClient, HyperliquidExchangeClientLive } from "./ExchangeClient.ts";
+import { exchangeResponseType } from "./ExchangeResponse.ts";
 import { createL1ActionHash, signL1ActionForWire } from "./Signing.ts";
 
 /**
@@ -84,10 +85,10 @@ describeLive("HyperliquidExecutionSmoke — live /exchange", () => {
         // response type confirms the noop shape.
         yield* Effect.logInfo("[execution-smoke] response", {
           status: "status" in response ? response.status : undefined,
-          responseType: response.response.type,
+          responseType: exchangeResponseType(response),
         });
         expect("status" in response ? response.status : undefined).toBe("ok");
-        expect(response.response.type).toBe("default");
+        expect(exchangeResponseType(response)).toBe("default");
       }).pipe(Effect.provide(exchangeLayer)),
     30_000,
   );

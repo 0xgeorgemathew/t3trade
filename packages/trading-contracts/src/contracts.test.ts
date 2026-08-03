@@ -417,6 +417,31 @@ describe("§10.6 market- and account-read contracts (Phase 2 pin)", () => {
     expect(decoded.positions[0]?.market).toBe("ETH");
   });
 
+  it("decodes an AgentAccountSnapshot holding a market the mission cannot trade", () => {
+    // The clearinghouse reports the whole wallet. When `market` was the "ETH"
+    // literal, one BTC position made the snapshot undecodable — and since the
+    // snapshot rides inside every wakeup payload, that killed the wake itself
+    // rather than the one position nobody asked about.
+    const decoded = decodeAgentAccountSnapshot({
+      address: "0xabc",
+      accountValue: 1_000,
+      marginUsed: 250,
+      withdrawable: 750,
+      positions: [
+        {
+          market: "BTC",
+          size: 0.01,
+          entryPrice: 61_400,
+          unrealisedPnl: -2.5,
+          cumulativeFunding: 0,
+          marginUsed: 250,
+        },
+      ],
+      freshness: accountFreshness(1_753_000_000_000, "info_api"),
+    });
+    expect(decoded.positions[0]?.market).toBe("BTC");
+  });
+
   it("decodes an AgentNetPosition with a signed (short) size", () => {
     const decoded = decodeAgentNetPosition({
       market: "ETH",
@@ -440,6 +465,8 @@ describe("§10.6 market- and account-read contracts (Phase 2 pin)", () => {
       remainingSize: 0.3,
       status: "open",
       createdAt: 1_753_000_000_000,
+      reduceOnly: false,
+      isTrigger: false,
     });
     expect(decoded.orderId).toBe(90_542_681);
   });
@@ -464,11 +491,21 @@ describe("TradingOrderIntent", () => {
   it("decodes a valid position-increasing entry intent", () => {
     const decoded = decodeOrderIntent(intent);
     expect(decoded.side).toBe("buy");
-    expect(decoded.stop.stopPrice).toBe(3_700);
+    expect(decoded.stop?.stopPrice).toBe(3_700);
   });
 
-  it("rejects an intent without a stop (§16.3 item 17)", () => {
-    expect(() => decodeOrderIntent({ ...intent, stop: undefined })).toThrow();
+  it("decodes a reduce-only exit that carries no stop", () => {
+    // A close is the exit; it plans no new loss and needs no stop. The
+    // mandatory-stop gate (§16.3 item 17) is what refuses a stopless
+    // *increase* — see protection.test.ts.
+    const decoded = decodeOrderIntent({
+      ...intent,
+      actionType: "close",
+      side: "sell",
+      stop: undefined,
+      reduceOnly: true,
+    });
+    expect(decoded.stop).toBeUndefined();
   });
 
   it("rejects a non-positive size", () => {
@@ -477,14 +514,16 @@ describe("TradingOrderIntent", () => {
 });
 
 describe("TradingCloid", () => {
-  it("accepts a 32-char lowercase hex string", () => {
-    expect(decodeCloid("0123456789abcdef0123456789abcdef")).toBe(
-      "0123456789abcdef0123456789abcdef",
+  it("accepts a 0x-prefixed 32-char lowercase hex string", () => {
+    expect(decodeCloid("0x0123456789abcdef0123456789abcdef")).toBe(
+      "0x0123456789abcdef0123456789abcdef",
     );
   });
 
-  it("rejects a cloid with a 0x prefix (wire convention is bare)", () => {
-    expect(() => decodeCloid("0x0123456789abcdef0123456789abcdef")).toThrow();
+  it("rejects a bare cloid with no 0x prefix", () => {
+    // The exchange validates `len(cloid[2:]) == 32` and silently stores a bare
+    // cloid as null — accepted on submission, then unjoinable to its own fill.
+    expect(() => decodeCloid("0123456789abcdef0123456789abcdef")).toThrow();
   });
 
   it("rejects a cloid of the wrong length", () => {
@@ -499,7 +538,7 @@ describe("TradingExecutionRecord", () => {
     strategyVersion: 1,
     executionSequence: 0,
     actionType: "open",
-    cloid: "0123456789abcdef0123456789abcdef",
+    cloid: "0x0123456789abcdef0123456789abcdef",
     idempotencyKey: "idem_1",
     market: "ETH",
     side: "buy",
@@ -553,7 +592,7 @@ describe("TradingRiskReservation", () => {
     reservationId: "res_1",
     missionId: "mission_1",
     executionId: "exec_1",
-    cloid: "0123456789abcdef0123456789abcdef",
+    cloid: "0x0123456789abcdef0123456789abcdef",
     actionType: "open",
     reservedRiskUsd: 20,
     status: "reserved",
@@ -618,6 +657,7 @@ describe("subpath exports", () => {
         "./account-snapshot",
         "./execution",
         "./loss-accounting",
+        "./protection",
         "./wakeup",
       ].sort(),
     );

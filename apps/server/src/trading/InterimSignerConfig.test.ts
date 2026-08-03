@@ -1,7 +1,11 @@
 import { Effect, Option } from "effect";
 import { describe, expect, it } from "@effect/vitest";
 
-import { resolveInterimSignerFromEnv } from "./InterimSignerConfig.ts";
+import {
+  readFileText,
+  resolveInterimSignerFromEnv,
+  resolveInterimSignerFromFile,
+} from "./InterimSignerConfig.ts";
 
 /**
  * Canonical Ethereum test vector: private key = 32 bytes of 0x01 derives to
@@ -67,6 +71,22 @@ describe("resolveInterimSignerFromEnv", () => {
         T3_TRADES_INTERIM_SIGNER_KEY: "0xnotakey",
       }).pipe(Effect.flip);
       expect(error.reason).toBe("invalid_private_key");
+    }),
+  );
+});
+
+describe("resolveInterimSignerFromFile with the real reader", () => {
+  // Regression: the reader used `Effect.promise`, whose rejection is a DEFECT.
+  // Defects skip `orElseSucceed`, so an absent key file killed the caller
+  // instead of leaving the gate unarmed — which is what a fresh checkout, with
+  // no key written yet, always hits.
+  it.effect("leaves the gate unarmed when the key file is absent", () =>
+    Effect.gen(function* () {
+      const resolved = yield* resolveInterimSignerFromFile(
+        readFileText,
+        "/nonexistent/t3-trades-secrets",
+      );
+      expect(resolved).toEqual(Option.none());
     }),
   );
 });

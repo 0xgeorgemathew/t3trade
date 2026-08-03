@@ -74,6 +74,8 @@ export const TradingFillView = Schema.Struct({
   filledSize: Schema.Number,
   avgFillPrice: Schema.Number,
   feeUsd: Schema.Number,
+  /** Realised PnL the exchange attributed to this fill (§16.2 closedPnl). */
+  closedPnl: Schema.Number,
   tradedAt: IsoDateTime,
 });
 export type TradingFillView = typeof TradingFillView.Type;
@@ -95,6 +97,25 @@ export const TradingPositionView = Schema.Struct({
   observedAt: IsoDateTime,
 });
 export type TradingPositionView = typeof TradingPositionView.Type;
+
+/**
+ * The completion summary card's figures (§14.7 risk chrome).
+ *
+ * Aggregated across ALL of the mission's fills, not the three the receipt list
+ * shows: a summary that only counted recent fills would understate a mission
+ * that traded more than three times.
+ */
+export const TradingMissionResultView = Schema.Struct({
+  /** Realised PnL the exchange attributed to this mission's fills. */
+  realizedPnlUsd: Schema.Number,
+  /** Trading fees already paid. Always a cost, never netted into PnL twice. */
+  feesPaidUsd: Schema.Number,
+  fillCount: NonNegativeInt,
+  /** First and last fill, for the mission's traded duration. */
+  firstFillAt: Schema.NullOr(IsoDateTime),
+  lastFillAt: Schema.NullOr(IsoDateTime),
+});
+export type TradingMissionResultView = typeof TradingMissionResultView.Type;
 
 // -- read model --------------------------------------------------------------
 
@@ -133,6 +154,8 @@ export const OrchestrationTradingMission = Schema.Struct({
   recentFills: Schema.Array(TradingFillView),
   /** The live position card from reconciled projections (§10). Null when flat. */
   position: Schema.NullOr(TradingPositionView),
+  /** Realised result across every fill, for the completion summary card. */
+  result: TradingMissionResultView,
 
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -160,11 +183,12 @@ export const TradingMissionCreateCommand = Schema.Struct({
 });
 
 /**
- * The §14.7 controls that are meaningful before execution exists.
+ * The §14.7 controls that are pure §11.1 status transitions.
  *
- * `cancel_entries`, `reduce_position`, `close_position`, and
- * `close_and_revoke` all touch live exchange state and wait for the execution
- * phases; only pause, resume, and revoke are deterministic in Phase 1.
+ * Pause, resume, and revoke change what the mission is allowed to do next and
+ * touch no exchange state, so they resolve to a target status in the decider.
+ * The four controls that DO touch live exchange state are separate — see
+ * `TradingMissionRiskControlCommand`.
  */
 export const TradingMissionControlCommand = Schema.Struct({
   type: Schema.Literals([
@@ -178,9 +202,42 @@ export const TradingMissionControlCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * The §14.7 controls that reach the exchange.
+ *
+ * Modelled apart from the lifecycle controls because they are not status
+ * transitions: each one submits signed actions and only then reports what the
+ * mission became. Their defining property (§14.7) is that a workspace button
+ * invokes them directly — no harness turn, and availability that does not
+ * depend on the bound harness being online.
+ */
+export const TradingRiskControl = Schema.Literals([
+  "cancel_entries",
+  "reduce_position",
+  "close_position",
+  "close_and_revoke",
+]);
+export type TradingRiskControl = typeof TradingRiskControl.Type;
+
+/** The four reduction sizes the workspace offers (§14.7). */
+export const TradingReductionPercent = Schema.Literals([25, 50, 75, 100]);
+export type TradingReductionPercent = typeof TradingReductionPercent.Type;
+
+export const TradingMissionRiskControlCommand = Schema.Struct({
+  type: Schema.Literal("trading.mission.risk-control"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  missionId: TradingMissionId,
+  control: TradingRiskControl,
+  /** Required by `reduce_position`, meaningless for the others. */
+  reductionPercent: Schema.optional(TradingReductionPercent),
+  createdAt: IsoDateTime,
+});
+
 export const DispatchableTradingCommand = Schema.Union([
   TradingMissionCreateCommand,
   TradingMissionControlCommand,
+  TradingMissionRiskControlCommand,
 ]);
 export type DispatchableTradingCommand = typeof DispatchableTradingCommand.Type;
 
@@ -339,6 +396,18 @@ export const TradingMissionControlRequestedPayload = Schema.Struct({
   requestedAt: IsoDateTime,
 });
 
+/**
+ * A user pressed a §14.7 risk-reducing button. The reactor runs it through
+ * `TradingControlService`; this event is the request, not the outcome.
+ */
+export const TradingMissionRiskControlRequestedPayload = Schema.Struct({
+  missionId: TradingMissionId,
+  threadId: ThreadId,
+  control: TradingRiskControl,
+  reductionPercent: Schema.optional(TradingReductionPercent),
+  requestedAt: IsoDateTime,
+});
+
 export const TradingMissionStatusChangedPayload = Schema.Struct({
   missionId: TradingMissionId,
   threadId: ThreadId,
@@ -402,6 +471,7 @@ export const TradingExecutionRequestedPayload = Schema.Struct({
 export const TRADING_EVENT_TYPES = [
   "trading.mission-create-requested",
   "trading.mission-control-requested",
+  "trading.mission-risk-control-requested",
   "trading.mission-status-changed",
   "trading.mission-strategy-published",
   "trading.mission-watch-registered",

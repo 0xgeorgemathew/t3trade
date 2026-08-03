@@ -9,8 +9,9 @@
  *
  * @module HyperliquidGatewayTests
  */
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import * as Clock from "effect/Clock";
+import { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
 import { describe, expect, it } from "@effect/vitest";
 import { HyperliquidGateway } from "./Gateway.ts";
 import { HyperliquidGatewayLive } from "./Gateway.ts";
@@ -315,6 +316,11 @@ describe("HyperliquidGateway.getPosition", () => {
       const pos = yield* gateway.getPosition(MASTER_ADDRESS, "ETH");
       expect(pos.size).toBe(0);
       expect(pos.market).toBe("ETH");
+      // A flat account has no entry price. Reporting one — `0` in particular —
+      // fails to encode against `Price`, which is what made every
+      // `trading_get_position` call throw at the tool boundary while flat.
+      expect(pos.entryPrice).toBeUndefined();
+      expect(() => Schema.encodeUnknownSync(AgentNetPosition)(pos)).not.toThrow();
     }).pipe(
       Effect.provide(
         gatewayLayerWith({
@@ -360,7 +366,7 @@ describe("HyperliquidGateway.getOpenOrders", () => {
       Effect.provide(
         gatewayLayerWith({
           metaAndAssetCtxs: FIXTURE_META_AND_CTX,
-          openOrders: () => [
+          frontendOpenOrders: () => [
             {
               coin: "ETH",
               side: "B",
@@ -378,6 +384,73 @@ describe("HyperliquidGateway.getOpenOrders", () => {
               oid: 2,
               timestamp: 1_753_000_000_000,
               origSz: "0.3",
+            },
+          ],
+        }),
+      ),
+    ),
+  );
+
+  it.effect("carries the trigger + reduce-only detail protection is confirmed from", () =>
+    Effect.gen(function* () {
+      const gateway = yield* HyperliquidGateway;
+      const orders = yield* gateway.getOpenOrders(MASTER_ADDRESS);
+
+      const stop = orders[0]!;
+      expect(stop.reduceOnly).toBe(true);
+      expect(stop.isTrigger).toBe(true);
+      expect(stop.triggerPrice).toBe(2_950);
+      expect(stop.orderType).toBe("Stop Market");
+    }).pipe(
+      Effect.provide(
+        gatewayLayerWith({
+          metaAndAssetCtxs: FIXTURE_META_AND_CTX,
+          frontendOpenOrders: () => [
+            {
+              coin: "ETH",
+              side: "A",
+              limitPx: "2920.5",
+              sz: "0.2",
+              oid: 7,
+              timestamp: 1_753_000_000_000,
+              origSz: "0.2",
+              isTrigger: true,
+              triggerPx: "2950.0",
+              triggerCondition: "Below 2950.0",
+              reduceOnly: true,
+              orderType: "Stop Market",
+            },
+          ],
+        }),
+      ),
+    ),
+  );
+
+  it.effect("reads a row that omits the protective flags as unprotective", () =>
+    Effect.gen(function* () {
+      // An order the exchange did not describe must never be counted toward
+      // protected size — the default has to fail closed (§17.2 step 7).
+      const gateway = yield* HyperliquidGateway;
+      const orders = yield* gateway.getOpenOrders(MASTER_ADDRESS);
+
+      expect(orders[0]?.reduceOnly).toBe(false);
+      expect(orders[0]?.isTrigger).toBe(false);
+      expect(orders[0]?.triggerPrice).toBeUndefined();
+    }).pipe(
+      Effect.provide(
+        gatewayLayerWith({
+          metaAndAssetCtxs: FIXTURE_META_AND_CTX,
+          frontendOpenOrders: () => [
+            {
+              coin: "ETH",
+              side: "A",
+              limitPx: "3800.0",
+              sz: "0.3",
+              oid: 2,
+              timestamp: 1_753_000_000_000,
+              origSz: "0.3",
+              // A non-trigger order reports "0.0" here, which is not a price.
+              triggerPx: "0.0",
             },
           ],
         }),
