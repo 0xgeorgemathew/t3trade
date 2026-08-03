@@ -1,4 +1,4 @@
-import type { MarketWatch, TradingMissionStatus } from "@t3tools/trading-contracts";
+import type { MarketWatch, PersistedWatch, TradingMissionStatus } from "@t3tools/trading-contracts";
 
 /** The ten §11.1 statuses, as the workspace names them. */
 export const MISSION_STATUS_LABELS: Record<TradingMissionStatus, string> = {
@@ -20,6 +20,27 @@ export const formatUsd = (value: number): string =>
     currency: "USD",
     maximumFractionDigits: 0,
   });
+
+/**
+ * A signed dollar figure, so a P&L reads as a direction and not just a number.
+ * Cents are kept: a result of "+$0" for eighty cents would be a lie.
+ */
+export const formatSignedUsd = (value: number): string => {
+  const magnitude = Math.abs(value).toFixed(2);
+  if (value > 0) return `+$${magnitude}`;
+  if (value < 0) return `-$${magnitude}`;
+  return "$0.00";
+};
+
+/**
+ * A market price as the exchange quotes it.
+ *
+ * Precision varies by market — ETH trades to the cent, BTC to the dollar — so
+ * this keeps whatever the projection carried up to two decimals rather than
+ * padding every price to a fixed width it does not have.
+ */
+export const formatPrice = (value: number): string =>
+  value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
 /** Turn an underscored domain literal into prose without inventing wording. */
 export const humanizeLiteral = (value: string): string => value.replaceAll("_", " ");
@@ -71,6 +92,19 @@ export type MissionStripTone = "exposed" | "armed" | "paused" | "blocked";
 export interface MissionStrip {
   readonly tone: MissionStripTone;
   readonly stateLabel: string;
+  /** The market the mission trades, as the exchange names it. */
+  readonly marketLabel: string;
+  /**
+   * What the mission is holding, or what it is waiting for. Exposure reads back
+   * the fill; a flat mission reads back its armed watch, because the watch is
+   * the only thing that can move it — a flat mission with no active watch is
+   * saying something worth reading.
+   */
+  readonly detailPrimary: string;
+  /** Live P&L and protection while exposed; null when there is nothing held. */
+  readonly detailSecondary: string | null;
+  /** The immutable §10.2 harness binding: which provider owns this mission. */
+  readonly harnessLabel: string;
   /** Signed exposure in base units; zero when flat. */
   readonly exposure: number;
   readonly exposureLabel: string;
@@ -99,12 +133,62 @@ export function shouldShowMissionStrip(mission: {
   return exposed || ARMED_OR_EXPOSED.has(mission.status);
 }
 
+/**
+ * What a flat mission is waiting on.
+ *
+ * Only `active` watches can still fire; a triggered or superseded one is
+ * history. With none of them the mission is deaf — it holds authority but
+ * nothing will wake it — and the strip says so rather than leaving the slot
+ * blank, because a blank slot reads as "fine".
+ */
+function describeArmedWatch(watches: ReadonlyArray<PersistedWatch>): string {
+  const active = watches.find((watch) => watch.status === "active");
+  return active === undefined ? "No active watch" : `Waiting on ${describeWatch(active.watch)}`;
+}
+
+/** "Entry 1,833.90 · Mark 1,859.50", dropping whichever price is absent. */
+function describeExposure(position: {
+  readonly entryPrice?: number | undefined;
+  readonly markPrice?: number | undefined;
+}): string {
+  const parts: string[] = [];
+  if (position.entryPrice !== undefined) parts.push(`Entry ${formatPrice(position.entryPrice)}`);
+  if (position.markPrice !== undefined) parts.push(`Mark ${formatPrice(position.markPrice)}`);
+  return parts.length === 0 ? "Position open" : parts.join(" · ");
+}
+
+/**
+ * How much of the position a stop actually covers (§16.1).
+ *
+ * The difference between a bounded loss and an open-ended one, so the strip
+ * names it rather than leaving "there is a stop somewhere" to be assumed.
+ */
+function describeProtection(position: {
+  readonly size: number;
+  readonly protectedSize: number;
+}): string {
+  const covered = Math.abs(position.protectedSize);
+  if (covered === 0) return "Unprotected";
+  return covered >= Math.abs(position.size) ? "Protected" : "Partially protected";
+}
+
 export function deriveMissionStrip(mission: {
   readonly status: TradingMissionStatus;
-  readonly position: { readonly size: number } | null;
+  readonly market: string;
+  readonly blockedReason: string | null;
+  readonly harness: { readonly provider: string; readonly status: string };
+  readonly watches: ReadonlyArray<PersistedWatch>;
+  readonly position: {
+    readonly size: number;
+    readonly entryPrice?: number | undefined;
+    readonly markPrice?: number | undefined;
+    readonly unrealisedPnl: number;
+    readonly protectedSize: number;
+  } | null;
   readonly authority: { readonly maximumCumulativeLossUsd: number };
 }): MissionStrip {
-  const exposure = mission.position?.size ?? 0;
+  const position = mission.position;
+  const exposure = position?.size ?? 0;
   const exposed = exposure !== 0;
 
   const tone: MissionStripTone =
@@ -125,9 +209,27 @@ export function deriveMissionStrip(mission: {
       ? ("resume" as const)
       : ("pause" as const);
 
+  // A blocked mission's reason outranks everything else the slot could say:
+  // it is the one fact that explains why nothing is happening.
+  const detailPrimary =
+    mission.blockedReason !== null
+      ? humanizeLiteral(mission.blockedReason)
+      : exposed && position !== null
+        ? describeExposure(position)
+        : describeArmedWatch(mission.watches);
+
+  const detailSecondary =
+    exposed && position !== null
+      ? `Unrealised ${formatSignedUsd(position.unrealisedPnl)} · ${describeProtection(position)}`
+      : null;
+
   return {
     tone,
     stateLabel: MISSION_STATUS_LABELS[mission.status],
+    marketLabel: mission.market,
+    detailPrimary,
+    detailSecondary,
+    harnessLabel: `${mission.harness.provider} · ${humanizeLiteral(mission.harness.status)}`,
     exposure,
     exposureLabel: exposed ? `${exposure > 0 ? "Long" : "Short"} ${Math.abs(exposure)}` : "Flat",
     maximumLossLabel: formatUsd(mission.authority.maximumCumulativeLossUsd),
@@ -139,6 +241,55 @@ export function deriveMissionStrip(mission: {
           ? "Resume"
           : "Pause",
   };
+}
+
+// ---------------------------------------------------------------------------
+// composer controls
+// ---------------------------------------------------------------------------
+//
+// The three pills the composer carries in a mission-bound thread. Each is read
+// back from the mission, never chosen here: the mandate is the authority the
+// user granted (§10.4) and entries are governed by the mission's control block
+// (§11.1), so a pill that let either be edited from the composer would be
+// showing a value the server would not honour.
+
+/**
+ * The venue and network a mission trades on.
+ *
+ * Read from the account id, which is the only network signal the projection
+ * carries. An id that does not name its network is shown verbatim rather than
+ * assumed to be mainnet — guessing wrong here is the expensive direction.
+ */
+export function describeTradingAccount(tradingAccountId: string): string {
+  const normalized = tradingAccountId.toLowerCase();
+  if (normalized.includes("testnet")) return "Hyperliquid · Testnet";
+  if (normalized.includes("mainnet")) return "Hyperliquid · Mainnet";
+  return tradingAccountId;
+}
+
+/** The mandate pill: the grant, and the most it is allowed to lose. */
+export function describeMandate(authority: {
+  readonly allocatedCapitalUsd: number;
+  readonly maximumCumulativeLossUsd: number;
+}): string {
+  return `${formatUsd(authority.allocatedCapitalUsd)} · max loss ${formatUsd(
+    authority.maximumCumulativeLossUsd,
+  )}`;
+}
+
+/**
+ * The entry-permission pill.
+ *
+ * The POC has no ask-before-orders mode — a mission executes within its mandate
+ * or it does not execute — so this reports the control block rather than
+ * offering a permission model that does not exist.
+ */
+export function describeEntryPermission(control: {
+  readonly entriesAllowed: boolean;
+  readonly reentryAllowed: boolean;
+}): string {
+  if (!control.entriesAllowed) return "Entries paused";
+  return control.reentryAllowed ? "Entries allowed" : "Entries allowed · no re-entry";
 }
 
 /**

@@ -1,20 +1,17 @@
 import type { EnvironmentId, OrchestrationTradingMission } from "@t3tools/contracts";
 import { pocRiskPolicyDefaults } from "@t3tools/trading-contracts/authority";
 import { RefreshCwIcon, TrendingUpIcon } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
-
-import type { TradingReductionPercent, TradingRiskControl } from "@t3tools/contracts";
+import { useMemo } from "react";
 
 import { useTradingMissions } from "../../lib/tradingMissionsState";
-import { orchestrationEnvironment } from "../../state/orchestration";
-import { useAtomCommand } from "../../state/use-atom-command";
 import { useProjects } from "../../state/entities";
 import { SettingsPageContainer, SettingsSection } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
+import { MissionStripBar } from "./MissionStripBar";
+import { useMissionControls, type MissionControls } from "./useMissionControls";
 import { NewMissionForm } from "./NewMissionForm";
 import {
   deriveCompletionSummary,
-  deriveMissionStrip,
   deriveRejectedOrder,
   describeWatch,
   formatDuration,
@@ -26,7 +23,6 @@ import {
   MISSION_STATUS_LABELS,
   shouldShowMissionStrip,
   visibleMissions,
-  type MissionStripTone,
   type RejectedOrderNotice,
 } from "./tradingPresentation";
 
@@ -37,20 +33,6 @@ import {
  * mock data and no client-side derivation of mission state: if the projection
  * has nothing, the empty state says so rather than inventing a mission.
  */
-
-/**
- * The dispatchers a mission's chrome uses.
- *
- * Both go straight to the server. §14.7's controls must work while the harness
- * is offline, so nothing here consults a session, a lease, or a turn.
- */
-interface MissionControls {
-  readonly isBusy: boolean;
-  readonly lifecycle: (
-    type: "trading.mission.pause" | "trading.mission.resume" | "trading.mission.revoke",
-  ) => void;
-  readonly risk: (control: TradingRiskControl, reductionPercent?: TradingReductionPercent) => void;
-}
 
 function Field({ label, value }: { label: string; value: string }) {
   return (
@@ -191,65 +173,6 @@ function Watches({ mission }: { mission: OrchestrationTradingMission }) {
 // ---------------------------------------------------------------------------
 // §14.7 risk chrome
 // ---------------------------------------------------------------------------
-
-const TONE_DOT: Record<MissionStripTone, string> = {
-  exposed: "bg-emerald-500",
-  armed: "bg-sky-500",
-  paused: "bg-amber-500",
-  blocked: "bg-destructive",
-};
-
-/**
- * The persistent mission strip.
- *
- * Shown for the whole time a mission is armed or exposed, and the way out is
- * always one click: while exposure exists the primary action is close-and-stop,
- * never a menu and never two steps.
- */
-function MissionStrip({
-  mission,
-  controls,
-}: {
-  mission: OrchestrationTradingMission;
-  controls: MissionControls;
-}) {
-  const strip = deriveMissionStrip(mission);
-
-  return (
-    <div
-      className="sticky top-0 z-10 flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-border bg-background/95 px-3 py-2 backdrop-blur sm:px-4"
-      data-testid="mission-strip"
-    >
-      <span className="flex items-center gap-2">
-        <span className={`size-2 rounded-full ${TONE_DOT[strip.tone]}`} aria-hidden />
-        <span className="text-sm font-medium text-foreground">{strip.stateLabel}</span>
-      </span>
-      <span className="text-sm tabular-nums text-muted-foreground">
-        Exposure <span className="text-foreground">{strip.exposureLabel}</span>
-      </span>
-      <span className="text-sm tabular-nums text-muted-foreground">
-        Max loss <span className="text-foreground">{strip.maximumLossLabel}</span>
-      </span>
-      <Button
-        className="ml-auto"
-        size="sm"
-        variant={strip.primaryAction === "close_and_revoke" ? "destructive" : "secondary"}
-        disabled={controls.isBusy}
-        onClick={() => {
-          if (strip.primaryAction === "close_and_revoke") {
-            controls.risk("close_and_revoke");
-          } else if (strip.primaryAction === "pause") {
-            controls.lifecycle("trading.mission.pause");
-          } else {
-            controls.lifecycle("trading.mission.resume");
-          }
-        }}
-      >
-        {strip.primaryActionLabel}
-      </Button>
-    </div>
-  );
-}
 
 /**
  * The paused card. Its one job is to say the thing a paused user most needs to
@@ -443,7 +366,11 @@ function MissionView({
   return (
     <>
       {shouldShowMissionStrip(mission) ? (
-        <MissionStrip mission={mission} controls={controls} />
+        <MissionStripBar
+          mission={mission}
+          controls={controls}
+          className="sticky top-0 z-10 rounded-md bg-background/95 backdrop-blur"
+        />
       ) : null}
       {stale ? <StaleDataBanner /> : null}
       {mission.status === "paused" ? <PausedCard /> : null}
@@ -542,44 +469,7 @@ function MissionWithControls({
   mission: OrchestrationTradingMission;
   environmentId: EnvironmentId;
 }) {
-  const dispatchLifecycle = useAtomCommand(orchestrationEnvironment.missionControl);
-  const dispatchRisk = useAtomCommand(orchestrationEnvironment.riskControl);
-  const [isBusy, setIsBusy] = useState(false);
-
-  // One busy flag per mission, so a press on one mission cannot grey out
-  // another mission's way out.
-  const run = useCallback((send: () => Promise<unknown>) => {
-    setIsBusy(true);
-    void send().finally(() => setIsBusy(false));
-  }, []);
-
-  const controls = useMemo<MissionControls>(
-    () => ({
-      isBusy,
-      lifecycle: (type) => {
-        run(() =>
-          dispatchLifecycle({
-            environmentId,
-            input: { type, threadId: mission.threadId, missionId: mission.id },
-          }),
-        );
-      },
-      risk: (control, reductionPercent) => {
-        run(() =>
-          dispatchRisk({
-            environmentId,
-            input: {
-              threadId: mission.threadId,
-              missionId: mission.id,
-              control,
-              ...(reductionPercent === undefined ? {} : { reductionPercent }),
-            },
-          }),
-        );
-      },
-    }),
-    [dispatchLifecycle, dispatchRisk, environmentId, isBusy, mission.id, mission.threadId, run],
-  );
+  const controls = useMissionControls(mission, environmentId);
 
   return <MissionView mission={mission} controls={controls} />;
 }

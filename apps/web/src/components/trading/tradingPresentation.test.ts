@@ -6,8 +6,13 @@ import {
   deriveCompletionSummary,
   deriveMissionStrip,
   deriveRejectedOrder,
+  describeEntryPermission,
+  describeMandate,
+  describeTradingAccount,
   describeWatch,
   formatDuration,
+  formatPrice,
+  formatSignedUsd,
   formatUsd,
   humanizeLiteral,
   isMissionComplete,
@@ -82,14 +87,45 @@ describe("value formatting", () => {
 // ---------------------------------------------------------------------------
 
 describe("mission strip", () => {
+  const priceWatch = {
+    id: "watch-1",
+    missionId: "mission-1",
+    strategyVersion: 1,
+    watch: {
+      type: "price_cross" as const,
+      market: "ETH" as const,
+      priceSource: "mark" as const,
+      direction: "above" as const,
+      price: 1900,
+    },
+    status: "active" as const,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+  };
+  const harness = { provider: "claude", status: "available" };
+
   const armed = {
     status: "waiting" as const,
+    market: "ETH-PERP",
+    blockedReason: null,
+    harness,
+    watches: [priceWatch],
     position: null,
     authority: { maximumCumulativeLossUsd: 100 },
   };
   const exposed = {
     status: "position_open" as const,
-    position: { size: 0.5 },
+    market: "ETH-PERP",
+    blockedReason: null,
+    harness,
+    watches: [priceWatch],
+    position: {
+      size: 0.5,
+      entryPrice: 1833.9,
+      markPrice: 1859.5,
+      unrealisedPnl: 12.8,
+      protectedSize: 0.5,
+    },
     authority: { maximumCumulativeLossUsd: 100 },
   };
 
@@ -129,10 +165,99 @@ describe("mission strip", () => {
 
   it("labels exposure by direction and size", () => {
     expect(deriveMissionStrip(exposed).exposureLabel).toBe("Long 0.5");
-    expect(deriveMissionStrip({ ...exposed, position: { size: -0.25 } }).exposureLabel).toBe(
-      "Short 0.25",
-    );
+    expect(
+      deriveMissionStrip({ ...exposed, position: { ...exposed.position, size: -0.25 } })
+        .exposureLabel,
+    ).toBe("Short 0.25");
     expect(deriveMissionStrip(armed).exposureLabel).toBe("Flat");
+  });
+
+  it("reads the position back while exposed, and the watch while flat", () => {
+    const open = deriveMissionStrip(exposed);
+    expect(open.detailPrimary).toBe("Entry 1,833.9 · Mark 1,859.5");
+    expect(open.detailSecondary).toBe("Unrealised +$12.80 · Protected");
+
+    const flat = deriveMissionStrip(armed);
+    expect(flat.detailPrimary).toBe("Waiting on ETH mark crosses above 1900");
+    expect(flat.detailSecondary).toBeNull();
+  });
+
+  it("says so when a flat mission has nothing left that can wake it", () => {
+    // A mission holding authority with no active watch is deaf. A blank slot
+    // would read as "fine", which is the one thing it is not.
+    const deaf = deriveMissionStrip({
+      ...armed,
+      watches: [{ ...priceWatch, status: "triggered" as const }],
+    });
+    expect(deaf.detailPrimary).toBe("No active watch");
+  });
+
+  it("distinguishes a covered stop from a partial one and from none", () => {
+    const partial = deriveMissionStrip({
+      ...exposed,
+      position: { ...exposed.position, protectedSize: 0.2 },
+    });
+    expect(partial.detailSecondary).toContain("Partially protected");
+
+    const none = deriveMissionStrip({
+      ...exposed,
+      position: { ...exposed.position, protectedSize: 0 },
+    });
+    expect(none.detailSecondary).toContain("Unprotected");
+  });
+
+  it("puts the blocked reason ahead of everything else the slot could say", () => {
+    const blocked = deriveMissionStrip({
+      ...exposed,
+      status: "blocked" as const,
+      blockedReason: "loss_budget_exhausted",
+    });
+    expect(blocked.detailPrimary).toBe("loss budget exhausted");
+  });
+
+  it("reports the immutable harness binding", () => {
+    expect(deriveMissionStrip(armed).harnessLabel).toBe("claude · available");
+  });
+});
+
+describe("composer controls", () => {
+  it("names the network only when the account id does", () => {
+    expect(describeTradingAccount("local-hyperliquid-testnet")).toBe("Hyperliquid · Testnet");
+    expect(describeTradingAccount("prod-hyperliquid-mainnet")).toBe("Hyperliquid · Mainnet");
+    // Guessing "mainnet" for an unlabelled account is the expensive direction.
+    expect(describeTradingAccount("account-7")).toBe("account-7");
+  });
+
+  it("states the grant and the ceiling on it", () => {
+    expect(describeMandate({ allocatedCapitalUsd: 1000, maximumCumulativeLossUsd: 350 })).toBe(
+      "$1,000 · max loss $350",
+    );
+  });
+
+  it("reports the control block rather than a permission model that does not exist", () => {
+    expect(describeEntryPermission({ entriesAllowed: true, reentryAllowed: true })).toBe(
+      "Entries allowed",
+    );
+    expect(describeEntryPermission({ entriesAllowed: true, reentryAllowed: false })).toBe(
+      "Entries allowed · no re-entry",
+    );
+    expect(describeEntryPermission({ entriesAllowed: false, reentryAllowed: true })).toBe(
+      "Entries paused",
+    );
+  });
+});
+
+describe("money and price formatting", () => {
+  it("signs a P&L and keeps its cents", () => {
+    expect(formatSignedUsd(41.62)).toBe("+$41.62");
+    expect(formatSignedUsd(-0.8)).toBe("-$0.80");
+    expect(formatSignedUsd(0)).toBe("$0.00");
+  });
+
+  it("keeps whatever precision the projection carried, up to two decimals", () => {
+    expect(formatPrice(119214)).toBe("119,214");
+    expect(formatPrice(1833.9)).toBe("1,833.9");
+    expect(formatPrice(0.06125)).toBe("0.06");
   });
 });
 
