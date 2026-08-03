@@ -305,8 +305,13 @@ describe("§14.3 mission tool contracts", () => {
       watches: [],
       control: mission.control,
       harness: mission.harness,
+      pendingExecutions: [
+        { cloid: "0xblocking", actionType: "open", status: "submitted", ageMillis: 45_000 },
+      ],
     });
     expect(decoded.watches).toEqual([]);
+    // The lock a `no_conflicting_execution_pending` rejection names.
+    expect(decoded.pendingExecutions[0]?.cloid).toBe("0xblocking");
   });
 });
 

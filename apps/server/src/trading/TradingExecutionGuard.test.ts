@@ -15,6 +15,7 @@
  * ExecutionReactorLoop.test.ts; they are skipped here rather than reimplemented
  * locally.
  */
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -25,6 +26,7 @@ import type { TradingLossBudget } from "@t3tools/trading-contracts/execution";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
 
+import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import {
   HyperliquidExecutionService,
@@ -88,6 +90,29 @@ const exhausted: TradingLossBudget = {
   remainingCumulativeLossUsd: 0,
   exhausted: true,
 };
+
+/**
+ * The guard over a real (in-memory) database, with a mission service whose
+ * transition answers however the case needs. `blockForExhaustion` is the only
+ * method that reads SQL and writes a transition, and its two failure paths are
+ * what these cases pin.
+ */
+const blockingLayer = (transition: Effect.Effect<never, Error>) =>
+  TradingExecutionGuardLive.pipe(
+    Layer.provideMerge(
+      Layer.succeed(TradingMissionService, {
+        transition: () => transition,
+      } as unknown as TradingMissionService["Service"]),
+    ),
+    Layer.provideMerge(stubExecution),
+    Layer.provideMerge(stubReconciler),
+    Layer.provideMerge(NodeSqliteClient.layerMemory()),
+    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.succeed(HyperliquidGateway, {} as HyperliquidGateway["Service"])),
+    Layer.provideMerge(
+      Layer.succeed(HyperliquidInfoClient, {} as HyperliquidInfoClient["Service"]),
+    ),
+  );
 
 layer("TradingExecutionGuard — §16.4 exhaustion enforcement", (it) => {
   it.effect("permits every action when the budget is NOT exhausted", () =>
@@ -182,6 +207,37 @@ layer("TradingExecutionGuard — §16.4 exhaustion enforcement", (it) => {
   it.skip("reduceOnlyClose — see ExecutionReactorLoop.test.ts (reduce-only IOC + close_did_not_flatten escalation)", () => {});
   it.skip("reduceOnlySized — see ExecutionReactorLoop.test.ts (requested size honoured, oversized reduce clamped, reduce-only forced onto the wire)", () => {});
 });
+
+/**
+ * `blockForExhaustion` used to answer both of its own failures with
+ * `budget_exhausted` — a SQL read that did not answer, and a mission that
+ * refused the transition. Neither is the budget saying no, and the harness
+ * acts on that word.
+ */
+it.effect("names an infrastructure failure as one, not as an exhausted budget", () =>
+  // The block's own bookkeeping read failing says nothing about the budget.
+  // Reported as `budget_exhausted` it sent the harness to wait for a ceiling
+  // to lift, inside a payload whose budget read `exhausted: false`.
+  Effect.gen(function* () {
+    const guard = yield* TradingExecutionGuard;
+    // No migrations here, so the orders read fails at the SQL layer.
+    const error = yield* Effect.flip(
+      guard.blockForExhaustion("mission_1", 1, "0x00000000000000000000000000000000000000ff"),
+    );
+    assert.equal(error.reason, "infrastructure_error");
+  }).pipe(Effect.provide(blockingLayer(Effect.succeed(undefined as never)))),
+);
+
+it.effect("names a refused transition as one, not as an exhausted budget", () =>
+  Effect.gen(function* () {
+    yield* runMigrations({ toMigrationInclusive: 43 });
+    const guard = yield* TradingExecutionGuard;
+    const error = yield* Effect.flip(
+      guard.blockForExhaustion("mission_1", 1, "0x00000000000000000000000000000000000000ff"),
+    );
+    assert.equal(error.reason, "transition_failed");
+  }).pipe(Effect.provide(blockingLayer(Effect.fail(new Error("version conflict"))))),
+);
 
 // ===========================================================================
 // The reduce-only error taxonomy.

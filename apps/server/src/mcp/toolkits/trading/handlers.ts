@@ -86,6 +86,10 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (mission: 
   const strategies = yield* TradingStrategyService;
   const strategy = yield* strategies.getCurrentStrategy(mission.id).pipe(Effect.orDie);
   const watches = yield* strategies.listWatches(mission.id).pipe(Effect.orDie);
+  const missions = yield* TradingMissionService;
+  // The same set preview item 16 refuses against, so a harness told
+  // `no_conflicting_execution_pending` can read what is holding the lock.
+  const pendingExecutions = yield* missions.listPendingExecutions(mission.id).pipe(Effect.orDie);
 
   return {
     mission,
@@ -96,6 +100,7 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (mission: 
     watches,
     control: mission.control,
     harness: mission.harness,
+    pendingExecutions,
   } satisfies TradingGetMissionResult;
 });
 
@@ -311,6 +316,7 @@ const handlers = {
       return yield* outcomes.awaitOutcome({
         missionId: input.missionId,
         executionSequence: input.intent.executionSequence,
+        actionType: input.intent.actionType,
         maximumCumulativeLossUsd: mission.authority.maximumCumulativeLossUsd,
         fallbackTakerFeeBpsPerSide: mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
         masterAddress,

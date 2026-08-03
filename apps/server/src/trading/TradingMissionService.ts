@@ -34,6 +34,7 @@ import {
   TradingMissionBlockedReason,
   TradingMissionControl,
   TradingMissionStatus,
+  TradingPendingExecution,
 } from "./Schemas.ts";
 
 export const CreateTradingMissionInput = Schema.Struct({
@@ -155,6 +156,17 @@ export interface TradingMissionServiceShape {
   readonly findMissionByThreadId: (
     threadId: string,
   ) => Effect.Effect<Option.Option<TradingMission>, PersistenceSqlError>;
+
+  /**
+   * The mission's mid-submission executions, oldest first.
+   *
+   * This is the set preview item 16 refuses a new intent against. Published so
+   * a harness told `no_conflicting_execution_pending` can read what is holding
+   * the lock and how stale it is, instead of only that something is.
+   */
+  readonly listPendingExecutions: (
+    missionId: string,
+  ) => Effect.Effect<ReadonlyArray<TradingPendingExecution>, PersistenceSqlError>;
 
   /**
    * The master-wallet address for the account a mission trades against.
@@ -295,6 +307,29 @@ const makeTradingMissionService = Effect.gen(function* () {
         return yield* new TradingMissionNotFoundError({ missionId });
       }
       return row.version;
+    });
+
+  const listPendingExecutions: TradingMissionServiceShape["listPendingExecutions"] = (missionId) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const rows = yield* sql<{
+        readonly cloid: string;
+        readonly action_type: string;
+        readonly status: string;
+        readonly updated_at: number;
+      }>`
+        SELECT cloid, action_type, status, updated_at FROM trading_execution_records
+        WHERE mission_id = ${missionId}
+          AND status IN ('previewed', 'reserved', 'signed', 'submitted')
+        ORDER BY updated_at ASC
+      `.pipe(Effect.mapError(sqlFail("listPendingExecutions")));
+
+      return rows.map((row) => ({
+        cloid: row.cloid,
+        actionType: row.action_type,
+        status: row.status,
+        ageMillis: Math.max(0, now - row.updated_at),
+      }));
     });
 
   const findMissionByThreadId: TradingMissionServiceShape["findMissionByThreadId"] = (threadId) =>
@@ -464,6 +499,7 @@ const makeTradingMissionService = Effect.gen(function* () {
     getMissionVersion,
     findActiveMission,
     findMissionByThreadId,
+    listPendingExecutions,
     getMasterWalletAddress,
   } satisfies TradingMissionServiceShape;
 });

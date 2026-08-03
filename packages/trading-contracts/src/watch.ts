@@ -59,6 +59,17 @@ export const PersistedWatchStatus = Schema.Literals([
 export type PersistedWatchStatus = typeof PersistedWatchStatus.Type;
 
 /**
+ * Who armed a watch.
+ *
+ * Absent means the harness armed it deliberately. `staleness_floor` means the
+ * runtime armed it because the mission would otherwise have had nothing left
+ * that could wake it — a wake from one of these is the cue that nothing crossed
+ * and the thesis is the thing to reconsider.
+ */
+export const WatchArmedReason = Schema.Literals(["staleness_floor"]);
+export type WatchArmedReason = typeof WatchArmedReason.Type;
+
+/**
  * A watch as persisted, bound to the strategy version that registered it -
  * spec §12.1.
  *
@@ -71,6 +82,7 @@ export const PersistedWatch = Schema.Struct({
   strategyVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(1)),
   watch: MarketWatch,
   status: PersistedWatchStatus,
+  armedReason: Schema.optional(WatchArmedReason),
   createdAt: UnixMillis,
   updatedAt: UnixMillis,
 });
@@ -119,24 +131,41 @@ export function readWatchCoverage(input: {
   readonly nowMillis: number;
   readonly floorMillis?: number;
 }): WatchCoverage {
-  const floor = input.floorMillis ?? WATCH_COVERAGE_FLOOR_MILLIS;
   const active = input.watches.filter((w) => w.status === "active");
 
   let coversUpside = false;
   let coversDownside = false;
-  let coversByReassessment = false;
 
   for (const persisted of active) {
     const watch = persisted.watch;
     if (watch.type === "price_cross" || watch.type === "candle_close") {
       if (watch.direction === "above" && watch.price >= input.markPrice) coversUpside = true;
       if (watch.direction === "below" && watch.price <= input.markPrice) coversDownside = true;
-    } else if (watch.type === "scheduled_reassessment") {
-      if (watch.runAt <= input.nowMillis + floor) coversByReassessment = true;
     }
   }
 
-  return { coversUpside, coversDownside, coversByReassessment };
+  return { coversUpside, coversDownside, coversByReassessment: hasReassessmentWithin(input) };
+}
+
+/**
+ * Whether an armed reassessment is due inside the floor.
+ *
+ * Split out of `readWatchCoverage` because a flat mission has no mark to
+ * measure levels against, and this is the only part of coverage that still
+ * means something without one.
+ */
+export function hasReassessmentWithin(input: {
+  readonly watches: ReadonlyArray<PersistedWatch>;
+  readonly nowMillis: number;
+  readonly floorMillis?: number;
+}): boolean {
+  const floor = input.floorMillis ?? WATCH_COVERAGE_FLOOR_MILLIS;
+  return input.watches.some(
+    (persisted) =>
+      persisted.status === "active" &&
+      persisted.watch.type === "scheduled_reassessment" &&
+      persisted.watch.runAt <= input.nowMillis + floor,
+  );
 }
 
 /**

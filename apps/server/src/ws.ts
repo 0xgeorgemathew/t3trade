@@ -70,6 +70,7 @@ import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
+import { TradingTurnCoordinator } from "./trading/TradingTurnCoordinator.ts";
 
 /** The `updatedAt` an empty mission snapshot reports. */
 const EPOCH_ISO = "1970-01-01T00:00:00.000Z";
@@ -348,6 +349,7 @@ const makeWsRpcLayer = (
       const crypto = yield* Crypto.Crypto;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       const tradingMissionProjection = yield* TradingMissionProjection;
+      const tradingTurnCoordinator = yield* TradingTurnCoordinator;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
       const keybindings = yield* Keybindings.Keybindings;
@@ -947,12 +949,40 @@ const makeWsRpcLayer = (
           );
         });
 
+      /**
+       * A plain turn start on a thread bound to a live trading mission goes
+       * through the trading wake path instead, so the operator's message
+       * arrives with a fresh mission snapshot and holds the decision lease
+       * rather than racing a watch-fired run. The coordinator answers `false`
+       * whenever it did not take the turn, and the ordinary dispatch runs.
+       */
+      const dispatchTurnStart = (
+        command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
+      ) =>
+        Effect.gen(function* () {
+          if (command.bootstrap) return yield* dispatchBootstrapTurnStart(command);
+
+          const routed = yield* tradingTurnCoordinator.requestUserMessageRun({
+            threadId: command.threadId,
+            text: command.message.text,
+          });
+          if (routed) return { sequence: yield* orchestrationEngine.latestSequence };
+
+          return yield* orchestrationEngine
+            .dispatch(command)
+            .pipe(
+              Effect.mapError((cause) =>
+                toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
+              ),
+            );
+        });
+
       const dispatchNormalizedCommand = (
         normalizedCommand: OrchestrationCommand,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
         const dispatchEffect =
-          normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
-            ? dispatchBootstrapTurnStart(normalizedCommand)
+          normalizedCommand.type === "thread.turn.start"
+            ? dispatchTurnStart(normalizedCommand)
             : orchestrationEngine
                 .dispatch(normalizedCommand)
                 .pipe(

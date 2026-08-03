@@ -68,6 +68,18 @@ export class TradingPreviewRejection extends Schema.TaggedErrorClass<TradingPrev
   }
 }
 
+/**
+ * An execution record that is mid-submission — written, not yet answered. One
+ * of these is what preview item 16 refuses a second submit sequence for.
+ */
+export interface PendingExecution {
+  readonly cloid: string;
+  readonly actionType: string;
+  readonly status: string;
+  /** How long it has sat in a non-terminal status. */
+  readonly ageMillis: number;
+}
+
 /** State the checklist inspects. All of it is already-reconciled truth. */
 export interface PreviewContext {
   readonly mission: TradingMission;
@@ -94,8 +106,15 @@ export interface PreviewContext {
   readonly bbo: MarketBestBidOffer;
   /** Account freshness observedAt (§13: 5s window). */
   readonly accountObservedAt: number;
-  /** Whether an execution for this mission is already in flight. */
-  readonly hasPendingExecution: boolean;
+  /**
+   * The mid-submission execution blocking this one, when there is one.
+   *
+   * A bare boolean made the rejection unactionable: the harness was told
+   * something conflicted without being told what, how old it was, or whether it
+   * was ever going to resolve. Naming the record is what lets it decide between
+   * waiting and asking for the blocker to be settled.
+   */
+  readonly pendingExecution: PendingExecution | null;
   /** Current loss-budget snapshot inputs (realised, open, pending). */
   readonly budget: Parameters<typeof evaluateLossBudget>[0];
   /**
@@ -337,13 +356,15 @@ const reservationsPlusProposedWithinBudget: Check = (intent, ctx) => {
       );
 };
 
-const noConflictingExecution: Check = (_intent, ctx) =>
-  !ctx.hasPendingExecution
-    ? Effect.void
-    : reject(
-        "no_conflicting_execution_pending",
-        "an execution for this mission is already in flight",
-      );
+const noConflictingExecution: Check = (_intent, ctx) => {
+  const blocking = ctx.pendingExecution;
+  if (blocking === null) return Effect.void;
+  return reject(
+    "no_conflicting_execution_pending",
+    `execution ${blocking.cloid} (${blocking.actionType}, ${blocking.status}) has been ` +
+      `in flight for ${Math.round(blocking.ageMillis / 1000)}s`,
+  );
+};
 
 /**
  * §16.3 item 17 / §17: the mandatory-stop gate, first of its two evaluations.

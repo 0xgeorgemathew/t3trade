@@ -164,7 +164,7 @@ const withMcpServer = <A, E>(
         `.pipe(Effect.asVoid, Effect.orDie);
       const httpClient = yield* HttpClient.HttpClient;
 
-      yield* runMigrations({ toMigrationInclusive: 36 }).pipe(Effect.provide(built), Effect.orDie);
+      yield* runMigrations({ toMigrationInclusive: 43 }).pipe(Effect.provide(built), Effect.orDie);
       yield* missions
         .createMission({
           missionId: MISSION_ID,

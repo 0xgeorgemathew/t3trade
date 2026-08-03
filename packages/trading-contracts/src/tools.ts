@@ -97,6 +97,22 @@ export const TradingGetMissionInput = Schema.Struct({
 });
 export type TradingGetMissionInput = typeof TradingGetMissionInput.Type;
 
+/**
+ * An execution this mission has written but the exchange has not yet answered.
+ *
+ * While one of these exists, preview item 16 refuses every new intent. The
+ * harness could previously see only the refusal, never the thing causing it,
+ * so the same summary is published here too.
+ */
+export const TradingPendingExecution = Schema.Struct({
+  cloid: Schema.String,
+  actionType: Schema.String,
+  status: Schema.String,
+  /** How long it has sat in a non-terminal status, in milliseconds. */
+  ageMillis: Schema.Number,
+});
+export type TradingPendingExecution = typeof TradingPendingExecution.Type;
+
 /** Current mission, authority, strategy, watches, and control flags. */
 export const TradingGetMissionResult = Schema.Struct({
   mission: TradingMission,
@@ -107,6 +123,8 @@ export const TradingGetMissionResult = Schema.Struct({
   watches: Schema.Array(PersistedWatch),
   control: TradingMissionControl,
   harness: TradingHarnessBinding,
+  /** Executions written but not yet answered — what a lock rejection means. */
+  pendingExecutions: Schema.Array(TradingPendingExecution),
 });
 export type TradingGetMissionResult = typeof TradingGetMissionResult.Type;
 
@@ -186,7 +204,29 @@ export const TradingRequestEntryResult = Schema.Struct({
    * generic internal error, hiding the refusal reason it most needed to read.
    */
   executionId: Schema.optional(TradingId),
-  status: Schema.Literals(["submitted", "accepted", "rejected"]),
+  /**
+   * What actually became of the request.
+   *
+   * Mirrors the persisted execution record's own status rather than
+   * flattening it: `accepted` used to be reported for a record that had been
+   * cancelled or had failed, which tells the harness it has a live order when
+   * it has none.
+   *
+   * - `submitted` — still in flight when the tool stopped waiting;
+   * - `accepted` — acknowledged and resting on the book;
+   * - `filled`, `cancelled`, `rejected`, `failed` — the record's terminal word;
+   * - `succeeded` — a deterministic action with no order of its own (a
+   *   `cancel`, a `modify_stop`) that did what it was asked.
+   */
+  status: Schema.Literals([
+    "submitted",
+    "accepted",
+    "filled",
+    "cancelled",
+    "rejected",
+    "failed",
+    "succeeded",
+  ]),
   cloid: Schema.String,
   orderResults: Schema.Array(Schema.Unknown),
   budget: Schema.Struct({
@@ -203,6 +243,14 @@ export const TradingRequestEntryResult = Schema.Struct({
    * those apart cannot decide what to do next.
    */
   detail: Schema.optional(Schema.String),
+  /**
+   * Signed canonical position size after a `reduce` or `close`, read from the
+   * reconciled snapshot the post-submit convergence wrote.
+   *
+   * A scale-out that reports only "accepted" leaves the harness to guess how
+   * much it still holds, and the guess is what it then sizes its stop against.
+   */
+  remainingSize: Schema.optional(Schema.Number),
 });
 export type TradingRequestEntryResult = typeof TradingRequestEntryResult.Type;
 

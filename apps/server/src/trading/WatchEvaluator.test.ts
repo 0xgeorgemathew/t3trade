@@ -96,7 +96,7 @@ const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   // Through 40: `trading_orders` arrives in 038, and the `order_update` watch
   // reads it.
-  yield* runMigrations({ toMigrationInclusive: 40 });
+  yield* runMigrations({ toMigrationInclusive: 43 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
@@ -421,6 +421,42 @@ layer("WatchEvaluator", (it) => {
       const strategies = yield* TradingStrategyService;
       const persisted = (yield* strategies.listWatches("mission_1")).find((w) => w.id === watch.id);
       assert.equal(persisted?.status, "triggered");
+    }),
+  );
+
+  /**
+   * The baseline a differential watch compares against used to live in a
+   * process-local Map, so a restart forgot it and re-seeded from whatever was
+   * current — swallowing exactly the change that happened while the server was
+   * down. The baseline is on the watch row now, so a fresh evaluator picks up
+   * where the last one left off.
+   */
+  it.effect("fires on the first change after a restart, having kept its baseline", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* writePosition(0.5, 3_000);
+      yield* seed({ type: "position_update", market: "ETH" });
+      yield* TestClock.setTime(NOW);
+
+      // The evaluator that was running before the restart records the baseline.
+      const before = yield* WatchEvaluator;
+      yield* before.sweep;
+      yield* before.drain;
+      const inbox = yield* TradingEventInbox;
+      assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+
+      // The position moves while nothing is watching, and a fresh evaluator —
+      // same database, empty in-memory state — comes up.
+      yield* writePosition(1.25, 3_010);
+      yield* Effect.gen(function* () {
+        const restarted = yield* WatchEvaluator;
+        yield* restarted.sweep;
+        yield* restarted.drain;
+      }).pipe(Effect.provide(WatchEvaluatorLive));
+
+      const claimed = yield* inbox.claimPending("mission_1");
+      assert.equal(claimed.length, 1);
+      assert.equal(claimed[0]?.category, "market");
     }),
   );
 

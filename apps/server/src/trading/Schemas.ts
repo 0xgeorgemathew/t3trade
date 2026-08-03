@@ -71,6 +71,7 @@ export {
   TRADING_PUBLISH_MOMENTUM_STRATEGY_TOOL,
   TradingGetMissionInput,
   TradingGetMissionResult,
+  TradingPendingExecution,
   TradingPublishMomentumStrategyInput,
   TradingPublishMomentumStrategyResult,
   TradingToolRejectedError,

@@ -21,7 +21,7 @@ import { TradingRequestEntryResult } from "@t3tools/trading-contracts/tools";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
-import { executionRefusedKey } from "./ExecutionRefusal.ts";
+import { executionRefusedKey, executionSettledKey } from "./ExecutionRefusal.ts";
 import { TradingBudgetReaderLive } from "./TradingBudgetReader.ts";
 import { TradingEventInbox, TradingEventInboxLive } from "./TradingEventInbox.ts";
 import {
@@ -57,6 +57,7 @@ const migrated = Effect.gen(function* () {
   yield* runMigrations();
   yield* sql`DELETE FROM trading_execution_records`;
   yield* sql`DELETE FROM trading_event_inbox`;
+  yield* sql`DELETE FROM trading_position_snapshots`;
 });
 
 /**
@@ -74,13 +75,14 @@ const encodeForHarness = Schema.encodeUnknownSync(TradingRequestEntryResult);
 const input: AwaitOutcomeInput = {
   missionId: MISSION_ID,
   executionSequence: 0,
+  actionType: "open",
   maximumCumulativeLossUsd: 5,
   fallbackTakerFeeBpsPerSide: 5,
   masterAddress: "0x000000000000000000000000000000000000beef",
 };
 
 /** An execution record in a terminal status, as the submit path would leave it. */
-const insertRecord = (status: string) =>
+const insertRecord = (status: string, actionType = "open") =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
@@ -89,11 +91,23 @@ const insertRecord = (status: string) =>
         cloid, idempotency_key, market, side, size, limit_price, time_in_force,
         reduce_only, signer_address, status, order_results_json, created_at, updated_at
       ) VALUES (
-        'exec-1', ${MISSION_ID}, 1, 0, 'open',
+        'exec-1', ${MISSION_ID}, 1, 0, ${actionType},
         '0xcloid', ${`idem-${status}`}, 'ETH', 'buy', 0.5, 3001, 'ioc',
         0, '0x00000000000000000000000000000000000000ff', ${status},
         '[{"status":"filled"}]', 1000, 1000
       )
+    `;
+  });
+
+/** The reconciled position the ack for a reduce reports what is left of. */
+const writePosition = (size: number) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO trading_position_snapshots (
+        mission_id, market, size, entry_price, unrealised_pnl,
+        margin_used, protected_size, observed_at
+      ) VALUES (${MISSION_ID}, 'ETH', ${size}, 3000, 0, 10, ${size}, 1000)
     `;
   });
 
@@ -105,12 +119,12 @@ layer("TradingExecutionOutcome", (it) => {
 
       const outcome = yield* (yield* TradingExecutionOutcome).awaitOutcome(input);
 
-      assert.equal(outcome.status, "accepted");
+      // The record's own word, not a flattening of it: "accepted" for a filled
+      // record cannot say whether the order filled or is still resting.
+      assert.equal(outcome.status, "filled");
       assert.equal(outcome.executionId, "exec-1");
       assert.equal(outcome.cloid, "0xcloid");
       assert.equal(outcome.orderResults.length, 1);
-      // `detail` carries the record's own status: "accepted" alone cannot say
-      // whether the order filled or is resting.
       assert.equal(outcome.detail, "filled");
     }),
   );
@@ -125,6 +139,100 @@ layer("TradingExecutionOutcome", (it) => {
       assert.equal(outcome.status, "rejected");
       assert.equal(outcome.detail, "rejected");
     }),
+  );
+
+  it.effect("reports a cancelled record as cancelled, never as accepted", () =>
+    // A record the exchange resolved by removing the order from the book. Read
+    // as "accepted", it tells the harness it still has a live order.
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* insertRecord("cancelled");
+
+      const outcome = yield* (yield* TradingExecutionOutcome).awaitOutcome(input);
+
+      assert.equal(outcome.status, "cancelled");
+      assert.doesNotThrow(() => encodeForHarness(outcome));
+    }),
+  );
+
+  it.effect("reports a failed record as failed", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* insertRecord("failed");
+
+      const outcome = yield* (yield* TradingExecutionOutcome).awaitOutcome(input);
+
+      assert.equal(outcome.status, "failed");
+      assert.doesNotThrow(() => encodeForHarness(outcome));
+    }),
+  );
+
+  it.effect("states what remains after a reduce", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* insertRecord("filled", "reduce");
+      yield* writePosition(0.25);
+
+      const outcome = yield* (yield* TradingExecutionOutcome).awaitOutcome({
+        ...input,
+        actionType: "reduce",
+      });
+
+      assert.equal(outcome.status, "filled");
+      assert.equal(outcome.remainingSize, 0.25);
+      assert.doesNotThrow(() => encodeForHarness(outcome));
+    }),
+  );
+
+  it.effect("answers a cancel from its recorded settlement", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* (yield* TradingEventInbox).persist({
+        missionId: MISSION_ID,
+        category: "system",
+        deduplicationKey: executionSettledKey(0),
+        payload: {},
+        occurredAt: 1_000,
+        summary: "order 0xabc cancelled",
+      });
+
+      const outcome = yield* (yield* TradingExecutionOutcome).awaitOutcome({
+        ...input,
+        actionType: "cancel",
+      });
+
+      assert.equal(outcome.status, "succeeded");
+      assert.equal(outcome.detail, "order 0xabc cancelled");
+    }),
+  );
+
+  it.effect(
+    "answers a stop move from its recorded settlement, without waiting out the deadline",
+    () =>
+      // `cancel` and `modify_stop` write no execution record, so this inbox row
+      // is the only thing that can answer them. Without it the tool polled for a
+      // full twenty seconds and then reported an action that had already
+      // succeeded as "still in flight".
+      Effect.gen(function* () {
+        yield* migrated;
+        yield* (yield* TradingEventInbox).persist({
+          missionId: MISSION_ID,
+          category: "system",
+          deduplicationKey: executionSettledKey(0),
+          payload: {},
+          occurredAt: 1_000,
+          summary: "stop moved to 2950; 0.05 of the position is confirmed protected",
+        });
+
+        const outcome = yield* (yield* TradingExecutionOutcome).awaitOutcome({
+          ...input,
+          actionType: "modify_stop",
+        });
+
+        assert.equal(outcome.status, "succeeded");
+        assert.match(outcome.detail ?? "", /stop moved to 2950/);
+        assert.doesNotThrow(() => encodeForHarness(outcome));
+      }),
   );
 
   it.effect("reports the recorded reason when the request was refused before signing", () =>

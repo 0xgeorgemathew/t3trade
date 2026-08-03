@@ -28,7 +28,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { TradingBudgetReader } from "./TradingBudgetReader.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
-import { executionRefusedKey } from "./ExecutionRefusal.ts";
+import { executionRefusedKey, executionSettledKey } from "./ExecutionRefusal.ts";
 
 /**
  * How long the tool waits for the reactor to conclude.
@@ -44,6 +44,8 @@ const POLL_INTERVAL_MS = 250;
 export interface AwaitOutcomeInput {
   readonly missionId: string;
   readonly executionSequence: number;
+  /** The intent's action type, which decides where the answer will be found. */
+  readonly actionType: string;
   readonly maximumCumulativeLossUsd: number;
   readonly fallbackTakerFeeBpsPerSide: number;
   readonly masterAddress: string;
@@ -64,21 +66,23 @@ const decodeOrderResultsJson = Schema.decodeUnknownSync(OrderResultsJson);
 interface RecordRow {
   readonly execution_id: string;
   readonly cloid: string;
+  readonly action_type: string;
   readonly status: string;
   readonly order_results_json: string;
 }
 
 /**
- * Statuses the record passes through on the way to the exchange. A record
- * sitting at one of these has been written but not yet answered, so it is not
- * a conclusion to report.
+ * The record statuses `TradingRequestEntryResult` reports verbatim. Anything
+ * else would be a status the wire contract has no word for, and the honest
+ * answer for one of those is "still in flight".
  */
-const IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set([
-  "previewed",
-  "reserved",
-  "signed",
-  "submitted",
-]);
+const REPORTABLE_STATUSES = new Set(["accepted", "filled", "cancelled", "rejected", "failed"]);
+
+/** The two actions that place no order of their own (see `executionSettledKey`). */
+const DETERMINISTIC_ACTIONS = new Set(["cancel", "modify_stop"]);
+
+/** The actions whose ack states what is left of the position. */
+const REDUCING_ACTIONS = new Set(["reduce", "close"]);
 
 const make = Effect.gen(function* () {
   const inbox = yield* TradingEventInbox;
@@ -90,7 +94,7 @@ const make = Effect.gen(function* () {
   const findRecord = (missionId: string, executionSequence: number) =>
     Effect.gen(function* () {
       const rows = yield* sql<RecordRow>`
-        SELECT execution_id, cloid, status, order_results_json
+        SELECT execution_id, cloid, action_type, status, order_results_json
         FROM trading_execution_records
         WHERE mission_id = ${missionId} AND execution_sequence = ${executionSequence}
         ORDER BY updated_at DESC
@@ -104,6 +108,25 @@ const make = Effect.gen(function* () {
     inbox
       .findSummary(missionId, executionRefusedKey(executionSequence))
       .pipe(Effect.orElseSucceed(() => null));
+
+  /** What a deterministic action (cancel, modify_stop) did, once it is done. */
+  const findSettlement = (missionId: string, executionSequence: number) =>
+    inbox
+      .findSummary(missionId, executionSettledKey(executionSequence))
+      .pipe(Effect.orElseSucceed(() => null));
+
+  /**
+   * What the mission still holds, from the snapshot the post-submit reconcile
+   * wrote. Only meaningful for a `reduce`/`close`, which is the only place it
+   * is read.
+   */
+  const readRemainingSize = (missionId: string) =>
+    sql<{ readonly size: number }>`
+      SELECT size FROM trading_position_snapshots WHERE mission_id = ${missionId}
+    `.pipe(
+      Effect.map((rows) => rows[0]?.size ?? 0),
+      Effect.orElseSucceed(() => 0),
+    );
 
   const readBudget = (input: AwaitOutcomeInput) =>
     Effect.gen(function* () {
@@ -139,15 +162,35 @@ const make = Effect.gen(function* () {
 
       for (let attempt = 0; attempt < deadline; attempt++) {
         const record = yield* findRecord(input.missionId, input.executionSequence);
-        if (record !== null && !IN_FLIGHT_STATUSES.has(record.status)) {
+        if (record !== null && REPORTABLE_STATUSES.has(record.status)) {
+          const reducing = REDUCING_ACTIONS.has(record.action_type);
           return {
             executionId: record.execution_id,
-            status: record.status === "rejected" ? ("rejected" as const) : ("accepted" as const),
+            // The record's own word for what happened. Reporting a cancelled
+            // or failed execution as `accepted` told the harness it held a
+            // resting order it did not have.
+            status: record.status as "accepted" | "filled" | "cancelled" | "rejected" | "failed",
             cloid: record.cloid,
             orderResults: decodeOrderResults(record.order_results_json),
             budget: yield* readBudget(input),
             detail: record.status,
+            ...(reducing ? { remainingSize: yield* readRemainingSize(input.missionId) } : {}),
           };
+        }
+
+        // A `cancel` or a `modify_stop` writes no record; the reactor records
+        // what it did in the inbox instead.
+        if (DETERMINISTIC_ACTIONS.has(input.actionType)) {
+          const settled = yield* findSettlement(input.missionId, input.executionSequence);
+          if (settled !== null) {
+            return {
+              status: "succeeded" as const,
+              cloid: "",
+              orderResults: [],
+              budget: yield* readBudget(input),
+              detail: settled.summary,
+            };
+          }
         }
 
         const refusal = yield* findRefusal(input.missionId, input.executionSequence);
