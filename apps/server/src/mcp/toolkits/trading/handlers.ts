@@ -48,7 +48,7 @@ const rejectCall = (input: {
     | "thread_not_bound_to_mission"
     | "mission_not_bound_to_thread";
   readonly threadId: string;
-  readonly missionId: string;
+  readonly missionId: string | undefined;
 }) =>
   Effect.logInfo("trading tool call rejected", input).pipe(
     Effect.andThen(new TradingToolRejectedError(input)),
@@ -61,10 +61,10 @@ const rejectCall = (input: {
  * freezes one active mission onto one provider thread, so the thread carried by
  * the credential — not an argument the harness supplies — decides which mission
  * is reachable. A `missionId` argument is checked against that binding rather
- * than trusted.
+ * than trusted; an omitted `missionId` resolves to the bound mission.
  */
 const resolveBoundCall = Effect.fn("TradingToolkit.resolveBoundCall")(function* (
-  missionId: string,
+  missionId: string | undefined,
 ): Effect.fn.Return<
   BoundCall,
   TradingToolRejectedError,
@@ -91,7 +91,9 @@ const resolveBoundCall = Effect.fn("TradingToolkit.resolveBoundCall")(function* 
     });
   }
 
-  if (bound.value.id !== missionId) {
+  // Omitting `missionId` resolves to the bound mission. Naming a different one
+  // is still a mismatch the harness has to be told about explicitly.
+  if (missionId !== undefined && bound.value.id !== missionId) {
     return yield* rejectCall({
       reason: "mission_not_bound_to_thread",
       threadId: scope.threadId,
@@ -114,7 +116,7 @@ const resolveBoundCall = Effect.fn("TradingToolkit.resolveBoundCall")(function* 
  * tool would still refuse on.
  */
 const resolveReadCall = Effect.fn("TradingToolkit.resolveReadCall")(function* (
-  missionId: string,
+  missionId: string | undefined,
 ): Effect.fn.Return<
   { readonly threadId: string; readonly mission: TradingMission | null },
   TradingToolRejectedError,
@@ -325,9 +327,9 @@ const handlers = {
     Effect.gen(function* () {
       const call = yield* resolveReadCall(input.missionId);
       if (call.mission === null) return yield* readUnboundMission(call.threadId);
-      // A live mission on this thread that is not the one named is still a
-      // mismatch, not an unbound read.
-      if (call.mission.id !== input.missionId) {
+      // Omitting `missionId` resolves to the bound mission. Naming a different
+      // one is still a mismatch, not an unbound read.
+      if (input.missionId !== undefined && call.mission.id !== input.missionId) {
         return yield* rejectCall({
           reason: "mission_not_bound_to_thread",
           threadId: call.threadId,
@@ -339,9 +341,12 @@ const handlers = {
 
   trading_publish_momentum_strategy: (input) =>
     Effect.gen(function* () {
-      const { threadId } = yield* resolveBoundCall(input.missionId);
+      const { threadId, mission } = yield* resolveBoundCall(input.missionId);
+      // The strategy service keys off `input.missionId`; resolve it to the bound
+      // mission so an omitted `missionId` reaches the publish path.
+      const resolvedInput = { ...input, missionId: mission.id };
       const strategies = yield* TradingStrategyService;
-      const published = yield* strategies.publishMomentumStrategy(input).pipe(
+      const published = yield* strategies.publishMomentumStrategy(resolvedInput).pipe(
         Effect.catchTags({
           // The mission was resolved a moment ago, so a miss here means it was
           // deleted mid-call. Report it as a rejection rather than a defect.
@@ -349,7 +354,7 @@ const handlers = {
             new TradingToolRejectedError({
               reason: "mission_not_found",
               threadId,
-              missionId: input.missionId,
+              missionId: mission.id,
             }),
           PersistenceSqlError: (error) => Effect.die(error),
         }),
@@ -361,11 +366,11 @@ const handlers = {
       if (published.outcome === "accepted") {
         yield* announceStrategyPublished({
           threadId,
-          missionId: input.missionId,
+          missionId: mission.id,
           strategyVersion: published.strategyVersion,
           supersededWatchIds: published.supersededWatchIds,
         });
-        yield* announceMissionStatus({ threadId, missionId: input.missionId });
+        yield* announceMissionStatus({ threadId, missionId: mission.id });
       }
 
       return published;
@@ -383,7 +388,7 @@ const handlers = {
           type: "trading.execution.requested",
           commandId: CommandId.make(commandId),
           threadId: ThreadId.make(threadId),
-          missionId: TradingMissionId.make(input.missionId),
+          missionId: TradingMissionId.make(mission.id),
           intent: input.intent,
           expectedAuthorityVersion: input.expectedAuthorityVersion,
           activeHarnessRunId: input.activeHarnessRunId,
@@ -402,7 +407,7 @@ const handlers = {
         .pipe(Effect.orDie);
 
       return yield* outcomes.awaitOutcome({
-        missionId: input.missionId,
+        missionId: mission.id,
         executionSequence: input.intent.executionSequence,
         actionType: input.intent.actionType,
         maximumCumulativeLossUsd: mission.authority.maximumCumulativeLossUsd,
@@ -506,22 +511,22 @@ const handlers = {
 
   trading_register_watch: (input) =>
     Effect.gen(function* () {
-      const { threadId } = yield* resolveBoundCall(input.missionId);
+      const { threadId, mission } = yield* resolveBoundCall(input.missionId);
       const watches = yield* TradingWatchService;
-      const watch = yield* watches.registerWatch(input).pipe(
+      const watch = yield* watches.registerWatch({ ...input, missionId: mission.id }).pipe(
         Effect.catchTags({
           TradingMissionNotFoundError: () =>
             new TradingToolRejectedError({
               reason: "mission_not_found",
               threadId,
-              missionId: input.missionId,
+              missionId: mission.id,
             }),
           PersistenceSqlError: (error) => Effect.die(error),
         }),
       );
       yield* announceWatchRegistered({
         threadId,
-        missionId: input.missionId,
+        missionId: mission.id,
         watch,
       });
       return watch;
@@ -529,13 +534,13 @@ const handlers = {
 
   trading_schedule_reassessment: (input) =>
     Effect.gen(function* () {
-      const { threadId } = yield* resolveBoundCall(input.missionId);
+      const { threadId, mission } = yield* resolveBoundCall(input.missionId);
       const watches = yield* TradingWatchService;
       // A scheduled reassessment is a watch of type `scheduled_reassessment`;
       // it rides the same register/announce path as any other watch.
       const watch = yield* watches
         .registerWatch({
-          missionId: input.missionId,
+          missionId: mission.id,
           watch: { type: "scheduled_reassessment", runAt: input.runAt },
         })
         .pipe(
@@ -544,14 +549,14 @@ const handlers = {
               new TradingToolRejectedError({
                 reason: "mission_not_found",
                 threadId,
-                missionId: input.missionId,
+                missionId: mission.id,
               }),
             PersistenceSqlError: (error) => Effect.die(error),
           }),
         );
       yield* announceWatchRegistered({
         threadId,
-        missionId: input.missionId,
+        missionId: mission.id,
         watch,
       });
       return watch;
@@ -559,11 +564,11 @@ const handlers = {
 
   trading_list_watches: (input) =>
     Effect.gen(function* () {
-      yield* resolveBoundCall(input.missionId);
+      const { mission } = yield* resolveBoundCall(input.missionId);
       // listWatches lives on TradingStrategyService (the mission read model
       // reads watches through it).
       const strategies = yield* TradingStrategyService;
-      return yield* strategies.listWatches(input.missionId).pipe(
+      return yield* strategies.listWatches(mission.id).pipe(
         Effect.catchTags({
           PersistenceSqlError: (error) => Effect.die(error),
         }),
@@ -572,19 +577,21 @@ const handlers = {
 
   trading_cancel_watch: (input) =>
     Effect.gen(function* () {
-      const { threadId } = yield* resolveBoundCall(input.missionId);
+      const { threadId, mission } = yield* resolveBoundCall(input.missionId);
       const watches = yield* TradingWatchService;
-      const cancelled = yield* watches.cancelWatch(input).pipe(
-        Effect.catchTags({
-          TradingMissionNotFoundError: () =>
-            new TradingToolRejectedError({
-              reason: "mission_not_found",
-              threadId,
-              missionId: input.missionId,
-            }),
-          PersistenceSqlError: (error) => Effect.die(error),
-        }),
-      );
+      const cancelled = yield* watches
+        .cancelWatch({ missionId: mission.id, watchId: input.watchId })
+        .pipe(
+          Effect.catchTags({
+            TradingMissionNotFoundError: () =>
+              new TradingToolRejectedError({
+                reason: "mission_not_found",
+                threadId,
+                missionId: mission.id,
+              }),
+            PersistenceSqlError: (error) => Effect.die(error),
+          }),
+        );
       if (cancelled === null) {
         // Distinguish "no such watch" from "watch exists but is terminal".
         const existing = yield* watches.getWatch(input.watchId).pipe(Effect.orDie);
@@ -595,7 +602,7 @@ const handlers = {
       }
       yield* announceWatchCancelled({
         threadId,
-        missionId: input.missionId,
+        missionId: mission.id,
         watchId: input.watchId,
       });
       return { outcome: "cancelled" as const, watch: cancelled };

@@ -116,17 +116,21 @@ const makeTradingStrategyService = Effect.gen(function* () {
 
   const publishMomentumStrategy: TradingStrategyServiceShape["publishMomentumStrategy"] = (input) =>
     Effect.gen(function* () {
+      // `missionId` is optional on the wire input but the handler always
+      // resolves it to the bound mission's id before calling, so by the time
+      // the publish path runs it is a concrete string.
+      const missionId = input.missionId as string;
       const missions = yield* sql<{
         readonly status: string;
         readonly strategy_version: number;
       }>`
         SELECT status, strategy_version FROM trading_missions
-        WHERE mission_id = ${input.missionId}
+        WHERE mission_id = ${missionId}
       `.pipe(Effect.mapError(sqlFail("publish:readMission")));
 
       const mission = missions[0];
       if (mission === undefined) {
-        return yield* new TradingMissionNotFoundError({ missionId: input.missionId });
+        return yield* new TradingMissionNotFoundError({ missionId });
       }
 
       const status = decodeMissionStatus(mission.status);
@@ -156,7 +160,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
 
       yield* sql`
         INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
-        VALUES (${input.missionId}, ${version}, ${encodeStrategyJson(strategy)}, ${now})
+        VALUES (${missionId}, ${version}, ${encodeStrategyJson(strategy)}, ${now})
       `.pipe(Effect.mapError(sqlFail("publish:insertStrategy")));
 
       // §11.3: publishing a new strategy supersedes the active watches of the
@@ -164,7 +168,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
       // consumed, cancelled, and expired watches keep their terminal status.
       const superseded = yield* sql<{ readonly watch_id: string }>`
         SELECT watch_id FROM trading_watches
-        WHERE mission_id = ${input.missionId}
+        WHERE mission_id = ${missionId}
           AND status = 'active'
           AND strategy_version < ${version}
       `.pipe(Effect.mapError(sqlFail("publish:selectSuperseded")));
@@ -172,7 +176,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
       yield* sql`
         UPDATE trading_watches
         SET status = 'superseded', version = version + 1, updated_at = ${now}
-        WHERE mission_id = ${input.missionId}
+        WHERE mission_id = ${missionId}
           AND status = 'active'
           AND strategy_version < ${version}
       `.pipe(Effect.mapError(sqlFail("publish:supersedeWatches")));
@@ -194,7 +198,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
             status = CASE WHEN status = 'analysing' THEN 'waiting' ELSE status END,
             version = version + 1,
             updated_at = ${now}
-        WHERE mission_id = ${input.missionId} AND strategy_version = ${input.expectedVersion}
+        WHERE mission_id = ${missionId} AND strategy_version = ${input.expectedVersion}
       `.pipe(Effect.mapError(sqlFail("publish:bumpMission")));
 
       return {

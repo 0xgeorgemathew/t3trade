@@ -441,3 +441,86 @@ it.effect("registers a watch before the first strategy publish with strategyVers
     }),
   ),
 );
+
+it.effect("resolves an omitted missionId to the bound mission for a read tool", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      // Omitting `missionId` entirely: the call resolves to the one mission the
+      // thread is bound to, exactly as naming it would.
+      const omitted = yield* callTool(BOUND_THREAD, "trading_get_mission", {});
+      assert.equal(omitted.result.isError, false);
+      assert.equal(omitted.result.structuredContent.mission.id, MISSION_ID);
+    }),
+  ),
+);
+
+it.effect("resolves an omitted missionId to the bound mission for a write tool", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      // A publish with no `missionId` reaches the bound mission and increments
+      // its strategy version, just as a publish that named it would.
+      const published = yield* callTool(BOUND_THREAD, "trading_publish_momentum_strategy", {
+        expectedVersion: 0,
+        strategy: strategyBody("no missionId supplied"),
+      });
+      assert.equal(published.result.isError, false);
+      assert.equal(published.result.structuredContent.outcome, "accepted");
+      assert.equal(published.result.structuredContent.strategyVersion, 1);
+
+      // The bound mission now carries the published strategy.
+      const after = yield* callTool(BOUND_THREAD, "trading_get_mission", {});
+      assert.equal(after.result.structuredContent.strategyVersion, 1);
+      assert.equal(after.result.structuredContent.strategy.name, "no missionId supplied");
+    }),
+  ),
+);
+
+it.effect("still rejects a wrong missionId with mission_not_bound_to_thread", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      // An explicit `missionId` that does not match the bound mission is still a
+      // firm refusal — making the argument optional did not make it trusted.
+      const wrong = yield* callTool(BOUND_THREAD, "trading_get_mission", {
+        missionId: "mission_belonging_to_someone_else",
+      });
+      assert.equal(wrong.result.isError, true);
+      assert.deepStrictEqual(wrong.result.content, [
+        {
+          type: "text",
+          text: `TradingToolRejectedError: mission_not_bound_to_thread (thread=${BOUND_THREAD}, mission=mission_belonging_to_someone_else)`,
+        },
+      ]);
+    }),
+  ),
+);
+
+it.effect("decodes a prose-string exit condition and round-trips it as the object shape", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      // A bare prose string where the schema asked for `{ description }` used to
+      // fail the whole publish. The lenient input union decodes it to the object
+      // shape, and the persisted strategy carries the object back out.
+      const strategyBodyWithProseExit = {
+        ...strategyBody("prose exit condition"),
+        exitConditions: ["Exit if a finalized 1m candle closes back above 1865.9."],
+      };
+      const published = yield* callTool(BOUND_THREAD, "trading_publish_momentum_strategy", {
+        missionId: MISSION_ID,
+        expectedVersion: 0,
+        strategy: strategyBodyWithProseExit,
+      });
+      assert.equal(published.result.isError, false);
+      assert.equal(published.result.structuredContent.outcome, "accepted");
+
+      const after = yield* callTool(BOUND_THREAD, "trading_get_mission", {
+        missionId: MISSION_ID,
+      });
+      const exitConditions = after.result.structuredContent.strategy.exitConditions;
+      assert.equal(exitConditions.length, 1);
+      // The persisted/encoded form is the object shape, not the bare string.
+      assert.deepStrictEqual(exitConditions[0], {
+        description: "Exit if a finalized 1m candle closes back above 1865.9.",
+      });
+    }),
+  ),
+);

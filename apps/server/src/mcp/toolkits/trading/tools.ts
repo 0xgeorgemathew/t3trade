@@ -80,7 +80,8 @@ export const TradingGetMissionTool = Tool.make("trading_get_mission", {
     "Read the current state of the trading mission this agent session is bound to: status, mandate (authority and risk policy), the published momentum strategy and its version, registered watches, the user's control flags, and any executions still in flight. Call this at the start of every turn before deciding anything. " +
     "The mandate is the user's hard rails, not a balance: `authority.allocatedCapitalUsd` and the maximums derived from it are ceilings you may never exceed, and they do not move when the account value does. What is actually free to trade right now is `accountSnapshot.withdrawable` from trading_get_account_state. Sizing within the rails, against the live balance, is your judgement to exercise. " +
     "`pendingExecutions[]` is the lock behind the `no_conflicting_execution_pending` refusal: while any entry is listed there, trading_request_entry refuses every new intent. Each entry names the cloid, the action, its status, and how long it has sat there. " +
-    "When the mission this thread held has ended, this returns `bound: false` instead of failing — with `lastMission` (its terminal status is the answer to what happened) and `activeMissionId` when a newer mission holds the slot. Market reads keep working on an unbound thread; nothing that writes does.",
+    "When the mission this thread held has ended, this returns `bound: false` instead of failing — with `lastMission` (its terminal status is the answer to what happened) and `activeMissionId` when a newer mission holds the slot. Market reads keep working on an unbound thread; nothing that writes does. " +
+    "`missionId` is optional — omit it and the call acts on the mission this session is bound to.",
   parameters: TradingGetMissionInput,
   success: TradingGetMissionResult,
   failure: TradingToolRejectedError,
@@ -96,7 +97,8 @@ export const TradingPublishMomentumStrategyTool = Tool.make("trading_publish_mom
   description:
     "Publish the momentum strategy this mission should now be executed against. Supply expectedVersion as the strategy version you read from trading_get_mission (0 before any publish). A stale expectedVersion is rejected with the server's current version and leaves the published strategy untouched; an accepted publish increments the version and supersedes the watches registered by the previous one — re-arm the watches you still want, and cancel any resting order from the old thesis with trading_request_entry actionType `cancel`, which a publish does not touch. " +
     "This is also how you switch strategies: republish at the next version with a different mode or direction when the thesis fails or the market goes stale. " +
-    "Every entry in `strategy.entryPlan.conditions[]` REQUIRES a non-empty `description` — the prose conclusion is the field that matters; `timeframe`, `priceLevel`, and `invalidatedBy` are optional display hints. A conditions entry without a description is rejected.",
+    "Every entry in `strategy.entryPlan.conditions[]` REQUIRES a non-empty `description` — the prose conclusion is the field that matters; `timeframe`, `priceLevel`, and `invalidatedBy` are optional display hints. A conditions entry without a description is rejected. A condition may also be supplied as a bare prose string, which is read as `{ description: <the string> }`. " +
+    "`missionId` is optional — omit it and the call acts on the mission this session is bound to.",
   parameters: TradingPublishMomentumStrategyInput,
   success: TradingPublishMomentumStrategyResult,
   failure: TradingToolRejectedError,
@@ -220,7 +222,8 @@ export const TradingRegisterWatchTool = Tool.make("trading_register_watch", {
     "A watch fires EXACTLY ONCE and is then terminal. A level you want to keep standing has to be re-registered after it fires; nothing re-arms it for you. " +
     "Watches also do NOT survive a strategy publish — publishing supersedes every watch the previous version armed, so re-arm what you still need after switching. " +
     "`position_update` and `order_update` read T3's reconciled local tables, not the exchange directly: they fire on a change in the size the last reconcile recorded, so they follow fills and cancels rather than quotes. " +
-    'While a position is open, arm levels on BOTH sides of the mark: the two differential types fire on a change in size and will not wake you for a move in your favour. A run that ends holding a position with nothing armed above and below, and no reassessment due within ten minutes, gets a reassessment registered for it automatically — and so does a FLAT mission that still has a published thesis. That automatic wake carries `wakeReason: "staleness_floor"`: it means nothing crossed and nothing fired, so the thing to reconsider is the thesis — re-level, republish at the next version, or stand down.',
+    'While a position is open, arm levels on BOTH sides of the mark: the two differential types fire on a change in size and will not wake you for a move in your favour. A run that ends holding a position with nothing armed above and below, and no reassessment due within ten minutes, gets a reassessment registered for it automatically — and so does a FLAT mission that still has a published thesis. That automatic wake carries `wakeReason: "staleness_floor"`: it means nothing crossed and nothing fired, so the thing to reconsider is the thesis — re-level, republish at the next version, or stand down. ' +
+    "`missionId` is optional — omit it and the call acts on the mission this session is bound to.",
   parameters: TradingRegisterWatchInput,
   success: TradingRegisterWatchResult,
   failure: TradingToolRejectedError,
