@@ -35,6 +35,7 @@ import { MissionStripBar } from "./MissionStripBar";
 import {
   deriveFillSlippagePercent,
   formatPrice,
+  formatSize,
   formatSignedPercent,
   formatSignedUsd,
   humanizeLiteral,
@@ -126,7 +127,7 @@ function OrderIntentCard({ exec }: { exec: TradingExecutionView }) {
       accentClassName="border-armed/40 bg-armed/5"
     >
       <FieldRows>
-        <Field label="Size" value={String(exec.size)} />
+        <Field label="Size" value={formatSize(exec.size)} />
         <Field label="Limit" value={formatPrice(exec.limitPrice)} />
         <Field label="Time in force" value={exec.timeInForce.toUpperCase()} />
         <Field label="Reduce only" value={exec.reduceOnly ? "Yes" : "No"} />
@@ -149,7 +150,7 @@ function FillReceipt({
   return (
     <Card
       title="Filled"
-      badge={`${sideLabel(fill.side)} ${fill.filledSize} ${fill.market}`}
+      badge={`${sideLabel(fill.side)} ${formatSize(fill.filledSize)} ${fill.market}`}
       meta={`${new Date(fill.tradedAt).toLocaleTimeString()} · #${fill.orderId}`}
     >
       <StatLine>
@@ -177,17 +178,33 @@ function FillReceipt({
   );
 }
 
-/** The live position card: entry, mark, unrealised P&L, protection (§10). */
-function PositionCard({ position }: { position: TradingPositionView }) {
-  const direction = position.size > 0 ? "Long" : position.size < 0 ? "Short" : "Flat";
+/**
+ * The live position card: entry, mark, unrealised P&L, protection (§10).
+ *
+ * Only ever rendered while something is held — see {@link MissionThreadCards}.
+ * The projection keeps a mission's snapshot row after the position closes, with
+ * its size zeroed, and rendering that row produced a card headed "Flat · open"
+ * reporting a size of zero as fully protected. Every figure on it was true and
+ * the card as a whole was a lie.
+ */
+function PositionCard({
+  position,
+  markPrice,
+}: {
+  position: TradingPositionView;
+  /** The live mark, preferred over the snapshot's own as it is newer. */
+  markPrice: number | null;
+}) {
+  const direction = position.size > 0 ? "Long" : "Short";
   // §16.1: a stop that covers less than the position is the difference between
   // a bounded loss and an open-ended one, so it is a figure, not a checkmark.
   const protection =
-    Math.abs(position.protectedSize) >= Math.abs(position.size)
-      ? "Full"
-      : position.protectedSize === 0
-        ? "None"
-        : `${Math.abs(position.protectedSize)} of ${Math.abs(position.size)}`;
+    position.protectedSize === 0
+      ? "None"
+      : Math.abs(position.protectedSize) >= Math.abs(position.size)
+        ? "Full"
+        : `${formatSize(Math.abs(position.protectedSize))} of ${formatSize(Math.abs(position.size))}`;
+  const mark = markPrice ?? position.markPrice ?? null;
 
   return (
     <Card
@@ -196,13 +213,11 @@ function PositionCard({ position }: { position: TradingPositionView }) {
       meta={`Margin $${position.marginUsed.toFixed(2)}`}
     >
       <div className="grid grid-cols-3 gap-x-4 gap-y-3 px-3 py-3">
-        <Cell label="Size" value={String(Math.abs(position.size))} />
+        <Cell label="Size" value={formatSize(Math.abs(position.size))} />
         {position.entryPrice === undefined ? null : (
           <Cell label="Entry" value={formatPrice(position.entryPrice)} />
         )}
-        {position.markPrice === undefined ? null : (
-          <Cell label="Mark" value={formatPrice(position.markPrice)} />
-        )}
+        {mark === null ? null : <Cell label="Mark" value={formatPrice(mark)} />}
         <Cell
           label="Unrealised"
           value={formatSignedUsd(position.unrealisedPnl)}
@@ -267,17 +282,21 @@ export function MissionThreadStrip({
  * three receipts costs the conversation nothing once the user scrolls past it.
  */
 export function MissionThreadCards({ mission }: { readonly mission: OrchestrationTradingMission }) {
+  // A closed position leaves its snapshot row behind with size zeroed, so the
+  // card is gated on exposure rather than on the row existing.
+  const openPosition =
+    mission.position !== null && mission.position.size !== 0 ? mission.position : null;
   const hasCards =
-    mission.inFlightExecution !== null ||
-    mission.position !== null ||
-    mission.recentFills.length > 0;
+    mission.inFlightExecution !== null || openPosition !== null || mission.recentFills.length > 0;
 
   if (!hasCards) return null;
 
   return (
     <div className="flex flex-col gap-2 pt-2">
       {mission.inFlightExecution && <OrderIntentCard exec={mission.inFlightExecution} />}
-      {mission.position && <PositionCard position={mission.position} />}
+      {openPosition && (
+        <PositionCard position={openPosition} markPrice={mission.marketPrice ?? null} />
+      )}
       {mission.recentFills.slice(0, 3).map((fill) => (
         <FillReceipt
           key={`${fill.orderId}-${fill.tradedAt}`}

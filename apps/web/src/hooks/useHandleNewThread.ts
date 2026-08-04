@@ -138,6 +138,21 @@ export function useNewThreadHandler() {
             hasWorktreePathOption ||
             hasEnvModeOption ||
             hasStartFromOriginOption;
+          // A stored draft's thread id is only a client-side reservation, and
+          // reusing it can be wrong: the reusability test above is "no thread
+          // shell is loaded for it", which is also true of a thread the server
+          // DID create and has since archived. Trading missions archive their
+          // thread on settle, so the draft that opened one sat in storage
+          // unpromoted, holding a live thread id — and the next New thread
+          // resurrected it and dispatched `thread.create` for a thread that
+          // already existed, which the orchestration invariant refuses.
+          //
+          // Reaching this branch at all means no thread shell is loaded for the
+          // id, so a draft whose thread the client HAS seen is never here: it
+          // gets promoted and drops out of reuse. Nothing else references the
+          // reservation, so minting a fresh one here costs nothing and makes
+          // the collision impossible rather than merely unlikely.
+          const draftThreadId = newThreadId();
           // Resurrecting a stored draft must not resurrect its stale context:
           // explicit workspace options win outright; otherwise the env context
           // resets to the configured defaults so drafts seeded before a
@@ -190,7 +205,7 @@ export function useNewThreadHandler() {
             projectRef,
             reusableStoredDraftThread.draftId,
             {
-              threadId: reusableStoredDraftThread.threadId,
+              threadId: draftThreadId,
               ...(workspaceContext ?? {}),
               ...(carryRuntimeMode ? { runtimeMode: carryRuntimeMode } : {}),
               ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),

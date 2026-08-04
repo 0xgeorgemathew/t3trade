@@ -157,7 +157,17 @@ interface ExecutionRecordRow {
   readonly updated_at: number;
 }
 
-/** Row shape for a fill in the receipt list. */
+/**
+ * Row shape for a receipt in the fill list — one order, not one fill event.
+ *
+ * Hyperliquid reports a market order as however many partial fills it took to
+ * cross the book: a 3 ETH entry comes back as a dozen slices of a few hundredths
+ * each. Rendering those raw put "Sell 0.044 ETH" on the receipt for an order
+ * that sold three, with a fee and a realised PnL to match — every figure on the
+ * card a fraction of what the trade actually did, and a cap of three receipts
+ * hiding the rest. The aggregate below is the order the operator placed, which
+ * is also the row the exchange's own trade history shows.
+ */
 interface FillRow {
   readonly cloid: string | null;
   readonly order_id: number;
@@ -444,13 +454,24 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       `.pipe(Effect.mapError(sqlFail("execution")));
       const inFlightExecution = execRows[0] ?? null;
 
-      // Recent fills, newest first. Capped at 3 to match the receipt list the
-      // thread card renders — the projection and the UI agree on the same count
-      // rather than the UI silently truncating a larger list.
+      // The three most recent orders, newest first — each one the sum of its own
+      // partial fills. The average price is size-weighted, because the plain
+      // mean of a dozen slices is not the price the order got. Capped at 3 to
+      // match the receipt list the thread card renders, so the projection and
+      // the UI agree on the count rather than the UI truncating silently.
       const recentFills = yield* sql<FillRow>`
-        SELECT cloid, order_id, market, side, filled_size, avg_fill_price, fee_usd,
-               closed_pnl, traded_at
+        SELECT
+          MIN(cloid) AS cloid,
+          order_id,
+          market,
+          side,
+          SUM(filled_size) AS filled_size,
+          SUM(filled_size * avg_fill_price) / SUM(filled_size) AS avg_fill_price,
+          SUM(fee_usd) AS fee_usd,
+          SUM(closed_pnl) AS closed_pnl,
+          MAX(traded_at) AS traded_at
         FROM trading_fills WHERE mission_id = ${missionId}
+        GROUP BY order_id, market, side
         ORDER BY traded_at DESC LIMIT 3
       `.pipe(Effect.mapError(sqlFail("fills")));
 

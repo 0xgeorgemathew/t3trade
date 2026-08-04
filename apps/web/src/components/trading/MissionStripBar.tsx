@@ -86,6 +86,9 @@ export function MissionStripBar({
       <span className={cn("flex-none tabular-nums", TONE_TEXT[strip.tone])}>
         {strip.stateLabel}
       </span>
+      {/* Where the market is, held or not: every level the strip names to the
+          right of this is read against it. */}
+      {strip.markLabel === null ? null : <Slot label="Mark" value={strip.markLabel} />}
       <span className="flex-none tabular-nums text-foreground">{strip.exposureLabel}</span>
 
       {/* The two detail slots give up their width first: the strip is one line

@@ -181,12 +181,27 @@ describe("mission strip", () => {
 
   it("reads the position back while exposed, and the watch while flat", () => {
     const open = deriveMissionStrip(exposed);
-    expect(open.detailPrimary).toBe("Entry 1,833.9 · Mark 1,859.5");
+    expect(open.detailPrimary).toBe("Entry 1,833.9");
     expect(open.detailSecondary).toBe("Unrealised +$12.80 · Protected");
 
     const flat = deriveMissionStrip(armed);
     expect(flat.detailPrimary).toBe("Waiting on ETH mark crosses above 1900");
     expect(flat.detailSecondary).toBeNull();
+  });
+
+  it("quotes the live mark, held or not", () => {
+    // The whole point of the slot: a flat mission waiting on a level has no
+    // position mark, and the level means nothing without one to read it against.
+    expect(deriveMissionStrip({ ...armed, marketPrice: 1872.94 }).markLabel).toBe("1,872.94");
+    // Exposed, the live read wins over the snapshot's older mark.
+    expect(deriveMissionStrip({ ...exposed, marketPrice: 1861.2 }).markLabel).toBe("1,861.2");
+    expect(deriveMissionStrip(exposed).markLabel).toBe("1,859.5");
+  });
+
+  it("shows no mark at all when the exchange read failed", () => {
+    // A price nothing confirmed is worse than no price on a surface exits are
+    // decided from.
+    expect(deriveMissionStrip(armed).markLabel).toBeNull();
   });
 
   it("says so when a flat mission has nothing left that can wake it", () => {

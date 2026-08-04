@@ -154,6 +154,15 @@ export const OrchestrationTradingMission = Schema.Struct({
   recentFills: Schema.Array(TradingFillView),
   /** The live position card from reconciled projections (§10). Null when flat. */
   position: Schema.NullOr(TradingPositionView),
+  /**
+   * The market's live mark price.
+   *
+   * Read from the exchange rather than from the position, because the position
+   * snapshot's mark is cleared the moment the mission goes flat — and a waiting
+   * mission is exactly the one whose surfaces need to say where the market is.
+   * Absent when the exchange read failed; never a stale carry-forward.
+   */
+  marketPrice: Schema.optional(Schema.Number),
   /** Realised result across every fill, for the completion summary card. */
   result: TradingMissionResultView,
 

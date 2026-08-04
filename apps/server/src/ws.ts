@@ -29,6 +29,7 @@ import {
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
+  type OrchestrationTradingMission,
   ORCHESTRATION_WS_METHODS,
   type ProjectId,
   type ProjectEntriesFailure,
@@ -69,11 +70,38 @@ import {
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
 import { TradingTurnCoordinator } from "./trading/TradingTurnCoordinator.ts";
 
 /** The `updatedAt` an empty mission snapshot reports. */
 const EPOCH_ISO = "1970-01-01T00:00:00.000Z";
+
+/**
+ * Quote each live mission's market on the snapshot the workspace polls.
+ *
+ * The projection is SQL-only, and no local table holds a mark price while the
+ * mission is flat, so the live price is attached here — at the read surface
+ * that needs it. Only missions that can still act are quoted: a revoked mission
+ * is history, and pricing it would put an exchange call on the wire for a card
+ * that reports a finished result.
+ */
+const withMarketPrices = (
+  missions: ReadonlyArray<OrchestrationTradingMission>,
+  marketPrice: TradingMarketPrice["Service"],
+): Effect.Effect<ReadonlyArray<OrchestrationTradingMission>> =>
+  Effect.forEach(
+    missions,
+    (mission) => {
+      if (mission.status === "revoked" || mission.status === "completed") {
+        return Effect.succeed(mission);
+      }
+      return Effect.map(marketPrice.markPrice(mission.market), (price) =>
+        price === null ? mission : { ...mission, marketPrice: price },
+      );
+    },
+    { concurrency: "unbounded" },
+  );
 import {
   observeRpcEffect as instrumentRpcEffect,
   observeRpcStream as instrumentRpcStream,
@@ -349,6 +377,7 @@ const makeWsRpcLayer = (
       const crypto = yield* Crypto.Crypto;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       const tradingMissionProjection = yield* TradingMissionProjection;
+      const tradingMarketPrice = yield* TradingMarketPrice;
       const tradingTurnCoordinator = yield* TradingTurnCoordinator;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
@@ -1280,7 +1309,10 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getTradingMissionSnapshot,
             Effect.gen(function* () {
-              const missions = yield* tradingMissionProjection.list();
+              const missions = yield* withMarketPrices(
+                yield* tradingMissionProjection.list(),
+                tradingMarketPrice,
+              );
               // The snapshot sequence is the engine's latest event sequence, so
               // the client can tell a stale snapshot (behind the subscribed
               // stream) from a fresh one. Previously this was hardcoded to 0,

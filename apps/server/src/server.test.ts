@@ -84,6 +84,7 @@ import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngi
 import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
+import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
 import { TradingMissionProjectionLive } from "./trading/TradingMissionProjection.ts";
 import { TradingTurnCoordinator } from "./trading/TradingTurnCoordinator.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
@@ -353,6 +354,7 @@ const buildAppUnderTest = (options?: {
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
     checkpointDiffQuery?: Partial<CheckpointDiffQuery.CheckpointDiffQuery["Service"]>;
     tradingTurnCoordinator?: Partial<TradingTurnCoordinator["Service"]>;
+    tradingMarketPrice?: Partial<TradingMarketPrice["Service"]>;
     browserTraceCollector?: Partial<BrowserTraceCollector.BrowserTraceCollector["Service"]>;
     serverLifecycleEvents?: Partial<ServerLifecycleEvents.ServerLifecycleEvents["Service"]>;
     serverRuntimeStartup?: Partial<ServerRuntimeStartup.ServerRuntimeStartup["Service"]>;
@@ -772,6 +774,14 @@ const buildAppUnderTest = (options?: {
       // persisted mission state, so the routes layer now genuinely needs the
       // trading projection and a database to build.
       Layer.provide(TradingMissionProjectionLive),
+      // The mission snapshot quotes each live mission's market. These tests
+      // have no exchange to ask, and a snapshot without a price is a valid one.
+      Layer.provide(
+        Layer.mock(TradingMarketPrice)({
+          markPrice: () => Effect.succeed(null),
+          ...options?.layers?.tradingMarketPrice,
+        }),
+      ),
       // The WS turn-start path asks the coordinator whether the thread belongs
       // to a live mission. These tests have no mission, so it never takes the
       // turn.

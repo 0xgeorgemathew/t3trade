@@ -42,6 +42,16 @@ export const formatSignedUsd = (value: number): string => {
 export const formatPrice = (value: number): string =>
   value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
+/**
+ * A position or fill size in base units.
+ *
+ * Sizes reach the UI as sums of partial fills, so a clean 3 ETH order arrives as
+ * 2.9999999999999996 and rendered raw it reads as a broken feed. Four decimals
+ * is the finest lot size the POC's markets quote, so nothing real is lost.
+ */
+export const formatSize = (value: number): string =>
+  value.toLocaleString(undefined, { maximumFractionDigits: 4 });
+
 /** Turn an underscored domain literal into prose without inventing wording. */
 export const humanizeLiteral = (value: string): string => value.replaceAll("_", " ");
 
@@ -181,6 +191,15 @@ export interface MissionStrip {
   /** The market the mission trades, as the exchange names it. */
   readonly marketLabel: string;
   /**
+   * What the market is doing right now, whether or not anything is held.
+   *
+   * The strip used to name a level the mission was waiting for with no way to
+   * tell how far away it was — "waiting for a close below 1868" reads very
+   * differently at 1869 than at 1890. Null when the exchange read failed; the
+   * slot then disappears rather than showing a price nothing confirmed.
+   */
+  readonly markLabel: string | null;
+  /**
    * What the mission is holding, or what it is waiting for. Exposure reads back
    * the fill; a flat mission reads back its armed watch, because the watch is
    * the only thing that can move it — a flat mission with no active watch is
@@ -232,15 +251,17 @@ function describeArmedWatch(watches: ReadonlyArray<PersistedWatch>): string {
   return active === undefined ? "No active watch" : `Waiting on ${describeWatch(active.watch)}`;
 }
 
-/** "Entry 1,833.90 · Mark 1,859.50", dropping whichever price is absent. */
-function describeExposure(position: {
-  readonly entryPrice?: number | undefined;
-  readonly markPrice?: number | undefined;
-}): string {
-  const parts: string[] = [];
-  if (position.entryPrice !== undefined) parts.push(`Entry ${formatPrice(position.entryPrice)}`);
-  if (position.markPrice !== undefined) parts.push(`Mark ${formatPrice(position.markPrice)}`);
-  return parts.length === 0 ? "Position open" : parts.join(" · ");
+/**
+ * "Entry 1,833.90" — where the exposure was taken.
+ *
+ * The mark is not repeated here: the strip carries the live one in its own
+ * slot, and two marks a few seconds apart on the same line is a contradiction
+ * the operator has to stop and resolve.
+ */
+function describeExposure(position: { readonly entryPrice?: number | undefined }): string {
+  return position.entryPrice === undefined
+    ? "Position open"
+    : `Entry ${formatPrice(position.entryPrice)}`;
 }
 
 /**
@@ -261,6 +282,7 @@ function describeProtection(position: {
 export function deriveMissionStrip(mission: {
   readonly status: TradingMissionStatus;
   readonly market: string;
+  readonly marketPrice?: number | undefined;
   readonly blockedReason: string | null;
   readonly harness: { readonly provider: string; readonly status: string };
   readonly watches: ReadonlyArray<PersistedWatch>;
@@ -276,6 +298,7 @@ export function deriveMissionStrip(mission: {
   const position = mission.position;
   const exposure = position?.size ?? 0;
   const exposed = exposure !== 0;
+  const markPrice = mission.marketPrice ?? position?.markPrice ?? null;
 
   const tone: MissionStripTone =
     mission.status === "blocked"
@@ -313,11 +336,17 @@ export function deriveMissionStrip(mission: {
     tone,
     stateLabel: MISSION_STATUS_LABELS[mission.status],
     marketLabel: mission.market,
+    // The live read is preferred over the position's mark: a flat mission has
+    // no position mark at all, and an exposed one's is as old as its last
+    // reconcile.
+    markLabel: markPrice === null ? null : formatPrice(markPrice),
     detailPrimary,
     detailSecondary,
     harnessLabel: `${mission.harness.provider} · ${humanizeLiteral(mission.harness.status)}`,
     exposure,
-    exposureLabel: exposed ? `${exposure > 0 ? "Long" : "Short"} ${Math.abs(exposure)}` : "Flat",
+    exposureLabel: exposed
+      ? `${exposure > 0 ? "Long" : "Short"} ${formatSize(Math.abs(exposure))}`
+      : "Flat",
     maximumLossLabel: formatUsd(mission.authority.maximumCumulativeLossUsd),
     primaryAction,
     primaryActionLabel:
@@ -395,7 +424,7 @@ export function derivePausedExposure(
   if (position === null || position.size === 0) return null;
 
   return {
-    exposureLabel: `${position.size > 0 ? "Long" : "Short"} ${Math.abs(position.size)}`,
+    exposureLabel: `${position.size > 0 ? "Long" : "Short"} ${formatSize(Math.abs(position.size))}`,
     unrealisedUsd: position.unrealisedPnl,
     liquidationLabel:
       position.liquidationPrice === undefined ? "—" : formatPrice(position.liquidationPrice),
