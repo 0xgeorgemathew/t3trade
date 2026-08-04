@@ -4,6 +4,7 @@ import { describe } from "vite-plus/test";
 import { Tool } from "effect/unstable/ai";
 
 import { coerceToolArguments } from "./coerceToolArguments.ts";
+import { TradingToolkit } from "./toolkits/trading/tools.ts";
 
 /**
  * The exact JSON-schema shape Effect emits for a `Schema.Number` field: an
@@ -205,5 +206,110 @@ describe("coerceToolArguments", () => {
     expect(coerceToolArguments(null, args)).toBe(args);
     expect(coerceToolArguments(undefined, args)).toBe(args);
     expect(coerceToolArguments("not-a-schema", args)).toBe(args);
+  });
+
+  /**
+   * The fixtures above are hand-built shapes. These run against the schemas the
+   * trading toolkit actually advertises, which is the only thing a provider
+   * ever sees — and they are what the hand-built fixtures missed:
+   *
+   * - Every *constrained* number in the trading contracts is emitted as
+   *   `{type:"number", allOf:[{minimum:0}]}`. A walker that reads `allOf`
+   *   before the node's own `type` concludes "accepts nothing" and coerces no
+   *   numeric string at all, on any real tool.
+   * - A schema emitted more than once is hoisted into `$defs` and referenced by
+   *   pointer (`exitConditions.items` is `{"$ref": "#/$defs/Union_"}`), so a
+   *   walker that does not resolve `$ref` never descends into it.
+   */
+  describe("against the real trading tool schemas", () => {
+    const schemaFor = (name: string) => {
+      const tool = Object.values(TradingToolkit.tools).find((t) => t.name === name);
+      if (tool === undefined) throw new Error(`no such trading tool: ${name}`);
+      return Tool.getJsonSchema(tool);
+    };
+
+    it('coerces maxBars: "100" on trading_get_market_history', () => {
+      expect(
+        coerceToolArguments(schemaFor("trading_get_market_history"), {
+          market: "ETH",
+          interval: "1m",
+          maxBars: "100",
+        }),
+      ).toEqual({ market: "ETH", interval: "1m", maxBars: 100 });
+    });
+
+    it("coerces the nested numeric intent fields on trading_request_entry", () => {
+      expect(
+        coerceToolArguments(schemaFor("trading_request_entry"), {
+          expectedAuthorityVersion: "1",
+          intent: {
+            missionId: "mission_1",
+            strategyVersion: "2",
+            executionSequence: "3",
+            actionType: "open",
+            market: "ETH",
+            side: "buy",
+            size: "0.01",
+            orderPreference: "resting_limit",
+            limitPrice: "1850.5",
+          },
+        }),
+      ).toEqual({
+        expectedAuthorityVersion: 1,
+        intent: {
+          missionId: "mission_1",
+          strategyVersion: 2,
+          executionSequence: 3,
+          actionType: "open",
+          market: "ETH",
+          side: "buy",
+          size: 0.01,
+          orderPreference: "resting_limit",
+          limitPrice: 1850.5,
+        },
+      });
+    });
+
+    it("coerces through a $ref'd condition and leaves a prose condition a string", () => {
+      const coerced = coerceToolArguments(schemaFor("trading_publish_momentum_strategy"), {
+        expectedVersion: "0",
+        strategy: {
+          protection: { stopMethod: "fixed", stopPrice: "1800", targetProfitUsd: "25" },
+          // `exitConditions.items` is a `$ref` into `$defs`: the object branch
+          // must still have its `priceLevel` coerced, and the prose branch must
+          // survive untouched so the string-condition input stays valid.
+          exitConditions: [
+            { description: "back above the level", priceLevel: "1865.9" },
+            "bank it",
+          ],
+        },
+      }) as {
+        expectedVersion: unknown;
+        strategy: { protection: Record<string, unknown>; exitConditions: ReadonlyArray<unknown> };
+      };
+
+      expect(coerced.expectedVersion).toBe(0);
+      expect(coerced.strategy.protection).toEqual({
+        stopMethod: "fixed",
+        stopPrice: 1800,
+        targetProfitUsd: 25,
+      });
+      expect(coerced.strategy.exitConditions).toEqual([
+        { description: "back above the level", priceLevel: 1865.9 },
+        "bank it",
+      ]);
+    });
+
+    it('leaves the "Infinity" sentinel a string rather than coercing it', () => {
+      // The number branch is emitted alongside a string enum of
+      // `Infinity`/`-Infinity`/`NaN`. Those are the string branch's business.
+      expect(
+        coerceToolArguments(schemaFor("trading_get_market_history"), {
+          market: "ETH",
+          interval: "1m",
+          maxBars: "Infinity",
+        }),
+      ).toEqual({ market: "ETH", interval: "1m", maxBars: "Infinity" });
+    });
   });
 });

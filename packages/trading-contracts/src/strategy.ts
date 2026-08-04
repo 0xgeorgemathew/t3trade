@@ -75,9 +75,10 @@ export type AgentConditionDescription = typeof AgentConditionDescription.Type;
  * hints are only reachable through the object branch, which is fine — a bare
  * prose string carries no hints by definition.
  *
- * `MomentumStrategyState` keeps `Schema.Array(AgentConditionDescription)` so
- * the persisted form never carries the union; only the authored/input fields
- * (the strategy body the harness publishes) accept the lenient shape.
+ * The union is ordered object-branch-first, so encoding always takes the object
+ * branch: a strategy that decoded a prose string re-encodes as `{description}`,
+ * which is what the persisted row, `trading_get_mission`, and the wakeup all
+ * carry. The string branch is an input affordance only.
  */
 const conditionStringToObject = Schema.String.pipe(
   Schema.decodeTo(

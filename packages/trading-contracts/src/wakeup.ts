@@ -106,7 +106,9 @@ export const TradingHarnessWakeup = Schema.Struct({
    * Why the runtime woke this run, when the answer is not the harness's own
    * doing. `staleness_floor` means the triggering reassessment was auto-armed
    * because nothing else could have woken the mission — nothing crossed, and
-   * the thesis is the thing to reconsider.
+   * the thesis is the thing to reconsider. `profit_target` means the position
+   * reached the strategy's declared `protection.targetProfitUsd`: bank the win,
+   * or republish with a higher target and say why.
    */
   wakeReason: Schema.optional(WatchArmedReason),
   /** The user message that woke the run, when the cause is `user_message`. */
