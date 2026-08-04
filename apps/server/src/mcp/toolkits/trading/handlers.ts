@@ -27,6 +27,7 @@ import { TradingStrategyService } from "../../../trading/TradingStrategyService.
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
+import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 import { TradingToolkit } from "./tools.ts";
 
 interface BoundCall {
@@ -459,6 +460,30 @@ const handlers = {
           maxBars: input.maxBars,
         })
         .pipe(Effect.orDie);
+    }),
+
+  trading_measure_volatility: (input) =>
+    Effect.gen(function* () {
+      // Market data, not mission state: an unbound thread reads it too.
+      yield* resolveReadCall(input.missionId);
+      const gateway = yield* HyperliquidGateway;
+      const history = yield* gateway
+        .getMarketHistory({
+          market: input.market,
+          interval: input.interval,
+          maxBars: input.lookbackBars ?? VOLATILITY_LOOKBACK_BARS,
+        })
+        .pipe(Effect.orDie);
+
+      // The candles carry their own observation time, so the measurement is
+      // stamped with when the data was read rather than when this returned.
+      return measureVolatility({
+        market: input.market,
+        interval: input.interval,
+        candles: history.candles,
+        measuredAt: history.freshness.observedAt,
+        ...(input.holdBars === undefined ? {} : { holdHorizons: input.holdBars }),
+      });
     }),
 
   trading_get_order_book: (input) =>

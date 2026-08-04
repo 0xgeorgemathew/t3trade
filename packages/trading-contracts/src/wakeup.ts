@@ -16,6 +16,7 @@ import { AgentMarketSnapshot, MarketHistory } from "./market.ts";
 import { TradingHarnessRunCause } from "./mission.ts";
 import { TradingId, TradingText, UnixMillis } from "./primitives.ts";
 import { MomentumStrategyState, TradingTimeframe } from "./strategy.ts";
+import { ObservedVolatility } from "./volatility.ts";
 import { PersistedWatch, WatchArmedReason } from "./watch.ts";
 
 /**
@@ -137,6 +138,18 @@ export const TradingHarnessWakeup = Schema.Struct({
    * history stays behind that tool; this never exceeds 20 bars.
    */
   recentCandles: MarketHistory,
+  /**
+   * What the instrument's fluctuation actually measures, on the same primary
+   * timeframe, over `VOLATILITY_LOOKBACK_BARS` bars.
+   *
+   * This is the basis a profit target has to be derived from: ATR, realized
+   * volatility, the window's swing range, and — the one to read a target off —
+   * the distribution of the move price delivered over each candidate holding
+   * period. A target published without a matching `protection.targetProfitBasis`
+   * is rejected, so this is measured on every wake rather than left to a tool
+   * call the harness may skip.
+   */
+  observedVolatility: ObservedVolatility,
   activeStrategy: MomentumStrategyState,
   /**
    * How long ago the active strategy was published, in milliseconds.

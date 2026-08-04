@@ -24,6 +24,7 @@ import {
   TradingGetPositionInput,
   TradingListWatchesInput,
   TradingListWatchesResult,
+  TradingMeasureVolatilityInput,
   TradingPublishMomentumStrategyInput,
   TradingPublishMomentumStrategyResult,
   TradingRegisterWatchInput,
@@ -46,6 +47,7 @@ import {
   OrderBook,
   ResolvedMarket,
 } from "@t3tools/trading-contracts/market";
+import { ObservedVolatility } from "@t3tools/trading-contracts/volatility";
 import { Schema } from "effect";
 import * as Crypto from "effect/Crypto";
 import { Tool, Toolkit } from "effect/unstable/ai";
@@ -100,6 +102,9 @@ export const TradingPublishMomentumStrategyTool = Tool.make("trading_publish_mom
     "`strategy.timeframes[0]` is the primary timeframe that drives the monitoring cadence; it must name at least one timeframe. " +
     "Every entry in `strategy.entryPlan.conditions[]` REQUIRES a non-empty `description` — the prose conclusion is the field that matters; `timeframe`, `priceLevel`, and `invalidatedBy` are optional display hints. A conditions entry without a description is rejected. A condition may also be supplied as a bare prose string, which is read as `{ description: <the string> }`. " +
     "`protection.targetProfitUsd` is REQUIRED: the unrealised-PnL level, in USD, that makes this position a win worth banking. It is shown to the user and the runtime arms a `pnl_above` watch at it while you hold a position. When that watch wakes you, the default action is to close (or reduce) and reassess; you may instead republish with a higher target if the move is genuinely extending — say why. You may additionally place your own resting take-profit order via trading_request_entry if you judge one right; the target watch still stands. " +
+    "Derive that target from the fluctuation this instrument is actually producing, not from a round number or a feeling about the setup — a target the market does not reach in your holding period is a position that round-trips. Read `observedVolatility` from the wakeup, or call trading_measure_volatility for another interval or lookback, and carry the measurement through: pick the measurement that fits your thesis (`horizons[].favourableUpUsd.p50` for a long, `favourableDownUsd.p50` for a short, is the move price actually delivered over that many bars in half the recent windows; `atr`, `realized_volatility`, and `swing_range` are single-number summaries of the same window), convert it to a percentage move off the current mark, and multiply by the position notional (margin x leverage) to get the USD target. Worked example: 100 USD margin at 20x = 2000 USD notional; a measured 0.35% move over a 10-bar hold = 7.00 USD. " +
+    "Record that reasoning in `protection.targetProfitBasis` — measurement, timeframe, lookbackBars, expectedHoldBars, measuredMoveUsd (USD of PRICE), referencePrice, targetPriceMovePercent, positionNotionalUsd, `historicalHitRatePercent` when the measurement gives one (a p50 is 50), and a `rationale` saying why the move is attainable in current conditions. It is read back to you on the next wake, so a target you cannot justify there is one you will not be able to defend to yourself later. " +
+    "If the observed fluctuation does not support a target worth taking, say so: set `insufficientVolatility: true`, explain it in the rationale, and stand down rather than inventing a number to fill the field. " +
     "`missionId` is optional — omit it and the call acts on the mission this session is bound to.",
   parameters: TradingPublishMomentumStrategyInput,
   success: TradingPublishMomentumStrategyResult,
@@ -154,6 +159,23 @@ export const TradingGetMarketHistoryTool = Tool.make("trading_get_market_history
   dependencies,
 })
   .annotate(Tool.Title, "Get market history")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
+export const TradingMeasureVolatilityTool = Tool.make("trading_measure_volatility", {
+  description:
+    "Measure the fluctuation a market is actually producing over a bounded candle window — the basis every profit target has to be derived from. Returns, all computed from real candles with no model or assumed distribution: `atrUsd`/`atrPercent` (mean true range over the last 14 bars), `realizedVolatilityPercentPerBar` (standard deviation of bar-to-bar log returns), `swingRangeUsd`/`swingRangePercent` (the window's high-to-low), and `horizons[]`. " +
+    "`horizons[]` is the one to set a target from: for each holding period in bars it reports, over every window of that length in the lookback, the distribution (p25/p50/p75) of the move price delivered from a bar's close — `favourableUpUsd` for a long, `favourableDownUsd` for a short. A target at the p50 was available in half the recent windows of that length; at the p75, in a quarter. That is what makes a target attainable rather than hopeful. " +
+    "`sufficientData` is false when the window is too short to measure from (under 30 bars) — read a longer window before setting a target off it. " +
+    "The same measurement for the mission's primary timeframe is already on every wakeup as `observedVolatility` — call this when you want another interval or a longer lookback. Defaults to 120 bars and hold horizons of 3, 5, 10, and 20 bars.",
+  parameters: TradingMeasureVolatilityInput,
+  success: ObservedVolatility,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Measure volatility")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
@@ -310,6 +332,7 @@ export const TradingToolkit = Toolkit.make(
   TradingResolveMarketTool,
   TradingGetMarketSnapshotTool,
   TradingGetMarketHistoryTool,
+  TradingMeasureVolatilityTool,
   TradingGetOrderBookTool,
   TradingGetAccountStateTool,
   TradingGetPositionTool,

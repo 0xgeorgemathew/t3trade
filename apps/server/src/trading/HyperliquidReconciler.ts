@@ -22,6 +22,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
+import type { WireUserFill } from "@t3tools/hyperliquid/wire";
 import type { AgentOpenOrder } from "@t3tools/trading-contracts/account-snapshot";
 import { confirmedProtectedSize } from "@t3tools/trading-contracts/protection";
 import { PENDING_EXECUTION_STATUSES } from "@t3tools/trading-contracts/execution";
@@ -224,6 +225,36 @@ function toOpenOrderRecords(
 }
 
 /**
+ * Assign each wire fill its identity, in response order.
+ *
+ * `tid` is the exchange's per-trade id and is unique per fill event, so it is
+ * the identity whenever the row carries one.
+ *
+ * `hash` is NOT an identity. It is the L1 transaction hash of the action, and
+ * every fill that action produced — every partial of one order, and every
+ * order of a batched action — carries the same one. Keying on it collapsed a
+ * dozen partials into a single row: the insert kept the first partial's size
+ * and the conflicting upserts overwrote fee and realised PnL with the last
+ * partial's, so a fully-filled order was reported at a fraction of its size
+ * with a fraction of its cost.
+ *
+ * With no `tid`, fall back to the fill's own content plus an ordinal within
+ * its identical-content group. The ordinal is counted per group rather than
+ * across the response, so it does not shift as newer fills push a group down
+ * the (newest-first) list.
+ */
+function fillIdentities(fills: ReadonlyArray<WireUserFill>): ReadonlyArray<string> {
+  const groupCounts = new Map<string, number>();
+  return fills.map((f) => {
+    if (f.tid !== undefined) return `${f.oid}-${f.tid}`;
+    const group = `${f.hash ?? f.cloid ?? f.oid}-${f.oid}-${f.time}-${f.px}-${f.sz}`;
+    const ordinal = groupCounts.get(group) ?? 0;
+    groupCounts.set(group, ordinal + 1);
+    return `${group}-${ordinal}`;
+  });
+}
+
+/**
  * Read canonical fills via the InfoClient userFills endpoint and map them to
  * `TradingFill` records. Only the mission's market's fills are kept.
  */
@@ -242,35 +273,28 @@ function readCanonicalFills(
           }),
       ),
     );
-    return wireFills
-      .filter((f) => f.coin === input.market)
-      .map(
-        (f, idx) =>
-          ({
-            // Fill identity: prefer the exchange hash; fall back to a composite
-            // cloid-time-idx rather than bare cloid. Two partial fills of the
-            // same order share a cloid but are distinct fill events — a bare
-            // cloid would collide on fill_id and the idempotent upsert would
-            // silently drop one. `hash` is optional on the wire fill, so the
-            // composite must carry the timestamp (and a positional idx as a
-            // tiebreaker for same-ms partials).
-            fillId: f.hash ?? `${f.cloid ?? f.oid}-${f.time}-${idx}`,
-            missionId: input.missionId,
-            cloid: f.cloid,
-            orderId: f.oid,
-            market: f.coin,
-            side: f.side === "B" ? "buy" : "sell",
-            filledSize: Number.parseFloat(f.sz),
-            avgFillPrice: Number.parseFloat(f.px),
-            feeUsd: Number.parseFloat(f.fee),
-            feeToken: f.feeToken ?? "USDC",
-            // §16.2 closedPnl: the realised PnL the exchange attributes to this
-            // fill. Absent on some fills (e.g. entry increases) — treat as 0.
-            closedPnl: f.closedPnl !== undefined ? Number.parseFloat(f.closedPnl) : 0,
-            tradedAt: f.time,
-            observedAt,
-          }) as TradingFill,
-      );
+    const marketFills = wireFills.filter((f) => f.coin === input.market);
+    const ids = fillIdentities(marketFills);
+    return marketFills.map(
+      (f, idx) =>
+        ({
+          fillId: ids[idx]!,
+          missionId: input.missionId,
+          cloid: f.cloid,
+          orderId: f.oid,
+          market: f.coin,
+          side: f.side === "B" ? "buy" : "sell",
+          filledSize: Number.parseFloat(f.sz),
+          avgFillPrice: Number.parseFloat(f.px),
+          feeUsd: Number.parseFloat(f.fee),
+          feeToken: f.feeToken ?? "USDC",
+          // §16.2 closedPnl: the realised PnL the exchange attributes to this
+          // fill. Absent on some fills (e.g. entry increases) — treat as 0.
+          closedPnl: f.closedPnl !== undefined ? Number.parseFloat(f.closedPnl) : 0,
+          tradedAt: f.time,
+          observedAt,
+        }) as TradingFill,
+    );
   });
 }
 
@@ -322,9 +346,14 @@ function persistPosition(
 }
 
 /**
- * Append reconciled fills (idempotent on `fill_id` — re-running a reconcile
- * never duplicates a fill, never overwrites the realised PnL the exchange
- * already reported).
+ * Persist reconciled fills (idempotent on `fill_id` — re-running a reconcile
+ * never duplicates a fill).
+ *
+ * For every order the canonical read covers, the canonical fills ARE the
+ * order's fills: any other row this mission holds for that order is dropped.
+ * That is what heals rows written under the old hash-keyed identity, which
+ * collapsed an order's partials into one under-reported row. Orders absent
+ * from the read (older than the userFills window) are left untouched.
  */
 function persistFills(
   fills: ReadonlyArray<TradingFill>,
@@ -344,7 +373,25 @@ function persistFills(
           ${f.feeUsd}, ${f.feeToken}, ${f.closedPnl}, ${f.tradedAt}, ${f.observedAt}
         )
         ON CONFLICT(fill_id) DO UPDATE SET
+          filled_size = ${f.filledSize}, avg_fill_price = ${f.avgFillPrice},
           closed_pnl = ${f.closedPnl}, fee_usd = ${f.feeUsd}, observed_at = ${f.observedAt}
+      `;
+    }
+
+    // Drop stale rows order by order, so a partially-covered order can never
+    // take another order's canonical set as its own.
+    const byOrder = new Map<number, Array<string>>();
+    for (const f of fills) {
+      const ids = byOrder.get(f.orderId) ?? [];
+      ids.push(f.fillId);
+      byOrder.set(f.orderId, ids);
+    }
+    const missionId = fills[0]!.missionId;
+    for (const [orderId, ids] of byOrder) {
+      yield* sql`
+        DELETE FROM trading_fills
+        WHERE mission_id = ${missionId} AND order_id = ${orderId}
+          AND NOT ${sql.in("fill_id", ids)}
       `;
     }
   }).pipe(

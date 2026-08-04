@@ -260,6 +260,12 @@ export const WireUserFill = Schema.Struct({
   closedPnl: Schema.optional(Schema.String),
   fee: Schema.String,
   oid: Schema.Number,
+  /**
+   * The exchange's own trade id — unique per fill event. Distinct from `hash`,
+   * which is the L1 transaction hash and is shared by every fill the same
+   * action produced. This is the fill's identity; see `readCanonicalFills`.
+   */
+  tid: Schema.optional(Schema.Number),
   cloid: Schema.optional(Schema.String),
   feeToken: Schema.optional(Schema.String),
   dir: Schema.optional(Schema.String),

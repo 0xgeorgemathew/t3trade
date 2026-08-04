@@ -69,6 +69,18 @@ const strategyBody = (name: string): PublishMomentumStrategyBody => ({
   protection: {
     stopMethod: "Structural stop beneath the breakout candle low.",
     targetProfitUsd: 20,
+    targetProfitBasis: {
+      measurement: "excursion_quantile",
+      timeframe: "5m",
+      lookbackBars: 120,
+      measuredMoveUsd: 40,
+      expectedHoldBars: 10,
+      referencePrice: 3_200,
+      targetPriceMovePercent: 1,
+      positionNotionalUsd: 2_000,
+      historicalHitRatePercent: 50,
+      rationale: "Median 10-bar upside excursion over the last 120 5m bars is 40 USD of price.",
+    },
   },
   exitConditions: [{ description: "Momentum stalls for three consecutive candles." }],
   abandonmentConditions: [{ description: "Range high is lost on a 15m close." }],

@@ -15,6 +15,7 @@ import * as Layer from "effect/Layer";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 
 import { pocAuthorityDefaults } from "@t3tools/trading-contracts/authority";
+import { VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 
 import type { MomentumStrategyState, PersistedWatch, TradingMission } from "./Schemas.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
@@ -144,14 +145,15 @@ const stubGateway = Layer.succeed(HyperliquidGateway)({
     Effect.succeed({
       market: request.market,
       interval: request.interval,
-      // The composer asks for 20 bars; echo the cap so the test can assert it.
+      // Echo the cap the composer asked for, as a window that actually moves:
+      // a flat series would let a broken volatility measurement pass.
       candles: Array.from({ length: request.maxBars ?? 0 }, (_, i) => ({
         openTime: i,
         closeTime: i,
         open: MARK,
-        close: MARK,
-        high: MARK,
-        low: MARK,
+        close: i % 2 === 0 ? MARK + 5 : MARK - 5,
+        high: MARK + 5,
+        low: MARK - 5,
         volume: 1,
       })),
       freshness,
@@ -242,6 +244,21 @@ layer("TradingWakeupComposer", (it) => {
       // The primary timeframe is strategy.timeframes[0] ("1m"); the slice is capped at 20.
       assert.equal(wakeup.recentCandles.interval, "1m");
       assert.equal(wakeup.recentCandles.candles.length, 20);
+    }),
+  );
+
+  it.effect("measures the volatility a profit target has to be derived from", () =>
+    Effect.gen(function* () {
+      const wakeup = yield* compose();
+      const measured = wakeup.observedVolatility;
+
+      // Measured over the full read, not the 20 bars the wakeup shows.
+      assert.equal(measured.barsObserved, VOLATILITY_LOOKBACK_BARS);
+      assert.equal(measured.interval, "1m");
+      assert.equal(measured.sufficientData, true);
+      // Every bar spans MARK ± 5, so the true range is 10 on each of them.
+      assert.closeTo(measured.atrUsd, 10, 1e-6);
+      assert.ok(measured.horizons.length > 0);
     }),
   );
 });

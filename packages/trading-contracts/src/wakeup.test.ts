@@ -167,6 +167,29 @@ describe("TradingHarnessWakeup", () => {
       ],
       freshness: { observedAt: 1_600_000, source: "websocket", staleAfterMillis: 5_000 },
     },
+    observedVolatility: {
+      market: "ETH",
+      interval: "1m",
+      barsObserved: 120,
+      referencePrice: 4_000,
+      measuredAt: 1_600_000,
+      sufficientData: true,
+      atrPeriod: 14,
+      atrUsd: 4,
+      atrPercent: 0.1,
+      realizedVolatilityPercentPerBar: 0.05,
+      swingRangeUsd: 60,
+      swingRangePercent: 1.5,
+      horizons: [
+        {
+          holdBars: 10,
+          holdMinutes: 10,
+          samples: 110,
+          favourableUpUsd: { p25: 6, p50: 12, p75: 20 },
+          favourableDownUsd: { p25: 5, p50: 11, p75: 19 },
+        },
+      ],
+    },
     activeStrategy: strategy,
     strategyAgeMillis: 600_000,
     armedWatches: [
@@ -208,6 +231,10 @@ describe("TradingHarnessWakeup", () => {
     expect(() => decode(withoutPosition)).toThrow();
     const { recentCandles: _candles, ...withoutCandles } = base;
     expect(() => decode(withoutCandles)).toThrow();
+    // A wakeup without the measurement cannot support a derived profit target,
+    // which is the one thing the strategy publish will insist on.
+    const { observedVolatility: _volatility, ...withoutVolatility } = base;
+    expect(() => decode(withoutVolatility)).toThrow();
   });
 
   // The discriminator is what lets the chat timeline tell a wakeup from
