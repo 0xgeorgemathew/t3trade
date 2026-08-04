@@ -652,6 +652,7 @@ it.live(
                       protection: {
                         stopMethod: "Below the last accepted swing low",
                         stopPrice: 2_950,
+                        targetProfitUsd: 25,
                         maximumPlannedLossUsd: 20,
                       },
                       exitConditions: [

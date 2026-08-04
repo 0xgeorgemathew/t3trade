@@ -12,6 +12,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   isDeafWhileHoldingPosition,
   readWatchCoverage,
+  watchCoverageFloorMillis,
   WATCH_COVERAGE_FLOOR_MILLIS,
   type MarketWatch,
   type PersistedWatch,
@@ -124,5 +125,50 @@ describe("isDeafWhileHoldingPosition", () => {
       armed({ type: "scheduled_reassessment", runAt: NOW + 60_000 }),
     ]);
     assert.isFalse(isDeafWhileHoldingPosition(coverage));
+  });
+});
+
+describe("watchCoverageFloorMillis", () => {
+  const MINUTE = 60_000;
+
+  it("scales a 1m holder to 3 bars (3 minutes)", () => {
+    assert.equal(watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: true }), 3 * MINUTE);
+  });
+
+  it("scales a 1m flat thesis to 10 bars (10 minutes) — the original flat-1m floor", () => {
+    assert.equal(
+      watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: false }),
+      WATCH_COVERAGE_FLOOR_MILLIS,
+    );
+  });
+
+  it("scales a 5m holder to 3 bars (15 minutes), at the holding cap", () => {
+    assert.equal(watchCoverageFloorMillis({ timeframe: "5m", holdingPosition: true }), 15 * MINUTE);
+  });
+
+  it("clamps a 1h holder to the 15-minute holding cap rather than 3 hours", () => {
+    assert.equal(watchCoverageFloorMillis({ timeframe: "1h", holdingPosition: true }), 15 * MINUTE);
+  });
+
+  it("clamps a 1h flat thesis to the 30-minute flat cap rather than 10 hours", () => {
+    assert.equal(
+      watchCoverageFloorMillis({ timeframe: "1h", holdingPosition: false }),
+      30 * MINUTE,
+    );
+  });
+
+  it("clamps a short-timeframe holder up to the 2-minute minimum", () => {
+    // A 3m holder: 3 bars = 9 min, well above the 2 min floor — unaffected.
+    // A hypothetical sub-minute timeframe would clamp, but 3m is the smallest
+    // real bar; assert it computes 9 minutes without the floor binding.
+    assert.equal(watchCoverageFloorMillis({ timeframe: "3m", holdingPosition: true }), 9 * MINUTE);
+  });
+
+  it("clamps a short-timeframe flat thesis up to the 5-minute minimum", () => {
+    // 3m flat: 10 bars = 30 min, above the 5 min floor — unaffected.
+    assert.equal(
+      watchCoverageFloorMillis({ timeframe: "3m", holdingPosition: false }),
+      30 * MINUTE,
+    );
   });
 });

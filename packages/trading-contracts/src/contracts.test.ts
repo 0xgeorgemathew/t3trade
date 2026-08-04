@@ -112,6 +112,7 @@ const strategy: MomentumStrategyState = {
   protection: {
     stopMethod: "Below the last accepted swing low",
     stopPrice: 3_652,
+    targetProfitUsd: 25,
     maximumPlannedLossUsd: 19.9,
   },
   exitConditions: [{ description: "5m close under 3,690", timeframe: "5m", priceLevel: 3_690 }],

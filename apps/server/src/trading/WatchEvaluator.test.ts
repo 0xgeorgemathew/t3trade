@@ -3,6 +3,7 @@ import { fakeWebSocketClientLayer } from "@t3tools/hyperliquid/InfoClientTest";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import type { WsDelivery } from "@t3tools/hyperliquid/WebSocketClient";
 import type { AgentMarketSnapshot } from "@t3tools/trading-contracts/market";
+import type { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -66,13 +67,21 @@ const stubSnapshot: AgentMarketSnapshot = {
 
 const unusedRead = () => Effect.die("not used by WatchEvaluator tests");
 
+/**
+ * The position the stub gateway serves to `getPosition`. Mutable so a `pnl_above`
+ * case can set the unrealised PnL it wants the evaluator to see. `null` keeps
+ * the legacy "not used" behaviour so the other cases are unaffected.
+ */
+let stubPosition: AgentNetPosition | null = null;
+
 const stubGateway = Layer.succeed(HyperliquidGateway, {
   resolveMarket: unusedRead,
   getMarketSnapshot: () => Effect.succeed(stubSnapshot),
   getMarketHistory: unusedRead,
   getOrderBook: unusedRead,
   getAccountSnapshot: unusedRead,
-  getPosition: unusedRead,
+  getPosition: () =>
+    stubPosition === null ? (unusedRead() as never) : Effect.succeed(stubPosition),
   getOpenOrders: unusedRead,
 } as unknown as (typeof HyperliquidGateway)["Service"]);
 
@@ -103,6 +112,21 @@ const migrated = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_event_inbox`;
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_orders`;
+  // The `pnl_above` watch resolves the master-wallet address for the mission's
+  // trading account (the same identity the composer uses). Seed the account row
+  // it reads from so that path does not fail with a missing account.
+  const masterWalletJson =
+    '{"privyWalletId":"master_1","address":"0x000000000000000000000000000000000000beef","ownership":"user"}';
+  yield* sql`
+    INSERT INTO trading_accounts (
+      account_id, user_id, environment, master_wallet_json,
+      execution_wallet_json, status, created_at, updated_at
+    ) VALUES (
+      'acct_1', 'local', 'hyperliquid_testnet', ${masterWalletJson},
+      '{}', 'ready', 0, 0
+    )
+    ON CONFLICT (account_id) DO NOTHING
+  `;
 });
 
 /** Write the reconciled position row the `position_update` watch reads. */
@@ -159,7 +183,7 @@ const seed = (watch: MarketWatch) =>
           scaleInConditions: [],
           partialReductionAllowed: false,
         },
-        protection: { stopMethod: "fixed" },
+        protection: { stopMethod: "fixed", targetProfitUsd: 10 },
         exitConditions: [],
         abandonmentConditions: [],
         reentryConditions: [],
@@ -482,6 +506,105 @@ layer("WatchEvaluator", (it) => {
       const claimed = yield* inbox.claimPending("mission_1");
       assert.equal(claimed.length, 1);
       assert.match(claimed[0]?.summary ?? "", /gone/);
+    }),
+  );
+
+  /**
+   * `pnl_above` is the runtime's half of the wake-and-decide profit target: the
+   * strategy names the win worth banking, the evaluator wakes the harness when
+   * the unrealised PnL reaches it. A flat position never fires it.
+   */
+  it.effect("fires a pnl_above watch when unrealised PnL reaches the target", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      stubPosition = {
+        market: "ETH",
+        size: 0.5,
+        entryPrice: 3_000,
+        unrealisedPnl: 25,
+        cumulativeFunding: 0,
+        marginUsed: 50,
+        freshness,
+      };
+      const watch = yield* seed({ type: "pnl_above", market: "ETH", valueUsd: 25 });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+
+      // Two sweeps; the triggered watch must not fire a second time.
+      yield* evaluator.sweep;
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const inbox = yield* TradingEventInbox;
+      const claimed = yield* inbox.claimPending("mission_1");
+      assert.equal(claimed.length, 1);
+      assert.equal(claimed[0]?.deduplicationKey, `pnl_above:${watch.id}`);
+      assert.equal(claimed[0]?.category, "market");
+      assert.match(claimed[0]?.summary ?? "", /reached target/);
+
+      const strategies = yield* TradingStrategyService;
+      const persisted = (yield* strategies.listWatches("mission_1")).find((w) => w.id === watch.id);
+      assert.equal(persisted?.status, "triggered");
+      stubPosition = null;
+    }),
+  );
+
+  it.effect("does not fire a pnl_above watch while flat, and leaves it active", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      // size 0 is the gateway's flat shape.
+      stubPosition = {
+        market: "ETH",
+        size: 0,
+        unrealisedPnl: 0,
+        cumulativeFunding: 0,
+        marginUsed: 0,
+        freshness,
+      };
+      const watch = yield* seed({ type: "pnl_above", market: "ETH", valueUsd: 10 });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const inbox = yield* TradingEventInbox;
+      assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+
+      // The watch stays active: a strategy publish or a later re-entry still
+      // supersedes it like any other watch.
+      const strategies = yield* TradingStrategyService;
+      const persisted = (yield* strategies.listWatches("mission_1")).find((w) => w.id === watch.id);
+      assert.equal(persisted?.status, "active");
+      stubPosition = null;
+    }),
+  );
+
+  it.effect("does not fire a pnl_above watch before the target is reached", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      stubPosition = {
+        market: "ETH",
+        size: 0.5,
+        entryPrice: 3_000,
+        unrealisedPnl: 5,
+        cumulativeFunding: 0,
+        marginUsed: 50,
+        freshness,
+      };
+      yield* seed({ type: "pnl_above", market: "ETH", valueUsd: 25 });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const inbox = yield* TradingEventInbox;
+      assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+      stubPosition = null;
     }),
   );
 });

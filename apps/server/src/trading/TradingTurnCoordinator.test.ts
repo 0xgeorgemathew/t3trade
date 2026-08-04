@@ -106,7 +106,7 @@ const seedMission = Effect.gen(function* () {
         scaleInConditions: [],
         partialReductionAllowed: false,
       },
-      protection: { stopMethod: "fixed" },
+      protection: { stopMethod: "fixed", targetProfitUsd: 10 },
       exitConditions: [],
       abandonmentConditions: [],
       reentryConditions: [],

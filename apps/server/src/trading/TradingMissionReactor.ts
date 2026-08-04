@@ -160,6 +160,8 @@ const describeWatchPredicate = (watch: PersistedWatch["watch"]): string => {
       return `${watch.market} position updated`;
     case "scheduled_reassessment":
       return `scheduled reassessment due at ${watch.runAt}`;
+    case "pnl_above":
+      return `${watch.market} unrealised PnL reaches $${watch.valueUsd}`;
   }
 };
 

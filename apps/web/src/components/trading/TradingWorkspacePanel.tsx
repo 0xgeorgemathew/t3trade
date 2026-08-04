@@ -157,6 +157,7 @@ function Strategy({ mission }: { mission: OrchestrationTradingMission }) {
       <Field label="Current action" value={strategy.currentAction} />
       <Field label="Order preference" value={strategy.entryPlan.orderPreference} />
       <Field label="Stop method" value={strategy.protection.stopMethod} />
+      <Field label="Target" value={`+$${strategy.protection.targetProfitUsd}`} />
       <p className="px-3 pt-2 text-sm text-muted-foreground sm:px-4">{strategy.belief.summary}</p>
       <p className="px-3 pb-2 text-sm text-muted-foreground sm:px-4">{strategy.explanation}</p>
     </SettingsSection>
