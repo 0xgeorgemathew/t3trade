@@ -131,6 +131,31 @@ const stubGateway = Layer.succeed(HyperliquidGateway)({
       positions: [],
       freshness,
     } as never),
+  getPosition: () =>
+    Effect.succeed({
+      market: "ETH",
+      size: 0,
+      unrealisedPnl: 0,
+      cumulativeFunding: 0,
+      marginUsed: 0,
+      freshness,
+    } as never),
+  getMarketHistory: (request: { market: string; interval: string; maxBars?: number }) =>
+    Effect.succeed({
+      market: request.market,
+      interval: request.interval,
+      // The composer asks for 20 bars; echo the cap so the test can assert it.
+      candles: Array.from({ length: request.maxBars ?? 0 }, (_, i) => ({
+        openTime: i,
+        closeTime: i,
+        open: MARK,
+        close: MARK,
+        high: MARK,
+        low: MARK,
+        volume: 1,
+      })),
+      freshness,
+    } as never),
 } as unknown as HyperliquidGateway["Service"]);
 
 const stubMissions = Layer.succeed(TradingMissionService)({
@@ -206,6 +231,17 @@ layer("TradingWakeupComposer", (it) => {
     Effect.gen(function* () {
       const wakeup = yield* compose("watch_up");
       assert.equal(wakeup.wakeReason, undefined);
+    }),
+  );
+
+  it.effect("carries the net position and a bounded 20-bar slice of the primary timeframe", () =>
+    Effect.gen(function* () {
+      const wakeup = yield* compose();
+      // Flat is a real position, not a missing one.
+      assert.equal(wakeup.position.size, 0);
+      // The primary timeframe is strategy.timeframes[0] ("1m"); the slice is capped at 20.
+      assert.equal(wakeup.recentCandles.interval, "1m");
+      assert.equal(wakeup.recentCandles.candles.length, 20);
     }),
   );
 });

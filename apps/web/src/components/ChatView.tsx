@@ -5918,6 +5918,7 @@ function ChatViewContent(props: ChatViewProps) {
                             runtimeMode={runtimeMode}
                             interactionMode={interactionMode}
                             lockedProvider={lockedProvider}
+                            missionLockedProvider={missionHarnessProvider}
                             {...(boundMission
                               ? {
                                   missionControls: (

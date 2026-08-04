@@ -10,9 +10,9 @@
  * @module TradingWakeup
  */
 import { Schema } from "effect";
-import { AgentAccountSnapshot } from "./account-snapshot.ts";
+import { AgentAccountSnapshot, AgentNetPosition } from "./account-snapshot.ts";
 import { TradingAuthority } from "./authority.ts";
-import { AgentMarketSnapshot } from "./market.ts";
+import { AgentMarketSnapshot, MarketHistory } from "./market.ts";
 import { TradingHarnessRunCause } from "./mission.ts";
 import { TradingId, TradingText, UnixMillis } from "./primitives.ts";
 import { MomentumStrategyState, TradingTimeframe } from "./strategy.ts";
@@ -76,8 +76,10 @@ export function describeArmedWatch(persisted: PersistedWatch, markPrice: number)
  *
  * The harness does not receive unbounded market data or a free-form prompt. It
  * receives the cause, the triggering watch or user message, and a fresh,
- * versioned snapshot of market, account, active strategy, authority, and the
- * coalesced pending events the run was started with.
+ * versioned snapshot of market, account, position, recent price action, active
+ * strategy, authority, and the coalesced pending events the run was started
+ * with. The bounded snapshot answers "what do I hold, what did price just do?"
+ * without tool calls; deeper history stays behind `trading_get_market_history`.
  *
  * `cause` is the §11.2 `TradingHarnessRunCause` union verbatim, including
  * `mission_created` for the first run.
@@ -116,6 +118,23 @@ export const TradingHarnessWakeup = Schema.Struct({
    * are in `authority`.
    */
   accountSnapshot: AgentAccountSnapshot,
+  /**
+   * The mission's net position for `market`, always present.
+   *
+   * Flat is modelled as `size: 0` (the contract already treats that as a valid
+   * state), so a woken run never needs a boilerplate `trading_get_position`
+   * call to learn whether it holds anything before it can think.
+   */
+  position: AgentNetPosition,
+  /**
+   * The last 20 bars of the primary timeframe
+   * (`activeStrategy.timeframes[0]`, falling back to `defaultTimeframe`).
+   *
+   * A bounded slice of recent price action so the run can answer "what did
+   * price just do?" without a `trading_get_market_history` round-trip. Deeper
+   * history stays behind that tool; this never exceeds 20 bars.
+   */
+  recentCandles: MarketHistory,
   activeStrategy: MomentumStrategyState,
   /**
    * How long ago the active strategy was published, in milliseconds.

@@ -143,6 +143,30 @@ describe("TradingHarnessWakeup", () => {
       observedAt: 1_600_000,
       freshness: { observedAt: 1_600_000, source: "info_api", staleAfterMillis: 5_000 },
     },
+    position: {
+      market: "ETH",
+      size: 0,
+      unrealisedPnl: 0,
+      cumulativeFunding: 0,
+      marginUsed: 0,
+      freshness: { observedAt: 1_600_000, source: "info_api", staleAfterMillis: 5_000 },
+    },
+    recentCandles: {
+      market: "ETH",
+      interval: "1m",
+      candles: [
+        {
+          openTime: 1_599_940_000,
+          closeTime: 1_600_000_000,
+          open: 3_990,
+          close: 4_000,
+          high: 4_005,
+          low: 3_985,
+          volume: 12,
+        },
+      ],
+      freshness: { observedAt: 1_600_000, source: "websocket", staleAfterMillis: 5_000 },
+    },
     activeStrategy: strategy,
     strategyAgeMillis: 600_000,
     armedWatches: [
@@ -165,11 +189,25 @@ describe("TradingHarnessWakeup", () => {
     expect(decoded.kind).toBe("trading-harness-wakeup");
   });
 
+  it("carries the net position and the bounded recent-candle slice", () => {
+    const decoded = decode(base);
+    // Flat is a valid position state, not an absence of position.
+    expect(decoded.position.size).toBe(0);
+    expect(decoded.recentCandles.market).toBe("ETH");
+    expect(decoded.recentCandles.interval).toBe("1m");
+    expect(decoded.recentCandles.candles).toHaveLength(1);
+    expect(decoded.recentCandles.candles[0]?.close).toBe(4_000);
+  });
+
   it("requires the new fields rather than treating them as optional", () => {
     const { strategyAgeMillis: _age, ...withoutAge } = base;
     expect(() => decode(withoutAge)).toThrow();
     const { armedWatches: _armed, ...withoutArmed } = base;
     expect(() => decode(withoutArmed)).toThrow();
+    const { position: _position, ...withoutPosition } = base;
+    expect(() => decode(withoutPosition)).toThrow();
+    const { recentCandles: _candles, ...withoutCandles } = base;
+    expect(() => decode(withoutCandles)).toThrow();
   });
 
   // The discriminator is what lets the chat timeline tell a wakeup from

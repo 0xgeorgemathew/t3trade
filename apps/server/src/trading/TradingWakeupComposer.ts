@@ -133,9 +133,22 @@ const make = Effect.gen(function* () {
 
       // Fresh snapshots — the whole point of the wake path. The gateway enforces
       // its own freshness windows (BBO 2s, asset context 5s, §13); the composer
-      // does not second-guess them.
-      const [marketSnapshot, accountSnapshot] = yield* Effect.all(
-        [gateway.getMarketSnapshot(mission.market), gateway.getAccountSnapshot(address)],
+      // does not second-guess them. The position read and the bounded 20-bar
+      // history ride the same batch so a woken run starts already knowing what
+      // it holds and what price just did, without boilerplate tool calls. A
+      // history-read failure fails compose the same way a snapshot failure does.
+      const primaryTimeframe = activeStrategy.timeframes[0] ?? POC_DEFAULT_TIMEFRAME;
+      const [marketSnapshot, accountSnapshot, position, recentCandles] = yield* Effect.all(
+        [
+          gateway.getMarketSnapshot(mission.market),
+          gateway.getAccountSnapshot(address),
+          gateway.getPosition(address, mission.market),
+          gateway.getMarketHistory({
+            market: mission.market,
+            interval: primaryTimeframe,
+            maxBars: 20,
+          }),
+        ],
         { concurrency: "unbounded" },
       ).pipe(Effect.mapError((error) => fail("snapshot_read_failed", error)));
 
@@ -167,6 +180,8 @@ const make = Effect.gen(function* () {
         userMessage: input.userMessage,
         marketSnapshot,
         accountSnapshot,
+        position,
+        recentCandles,
         activeStrategy,
         strategyAgeMillis: Math.max(0, occurredAt - activeStrategy.updatedAt),
         armedWatches,
