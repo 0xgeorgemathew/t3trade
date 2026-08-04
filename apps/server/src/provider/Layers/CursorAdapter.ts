@@ -544,7 +544,7 @@ export function makeCursorAdapter(
                   mcpServers: [
                     {
                       type: "http" as const,
-                      name: "t3-code",
+                      name: "t3-trade",
                       url: mcpSession.endpoint,
                       headers: [
                         {

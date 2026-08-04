@@ -3,7 +3,7 @@
  *
  * These ride the existing upstream MCP boundary: the first-party MCP server in
  * `apps/server`, reached with the per-session bearer credential every provider
- * adapter already injects as `t3-code`. There is no second transport and no
+ * adapter already injects as `t3-trade`. There is no second transport and no
  * per-harness MCP configuration.
  *
  * Every schema here is imported from `@t3tools/trading-contracts/tools`; none

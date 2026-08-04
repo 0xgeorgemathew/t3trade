@@ -3,7 +3,7 @@
  *
  * These drive the real `/mcp` HTTP endpoint with a credential minted by
  * `McpSessionRegistry.issue`, so what is under test is the whole path an
- * injected `t3-code` harness takes: bearer auth, MCP session, tool dispatch,
+ * injected `t3-trade` harness takes: bearer auth, MCP session, tool dispatch,
  * capability check, thread-to-mission resolution, and the trading services.
  */
 import { NodeHttpServer } from "@effect/platform-node";
@@ -395,6 +395,49 @@ it.effect("still refuses a second active mission for the same user", () =>
 
       assert.equal(error._tag, "TradingMissionAlreadyActiveError");
       assert.equal((error as { activeMissionId: string }).activeMissionId, MISSION_ID);
+    }),
+  ),
+);
+
+it.effect("registers a watch before the first strategy publish with strategyVersion 0", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      // The mission was seeded with no published strategy, so its row still
+      // carries strategy_version = 0. A watch registered now must persist,
+      // result-encode, and announce — none of those steps may reject on the
+      // version being below 1.
+      const registered = yield* callTool(BOUND_THREAD, "trading_register_watch", {
+        missionId: MISSION_ID,
+        watch: {
+          type: "price_cross",
+          market: "ETH",
+          priceSource: "mark",
+          direction: "above",
+          price: 3200,
+        },
+      });
+      assert.equal(registered.result.isError, false);
+      const registeredWatch = registered.result.structuredContent;
+      assert.equal(registeredWatch.strategyVersion, 0);
+      assert.equal(registeredWatch.status, "active");
+      assert.equal(registeredWatch.watch.type, "price_cross");
+
+      const listed = yield* callTool(BOUND_THREAD, "trading_list_watches", {
+        missionId: MISSION_ID,
+      });
+      assert.equal(listed.result.isError, false);
+      const watches = listed.result.structuredContent;
+      assert.equal(watches.length, 1);
+      assert.equal(watches[0].strategyVersion, 0);
+      assert.equal(watches[0].id, registeredWatch.id);
+
+      // The announce path succeeded rather than hitting its
+      // "could not announce a registered watch" warning: a watch-registered
+      // command reached the recording engine.
+      assert.deepStrictEqual(
+        dispatchedCommands.map((command) => command.type),
+        ["trading.mission.watch-registered"],
+      );
     }),
   ),
 );
