@@ -45,7 +45,7 @@ const strategy = {
     scaleInConditions: [],
     partialReductionAllowed: true,
   },
-  protection: { stopMethod: "under the last swing low", stopPrice: 3_900 },
+  protection: { stopMethod: "under the last swing low", stopPrice: 3_900, targetProfitUsd: 15 },
   exitConditions: [{ description: "a close under 3900" }],
   abandonmentConditions: [],
   reentryConditions: [],

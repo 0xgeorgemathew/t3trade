@@ -25,7 +25,7 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { WATCH_COVERAGE_FLOOR_MILLIS } from "@t3tools/trading-contracts/watch";
+import { watchCoverageFloorMillis } from "@t3tools/trading-contracts/watch";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
@@ -210,7 +210,7 @@ const publishStrategy = Effect.gen(function* () {
         scaleInConditions: [],
         partialReductionAllowed: false,
       },
-      protection: { stopMethod: "fixed" },
+      protection: { stopMethod: "fixed", targetProfitUsd: 10 },
       exitConditions: [],
       abandonmentConditions: [],
       reentryConditions: [],
@@ -239,9 +239,15 @@ layer("run settlement: the armed-coverage floor", (it) => {
       const watch = watches[0]!.watch;
       assert.equal(watch.type, "scheduled_reassessment");
       if (watch.type !== "scheduled_reassessment") return;
-      // Due inside the floor — the whole point is that it is soon.
+      // Due inside the scaled floor — the whole point is that it is soon. No
+      // strategy is published here, so the primary timeframe is the 1m default
+      // and holding a position scales the floor to 3 bars (3 minutes).
       const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-      assert.isAtMost(watch.runAt, now + WATCH_COVERAGE_FLOOR_MILLIS + 1_000);
+      const holdingFloor1m = watchCoverageFloorMillis({
+        timeframe: "1m",
+        holdingPosition: true,
+      });
+      assert.isAtMost(watch.runAt, now + holdingFloor1m + 1_000);
     }),
   );
 
@@ -319,6 +325,43 @@ layer("run settlement: the armed-coverage floor", (it) => {
 
       const active = yield* activeWatches;
       assert.deepEqual(active, []);
+    }),
+  );
+
+  it.effect("arms the profit-target pnl_above watch once while holding a position", () =>
+    // The strategy names the win worth banking; the runtime arms a `pnl_above`
+    // watch at it while the mission holds a position. This runs in addition to
+    // the coverage floor, so a position left with no levels still gets both the
+    // target watch and a staleness reassessment.
+    Effect.gen(function* () {
+      yield* seed;
+      yield* holdPosition(0.05, 1_850);
+      yield* startTurn;
+      yield* publishStrategy;
+      yield* endTurn;
+
+      const active = yield* activeWatches;
+      const target = active.find((w) => w.watch.type === "pnl_above");
+      assert.isOk(target);
+      if (target?.watch.type !== "pnl_above") return;
+      assert.equal(target.watch.valueUsd, 10);
+      assert.equal(target.armedReason, "profit_target");
+      // Exactly one pnl_above watch is armed, never a duplicate.
+      assert.equal(active.filter((w) => w.watch.type === "pnl_above").length, 1);
+    }),
+  );
+
+  it.effect("does not arm the profit-target watch while flat", () =>
+    // A flat position never fires pnl_above and the runtime does not arm it
+    // before there is exposure to bank a profit on.
+    Effect.gen(function* () {
+      yield* seed;
+      yield* startTurn;
+      yield* publishStrategy;
+      yield* endTurn;
+
+      const active = yield* activeWatches;
+      assert.isFalse(active.some((w) => w.watch.type === "pnl_above"));
     }),
   );
 

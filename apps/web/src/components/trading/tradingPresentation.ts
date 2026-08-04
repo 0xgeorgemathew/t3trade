@@ -63,6 +63,8 @@ export function describeWatch(watch: MarketWatch): string {
       return `${watch.market} position updates`;
     case "scheduled_reassessment":
       return `Scheduled reassessment at ${new Date(watch.runAt).toISOString()}`;
+    case "pnl_above":
+      return `${watch.market} unrealised PnL reaches $${watch.valueUsd}`;
   }
 }
 

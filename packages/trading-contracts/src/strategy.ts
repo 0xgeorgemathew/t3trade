@@ -7,7 +7,14 @@
  * @module MomentumStrategy
  */
 import { Effect, Option, Schema, SchemaIssue, SchemaTransformation } from "effect";
-import { Price, TradingMarket, TradingText, UnixMillis, UsdAmount } from "./primitives.ts";
+import {
+  PositiveUsdAmount,
+  Price,
+  TradingMarket,
+  TradingText,
+  UnixMillis,
+  UsdAmount,
+} from "./primitives.ts";
 
 export const TradingTimeframe = Schema.Literals(["1m", "3m", "5m", "15m", "1h"]);
 export type TradingTimeframe = typeof TradingTimeframe.Type;
@@ -38,7 +45,8 @@ export const POC_DEFAULT_TIMEFRAME: TradingTimeframe = "1m";
  * minutes to wake.
  */
 export const POC_DEFAULT_INSTRUCTION =
-  "Trade ETH momentum on testnet using 1m candles. Arm candle-close watches on the 1m interval so each run wakes within a minute.";
+  "Trade ETH momentum on testnet using 1m candles. Arm candle-close watches on the 1m interval so each run wakes within a minute. " +
+  "State a concrete profit target in USD for every position and manage the position against it: bank it, or justify raising it.";
 
 /**
  * A condition the harness published in prose, with optional structured hints -
@@ -150,6 +158,20 @@ const MomentumProtection = Schema.Struct({
   stopPrice: Schema.optional(Price),
   takeProfitMethod: Schema.optional(TradingText),
   takeProfitPrice: Schema.optional(Price),
+  /**
+   * The unrealised PnL, in USD, at which this position should be closed or
+   * re-justified.
+   *
+   * This is the win worth banking. While a position is open the runtime arms a
+   * `pnl_above` watch at it; when that watch wakes the harness, the default
+   * action is to close (or reduce) and reassess. The server never auto-places a
+   * take-profit order on the exchange — this is wake-and-decide, and the harness
+   * may instead republish with a higher target if it judges the move still
+   * extending.
+   */
+  targetProfitUsd: PositiveUsdAmount,
+  /** Optional rationale for the chosen target. */
+  targetProfitRationale: Schema.optional(TradingText),
   maximumPlannedLossUsd: Schema.optional(UsdAmount),
 });
 
@@ -166,7 +188,12 @@ export const momentumStrategyAuthoredFields = {
   mode: MomentumStrategyMode,
 
   direction: MomentumStrategyDirection,
-  timeframes: Schema.Array(TradingTimeframe),
+  /**
+   * `timeframes[0]` is the primary timeframe that drives the monitoring
+   * cadence (the runtime scales its reassessment floor off it). A strategy
+   * must name at least one timeframe.
+   */
+  timeframes: Schema.Array(TradingTimeframe).check(Schema.isNonEmpty()),
 
   belief: MomentumBelief,
   entryPlan: MomentumEntryPlan,

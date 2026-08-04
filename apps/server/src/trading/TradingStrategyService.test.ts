@@ -40,6 +40,7 @@ const body = (name: string): PublishMomentumStrategyBody => ({
   protection: {
     stopMethod: "Below the last accepted swing low",
     stopPrice: 3_652,
+    targetProfitUsd: 25,
   },
   exitConditions: [{ description: "5m close under 3,690" }],
   abandonmentConditions: [],

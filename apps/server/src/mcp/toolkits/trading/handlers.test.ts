@@ -68,6 +68,7 @@ const strategyBody = (name: string): PublishMomentumStrategyBody => ({
   },
   protection: {
     stopMethod: "Structural stop beneath the breakout candle low.",
+    targetProfitUsd: 20,
   },
   exitConditions: [{ description: "Momentum stalls for three consecutive candles." }],
   abandonmentConditions: [{ description: "Range high is lost on a 15m close." }],

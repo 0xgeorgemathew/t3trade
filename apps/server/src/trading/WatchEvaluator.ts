@@ -429,6 +429,49 @@ const make = Effect.gen(function* () {
     yield* fireOnChange(tracked, signature, () => `order ${watch.cloid} is now ${signature}`);
   });
 
+  /**
+   * Evaluate a `pnl_above` watch against the reconciled unrealised PnL.
+   *
+   * The target lives in the strategy the watch was armed against; the live PnL
+   * comes from the gateway position read (resolved via the master-wallet
+   * address, the same identity the composer and §10.6 use). A flat position
+   * (size 0) never fires — it leaves the watch active so a strategy publish or
+   * a later re-entry still supersedes it like any other watch.
+   *
+   * `pnl_above` is not differential: it fires once when the threshold is first
+   * reached, then `markTriggered` flips it terminal so a subsequent sweep
+   * cannot re-fire.
+   */
+  const evaluatePnlAbove = Effect.fn("WatchEvaluator.evaluatePnlAbove")(function* (
+    tracked: TrackedWatch,
+  ) {
+    const watch = tracked.watch.watch;
+    if (watch.type !== "pnl_above") return;
+
+    const mission = yield* missions.getMission(tracked.missionId).pipe(Effect.orDie);
+    const address = yield* missions
+      .getMasterWalletAddress(mission.tradingAccountId)
+      .pipe(Effect.orDie);
+    const position = yield* gateway.getPosition(address, watch.market).pipe(Effect.orDie);
+    // A flat position never fires the watch and leaves it active.
+    if (position.size === 0) return;
+
+    if (position.unrealisedPnl < watch.valueUsd) return;
+
+    const observedAt = yield* nowMs;
+    yield* enqueueFire(
+      tracked,
+      `pnl_above:${tracked.watch.id}`,
+      `unrealised PnL $${position.unrealisedPnl.toFixed(2)} reached target $${watch.valueUsd}`,
+      {
+        unrealisedPnl: position.unrealisedPnl,
+        valueUsd: watch.valueUsd,
+        observedAt,
+        watchId: tracked.watch.id,
+      },
+    );
+  });
+
   /** Fire a `scheduled_reassessment` watch whose `runAt` has passed. */
   const evaluateScheduled = (tracked: TrackedWatch, observedAt: number) =>
     Effect.gen(function* () {
@@ -478,6 +521,9 @@ const make = Effect.gen(function* () {
           break;
         case "order_update":
           yield* evaluateOrderUpdate(t);
+          break;
+        case "pnl_above":
+          yield* evaluatePnlAbove(t);
           break;
         default:
           break;

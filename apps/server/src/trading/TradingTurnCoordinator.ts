@@ -41,21 +41,24 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
-import { POC_DEFAULT_TIMEFRAME } from "@t3tools/trading-contracts/strategy";
+import { POC_DEFAULT_TIMEFRAME, type TradingTimeframe } from "@t3tools/trading-contracts/strategy";
 import {
   hasReassessmentWithin,
   isDeafWhileHoldingPosition,
   readWatchCoverage,
-  WATCH_COVERAGE_FLOOR_MILLIS,
+  watchCoverageFloorMillis,
 } from "@t3tools/trading-contracts/watch";
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import {
   HarnessRunOutcome,
   HarnessRunRequest,
+  type MomentumStrategyState,
+  type PersistedWatch,
   TradingDomainEventSummary,
   TradingHarnessRunCause,
   TradingHarnessWakeup,
@@ -257,14 +260,19 @@ const make = Effect.gen(function* () {
   /**
    * Arm the floor's reassessment, once. `coversByReassessment` has already said
    * nothing is due inside the window, so this cannot stack duplicates.
+   *
+   * The floor is computed by the caller from the strategy's primary timeframe
+   * and whether a position is held (see `watchCoverageFloorMillis`), so the
+   * cadence scales with how fast the mission's market prints confirming bars.
    */
   const armStalenessFloor = (input: {
     readonly missionId: string;
     readonly nowMillis: number;
+    readonly floorMillis: number;
     readonly detail: Record<string, unknown>;
   }) =>
     Effect.gen(function* () {
-      const runAt = input.nowMillis + WATCH_COVERAGE_FLOOR_MILLIS;
+      const runAt = input.nowMillis + input.floorMillis;
       const watch = yield* watches.registerWatch({
         missionId: input.missionId,
         watch: { type: "scheduled_reassessment", runAt },
@@ -279,6 +287,58 @@ const make = Effect.gen(function* () {
     });
 
   /**
+   * Resolve the strategy's primary timeframe, the one that drives the monitoring
+   * cadence. Falls back to the POC default when no strategy is published so a
+   * mission between strategies still gets a floor.
+   */
+  const primaryTimeframeFor = (strategy: Option.Option<MomentumStrategyState>): TradingTimeframe =>
+    // The strategy schema requires a non-empty `timeframes` array, so index 0 is
+    // present at runtime; the fallback only satisfies `noUncheckedIndexedAccess`.
+    strategy._tag === "Some"
+      ? (strategy.value.timeframes[0] ?? POC_DEFAULT_TIMEFRAME)
+      : POC_DEFAULT_TIMEFRAME;
+
+  /**
+   * Arm a `pnl_above` watch at the strategy's declared profit target while the
+   * mission holds a position, once. A flat position never fires it and leaves
+   * it active; the strategy publish supersedes it like any other watch.
+   *
+   * This is the runtime's half of the wake-and-decide profit target: the
+   * strategy names the win worth banking, the runtime wakes the harness when
+   * the unrealised PnL reaches it, and the harness decides whether to bank it
+   * or republish with a higher target.
+   */
+  const ensureProfitTargetArmed = (input: {
+    readonly missionId: string;
+    readonly strategy: MomentumStrategyState;
+    readonly armed: ReadonlyArray<PersistedWatch>;
+  }) =>
+    Effect.gen(function* () {
+      const alreadyArmed = input.armed.some(
+        (w) =>
+          w.status === "active" &&
+          w.watch.type === "pnl_above" &&
+          w.watch.valueUsd === input.strategy.protection.targetProfitUsd,
+      );
+      if (alreadyArmed) return;
+
+      const watch = yield* watches.registerWatch({
+        missionId: input.missionId,
+        watch: {
+          type: "pnl_above",
+          market: input.strategy.market,
+          valueUsd: input.strategy.protection.targetProfitUsd,
+        },
+        armedReason: "profit_target",
+      });
+      yield* Effect.logInfo("TradingTurnCoordinator: armed the profit-target watch", {
+        missionId: input.missionId,
+        watchId: watch.id,
+        targetProfitUsd: input.strategy.protection.targetProfitUsd,
+      });
+    });
+
+  /**
    * Never let a run end holding a position with nothing armed that can wake it.
    *
    * The failure this closes was observed live: a position open, one downside
@@ -287,12 +347,14 @@ const make = Effect.gen(function* () {
    * broken — it was deaf, which looks identical from the outside and is much
    * worse, because a deaf mission still holds exposure.
    *
-   * The rule is a floor, not a policy: if the run left levels armed on both
-   * sides of the mark, or a reassessment due inside the window, nothing
-   * happens. Otherwise one reassessment is registered so the mission gets at
-   * least one more turn. That turn is also the staleness backstop — waking to
-   * find nothing has changed is the harness's cue to republish at v(n+1) with a
-   * different mode, wider levels, or no thesis at all.
+   * Two things happen here, in order:
+   *  1. While holding a position with a live strategy, arm a `pnl_above` watch
+   *     at the strategy's declared profit target — the win worth banking. This
+   *     runs in addition to the coverage logic, before it.
+   *  2. The coverage floor: if the run left levels armed on both sides of the
+   *     mark, or a reassessment due inside the window, nothing happens.
+   *     Otherwise one reassessment is registered so the mission gets at least
+   *     one more turn. The floor scales with the strategy's primary timeframe.
    *
    * It never blocks the settlement. The lease is already released by the time
    * this runs, and a mission that could not be given a watch is still better
@@ -309,6 +371,8 @@ const make = Effect.gen(function* () {
       const position = rows[0];
       const now = yield* Clock.currentTimeMillis;
       const armed = yield* strategies.listWatches(missionId);
+      const strategyOption = yield* strategies.getCurrentStrategy(missionId);
+      const primaryTimeframe = primaryTimeframeFor(strategyOption);
 
       // Flat. Timing an entry is the harness's own business, so no level is
       // required on either side — but a mission that has published a thesis and
@@ -318,22 +382,42 @@ const make = Effect.gen(function* () {
       if (position === undefined) {
         const mission = yield* missions.getMission(missionId);
         if (!isOperativeMissionStatus(mission.status)) return;
-        const strategy = yield* strategies.getCurrentStrategy(missionId);
         // No thesis: nothing to come back to. The mission is between strategies
         // and something else — a create, a publish, a user control — will move
         // it on.
-        if (strategy._tag === "None") return;
-        if (hasReassessmentWithin({ watches: armed, nowMillis: now })) return;
+        if (strategyOption._tag === "None") return;
+        const flatFloor = watchCoverageFloorMillis({
+          timeframe: primaryTimeframe,
+          holdingPosition: false,
+        });
+        if (hasReassessmentWithin({ watches: armed, nowMillis: now, floorMillis: flatFloor }))
+          return;
 
         yield* armStalenessFloor({
           missionId,
           nowMillis: now,
-          detail: { missionStatus: mission.status, flat: true },
+          floorMillis: flatFloor,
+          detail: { missionStatus: mission.status, flat: true, primaryTimeframe },
         });
         return;
       }
 
+      // Holding a position with a live strategy: arm the profit target. The
+      // strategy is the source of the target, so a mission with no published
+      // thesis skips this and falls through to the coverage floor alone.
+      if (strategyOption._tag === "Some") {
+        yield* ensureProfitTargetArmed({
+          missionId,
+          strategy: strategyOption.value,
+          armed,
+        });
+      }
+
       const markPrice = position.mark_px;
+      const holdingFloor = watchCoverageFloorMillis({
+        timeframe: primaryTimeframe,
+        holdingPosition: true,
+      });
 
       // With no mark there is no "each side of" anything to measure. Treat that
       // as uncovered rather than as covered: an unreadable mark is not evidence
@@ -341,14 +425,20 @@ const make = Effect.gen(function* () {
       const coverage =
         markPrice === null
           ? { coversUpside: false, coversDownside: false, coversByReassessment: false }
-          : readWatchCoverage({ watches: armed, markPrice, nowMillis: now });
+          : readWatchCoverage({
+              watches: armed,
+              markPrice,
+              nowMillis: now,
+              floorMillis: holdingFloor,
+            });
 
       if (!isDeafWhileHoldingPosition(coverage)) return;
 
       yield* armStalenessFloor({
         missionId,
         nowMillis: now,
-        detail: { positionSize: position.size, coverage },
+        floorMillis: holdingFloor,
+        detail: { positionSize: position.size, coverage, primaryTimeframe },
       });
     }).pipe(
       Effect.catchCause((cause) =>
