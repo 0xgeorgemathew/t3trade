@@ -20,7 +20,7 @@ import {
   ResolvedMarket,
 } from "./market.ts";
 import { TradingHarnessRun, TradingMission } from "./mission.ts";
-import { MomentumStrategyState } from "./strategy.ts";
+import { AgentConditionInput, MomentumStrategyState } from "./strategy.ts";
 import {
   TradingGetMissionResult,
   TradingPublishMomentumStrategyInput,
@@ -331,6 +331,54 @@ describe("§14.3 mission tool contracts", () => {
     const decoded = decodeGetMissionResult({ bound: false });
     assert(!decoded.bound);
     expect(decoded.lastMission).toBeUndefined();
+  });
+
+  it("accepts an omitted missionId (the bound mission resolves it at the handler)", () => {
+    // `missionId` is optional on every trading tool input: the calling thread
+    // is bound to exactly one mission, so the argument is a check, not a route.
+    const decoded = decodePublishInput({
+      expectedVersion: 0,
+      strategy: (() => {
+        const { version: _v, updatedAt: _u, ...body } = strategy;
+        return body;
+      })(),
+    });
+    expect(decoded.missionId).toBeUndefined();
+  });
+
+  it("decodes a prose-string condition into the object shape", () => {
+    const decodeCondition = Schema.decodeUnknownSync(AgentConditionInput);
+    // A bare prose string where the schema asked for `{ description }`.
+    expect(decodeCondition("Exit if a 1m candle closes back above 1865.9.")).toEqual({
+      description: "Exit if a 1m candle closes back above 1865.9.",
+    });
+    // The full object shape still passes through.
+    expect(
+      decodeCondition({ description: "Range high is lost on a 15m close.", timeframe: "15m" }),
+    ).toEqual({
+      description: "Range high is lost on a 15m close.",
+      timeframe: "15m",
+    });
+    // Empty prose is rejected — a bare "   " is not a conclusion.
+    expect(() => decodeCondition("   ")).toThrow();
+  });
+
+  it("round-trips a strategy whose exitConditions are bare prose strings", () => {
+    // The authored/input form accepts prose strings; the persisted form is the
+    // object shape. A strategy published with prose exit conditions decodes and
+    // re-encodes as objects.
+    const { version: _v, updatedAt: _u, ...body } = strategy;
+    const decoded = decodePublishInput({
+      missionId: "mission_1",
+      expectedVersion: 0,
+      strategy: {
+        ...body,
+        exitConditions: ["Exit if a finalized 1m candle closes back above 1865.9."],
+      },
+    });
+    expect(decoded.strategy.exitConditions).toEqual([
+      { description: "Exit if a finalized 1m candle closes back above 1865.9." },
+    ]);
   });
 });
 

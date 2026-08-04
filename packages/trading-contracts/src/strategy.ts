@@ -6,7 +6,7 @@
  *
  * @module MomentumStrategy
  */
-import { Schema } from "effect";
+import { Effect, Option, Schema, SchemaIssue, SchemaTransformation } from "effect";
 import { Price, TradingMarket, TradingText, UnixMillis, UsdAmount } from "./primitives.ts";
 
 export const TradingTimeframe = Schema.Literals(["1m", "3m", "5m", "15m", "1h"]);
@@ -56,6 +56,46 @@ export const AgentConditionDescription = Schema.Struct({
 });
 export type AgentConditionDescription = typeof AgentConditionDescription.Type;
 
+/**
+ * The input form of a condition: the full object, or just a prose string.
+ *
+ * Providers that stringified nested params (and a harness that simply thinks
+ * in prose) would send `"Exit if a 1m candle closes back above 1865.9."` where
+ * the schema asked for `{ description: ... }`. The union accepts either: the
+ * string branch decodes a non-empty `TradingText` into the object shape, so
+ * the persisted/encoded form is always `{ description }`. Optional display
+ * hints are only reachable through the object branch, which is fine — a bare
+ * prose string carries no hints by definition.
+ *
+ * `MomentumStrategyState` keeps `Schema.Array(AgentConditionDescription)` so
+ * the persisted form never carries the union; only the authored/input fields
+ * (the strategy body the harness publishes) accept the lenient shape.
+ */
+const conditionStringToObject = Schema.String.pipe(
+  Schema.decodeTo(
+    AgentConditionDescription,
+    SchemaTransformation.transformOrFail({
+      // Trim and reject empty prose the way `TradingText`-as-a-field would: a
+      // bare "   " is not a conclusion worth publishing.
+      decode: (value) =>
+        value.trim() === ""
+          ? Effect.fail(
+              new SchemaIssue.InvalidValue(Option.some(value), {
+                message: "a prose condition must be a non-empty string",
+              }),
+            )
+          : Effect.succeed({ description: value.trim() }),
+      encode: (value) => Effect.succeed(value.description),
+    }),
+  ),
+);
+
+export const AgentConditionInput = Schema.Union([
+  AgentConditionDescription,
+  conditionStringToObject,
+]);
+export type AgentConditionInput = typeof AgentConditionInput.Type;
+
 export const MomentumStrategyMode = Schema.Literals([
   "breakout_continuation",
   "breakdown_continuation",
@@ -95,12 +135,12 @@ const MomentumEntryPlan = Schema.Struct({
   initialNotionalUsd: Schema.optional(UsdAmount),
   maximumIntendedNotionalUsd: Schema.optional(UsdAmount),
   orderPreference: MomentumOrderPreference,
-  conditions: Schema.Array(AgentConditionDescription),
+  conditions: Schema.Array(AgentConditionInput),
 });
 
 const MomentumPositionManagement = Schema.Struct({
   scaleInAllowed: Schema.Boolean,
-  scaleInConditions: Schema.Array(AgentConditionDescription),
+  scaleInConditions: Schema.Array(AgentConditionInput),
   partialReductionAllowed: Schema.Boolean,
   trailingMethod: Schema.optional(TradingText),
 });
@@ -133,9 +173,9 @@ export const momentumStrategyAuthoredFields = {
   positionManagement: MomentumPositionManagement,
   protection: MomentumProtection,
 
-  exitConditions: Schema.Array(AgentConditionDescription),
-  abandonmentConditions: Schema.Array(AgentConditionDescription),
-  reentryConditions: Schema.Array(AgentConditionDescription),
+  exitConditions: Schema.Array(AgentConditionInput),
+  abandonmentConditions: Schema.Array(AgentConditionInput),
+  reentryConditions: Schema.Array(AgentConditionInput),
 
   currentAction: MomentumStrategyAction,
 

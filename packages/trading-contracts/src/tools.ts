@@ -93,7 +93,12 @@ export class TradingToolRejectedError extends Schema.TaggedErrorClass<TradingToo
 // -- trading_get_mission -----------------------------------------------------
 
 export const TradingGetMissionInput = Schema.Struct({
-  missionId: TradingId,
+  /**
+   * Optional since the calling thread is bound to exactly one mission; omit it
+   * and the call acts on the bound mission. A wrong `missionId` is still
+   * rejected with `mission_not_bound_to_thread`.
+   */
+  missionId: Schema.optional(TradingId),
 });
 export type TradingGetMissionInput = typeof TradingGetMissionInput.Type;
 
@@ -167,7 +172,8 @@ export const PublishMomentumStrategyBody = Schema.Struct(momentumStrategyAuthore
 export type PublishMomentumStrategyBody = typeof PublishMomentumStrategyBody.Type;
 
 export const TradingPublishMomentumStrategyInput = Schema.Struct({
-  missionId: TradingId,
+  /** Optional — omit to act on the mission this session is bound to. */
+  missionId: Schema.optional(TradingId),
   /** The strategy version the harness believes is current. 0 before any publish. */
   expectedVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   strategy: PublishMomentumStrategyBody,
@@ -206,9 +212,15 @@ export type TradingPublishMomentumStrategyResult = typeof TradingPublishMomentum
 // Market-symbol inputs reuse the POC `TradingMarket` literal ("ETH"); when the
 // POC widens to more markets, the literal widens with it.
 
-/** Shared mission-binding field on every read tool input. */
+/**
+ * Shared mission-binding field on every read tool input.
+ *
+ * `missionId` is optional: the calling thread is bound to exactly one mission,
+ * so omitting it resolves to that mission. A wrong `missionId` is still
+ * rejected with `mission_not_bound_to_thread`.
+ */
 const missionBound = {
-  missionId: TradingId,
+  missionId: Schema.optional(TradingId),
 } as const;
 
 export const TradingRequestEntryInput = Schema.Struct({
