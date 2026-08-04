@@ -1075,6 +1075,17 @@ export function makeOpenCodeAdapter(
         }
 
         case "session.error": {
+          // A user-initiated stop aborts the OpenCode session, which the
+          // server then reports back as `session.error`. That is the expected
+          // echo of our own abort — not a real failure — so treat it like the
+          // event pump's clean-exit path (line 1158): leave the session out of
+          // `error`, emit no `runtime.error`, and let the turn settle from the
+          // stop path. Without this guard the composer bricks: the session is
+          // pinned to `error` and a "Runtime error" card is shown for a stop.
+          if (yield* Ref.get(context.stopped)) {
+            return;
+          }
+
           const message = sessionErrorMessage(event.properties.error);
           const activeTurnId = context.activeTurnId;
           context.activeTurnId = undefined;
