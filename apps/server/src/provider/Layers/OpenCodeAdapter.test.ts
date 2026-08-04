@@ -19,6 +19,7 @@ import {
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderRuntimeEvent,
   ThreadId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -627,6 +628,168 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       );
     }),
   );
+
+  // Regression for Task 9: when a user stops a running OpenCode session, the
+  // server echoes the abort back as a `session.error` event on the still-open
+  // event stream. That echo must be treated as the expected fallout of our own
+  // abort, not a provider failure — no `runtime.error` card, no
+  // `turn.completed` failed, and the provider session never lands in `error`
+  // status. The guard in the `session.error` handler (`Ref.get(context.stopped)`)
+  // keeps the stop clean.
+  //
+  // This test uses a dedicated runtime whose `session.abort` resolves only
+  // after a few scheduler ticks. That widening mirrors the real network
+  // round-trip and gives the event pump — forked into the session scope, still
+  // alive until `Scope.close` — a deterministic window to drain the queued
+  // `session.error` echo while `stopped` is already true.
+  it.effect("treats a post-stop session.error as a clean stop, not a runtime error", () => {
+    const threadId = asThreadId("thread-opencode-stop-error-echo");
+    const sessionId = "http://127.0.0.1:9999/session";
+
+    // A yielding abort: the real server resolves `session.abort` after a
+    // network round-trip, during which the still-open event stream delivers
+    // the `session.error` echo. Awaiting a real timer here parks the calling
+    // fiber on a true async boundary so Effect's scheduler runs the event
+    // pump fiber — letting it drain the queued echo while `stopped` is true
+    // but the session scope is still open (the exact window the guard
+    // defends). `Scope.close` runs only after abort resolves.
+    const yieldingAbort = async (input: { sessionID: string }) => {
+      // A real async gap (not a microtask) parks the calling fiber so
+      // Effect's scheduler runs the event pump fiber. `Effect.runPromise`
+      // keeps this within the Effect timer API the linter requires.
+      await Effect.runPromise(Effect.sleep("20 millis"));
+      runtimeMock.state.abortCalls.push(input.sessionID);
+    };
+
+    const echoRuntime: OpenCodeRuntimeShape = {
+      ...OpenCodeRuntimeTestDouble,
+      createOpenCodeSdkClient: ({ baseUrl, serverPassword }) =>
+        ({
+          session: {
+            create: async (input: Record<string, unknown>) => {
+              runtimeMock.state.sessionCreateUrls.push(baseUrl);
+              runtimeMock.state.sessionCreateInputs.push(input);
+              runtimeMock.state.authHeaders.push(
+                serverPassword ? `Basic ${btoa(`opencode:${serverPassword}`)}` : null,
+              );
+              return { data: { id: sessionId } };
+            },
+            get: async ({ sessionID }: { sessionID: string }) => ({ data: { id: sessionID } }),
+            update: async () => ({ data: { id: sessionId } }),
+            abort: yieldingAbort,
+            promptAsync: async (input: unknown) => {
+              runtimeMock.state.promptCalls.push(input);
+            },
+            messages: async () => ({ data: [] }),
+            revert: async () => undefined,
+          },
+          event: {
+            subscribe: async () => ({
+              // The echo is queued up front; the pump drains it across the
+              // yield points opened by the yielding abort above.
+              stream: (async function* () {
+                yield {
+                  type: "session.error",
+                  properties: {
+                    sessionID: sessionId,
+                    error: { data: { message: "Session aborted." } },
+                  },
+                };
+              })(),
+            }),
+          },
+        }) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
+    };
+
+    const echoLayer = Layer.effect(
+      OpenCodeAdapter,
+      makeOpenCodeAdapter(openCodeAdapterTestSettings),
+    ).pipe(
+      Layer.provideMerge(Layer.succeed(OpenCodeRuntime, echoRuntime)),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(
+        ServerSettingsService.layerTest({
+          providers: {
+            opencode: {
+              binaryPath: "fake-opencode",
+              serverUrl: "http://127.0.0.1:9999",
+              serverPassword: "secret-password",
+            },
+          },
+        }),
+      ),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+
+      // Record every event for this thread as it is emitted. The recording
+      // fiber runs for the life of the test scope, so it captures the echo
+      // whenever the pump drains it.
+      const recorded: ProviderRuntimeEvent[] = [];
+      const recorder = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            recorded.push(event);
+          }),
+        ),
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      // An in-flight turn is the dangerous case: pre-fix, the echo would
+      // also emit a `turn.completed` failed for it.
+      yield* adapter.sendTurn({
+        threadId,
+        input: "run a long task",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      });
+      yield* adapter.stopSession(threadId);
+
+      // Drain whatever the pump has queued.
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(recorder).pipe(Effect.ignore);
+
+      const sessions = yield* adapter.listSessions();
+      NodeAssert.deepEqual(
+        sessions.map((session) => session.threadId),
+        [],
+      );
+
+      const eventTypes = recorded.map((event) => event.type);
+      const observed = eventTypes.join(", ");
+      NodeAssert.equal(
+        eventTypes.includes("runtime.error"),
+        false,
+        `expected no runtime.error from the stop echo, got: ${observed}`,
+      );
+      NodeAssert.equal(
+        eventTypes.includes("session.exited"),
+        true,
+        `expected session.exited from the clean stop, got: ${observed}`,
+      );
+      NodeAssert.equal(
+        eventTypes.some(
+          (type, index) =>
+            type === "turn.completed" &&
+            "state" in (recorded[index]?.payload ?? {}) &&
+            (recorded[index]?.payload as { state: string }).state === "failed",
+        ),
+        false,
+        `expected no failed turn from the stop echo, got: ${observed}`,
+      );
+    }).pipe(Effect.provide(echoLayer));
+  });
 
   it.effect("clears session state even when cleanup finalizers throw", () =>
     Effect.gen(function* () {
