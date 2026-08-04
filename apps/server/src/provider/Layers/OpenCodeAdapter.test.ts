@@ -932,6 +932,38 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("opens one turn when two prompts arrive at once", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-concurrent");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      // The mission case: a trading harness wake lands in the same tick as the
+      // user's own message. Unserialised, both read "no active turn", both mint
+      // a turn id, and orchestration rejects the loser's turn.completed forever.
+      const modelSelection = {
+        instanceId: ProviderInstanceId.make("opencode"),
+        model: "openai/gpt-5",
+      };
+      const [first, second] = yield* Effect.all(
+        [
+          adapter.sendTurn({ threadId, input: "Hi there", modelSelection }),
+          adapter.sendTurn({ threadId, input: "mission wake", modelSelection }),
+        ],
+        { concurrency: 2 },
+      );
+
+      NodeAssert.equal(String(second.turnId), String(first.turnId));
+      const sessions = yield* adapter.listSessions();
+      const session = sessions.find((entry) => entry.threadId === threadId);
+      NodeAssert.equal(String(session?.activeTurnId), String(first.turnId));
+    }),
+  );
+
   it.effect("keeps the running turn when a steer prompt fails", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;

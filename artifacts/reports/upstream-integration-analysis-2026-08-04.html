@@ -1,0 +1,2882 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Upstream Integration Analysis · T3 Trade ← T3 Code · 2026-08-04</title>
+    <style>
+      :root {
+        --bg: #0e1116;
+        --panel: #151b23;
+        --panel-2: #1b232e;
+        --ink: #e6edf3;
+        --ink-dim: #9aa7b4;
+        --ink-faint: #6b7785;
+        --line: #27313d;
+        --line-soft: #1f2832;
+        --fork: #f0b429; /* amber — origin */
+        --upstream: #4c9aff; /* blue  — upstream */
+        --base: #8b5cf6; /* violet — merge-base */
+        --merge: #22d3a6; /* green  — merged result */
+        --conflict: #ff6b6b; /* red   — conflict */
+        --warn: #ffb454;
+        --ok: #22d3a6;
+        --risk-low: #22d3a6;
+        --risk-med: #ffb454;
+        --risk-high: #ff6b6b;
+        --risk-crit: #f43f5e;
+        --mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        --shadow: 0 1px 0 rgba(255, 255, 255, 0.03), 0 8px 24px rgba(0, 0, 0, 0.35);
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        background:
+          radial-gradient(1200px 600px at 80% -10%, rgba(76, 154, 255, 0.07), transparent 60%),
+          radial-gradient(900px 500px at 0% 0%, rgba(240, 180, 41, 0.06), transparent 55%),
+          var(--bg);
+        color: var(--ink);
+        font-family: var(--sans);
+        line-height: 1.55;
+        -webkit-font-smoothing: antialiased;
+        padding: 0 0 120px;
+      }
+      .wrap {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 0 28px;
+      }
+
+      /* ---------- header ---------- */
+      header.top {
+        padding: 64px 0 40px;
+        border-bottom: 1px solid var(--line);
+        margin-bottom: 48px;
+      }
+      .eyebrow {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        margin-bottom: 14px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .eyebrow .pip {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--fork);
+        box-shadow: 0 0 8px var(--fork);
+      }
+      .eyebrow .arrow {
+        color: var(--ink-faint);
+      }
+      .eyebrow .pip.b {
+        background: var(--upstream);
+        box-shadow: 0 0 8px var(--upstream);
+      }
+      h1 {
+        font-size: clamp(28px, 4vw, 42px);
+        font-weight: 650;
+        letter-spacing: -0.02em;
+        line-height: 1.1;
+        margin-bottom: 16px;
+        color: #fff;
+      }
+      .lede {
+        font-size: 16px;
+        color: var(--ink-dim);
+        max-width: 760px;
+        margin-bottom: 24px;
+      }
+      .meta-row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .meta-chip {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-dim);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        padding: 5px 11px;
+        border-radius: 7px;
+      }
+      .meta-chip b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      /* ---------- summary strip ---------- */
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+        margin-bottom: 56px;
+      }
+      @media (max-width: 820px) {
+        .summary {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+      .stat {
+        background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 18px 20px;
+        box-shadow: var(--shadow);
+        position: relative;
+        overflow: hidden;
+      }
+      .stat::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        background: var(--accent, var(--fork));
+      }
+      .stat.fork::before {
+        background: var(--fork);
+      }
+      .stat.up::before {
+        background: var(--upstream);
+      }
+      .stat.base::before {
+        background: var(--base);
+      }
+      .stat.risk::before {
+        background: var(--conflict);
+      }
+      .stat .k {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        margin-bottom: 8px;
+      }
+      .stat .v {
+        font-size: 30px;
+        font-weight: 700;
+        color: #fff;
+        line-height: 1;
+      }
+      .stat .sub {
+        font-size: 12.5px;
+        color: var(--ink-dim);
+        margin-top: 8px;
+      }
+
+      /* ---------- section chrome ---------- */
+      section {
+        margin-bottom: 72px;
+        scroll-margin-top: 20px;
+      }
+      .sec-head {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        margin-bottom: 8px;
+        flex-wrap: wrap;
+      }
+      .sec-head .num {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        background: rgba(76, 154, 255, 0.12);
+        color: var(--upstream);
+        border: 1px solid rgba(76, 154, 255, 0.25);
+        padding: 3px 9px;
+        border-radius: 7px;
+      }
+      .sec-head h2 {
+        font-size: 25px;
+        font-weight: 650;
+        letter-spacing: -0.015em;
+        color: #fff;
+      }
+      .sec-intro {
+        font-size: 14.5px;
+        color: var(--ink-dim);
+        max-width: 820px;
+        margin-bottom: 28px;
+      }
+
+      /* ---------- facts vs assumptions ---------- */
+      .epistemic {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        margin-bottom: 8px;
+      }
+      @media (max-width: 820px) {
+        .epistemic {
+          grid-template-columns: 1fr;
+        }
+      }
+      .ep-card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 18px 20px;
+      }
+      .ep-card.fact {
+        border-left: 3px solid var(--ok);
+      }
+      .ep-card.assume {
+        border-left: 3px solid var(--warn);
+      }
+      .ep-card h4 {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .ep-card.fact h4 {
+        color: var(--ok);
+      }
+      .ep-card.assume h4 {
+        color: var(--warn);
+      }
+      .ep-card ul {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+      }
+      .ep-card li {
+        font-size: 13.5px;
+        color: var(--ink-dim);
+        padding-left: 16px;
+        position: relative;
+        line-height: 1.5;
+      }
+      .ep-card li::before {
+        content: "›";
+        position: absolute;
+        left: 0;
+        color: var(--ink-faint);
+      }
+      .ep-card.fact li b,
+      .ep-card.assume li b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      /* ---------- branch map / divergence diagram ---------- */
+      .diagram-frame {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 28px;
+        overflow-x: auto;
+        box-shadow: var(--shadow);
+      }
+      .diagram-frame svg {
+        display: block;
+        min-width: 780px;
+        margin: 0 auto;
+      }
+      .diagram-frame text {
+        font-family: var(--mono);
+      }
+      .legend {
+        display: flex;
+        gap: 18px;
+        flex-wrap: wrap;
+        margin-top: 18px;
+        padding-top: 16px;
+        border-top: 1px solid var(--line-soft);
+        justify-content: center;
+      }
+      .legend .item {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 12px;
+        color: var(--ink-dim);
+        font-family: var(--mono);
+      }
+      .legend .swatch {
+        width: 11px;
+        height: 11px;
+        border-radius: 3px;
+      }
+      .legend .line-sw {
+        width: 18px;
+        height: 3px;
+        border-radius: 2px;
+      }
+
+      /* SVG node animation */
+      .node-commit {
+        opacity: 0;
+        animation: nodeIn 0.5s ease-out forwards;
+      }
+      .node-commit.fork {
+        animation-delay: 0.1s;
+      }
+      .node-commit.up {
+        animation-delay: 0.1s;
+      }
+      .branch-line {
+        stroke-dasharray: 1000;
+        stroke-dashoffset: 1000;
+        animation: drawLine 1.4s ease-out forwards;
+      }
+      .branch-line.fork {
+        animation-delay: 0.2s;
+      }
+      .branch-line.up {
+        animation-delay: 0.35s;
+      }
+      .merge-line {
+        stroke-dasharray: 400;
+        stroke-dashoffset: 400;
+        animation: drawLine 1s ease-out 0.9s forwards;
+      }
+      @keyframes nodeIn {
+        to {
+          opacity: 1;
+        }
+      }
+      @keyframes drawLine {
+        to {
+          stroke-dashoffset: 0;
+        }
+      }
+
+      /* ahead/behind indicators */
+      .ab-pair {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        margin-top: 20px;
+      }
+      @media (max-width: 820px) {
+        .ab-pair {
+          grid-template-columns: 1fr;
+        }
+      }
+      .ab-card {
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 18px 20px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+      .ab-card .badge {
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 600;
+        padding: 5px 10px;
+        border-radius: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        white-space: nowrap;
+      }
+      .ab-card.ahead .badge {
+        background: rgba(240, 180, 41, 0.14);
+        color: var(--fork);
+        border: 1px solid rgba(240, 180, 41, 0.3);
+      }
+      .ab-card.behind .badge {
+        background: rgba(76, 154, 255, 0.14);
+        color: var(--upstream);
+        border: 1px solid rgba(76, 154, 255, 0.3);
+      }
+      .ab-card .num {
+        font-size: 34px;
+        font-weight: 700;
+        color: #fff;
+        line-height: 1;
+      }
+      .ab-card .label {
+        font-size: 13px;
+        color: var(--ink-dim);
+        margin-top: 2px;
+      }
+
+      /* ---------- conflict table ---------- */
+      .conflict-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        min-width: 680px;
+      }
+      thead th {
+        text-align: left;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        padding: 12px 14px;
+        background: var(--panel-2);
+        border-bottom: 1px solid var(--line);
+        position: sticky;
+        top: 0;
+      }
+      tbody td {
+        padding: 11px 14px;
+        border-bottom: 1px solid var(--line-soft);
+        color: var(--ink-dim);
+        vertical-align: top;
+      }
+      tbody tr:last-child td {
+        border-bottom: none;
+      }
+      tbody tr:hover td {
+        background: rgba(255, 255, 255, 0.015);
+      }
+      td .path {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        color: var(--ink);
+        word-break: break-all;
+      }
+      td .region {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--ink-faint);
+        display: block;
+        margin-top: 3px;
+      }
+      .risk-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        font-weight: 600;
+        padding: 3px 9px;
+        border-radius: 5px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        white-space: nowrap;
+      }
+      .risk-pill::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+      .risk-low {
+        color: var(--risk-low);
+        background: rgba(34, 211, 166, 0.1);
+      }
+      .risk-med {
+        color: var(--risk-med);
+        background: rgba(255, 180, 84, 0.1);
+      }
+      .risk-high {
+        color: var(--risk-high);
+        background: rgba(255, 107, 107, 0.1);
+      }
+      .risk-crit {
+        color: var(--risk-crit);
+        background: rgba(244, 63, 94, 0.12);
+      }
+
+      /* semantic-conflict callout */
+      .callout {
+        border-radius: 12px;
+        padding: 18px 20px;
+        margin: 20px 0;
+        display: flex;
+        gap: 14px;
+        align-items: flex-start;
+      }
+      .callout.crit {
+        background: rgba(244, 63, 94, 0.08);
+        border: 1px solid rgba(244, 63, 94, 0.3);
+        border-left: 3px solid var(--risk-crit);
+      }
+      .callout.warn {
+        background: rgba(255, 180, 84, 0.06);
+        border: 1px solid rgba(255, 180, 84, 0.25);
+        border-left: 3px solid var(--warn);
+      }
+      .callout.info {
+        background: rgba(76, 154, 255, 0.06);
+        border: 1px solid rgba(76, 154, 255, 0.22);
+        border-left: 3px solid var(--upstream);
+      }
+      .callout .ico {
+        width: 24px;
+        height: 24px;
+        border-radius: 6px;
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        font-size: 14px;
+      }
+      .callout.crit .ico {
+        background: rgba(244, 63, 94, 0.2);
+        color: var(--risk-crit);
+      }
+      .callout.warn .ico {
+        background: rgba(255, 180, 84, 0.18);
+        color: var(--warn);
+      }
+      .callout.info .ico {
+        background: rgba(76, 154, 255, 0.18);
+        color: var(--upstream);
+      }
+      .callout h4 {
+        font-size: 14px;
+        color: var(--ink);
+        margin-bottom: 4px;
+        font-weight: 600;
+      }
+      .callout p {
+        font-size: 13.5px;
+        color: var(--ink-dim);
+        line-height: 1.55;
+      }
+      .callout code {
+        font-family: var(--mono);
+        font-size: 12px;
+        background: rgba(255, 255, 255, 0.06);
+        padding: 1px 5px;
+        border-radius: 4px;
+        color: var(--ink);
+      }
+
+      /* ---------- strategy cards ---------- */
+      .strategy-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 18px;
+      }
+      @media (max-width: 900px) {
+        .strategy-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .strategy {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: var(--shadow);
+        transition: border-color 0.2s;
+      }
+      .strategy.recommended {
+        border-color: var(--merge);
+        box-shadow:
+          0 0 0 1px var(--merge),
+          var(--shadow);
+      }
+      .strategy .s-head {
+        padding: 18px 20px;
+        border-bottom: 1px solid var(--line-soft);
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+      }
+      .strategy .s-head h3 {
+        font-size: 16.5px;
+        font-weight: 600;
+        color: #fff;
+        margin-bottom: 3px;
+      }
+      .strategy .s-head .tagline {
+        font-size: 12.5px;
+        color: var(--ink-faint);
+        font-family: var(--mono);
+      }
+      .strategy .s-body {
+        padding: 16px 20px;
+      }
+      .strategy .s-body p {
+        font-size: 13.5px;
+        color: var(--ink-dim);
+        margin-bottom: 12px;
+        line-height: 1.55;
+      }
+      .strategy dl {
+        display: grid;
+        grid-template-columns: 96px 1fr;
+        gap: 8px 12px;
+        font-size: 12.5px;
+        margin-bottom: 14px;
+      }
+      .strategy dt {
+        color: var(--ink-faint);
+        font-family: var(--mono);
+        font-size: 10.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        padding-top: 1px;
+      }
+      .strategy dd {
+        color: var(--ink-dim);
+      }
+      .strategy dd b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .strategy dd .yes {
+        color: var(--ok);
+        font-weight: 600;
+      }
+      .strategy dd .no {
+        color: var(--risk-high);
+        font-weight: 600;
+      }
+      .strategy dd .maybe {
+        color: var(--warn);
+        font-weight: 600;
+      }
+      .strategy .s-risks {
+        background: var(--panel-2);
+        border-top: 1px solid var(--line-soft);
+        padding: 12px 20px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .strategy details {
+        padding: 0 20px 16px;
+      }
+      .strategy summary {
+        cursor: pointer;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--upstream);
+        list-style: none;
+        padding: 8px 0;
+        user-select: none;
+      }
+      .strategy summary::-webkit-details-marker {
+        display: none;
+      }
+      .strategy summary::before {
+        content: "▸ ";
+        transition: transform 0.15s;
+        display: inline-block;
+      }
+      .strategy details[open] summary::before {
+        transform: rotate(90deg);
+      }
+      .strategy details .cmd-block {
+        margin-top: 8px;
+      }
+
+      /* ---------- command blocks ---------- */
+      .cmd-block {
+        position: relative;
+        background: #0a0e13;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        overflow: hidden;
+      }
+      .cmd-block .cmd-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 12px;
+        background: var(--panel-2);
+        border-bottom: 1px solid var(--line-soft);
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--ink-faint);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .cmd-block .copy-btn {
+        background: transparent;
+        border: 1px solid var(--line);
+        color: var(--ink-dim);
+        font-family: var(--mono);
+        font-size: 10.5px;
+        padding: 2px 8px;
+        border-radius: 5px;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+      .cmd-block .copy-btn:hover {
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--ink);
+        border-color: var(--upstream);
+      }
+      .cmd-block .copy-btn.copied {
+        background: rgba(34, 211, 166, 0.15);
+        color: var(--ok);
+        border-color: var(--ok);
+      }
+      .cmd-block pre {
+        padding: 14px 16px;
+        overflow-x: auto;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: #c9d4e0;
+      }
+      .cmd-block pre .c {
+        color: var(--ink-faint);
+      }
+      .cmd-block pre .k {
+        color: #7dd3fc;
+      }
+      .cmd-block pre .s {
+        color: var(--fork);
+      }
+      .cmd-block pre .v {
+        color: var(--merge);
+      }
+
+      /* ---------- phased plan ---------- */
+      .phases {
+        position: relative;
+        padding-left: 0;
+      }
+      .phase {
+        display: grid;
+        grid-template-columns: 44px 1fr;
+        gap: 18px;
+        padding-bottom: 28px;
+        position: relative;
+      }
+      .phase .marker {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .phase .marker .num {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        background: var(--panel);
+        border: 2px solid var(--upstream);
+        color: var(--upstream);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: var(--mono);
+        font-size: 13px;
+        font-weight: 700;
+        flex-shrink: 0;
+        z-index: 2;
+        transition: all 0.3s;
+      }
+      .phase.active .marker .num {
+        background: var(--upstream);
+        color: #fff;
+      }
+      .phase::after {
+        content: "";
+        position: absolute;
+        left: 16px;
+        top: 34px;
+        bottom: 0;
+        width: 2px;
+        background: var(--line);
+      }
+      .phase:last-child::after {
+        display: none;
+      }
+      .phase .p-body {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 16px 20px;
+      }
+      .phase .p-body h4 {
+        font-size: 15px;
+        color: #fff;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+      .phase .p-body .goal {
+        font-size: 13px;
+        color: var(--ink-dim);
+        margin-bottom: 12px;
+      }
+      .phase .p-body ul {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        margin-bottom: 12px;
+      }
+      .phase .p-body li {
+        font-size: 13px;
+        color: var(--ink-dim);
+        padding-left: 18px;
+        position: relative;
+        line-height: 1.5;
+      }
+      .phase .p-body li::before {
+        content: "→";
+        position: absolute;
+        left: 0;
+        color: var(--upstream);
+      }
+      .phase .p-body li b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      /* ---------- decision tree ---------- */
+      .decision {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .q-node {
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 14px 18px;
+      }
+      .q-node .q {
+        font-size: 14px;
+        color: var(--ink);
+        font-weight: 500;
+        margin-bottom: 10px;
+      }
+      .q-node .q .qmark {
+        display: inline-flex;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: rgba(76, 154, 255, 0.15);
+        color: var(--upstream);
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 700;
+        margin-right: 8px;
+        font-family: var(--mono);
+      }
+      .q-node .opts {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .q-node .opt {
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+        font-size: 13px;
+        color: var(--ink-dim);
+        padding: 8px 10px;
+        background: var(--panel);
+        border-radius: 7px;
+        border: 1px solid var(--line-soft);
+      }
+      .q-node .opt b {
+        color: var(--merge);
+        font-weight: 600;
+        white-space: nowrap;
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+
+      /* ---------- checklist ---------- */
+      .checklist {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 8px 4px;
+      }
+      .check-row {
+        display: flex;
+        gap: 14px;
+        align-items: flex-start;
+        padding: 14px 20px;
+        border-bottom: 1px solid var(--line-soft);
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .check-row:last-child {
+        border-bottom: none;
+      }
+      .check-row:hover {
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .check-row .box {
+        width: 20px;
+        height: 20px;
+        border-radius: 5px;
+        border: 2px solid var(--line);
+        flex-shrink: 0;
+        margin-top: 1px;
+        transition: all 0.15s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .check-row.done .box {
+        background: var(--ok);
+        border-color: var(--ok);
+      }
+      .check-row.done .box::after {
+        content: "";
+        width: 5px;
+        height: 9px;
+        border: solid #0a0e13;
+        border-width: 0 2px 2px 0;
+        transform: rotate(45deg);
+        margin-top: -1px;
+      }
+      .check-row.done .txt {
+        color: var(--ink-faint);
+        text-decoration: line-through;
+      }
+      .check-row .txt {
+        font-size: 13.5px;
+        color: var(--ink-dim);
+        line-height: 1.5;
+      }
+      .check-row .txt b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .check-row .txt code {
+        font-family: var(--mono);
+        font-size: 12px;
+        background: rgba(255, 255, 255, 0.06);
+        padding: 1px 5px;
+        border-radius: 4px;
+      }
+
+      /* ---------- TOC ---------- */
+      nav.toc {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(14, 17, 22, 0.92);
+        backdrop-filter: blur(10px);
+        border-bottom: 1px solid var(--line);
+        margin: 0 -28px 40px;
+        padding: 10px 28px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
+        white-space: nowrap;
+      }
+      nav.toc .toc-inner {
+        max-width: 1180px;
+        margin: 0 auto;
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      nav.toc a {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-faint);
+        text-decoration: none;
+        padding: 4px 10px;
+        border-radius: 6px;
+        transition: all 0.15s;
+      }
+      nav.toc a:hover {
+        background: var(--panel);
+        color: var(--ink);
+      }
+      nav.toc .toc-label {
+        font-size: 10.5px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        margin-right: 6px;
+      }
+
+      /* reveal-on-scroll */
+      .reveal {
+        opacity: 0;
+        transform: translateY(16px);
+        transition:
+          opacity 0.6s ease-out,
+          transform 0.6s ease-out;
+      }
+      .reveal.in {
+        opacity: 1;
+        transform: none;
+      }
+
+      /* footer */
+      footer.bot {
+        margin-top: 80px;
+        padding-top: 32px;
+        border-top: 1px solid var(--line);
+        font-size: 12.5px;
+        color: var(--ink-faint);
+        display: flex;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      footer.bot code {
+        font-family: var(--mono);
+      }
+
+      /* ===========================================================
+     MOBILE OPTIMIZATION
+     Breakpoints: ≤820 tablet, ≤560 phone, ≤380 small phone.
+     Targets measured overflow: SVG diagram (780px), table (680px),
+     cmd blocks, undersized tap targets (~26px), dense padding.
+     =========================================================== */
+
+      /* ---- Tablet and below: relax padding, stack columns ---- */
+      @media (max-width: 820px) {
+        .wrap {
+          padding: 0 18px;
+        }
+        header.top {
+          padding: 40px 0 28px;
+          margin-bottom: 36px;
+        }
+        section {
+          margin-bottom: 52px;
+        }
+        .sec-head h2 {
+          font-size: 22px;
+        }
+        .sec-intro {
+          font-size: 13.5px;
+        }
+        .h1,
+        h1 {
+          font-size: clamp(26px, 6vw, 34px);
+        }
+        .lede {
+          font-size: 14.5px;
+        }
+
+        /* strategy grid: single column earlier */
+        .strategy-grid {
+          grid-template-columns: 1fr;
+        }
+        .strategy dl {
+          grid-template-columns: 88px 1fr;
+        }
+
+        /* epistemic already stacks at 820 via its own rule */
+      }
+
+      /* ---- Phone: the main target ---- */
+      @media (max-width: 560px) {
+        .wrap {
+          padding: 0 14px;
+        }
+        header.top {
+          padding: 32px 0 22px;
+          margin-bottom: 28px;
+        }
+        section {
+          margin-bottom: 44px;
+        }
+        .sec-head {
+          gap: 10px;
+          margin-bottom: 6px;
+        }
+        .sec-head .num {
+          font-size: 10.5px;
+          padding: 2px 7px;
+        }
+        .sec-head h2 {
+          font-size: 19px;
+        }
+        .sec-intro {
+          font-size: 13px;
+          margin-bottom: 20px;
+        }
+
+        /* summary: 2x2 is fine but tighten */
+        .summary {
+          gap: 10px;
+          margin-bottom: 40px;
+        }
+        .stat {
+          padding: 14px 15px;
+        }
+        .stat .v {
+          font-size: 24px;
+        }
+        .stat .sub {
+          font-size: 11.5px;
+        }
+        .ab-pair {
+          gap: 10px;
+        }
+        .ab-card {
+          padding: 14px 15px;
+          gap: 12px;
+        }
+        .ab-card .num {
+          font-size: 28px;
+        }
+        .ab-card .badge {
+          font-size: 10px;
+          padding: 4px 8px;
+        }
+
+        /* ---- SVG diagram: scale-to-fit instead of min-width scroll ---- */
+        .diagram-frame {
+          padding: 16px 12px;
+        }
+        .diagram-frame svg {
+          min-width: 0; /* allow shrink */
+          width: 100%; /* fill container */
+          height: auto; /* keep aspect ratio from viewBox */
+          max-height: 300px;
+        }
+        .legend {
+          gap: 12px;
+          margin-top: 14px;
+          padding-top: 12px;
+        }
+        .legend .item {
+          font-size: 11px;
+        }
+
+        /* ---- Conflict table → card layout (no horizontal scroll) ---- */
+        .conflict-wrap {
+          overflow-x: visible;
+          border: none;
+          border-radius: 0;
+          background: transparent;
+        }
+        .conflict-wrap thead {
+          display: none;
+        } /* hide header row */
+        .conflict-wrap table {
+          display: block;
+          min-width: 0;
+          width: 100%;
+        }
+        .conflict-wrap tbody {
+          display: block;
+        }
+        .conflict-wrap tr {
+          display: block; /* each row → card */
+          padding: 14px 16px;
+          margin-bottom: 12px;
+          background: var(--panel);
+          border: 1px solid var(--line);
+          border-radius: 12px;
+        }
+        .conflict-wrap td {
+          display: block;
+          border: none;
+          padding: 2px 0;
+          font-size: 12.5px;
+        }
+        .conflict-wrap td .path {
+          font-size: 13px;
+        }
+        .conflict-wrap td .region {
+          margin: 4px 0 8px;
+        }
+        /* relabel columns with ::before since header is hidden */
+        .conflict-wrap td:nth-child(2)::before {
+          content: "Fork Δ · ";
+          color: var(--fork);
+          font-family: var(--mono);
+          font-size: 10.5px;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+        }
+        .conflict-wrap td:nth-child(3)::before {
+          content: "Upstream Δ · ";
+          color: var(--upstream);
+          font-family: var(--mono);
+          font-size: 10.5px;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+        }
+        .conflict-wrap td:nth-child(4) {
+          margin-top: 6px;
+        }
+
+        /* callouts */
+        .callout {
+          padding: 14px 15px;
+          gap: 11px;
+        }
+        .callout p {
+          font-size: 12.5px;
+        }
+        .callout h4 {
+          font-size: 13px;
+        }
+
+        /* ---- Tap targets ≥44px (touch minimum) ---- */
+        nav.toc {
+          padding: 8px 14px;
+          margin: 0 -14px 28px;
+        }
+        nav.toc .toc-inner {
+          gap: 4px;
+        }
+        nav.toc a {
+          font-size: 11px;
+          padding: 12px 11px;
+          min-height: 44px;
+          display: inline-flex;
+          align-items: center;
+        }
+        nav.toc .toc-label {
+          display: block;
+          width: 100%;
+          margin-bottom: 2px;
+        }
+
+        .copy-btn {
+          font-size: 11.5px;
+          padding: 10px 13px;
+          min-height: 44px;
+        }
+        .strategy summary {
+          padding: 12px 0;
+          min-height: 44px;
+          font-size: 12px;
+        }
+
+        .check-row {
+          padding: 14px 16px;
+          min-height: 44px;
+        }
+        .check-row .box {
+          width: 22px;
+          height: 22px;
+        }
+        .check-row .txt {
+          font-size: 13px;
+        }
+
+        /* phased plan */
+        .phase {
+          grid-template-columns: 32px 1fr;
+          gap: 14px;
+          padding-bottom: 22px;
+        }
+        .phase .marker .num {
+          width: 28px;
+          height: 28px;
+          font-size: 12px;
+        }
+        .phase::after {
+          left: 13px;
+          top: 28px;
+        }
+        .phase .p-body {
+          padding: 14px 16px;
+        }
+        .phase .p-body h4 {
+          font-size: 14px;
+        }
+        .phase .p-body .goal {
+          font-size: 12.5px;
+          margin-bottom: 10px;
+        }
+        .phase .p-body li {
+          font-size: 12.5px;
+          padding-left: 16px;
+        }
+
+        /* decision tree */
+        .q-node {
+          padding: 12px 14px;
+        }
+        .q-node .q {
+          font-size: 13px;
+          margin-bottom: 10px;
+        }
+        .q-node .opt {
+          font-size: 12.5px;
+          padding: 12px 12px;
+          line-height: 1.45;
+          min-height: 44px;
+        }
+
+        /* strategy cards */
+        .strategy .s-head {
+          padding: 15px 16px;
+        }
+        .strategy .s-head h3 {
+          font-size: 15px;
+        }
+        .strategy .s-head .tagline {
+          font-size: 11.5px;
+        }
+        .strategy .s-body {
+          padding: 14px 16px;
+        }
+        .strategy .s-body p {
+          font-size: 13px;
+        }
+        .strategy dl {
+          grid-template-columns: 82px 1fr;
+          font-size: 12px;
+          gap: 7px 10px;
+        }
+        .strategy .s-risks {
+          padding: 10px 16px;
+        }
+        .strategy details {
+          padding: 0 16px 14px;
+        }
+
+        /* command blocks: allow horizontal scroll within the block only */
+        .cmd-block pre {
+          font-size: 11.5px;
+          padding: 12px 14px;
+          -webkit-text-size-adjust: 100%;
+        }
+
+        /* meta chips wrap */
+        .meta-row {
+          gap: 7px;
+        }
+        .meta-chip {
+          font-size: 10.5px;
+          padding: 4px 9px;
+        }
+
+        /* footer */
+        footer.bot {
+          margin-top: 56px;
+          padding-top: 24px;
+          font-size: 11.5px;
+        }
+
+        /* eyebrow */
+        .eyebrow {
+          font-size: 10.5px;
+          gap: 7px;
+          margin-bottom: 12px;
+        }
+        .eyebrow code {
+          font-size: 10.5px;
+        }
+      }
+
+      /* ---- Small phone: final tightening ---- */
+      @media (max-width: 380px) {
+        .wrap {
+          padding: 0 11px;
+        }
+        .summary {
+          grid-template-columns: 1fr 1fr;
+          gap: 8px;
+        }
+        .stat {
+          padding: 12px 13px;
+        }
+        .stat .v {
+          font-size: 21px;
+        }
+        .stat .k {
+          font-size: 10px;
+        }
+        .h1,
+        h1 {
+          font-size: 23px;
+        }
+        .sec-head h2 {
+          font-size: 17.5px;
+        }
+        .strategy dl {
+          grid-template-columns: 1fr;
+          gap: 4px;
+        } /* stack label above value */
+        .strategy dt {
+          margin-top: 6px;
+        }
+        .meta-chip {
+          font-size: 10px;
+          padding: 3px 7px;
+        }
+        .diagram-frame svg {
+          max-height: 260px;
+        }
+      }
+
+      /* ---- Landscape phone: reclaim vertical space ---- */
+      @media (max-width: 900px) and (orientation: landscape) and (max-height: 500px) {
+        header.top {
+          padding: 24px 0 18px;
+          margin-bottom: 24px;
+        }
+        .summary {
+          margin-bottom: 32px;
+        }
+        section {
+          margin-bottom: 36px;
+        }
+      }
+
+      /* prevent iOS pinch-zoom text inflation */
+      @media (max-width: 560px) {
+        body {
+          -webkit-text-size-adjust: 100%;
+          text-size-adjust: 100%;
+        }
+        pre,
+        code,
+        kbd,
+        samp {
+          font-size: 1em;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.001ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.001ms !important;
+          scroll-behavior: auto !important;
+        }
+        .reveal {
+          opacity: 1;
+          transform: none;
+        }
+        .node-commit,
+        .branch-line,
+        .merge-line {
+          animation: none !important;
+          opacity: 1 !important;
+          stroke-dashoffset: 0 !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="toc">
+      <div class="toc-inner">
+        <span class="toc-label">Contents</span>
+        <a href="#summary">Summary</a>
+        <a href="#facts">Facts</a>
+        <a href="#map">Branch Map</a>
+        <a href="#conflicts">Conflicts</a>
+        <a href="#semantic">Semantic Risks</a>
+        <a href="#strategies">Strategies</a>
+        <a href="#decision">Decision</a>
+        <a href="#phases">Phased Plan</a>
+        <a href="#checklist">Handoff</a>
+      </div>
+    </nav>
+
+    <header class="top">
+      <div class="wrap">
+        <div class="eyebrow">
+          <span class="pip"></span> origin
+          <code style="font-family: var(--mono); color: var(--fork)">0xgeorgemathew/t3trade</code>
+          <span class="arrow">←</span>
+          <span class="pip b"></span> upstream
+          <code style="font-family: var(--mono); color: var(--upstream)">pingdotgg/t3code</code>
+        </div>
+        <h1>Upstream Integration Analysis</h1>
+        <p class="lede">
+          The fork has diverged substantially from upstream. This report maps exactly how the two
+          mains have split, which upstream changes are missing, where the fork will fight back, and
+          which integration path minimizes risk to the trading layer. No branches, commits, or
+          remotes were modified — this is analysis only.
+        </p>
+        <div class="meta-row">
+          <span class="meta-chip">merge-base <b>a8e05cbb</b></span>
+          <span class="meta-chip">fork tip <b>e6fe90756</b></span>
+          <span class="meta-chip">upstream tip <b>2b1d4fecb</b></span>
+          <span class="meta-chip">analyzed <b>2026-08-04</b></span>
+          <span class="meta-chip">dry-run conflicts <b style="color: var(--conflict)">12</b></span>
+        </div>
+      </div>
+    </header>
+
+    <div class="wrap">
+      <!-- ============ SUMMARY ============ -->
+      <section id="summary">
+        <div class="sec-head">
+          <span class="num">01</span>
+          <h2>The divergence at a glance</h2>
+        </div>
+        <p class="sec-intro">
+          Both branches share a common ancestor at
+          <code style="font-family: var(--mono); color: var(--base)">a8e05cbb</code> (<em
+            >chore(release): prepare v0.0.31</em
+          >, 2026-07-29). Since then they have moved in parallel for six days. The numbers below
+          come from <code style="font-family: var(--mono)">git rev-list --count</code> and
+          <code style="font-family: var(--mono)">git merge-tree</code> against the freshly-fetched
+          remotes.
+        </p>
+
+        <div class="summary">
+          <div class="stat fork">
+            <div class="k">Fork ahead</div>
+            <div class="v">143</div>
+            <div class="sub">
+              commits on origin/main not in upstream/main — the entire trading layer
+            </div>
+          </div>
+          <div class="stat up">
+            <div class="k">Upstream ahead</div>
+            <div class="v">80</div>
+            <div class="sub">
+              commits on upstream/main not in origin/main — features & fixes to absorb
+            </div>
+          </div>
+          <div class="stat base">
+            <div class="k">Common ancestor</div>
+            <div class="v">6 days</div>
+            <div class="sub">of parallel divergence since v0.0.31 (Jul 29 → Aug 4)</div>
+          </div>
+          <div class="stat risk">
+            <div class="k">Textual conflicts</div>
+            <div class="v">12</div>
+            <div class="sub">files Git cannot auto-merge · plus 1 hidden semantic collision</div>
+          </div>
+        </div>
+
+        <div class="ab-pair">
+          <div class="ab-card ahead">
+            <div>
+              <div class="badge">Fork is ahead</div>
+              <div class="num">143</div>
+              <div class="label">commits — trading domain, Hyperliquid integration, branding</div>
+            </div>
+          </div>
+          <div class="ab-card behind">
+            <div>
+              <div class="badge">Fork is behind</div>
+              <div class="num">80</div>
+              <div class="label">
+                commits — search, terminal rendering, mobile, Effect β.103, Linux desktop
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ FACTS vs ASSUMPTIONS ============ -->
+      <section id="facts">
+        <div class="sec-head">
+          <span class="num">02</span>
+          <h2>What we observed vs. what we infer</h2>
+        </div>
+        <p class="sec-intro">
+          Integration decisions must rest on evidence, not guesses. The left column is verifiable
+          from the remotes; the right column is reasoned inference that an execution agent should
+          confirm before acting.
+        </p>
+        <div class="epistemic">
+          <div class="ep-card fact">
+            <h4>● Observed facts (from git)</h4>
+            <ul>
+              <li>
+                Remotes: <b>origin → 0xgeorgemathew/t3trade</b>,
+                <b>upstream → pingdotgg/t3code</b> (push disabled).
+              </li>
+              <li>
+                Both <code>main</code> branches descend from <b>a8e05cbb</b> (v0.0.31 release prep).
+              </li>
+              <li>
+                Fork carries <b>143 unique commits</b>; upstream carries <b>80 unique commits</b>.
+              </li>
+              <li>
+                Fork adds <b>10 migrations (035–044)</b> for trading tables; upstream adds
+                <b>1 migration (035)</b> for title regeneration.
+              </li>
+              <li>
+                <b>Migration number 035 collides</b>: fork = <code>035_TradingDomain</code>,
+                upstream = <code>035_ProjectionThreadTitleRegeneration</code>.
+              </li>
+              <li>
+                Effect catalog: fork pinned at <b>β.102</b>, upstream advanced to <b>β.103</b>.
+              </li>
+              <li>
+                <code>git merge-tree</code> dry-run reports exactly <b>12 textual conflicts</b> and
+                41 clean auto-merges.
+              </li>
+              <li>
+                Fork introduces two new packages (<b>packages/trading-contracts</b>,
+                <b>packages/hyperliquid</b>) untouched by upstream — zero conflict.
+              </li>
+              <li>
+                Fork has a <code>scripts/check-fork-independence.ts</code> guard that rejects
+                upstream infrastructure URLs.
+              </li>
+            </ul>
+          </div>
+          <div class="ep-card assume">
+            <h4>▲ Assumptions & inferences</h4>
+            <ul>
+              <li>
+                The migration-035 collision is a <b>data-integrity hazard</b>, not just a text
+                conflict — renumbering is required (inferred from migration semantics).
+              </li>
+              <li>
+                Effect β.102 → β.103 is likely <b>backward compatible</b> for this codebase, but the
+                contracts changes suggest some API drift worth a typecheck (inferred from minor
+                version bump).
+              </li>
+              <li>
+                Upstream's <code>searchThreads</code> and
+                <code>ThreadTitleRegeneration</code> additions to
+                <code>contracts/orchestration.ts</code> are <b>additive</b> and should coexist with
+                fork's trading command additions (inferred from diff regions).
+              </li>
+              <li>
+                The 41 auto-merged files are <b>probably safe</b> but still need a typecheck + test
+                pass — auto-merge ≠ correct (standard caveat).
+              </li>
+              <li>
+                Branding conflicts (<code>README.md</code>, <code>docs/README.md</code>) are
+                <b>intentional fork divergences</b> and should resolve in favor of the fork
+                (inferred from <code>fe092c004 chore(branding)</code>).
+              </li>
+              <li>
+                <code>bootService</code>/<code>selfUpdate</code> conflicts likely involve fork's
+                <b>fork-independence hardening</b> — must preserve fork intent (inferred from
+                <code>check-fork-independence.ts</code> existence).
+              </li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ BRANCH MAP ============ -->
+      <section id="map">
+        <div class="sec-head">
+          <span class="num">03</span>
+          <h2>Remote &amp; branch map</h2>
+        </div>
+        <p class="sec-intro">
+          A single merge-base, two fast-moving tips. The fork's 143 commits are almost entirely new
+          packages and trading features; upstream's 80 touch many of the same shared files
+          (contracts, orchestration, web UI, cloud services).
+        </p>
+
+        <div class="diagram-frame reveal">
+          <svg
+            viewBox="0 0 880 360"
+            width="100%"
+            height="360"
+            role="img"
+            aria-label="Branch divergence diagram"
+          >
+            <defs>
+              <marker
+                id="arr-up"
+                markerWidth="7"
+                markerHeight="7"
+                refX="6"
+                refY="3.5"
+                orient="auto"
+              >
+                <polygon points="0 0, 7 3.5, 0 7" fill="#4C9AFF" />
+              </marker>
+              <marker
+                id="arr-fork"
+                markerWidth="7"
+                markerHeight="7"
+                refX="6"
+                refY="3.5"
+                orient="auto"
+              >
+                <polygon points="0 0, 7 3.5, 0 7" fill="#F0B429" />
+              </marker>
+            </defs>
+
+            <!-- merge-base -->
+            <g transform="translate(120,180)">
+              <circle r="13" fill="#151B23" stroke="#8B5CF6" stroke-width="2.5" />
+              <text y="4" text-anchor="middle" fill="#8B5CF6" font-size="9" font-weight="700">
+                M
+              </text>
+              <text y="36" text-anchor="middle" fill="#9AA7B4" font-size="10">a8e05cbb</text>
+              <text y="50" text-anchor="middle" fill="#6B7785" font-size="9">v0.0.31 · Jul 29</text>
+            </g>
+
+            <!-- base trunk (shared past) -->
+            <line
+              x1="20"
+              y1="180"
+              x2="107"
+              y2="180"
+              stroke="#3D4753"
+              stroke-width="2"
+              stroke-dasharray="3 3"
+            />
+            <text x="20" y="166" fill="#6B7785" font-size="9">shared history</text>
+
+            <!-- FORK branch (upward) -->
+            <path
+              class="branch-line fork"
+              d="M133,180 Q160,180 160,90 L420,90"
+              fill="none"
+              stroke="#F0B429"
+              stroke-width="2.5"
+            />
+            <!-- fork commits -->
+            <g class="node-commit fork">
+              <circle cx="190" cy="90" r="6" fill="#F0B429" />
+              <circle cx="240" cy="90" r="6" fill="#F0B429" />
+              <circle cx="290" cy="90" r="6" fill="#F0B429" />
+              <circle cx="340" cy="90" r="6" fill="#F0B429" />
+              <circle cx="390" cy="90" r="6" fill="#F0B429" />
+            </g>
+            <!-- fork tip -->
+            <g transform="translate(440,90)">
+              <circle r="11" fill="#F0B429" stroke="#0E1116" stroke-width="2" />
+              <text y="-22" text-anchor="middle" fill="#F0B429" font-size="11" font-weight="700">
+                origin/main
+              </text>
+              <text y="30" text-anchor="middle" fill="#E6EDF3" font-size="10" font-weight="600">
+                e6fe90756
+              </text>
+              <text y="44" text-anchor="middle" fill="#9AA7B4" font-size="9">
+                143 commits ahead
+              </text>
+            </g>
+            <text
+              x="290"
+              y="70"
+              text-anchor="middle"
+              fill="#F0B429"
+              font-size="10"
+              font-family="monospace"
+            >
+              trading layer · branding · hyperliquid
+            </text>
+
+            <!-- UPSTREAM branch (downward) -->
+            <path
+              class="branch-line up"
+              d="M133,180 Q160,180 160,270 L420,270"
+              fill="none"
+              stroke="#4C9AFF"
+              stroke-width="2.5"
+            />
+            <g class="node-commit up">
+              <circle cx="190" cy="270" r="6" fill="#4C9AFF" />
+              <circle cx="240" cy="270" r="6" fill="#4C9AFF" />
+              <circle cx="290" cy="270" r="6" fill="#4C9AFF" />
+              <circle cx="340" cy="270" r="6" fill="#4C9AFF" />
+              <circle cx="390" cy="270" r="6" fill="#4C9AFF" />
+            </g>
+            <g transform="translate(440,270)">
+              <circle r="11" fill="#4C9AFF" stroke="#0E1116" stroke-width="2" />
+              <text y="22" text-anchor="middle" fill="#4C9AFF" font-size="11" font-weight="700">
+                upstream/main
+              </text>
+              <text y="-26" text-anchor="middle" fill="#E6EDF3" font-size="10" font-weight="600">
+                2b1d4fecb
+              </text>
+              <text y="-40" text-anchor="middle" fill="#9AA7B4" font-size="9">
+                80 commits ahead
+              </text>
+            </g>
+            <text
+              x="290"
+              y="298"
+              text-anchor="middle"
+              fill="#4C9AFF"
+              font-size="10"
+              font-family="monospace"
+            >
+              search · terminal · mobile · Effect β.103
+            </text>
+
+            <!-- integration arrows (to merged result) -->
+            <path
+              class="merge-line"
+              d="M451,79 Q560,79 620,150"
+              fill="none"
+              stroke="#22D3A6"
+              stroke-width="2"
+              stroke-dasharray="4 3"
+              marker-end="url(#arr-fork)"
+            />
+            <path
+              class="merge-line"
+              d="M451,281 Q560,281 620,210"
+              fill="none"
+              stroke="#22D3A6"
+              stroke-width="2"
+              stroke-dasharray="4 3"
+              marker-end="url(#arr-up)"
+            />
+
+            <!-- merged result -->
+            <g transform="translate(680,180)">
+              <circle r="14" fill="#151B23" stroke="#22D3A6" stroke-width="2.5" />
+              <text y="4" text-anchor="middle" fill="#22D3A6" font-size="9" font-weight="700">
+                ★
+              </text>
+              <text y="-30" text-anchor="middle" fill="#22D3A6" font-size="11" font-weight="700">
+                integration
+              </text>
+              <text y="36" text-anchor="middle" fill="#E6EDF3" font-size="10">target state</text>
+              <text y="50" text-anchor="middle" fill="#9AA7B4" font-size="9">
+                12 conflicts to resolve
+              </text>
+            </g>
+
+            <!-- conflict annotation -->
+            <g transform="translate(540,60)">
+              <rect
+                x="-50"
+                y="-14"
+                width="100"
+                height="22"
+                rx="5"
+                fill="rgba(255,107,107,.1)"
+                stroke="#FF6B6B"
+                stroke-width="1"
+              />
+              <text y="1" text-anchor="middle" fill="#FF6B6B" font-size="10" font-weight="600">
+                ⚠ 12 conflicts
+              </text>
+            </g>
+          </svg>
+
+          <div class="legend">
+            <div class="item">
+              <span class="swatch" style="background: #8b5cf6"></span> merge-base (shared ancestor)
+            </div>
+            <div class="item">
+              <span class="line-sw" style="background: #f0b429"></span> origin/main (fork)
+            </div>
+            <div class="item">
+              <span class="line-sw" style="background: #4c9aff"></span> upstream/main
+            </div>
+            <div class="item">
+              <span class="line-sw" style="background: #22d3a6"></span> integration path
+            </div>
+            <div class="item">
+              <span class="swatch" style="background: #ff6b6b"></span> conflict zone
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ CONFLICTS ============ -->
+      <section id="conflicts">
+        <div class="sec-head">
+          <span class="num">04</span>
+          <h2>The 12 textual conflicts, ranked</h2>
+        </div>
+        <p class="sec-intro">
+          From
+          <code style="font-family: var(--mono)"
+            >git merge-tree --write-tree upstream/main origin/main</code
+          >. Risk is scored by combining how many lines each side changed in overlapping regions and
+          whether the file is load-bearing for the trading layer.
+        </p>
+
+        <div class="conflict-wrap reveal">
+          <table>
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Conflict region</th>
+                <th>Fork Δ</th>
+                <th>Upstream Δ</th>
+                <th>Risk</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <span class="path">packages/contracts/src/orchestration.ts</span
+                  ><span class="region">WS methods, command unions, OrchestrationThread</span>
+                </td>
+                <td>+88 lines</td>
+                <td>+76 lines</td>
+                <td><span class="risk-pill risk-high">High</span></td>
+              </tr>
+              <tr>
+                <td>
+                  <span class="path">apps/server/src/serverRuntimeStartup.ts</span
+                  ><span class="region">service wiring / startup layers</span>
+                </td>
+                <td>+2 lines</td>
+                <td>+342 lines</td>
+                <td><span class="risk-pill risk-high">High</span></td>
+              </tr>
+              <tr>
+                <td>
+                  <span class="path">apps/server/src/cloud/bootService.ts</span
+                  ><span class="region">fork-independence hardening vs upstream rewrite</span>
+                </td>
+                <td>+6 lines</td>
+                <td>+288 lines</td>
+                <td><span class="risk-pill risk-high">High</span></td>
+              </tr>
+              <tr>
+                <td>
+                  <span class="path">apps/server/src/cloud/selfUpdate.ts</span
+                  ><span class="region">update endpoint / rollback logic</span>
+                </td>
+                <td>+4 lines</td>
+                <td>+463 lines</td>
+                <td><span class="risk-pill risk-high">High</span></td>
+              </tr>
+              <tr>
+                <td>
+                  <span class="path">apps/web/src/components/settings/SettingsSidebarNav.tsx</span
+                  ><span class="region">sidebar nav entries</span>
+                </td>
+                <td>+5 lines</td>
+                <td>+288 lines</td>
+                <td><span class="risk-pill risk-med">Medium</span></td>
+              </tr>
+              <tr>
+                <td>
+                  <span class="path">apps/server/src/cloud/bootService.test.ts</span
+                  ><span class="region">test scaffolding</span>
+                </td>
+                <td>+2 lines</td>
+                <td>+611 lines</td>
+                <td><span class="risk-pill risk-med">Medium</span></td>
+              </tr>
+              <tr>
+                <td>
+                  <span class="path">apps/server/src/persistence/Migrations.ts</span
+                  ><span class="region">import list + migration manifest</span>
+                </td>
+                <td>+20 lines</td>
+                <td>+6 lines</td>
+                <td><span class="risk-pill risk-high">High</span></td>
+              </tr>
+              <tr>
+                <td>
+                  <span class="path">apps/desktop/src/app/DesktopEnvironment.ts</span
+                  ><span class="region">environment identity</span>
+                </td>
+                <td>+6 lines</td>
+                <td>+24 lines</td>
+                <td><span class="risk-pill risk-med">Medium</span></td>
+              </tr>
+              <tr>
+                <td>
+                  <span class="path">apps/mobile/app.config.ts</span
+                  ><span class="region">app metadata / scheme</span>
+                </td>
+                <td>+12 lines</td>
+                <td>+22 lines</td>
+                <td><span class="risk-pill risk-med">Medium</span></td>
+              </tr>
+              <tr>
+                <td>
+                  <span class="path">apps/server/src/cli/connect.ts</span
+                  ><span class="region">connect command</span>
+                </td>
+                <td>+2 lines</td>
+                <td>+15 lines</td>
+                <td><span class="risk-pill risk-low">Low</span></td>
+              </tr>
+              <tr>
+                <td>
+                  <span class="path">README.md</span
+                  ><span class="region">branding (intentional fork divergence)</span>
+                </td>
+                <td>+177 lines</td>
+                <td>+27 lines</td>
+                <td><span class="risk-pill risk-low">Low</span></td>
+              </tr>
+              <tr>
+                <td>
+                  <span class="path">docs/README.md</span
+                  ><span class="region">docs index (branding)</span>
+                </td>
+                <td>fork-only</td>
+                <td>+upstream</td>
+                <td><span class="risk-pill risk-low">Low</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout info">
+          <div class="ico">i</div>
+          <div>
+            <h4>41 additional files auto-merge cleanly — but verify anyway</h4>
+            <p>
+              Files like <code>apps/server/src/orchestration/decider.ts</code> (fork +220 / upstream
+              +38) and <code>apps/server/src/ws.ts</code> (fork +68 / upstream +141) auto-merge
+              without textual conflict, but they are load-bearing for the trading state machine.
+              Auto-merge success does <b>not</b> guarantee semantic correctness — a typecheck and
+              the trading test suite are mandatory after any integration.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SEMANTIC RISKS ============ -->
+      <section id="semantic">
+        <div class="sec-head">
+          <span class="num">05</span>
+          <h2>Hidden risks Git will not warn you about</h2>
+        </div>
+        <p class="sec-intro">
+          These problems do not appear as <code>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</code> markers. They
+          are silent collisions in shared numeric namespaces and version catalogs. An execution
+          agent that ignores them will produce a tree that typechecks but is broken at runtime.
+        </p>
+
+        <div class="callout crit">
+          <div class="ico">!</div>
+          <div>
+            <h4>Migration 035 collision — the single most dangerous finding</h4>
+            <p>
+              Both sides claimed migration slot <b>35</b>. The fork uses it for
+              <code>035_TradingDomain.ts</code> (creates the core trading tables); upstream uses it
+              for <code>035_ProjectionThreadTitleRegeneration.ts</code> (thread title regen column).
+              If both files land under the same number, the migration loader will apply only one and
+              the other's schema change silently never runs — leading to missing tables or missing
+              columns depending on load order.
+              <b>The fork's migrations 035–044 must be renumbered to 036–045</b>
+              (or higher) so upstream's 035 keeps its slot. This is a manual edit to
+              <code>Migrations.ts</code> plus a file rename — it will not surface as a text
+              conflict.
+            </p>
+          </div>
+        </div>
+
+        <div class="callout warn">
+          <div class="ico">▲</div>
+          <div>
+            <h4>Effect catalog drift: β.102 → β.103</h4>
+            <p>
+              Upstream bumped the entire Effect catalog from <code>4.0.0-beta.102</code> to
+              <code>4.0.0-beta.103</code> (commit <code>2b1d4fecb</code>). The fork still sits on
+              β.102. A β-bump can carry breaking schema/API changes — upstream's own
+              <code>contracts/orchestration.ts</code> edit (removing
+              <code>effect/Option</code> import, adding <code>TrimmedString</code>) is evidence of
+              API drift. The integration must adopt β.103 wholesale and re-run the full typecheck.
+              <code>pnpm-lock.yaml</code> will conflict but should be regenerated rather than merged
+              by hand.
+            </p>
+          </div>
+        </div>
+
+        <div class="callout warn">
+          <div class="ico">▲</div>
+          <div>
+            <h4>Fork-independence guard rails</h4>
+            <p>
+              The fork ships <code>scripts/check-fork-independence.ts</code>, which fails CI if any
+              source file references <code>pingdotgg/t3code</code> infrastructure. Upstream's
+              <code>bootService.ts</code>, <code>selfUpdate.ts</code>, and
+              <code>connect.ts</code> naturally contain such references. Resolving those conflicts
+              "in favor of upstream" would re-introduce a live dependency on upstream's infra and
+              break the guard. These three files must be resolved
+              <b>in favor of the fork's redirection logic</b>, then re-validated by running the
+              independence check.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ STRATEGIES ============ -->
+      <section id="strategies">
+        <div class="sec-head">
+          <span class="num">06</span>
+          <h2>Integration strategies compared</h2>
+        </div>
+        <p class="sec-intro">
+          Five viable paths, each with a different trade-off between history cleanliness, conflict
+          exposure, and reversibility. The
+          <span style="color: var(--merge); font-weight: 600">green-bordered card</span> is the
+          recommendation.
+        </p>
+
+        <div class="strategy-grid">
+          <!-- STRATEGY A: merge (recommended) -->
+          <div class="strategy recommended reveal">
+            <div class="s-head">
+              <div>
+                <h3>A · Merge upstream into a feature branch</h3>
+                <div class="tagline">git merge upstream/main — preserve both histories</div>
+              </div>
+              <span class="risk-pill risk-med">Recommended</span>
+            </div>
+            <div class="s-body">
+              <p>
+                Create <code>sync/upstream-2026-08-04</code> off <code>origin/main</code>, run
+                <code>git merge upstream/main</code>, resolve the 12 conflicts plus the migration
+                renumber, typecheck, test, then fast-forward <code>main</code>. History is
+                preserved; a merge commit records the synchronization point.
+              </p>
+              <dl>
+                <dt>Best for</dt>
+                <dd>This exact situation — long-lived fork, ongoing relationship with upstream.</dd>
+                <dt>Conflict risk</dt>
+                <dd>
+                  <span class="maybe">Medium</span> — bounded to the known 12 files + migration
+                  renumber.
+                </dd>
+                <dt>History</dt>
+                <dd><b>Preserved</b> on both sides; one merge commit.</dd>
+                <dt>Force-push?</dt>
+                <dd><span class="no">No</span> — if done on a feature branch merged by PR.</dd>
+                <dt>Reversible?</dt>
+                <dd><span class="yes">Yes</span> — delete the branch / revert the merge commit.</dd>
+              </dl>
+            </div>
+            <div class="s-risks">
+              <span class="risk-pill risk-med">12 conflicts</span>
+              <span class="risk-pill risk-high">migration renumber</span>
+              <span class="risk-pill risk-med">Effect β-bump</span>
+            </div>
+            <details>
+              <summary>Exact commands</summary>
+              <div class="cmd-block">
+                <div class="cmd-head">
+                  <span>shell</span><button class="copy-btn" data-copy="cmd-merge">copy</button>
+                </div>
+                <pre id="cmd-merge"><span class="c"># 0. Backup the current tip</span>
+git branch backup/main-pre-sync-$(date +%Y%m%d) origin/main
+
+<span class="c"># 1. Fresh integration branch off the fork</span>
+git checkout -b sync/upstream-2026-08-04 origin/main
+
+<span class="c"># 2. Ensure upstream is current</span>
+git fetch upstream
+
+<span class="c"># 3. Merge — expect 12 conflicts</span>
+git merge upstream/main --no-ff --no-commit
+
+<span class="c"># 4. Resolve conflicts (see phased plan), then:</span>
+git add -A
+git commit -m <span class="s">"sync(upstream): merge pingdotgg/t3code main (80 commits) into T3 Trade
+
+- renumber fork migrations 035-044 -> 036-045 to free slot 035 for upstream
+- adopt Effect catalog beta.103
+- preserve fork-independence hardening in bootService/selfUpdate/connect
+- resolve 12 textual conflicts per upstream-integration-analysis-2026-08-04"</span>
+
+<span class="c"># 5. Verify before pushing</span>
+pnpm install
+pnpm run typecheck
+pnpm test run apps/server/src/persistence packages/contracts packages/trading-contracts
+
+<span class="c"># 6. Push the branch and open a PR — do NOT force-push main</span>
+git push -u origin sync/upstream-2026-08-04</pre>
+              </div>
+            </details>
+          </div>
+
+          <!-- STRATEGY B: rebase -->
+          <div class="strategy reveal">
+            <div class="s-head">
+              <div>
+                <h3>B · Rebase the fork onto upstream</h3>
+                <div class="tagline">git rebase upstream/main — linear history</div>
+              </div>
+              <span class="risk-pill risk-high">Risky</span>
+            </div>
+            <div class="s-body">
+              <p>
+                Replay all 143 fork commits on top of <code>upstream/main</code>. Produces a
+                perfectly linear history, but every fork commit that touches a conflicting file may
+                pause for resolution, and the same conflict can recur multiple times across the
+                143-commit range.
+              </p>
+              <dl>
+                <dt>Best for</dt>
+                <dd>Short forks with few commits — <b>not this one</b>.</dd>
+                <dt>Conflict risk</dt>
+                <dd>
+                  <span class="no">High</span> — conflicts may repeat per-commit; 143 replays.
+                </dd>
+                <dt>History</dt>
+                <dd><b>Rewritten</b> — every fork commit gets a new SHA.</dd>
+                <dt>Force-push?</dt>
+                <dd><span class="yes">Yes</span> — mandatory; all SHAs change.</dd>
+                <dt>Reversible?</dt>
+                <dd>Only via the backup branch / <code>ORIG_HEAD</code>.</dd>
+              </dl>
+            </div>
+            <div class="s-risks">
+              <span class="risk-pill risk-high">repeated conflicts</span>
+              <span class="risk-pill risk-crit">force-push</span>
+              <span class="risk-pill risk-high">143 replays</span>
+            </div>
+            <details>
+              <summary>Exact commands</summary>
+              <div class="cmd-block">
+                <div class="cmd-head">
+                  <span>shell</span><button class="copy-btn" data-copy="cmd-rebase">copy</button>
+                </div>
+                <pre
+                  id="cmd-rebase"
+                ><span class="c"># Backup is mandatory — rebasing rewrites history</span>
+git branch backup/main-pre-rebase origin/main
+
+git checkout -b rebase/upstream-2026-08-04 origin/main
+git fetch upstream
+git rebase upstream/main
+
+<span class="c"># On each conflict: resolve, git add, git rebase --continue</span>
+<span class="c"># To abandon: git rebase --abort</span>
+
+<span class="c"># Force-push ONLY after full verification</span>
+git push --force-with-lease origin rebase/upstream-2026-08-04</pre>
+              </div>
+            </details>
+          </div>
+
+          <!-- STRATEGY C: cherry-pick -->
+          <div class="strategy reveal">
+            <div class="s-head">
+              <div>
+                <h3>C · Cherry-pick selected upstream commits</h3>
+                <div class="tagline">take only what you want</div>
+              </div>
+              <span class="risk-pill risk-med">Targeted</span>
+            </div>
+            <div class="s-body">
+              <p>
+                Pick individual upstream commits (e.g. <code>5c9358aca</code> title regen,
+                <code>4b71a2ae2</code> thread search, <code>61514c129</code>
+                <code>npx t3 pair</code>) onto <code>origin/main</code>. Useful if you want only a
+                subset of upstream and can defer the rest.
+              </p>
+              <dl>
+                <dt>Best for</dt>
+                <dd>When only a few upstream features are wanted now.</dd>
+                <dt>Conflict risk</dt>
+                <dd><span class="maybe">Variable</span> — depends on which commits and order.</dd>
+                <dt>History</dt>
+                <dd>Fork commits preserved; cherry-picks appended with new SHAs.</dd>
+                <dt>Force-push?</dt>
+                <dd><span class="no">No</span> — appended normally.</dd>
+                <dt>Reversible?</dt>
+                <dd><span class="yes">Yes</span> — revert individual cherry-picks.</dd>
+              </dl>
+            </div>
+            <div class="s-risks">
+              <span class="risk-pill risk-med">partial sync</span>
+              <span class="risk-pill risk-low">low blast radius</span>
+              <span class="risk-pill risk-med">manual triage</span>
+            </div>
+            <details>
+              <summary>Exact commands</summary>
+              <div class="cmd-block">
+                <div class="cmd-head">
+                  <span>shell</span><button class="copy-btn" data-copy="cmd-cherry">copy</button>
+                </div>
+                <pre id="cmd-cherry">git checkout -b cherry/upstream-selective origin/main
+git fetch upstream
+
+<span class="c"># Example: thread title regeneration + search (additive to contracts)</span>
+git cherry-pick 5c9358aca   <span class="c"># feat(web): regenerate thread titles</span>
+git cherry-pick 4b71a2ae2   <span class="c"># feat(search): find threads by content</span>
+git cherry-pick abc409c2d   <span class="c"># project file picker + content search</span>
+
+<span class="c"># Resolve per-commit, then:</span>
+pnpm run typecheck &amp;&amp; pnpm test run packages/contracts
+git push -u origin cherry/upstream-selective</pre>
+              </div>
+            </details>
+          </div>
+
+          <!-- STRATEGY D: reset to upstream -->
+          <div class="strategy reveal">
+            <div class="s-head">
+              <div>
+                <h3>D · Reset fork main to upstream</h3>
+                <div class="tagline">start over from upstream — destructive</div>
+              </div>
+              <span class="risk-pill risk-crit">Destructive</span>
+            </div>
+            <div class="s-body">
+              <p>
+                Point <code>main</code> at <code>upstream/main</code>, then re-apply the trading
+                layer as a new commit (or series of commits) on top. Cleanest possible base, but
+                discards all fork history and requires re-porting 143 commits worth of work.
+              </p>
+              <dl>
+                <dt>Best for</dt>
+                <dd>Never, for this fork — 143 commits of trading logic is too much to re-port.</dd>
+                <dt>Conflict risk</dt>
+                <dd>
+                  <span class="no">N/A</span> — there is nothing to conflict with; you start clean.
+                </dd>
+                <dt>History</dt>
+                <dd><b>Destroyed</b> — fork SHAs orphaned (recoverable from backup only).</dd>
+                <dt>Force-push?</dt>
+                <dd><span class="yes">Yes</span> — mandatory.</dd>
+                <dt>Reversible?</dt>
+                <dd>Only via backup branch.</dd>
+              </dl>
+            </div>
+            <div class="s-risks">
+              <span class="risk-pill risk-crit">history loss</span>
+              <span class="risk-pill risk-crit">re-port 143 commits</span>
+            </div>
+            <details>
+              <summary>Exact commands (not recommended)</summary>
+              <div class="cmd-block">
+                <div class="cmd-head">
+                  <span>shell</span><button class="copy-btn" data-copy="cmd-reset">copy</button>
+                </div>
+                <pre id="cmd-reset"><span class="c"># MANDATORY backup</span>
+git branch backup/main-pre-reset origin/main
+
+git checkout main
+git fetch upstream
+git reset --hard upstream/main
+git push --force-with-lease origin main
+
+<span class="c"># Then manually re-port the trading layer from backup/main-pre-reset</span></pre>
+              </div>
+            </details>
+          </div>
+
+          <!-- STRATEGY E: phased port -->
+          <div class="strategy reveal">
+            <div class="s-head">
+              <div>
+                <h3>E · Phased manual port</h3>
+                <div class="tagline">group upstream changes, port by theme</div>
+              </div>
+              <span class="risk-pill risk-med">Patient</span>
+            </div>
+            <div class="s-body">
+              <p>
+                Split upstream's 80 commits into thematic batches (contracts/schema, web UI, mobile,
+                desktop, cloud/infra, deps) and merge or cherry-pick each batch separately behind
+                its own feature branch and PR. Slower, but each batch is independently reviewable
+                and revertible.
+              </p>
+              <dl>
+                <dt>Best for</dt>
+                <dd>When you want review gates per concern and can spread the work over days.</dd>
+                <dt>Conflict risk</dt>
+                <dd>
+                  <span class="maybe">Medium</span> — same total conflicts, but surfaced in smaller
+                  pieces.
+                </dd>
+                <dt>History</dt>
+                <dd>Preserved; one merge commit per batch.</dd>
+                <dt>Force-push?</dt>
+                <dd><span class="no">No</span>.</dd>
+                <dt>Reversible?</dt>
+                <dd><span class="yes">Yes</span> — revert per-batch PR.</dd>
+              </dl>
+            </div>
+            <div class="s-risks">
+              <span class="risk-pill risk-med">slower</span>
+              <span class="risk-pill risk-low">reviewable</span>
+              <span class="risk-pill risk-med">ordering care</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ DECISION TREE ============ -->
+      <section id="decision">
+        <div class="sec-head">
+          <span class="num">07</span>
+          <h2>Which strategy should you pick?</h2>
+        </div>
+        <p class="sec-intro">
+          Answer honestly, then follow the recommendation. This encodes the trade-offs above into a
+          decision path grounded in the observed fork state (143 ahead, 80 behind, 12 conflicts).
+        </p>
+
+        <div class="decision reveal">
+          <div class="q-node">
+            <div class="q">
+              <span class="qmark">Q1</span>Do you want to absorb <b>all</b> of upstream, or just
+              specific features?
+            </div>
+            <div class="opts">
+              <div class="opt"><b>All →</b> Go to Q2.</div>
+              <div class="opt">
+                <b>Only some →</b> Use <b>Strategy C (cherry-pick)</b>. Pick the commits you want;
+                defer the rest. Lowest blast radius, but you'll still owe a full sync later.
+              </div>
+            </div>
+          </div>
+
+          <div class="q-node">
+            <div class="q">
+              <span class="qmark">Q2</span>Is linear history worth rewriting 143 fork commit SHAs?
+            </div>
+            <div class="opts">
+              <div class="opt"><b>No →</b> Go to Q3.</div>
+              <div class="opt">
+                <b>Yes →</b> Use <b>Strategy B (rebase)</b> — but expect repeated conflicts across
+                143 commits and a mandatory force-push.
+                <span style="color: var(--risk-high)">Not recommended for a fork this size.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="q-node">
+            <div class="q">
+              <span class="qmark">Q3</span>Do you need per-concern review gates, or one synchronized
+              PR?
+            </div>
+            <div class="opts">
+              <div class="opt">
+                <b>One PR →</b> Use <b>Strategy A (merge)</b> — the recommendation. Single
+                integration branch, all 12 conflicts resolved in one place, one merge commit records
+                the sync point.
+              </div>
+              <div class="opt">
+                <b>Per-concern PRs →</b> Use <b>Strategy E (phased port)</b>. Slower but each batch
+                (contracts, web, mobile, cloud, deps) ships behind its own reviewable, revertible
+                PR.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout info" style="margin-top: 24px">
+          <div class="ico">★</div>
+          <div>
+            <h4>Recommendation for this fork, today</h4>
+            <p>
+              <b>Strategy A (merge)</b> on a dedicated <code>sync/upstream-2026-08-04</code> branch,
+              merged via PR. It is the safest strategy (no force-push, fully reversible, both
+              histories preserved), the fastest reasonable one (one conflict-resolution pass, not
+              143), and the cleanest long-term (the merge commit becomes a durable record of the
+              synchronization point). If you later want finer-grained review, <b>Strategy E</b> is
+              the natural fallback.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ PHASED PLAN ============ -->
+      <section id="phases">
+        <div class="sec-head">
+          <span class="num">08</span>
+          <h2>Recommended execution sequence</h2>
+        </div>
+        <p class="sec-intro">
+          Six phases for Strategy A. Each phase is independently verifiable and abortable. Do not
+          skip the backup — if anything goes sideways, <code>backup/main-pre-sync-*</code> is the
+          restore point.
+        </p>
+
+        <div class="phases reveal">
+          <div class="phase active">
+            <div class="marker"><div class="num">1</div></div>
+            <div class="p-body">
+              <h4>Backup &amp; branch</h4>
+              <div class="goal">Establish a restore point and an isolated workspace.</div>
+              <ul>
+                <li>
+                  Create <code>backup/main-pre-sync-YYYYMMDD</code> pointing at current
+                  <code>origin/main</code>.
+                </li>
+                <li>Create <code>sync/upstream-2026-08-04</code> off <code>origin/main</code>.</li>
+                <li>
+                  Confirm working tree is clean (commit or stash the
+                  <code>.vscode/settings.json</code> change and untracked
+                  <code>artifacts/reports/*</code>).
+                </li>
+                <li>
+                  <code>git fetch upstream</code> to ensure <code>upstream/main</code> is current.
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="phase">
+            <div class="marker"><div class="num">2</div></div>
+            <div class="p-body">
+              <h4>Merge &amp; triage conflicts</h4>
+              <div class="goal">Surface every conflict in one pass.</div>
+              <ul>
+                <li>
+                  <code>git merge upstream/main --no-ff --no-commit</code> — expect 12 textual
+                  conflicts.
+                </li>
+                <li>List them: <code>git diff --name-only --diff-filter=U</code>.</li>
+                <li>
+                  Confirm the count matches the 12 in this report; if higher, stop and investigate
+                  before resolving.
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="phase">
+            <div class="marker"><div class="num">3</div></div>
+            <div class="p-body">
+              <h4>Resolve the semantic risks first</h4>
+              <div class="goal">Fix what Git will not warn you about.</div>
+              <ul>
+                <li>
+                  <b>Migration renumber:</b> rename fork's
+                  <code>035_TradingDomain</code>→<code>036</code>, …,
+                  <code>044_TradingAccountObservations</code>→<code>045</code>; update
+                  <code>Migrations.ts</code> import list and manifest array to match. Leave
+                  upstream's <code>035_ProjectionThreadTitleRegeneration</code> as slot 35.
+                </li>
+                <li>
+                  <b>Effect catalog:</b> accept upstream's <code>pnpm-workspace.yaml</code> (β.103);
+                  discard the fork's lock fragment. Regenerate <code>pnpm-lock.yaml</code> with
+                  <code>pnpm install</code> rather than merging it.
+                </li>
+                <li>
+                  <b>Fork-independence:</b> in <code>bootService.ts</code>,
+                  <code>selfUpdate.ts</code>, <code>connect.ts</code> — keep the fork's redirection
+                  logic; re-apply upstream's behavioral fixes <i>around</i> it, not over it.
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="phase">
+            <div class="marker"><div class="num">4</div></div>
+            <div class="p-body">
+              <h4>Resolve the textual conflicts</h4>
+              <div class="goal">Settle the 12 files, lowest-risk first.</div>
+              <ul>
+                <li>
+                  <b>Branding (low):</b> <code>README.md</code>, <code>docs/README.md</code> → take
+                  fork side (intentional divergence).
+                </li>
+                <li>
+                  <b>Low-risk misc:</b> <code>apps/server/src/cli/connect.ts</code> → re-apply
+                  fork's redirect on top of upstream's new behavior.
+                </li>
+                <li>
+                  <b>Mobile/desktop metadata (medium):</b> <code>apps/mobile/app.config.ts</code>,
+                  <code>apps/desktop/src/app/DesktopEnvironment.ts</code>,
+                  <code>apps/web/.../SettingsSidebarNav.tsx</code> → merge both sides' additions.
+                </li>
+                <li>
+                  <b>Tests (medium):</b> <code>apps/server/src/cloud/bootService.test.ts</code> →
+                  keep fork's assertions, add upstream's new cases.
+                </li>
+                <li>
+                  <b>Schema (high):</b> <code>packages/contracts/src/orchestration.ts</code> → union
+                  both sides' WS methods, command additions, and
+                  <code>OrchestrationThread</code> fields. Both are additive.
+                </li>
+                <li>
+                  <b>Startup/cloud (high):</b> <code>apps/server/src/serverRuntimeStartup.ts</code>,
+                  <code>bootService.ts</code>, <code>selfUpdate.ts</code> → port upstream's fixes,
+                  preserve fork's independence layer.
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="phase">
+            <div class="marker"><div class="num">5</div></div>
+            <div class="p-body">
+              <h4>Verify</h4>
+              <div class="goal">Prove the integrated tree is correct, not just conflict-free.</div>
+              <ul>
+                <li><code>pnpm install</code> (regenerates lockfile at β.103).</li>
+                <li>
+                  <code>pnpm run typecheck</code> — must pass; watch for Effect β.103 API drift.
+                </li>
+                <li>
+                  <code>pnpm test run apps/server/src/persistence</code> — proves migrations load
+                  036–045 + upstream's 035.
+                </li>
+                <li>
+                  <code>pnpm test run packages/contracts packages/trading-contracts</code> — proves
+                  the unioned schemas decode.
+                </li>
+                <li>
+                  <code>pnpm test run apps/server/src/orchestration</code> — proves
+                  decider/projector still behave.
+                </li>
+                <li>
+                  Run <code>scripts/check-fork-independence.ts</code> — must still pass (no upstream
+                  infra URLs leaked in).
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="phase">
+            <div class="marker"><div class="num">6</div></div>
+            <div class="p-body">
+              <h4>Commit, push, review</h4>
+              <div class="goal">Land the integration behind a reviewable PR.</div>
+              <ul>
+                <li><code>git commit</code> with the message template from Strategy A.</li>
+                <li>
+                  <code>git push -u origin sync/upstream-2026-08-04</code> — <b>not</b> a
+                  force-push.
+                </li>
+                <li>Open a PR into <code>main</code>; request review before merging.</li>
+                <li>
+                  After merge, delete the sync branch; keep
+                  <code>backup/main-pre-sync-*</code> until the next sync is green.
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ HANDOFF CHECKLIST ============ -->
+      <section id="checklist">
+        <div class="sec-head">
+          <span class="num">09</span>
+          <h2>Handoff checklist for the execution agent</h2>
+        </div>
+        <p class="sec-intro">
+          Interactive — click a row to mark it done. This is the contract between this analysis and
+          whoever runs the integration. Do not begin execution until every "before" box is checked.
+        </p>
+
+        <div class="checklist reveal" id="cl">
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>BEFORE:</b> Backup branch <code>backup/main-pre-sync-YYYYMMDD</code> created from
+              <code>origin/main</code>.
+            </div>
+          </div>
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>BEFORE:</b> Working tree clean —
+              <code>.vscode/settings.json</code> committed/stashed, untracked reports stashed.
+            </div>
+          </div>
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>BEFORE:</b> <code>git fetch upstream</code> run;
+              <code>upstream/main</code> confirmed at <code>2b1d4fecb</code>.
+            </div>
+          </div>
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>BEFORE:</b> Integration branch <code>sync/upstream-2026-08-04</code> created off
+              <code>origin/main</code>.
+            </div>
+          </div>
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>DURING:</b> Migration 035 collision resolved — fork's 035–044 renumbered to
+              036–045; upstream's 035 keeps its slot.
+            </div>
+          </div>
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>DURING:</b> Effect catalog accepted at β.103;
+              <code>pnpm-lock.yaml</code> regenerated, not hand-merged.
+            </div>
+          </div>
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>DURING:</b> Fork-independence preserved in <code>bootService.ts</code>,
+              <code>selfUpdate.ts</code>, <code>connect.ts</code>.
+            </div>
+          </div>
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>DURING:</b> All 12 textual conflicts resolved;
+              <code>git diff --diff-filter=U</code> is empty.
+            </div>
+          </div>
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>DURING:</b> Branding files (<code>README.md</code>, <code>docs/README.md</code>)
+              resolved in favor of the fork.
+            </div>
+          </div>
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>VERIFY:</b> <code>pnpm install</code> succeeds with no lockfile drift.
+            </div>
+          </div>
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>VERIFY:</b> <code>pnpm run typecheck</code> is green (watch for Effect β.103 API
+              changes).
+            </div>
+          </div>
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>VERIFY:</b> Persistence, contracts, trading-contracts, and orchestration test
+              suites pass.
+            </div>
+          </div>
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>VERIFY:</b> <code>scripts/check-fork-independence.ts</code> still passes.
+            </div>
+          </div>
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>AFTER:</b> Branch pushed as <code>sync/upstream-2026-08-04</code> (no force-push to
+              <code>main</code>).
+            </div>
+          </div>
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>AFTER:</b> PR opened; backup branch retained until next sync is confirmed green.
+            </div>
+          </div>
+          <div class="check-row">
+            <div class="box"></div>
+            <div class="txt">
+              <b>ROLLBACK (if needed):</b>
+              <code
+                >git checkout main &amp;&amp; git reset --hard backup/main-pre-sync-YYYYMMDD</code
+              >
+              — no force-push to shared main without sign-off.
+            </div>
+          </div>
+        </div>
+
+        <div class="callout warn" style="margin-top: 20px">
+          <div class="ico">▲</div>
+          <div>
+            <h4>Rollback plan</h4>
+            <p>
+              If verification fails and a clean fix is not obvious, abort the merge (<code
+                >git merge --abort</code
+              >
+              if unresolved, or abandon the branch), restore from
+              <code>backup/main-pre-sync-YYYYMMDD</code>, and re-attempt with Strategy E (phased) to
+              isolate which upstream batch introduced the failure. Never force-push
+              <code>main</code>
+              without explicit sign-off.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <footer class="bot">
+        <div>
+          Generated <code>2026-08-04</code> from remotes
+          <code>origin</code> (<code>0xgeorgemathew/t3trade</code>) and
+          <code>upstream</code> (<code>pingdotgg/t3code</code>). Analysis only — no branches,
+          commits, or remotes were modified.
+        </div>
+        <div>
+          artifact: <code>artifacts/reports/upstream-integration-analysis-2026-08-04.html</code>
+        </div>
+      </footer>
+    </div>
+    <!-- /wrap -->
+
+    <script>
+      // ---------- copy buttons ----------
+      document.querySelectorAll(".copy-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const id = btn.dataset.copy;
+          const text = document.getElementById(id).innerText;
+          navigator.clipboard
+            .writeText(text)
+            .then(() => {
+              const orig = btn.innerText;
+              btn.innerText = "copied";
+              btn.classList.add("copied");
+              setTimeout(() => {
+                btn.innerText = orig;
+                btn.classList.remove("copied");
+              }, 1600);
+            })
+            .catch(() => {
+              btn.innerText = "press ⌘C";
+              setTimeout(() => {
+                btn.innerText = "copy";
+              }, 1600);
+            });
+        });
+      });
+
+      // ---------- interactive checklist ----------
+      document.querySelectorAll("#cl .check-row").forEach((row) => {
+        row.addEventListener("click", () => row.classList.toggle("done"));
+      });
+
+      // ---------- reveal on scroll ----------
+      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (reduce) {
+        document.querySelectorAll(".reveal").forEach((el) => el.classList.add("in"));
+      } else {
+        const io = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((e) => {
+              if (e.isIntersecting) {
+                e.target.classList.add("in");
+                io.unobserve(e.target);
+              }
+            });
+          },
+          { threshold: 0.12, rootMargin: "0px 0px -40px 0px" },
+        );
+        document.querySelectorAll(".reveal").forEach((el) => io.observe(el));
+      }
+
+      // ---------- active TOC highlight ----------
+      const tocLinks = document.querySelectorAll("nav.toc a");
+      const sections = [...tocLinks]
+        .map((a) => document.querySelector(a.getAttribute("href")))
+        .filter(Boolean);
+      const setActive = () => {
+        let active = sections[0];
+        const y = window.scrollY + 120;
+        for (const s of sections) {
+          if (s.offsetTop <= y) active = s;
+        }
+        tocLinks.forEach(
+          (a) => (a.style.color = a.getAttribute("href") === "#" + active.id ? "var(--ink)" : ""),
+        );
+      };
+      window.addEventListener("scroll", setActive, { passive: true });
+      setActive();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,2068 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>T3 Trade Trading Tools Reference</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap");
+
+      :root {
+        --bg-primary: #0a0a0f;
+        --bg-secondary: #13131a;
+        --bg-tertiary: #1a1a24;
+        --bg-card: #16161f;
+        --bg-hover: #1f1f2a;
+        --text-primary: #f4f4f5;
+        --text-secondary: #a1a1aa;
+        --text-muted: #71717a;
+        --accent-blue: #3b82f6;
+        --accent-blue-dark: #2563eb;
+        --accent-purple: #8b5cf6;
+        --accent-pink: #ec4899;
+        --accent-cyan: #06b6d4;
+        --success: #22c55e;
+        --success-dark: #16a34a;
+        --warning: #f59e0b;
+        --danger: #ef4444;
+        --danger-dark: #dc2626;
+        --border: #27272a;
+        --border-light: #3f3f46;
+        --shadow: rgba(0, 0, 0, 0.4);
+        --shadow-glow: rgba(59, 130, 246, 0.15);
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        font-family:
+          "Inter",
+          -apple-system,
+          BlinkMacSystemFont,
+          sans-serif;
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        line-height: 1.6;
+        overflow-x: hidden;
+      }
+
+      /* Animated background */
+      .bg-gradient {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background:
+          radial-gradient(ellipse at 20% 20%, rgba(59, 130, 246, 0.08) 0%, transparent 50%),
+          radial-gradient(ellipse at 80% 80%, rgba(139, 92, 246, 0.06) 0%, transparent 50%),
+          radial-gradient(ellipse at 50% 50%, rgba(236, 72, 153, 0.03) 0%, transparent 70%);
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 0 2rem;
+        position: relative;
+        z-index: 1;
+      }
+
+      /* Header */
+      header {
+        text-align: center;
+        padding: 4rem 0 3rem;
+        position: relative;
+      }
+
+      .header-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        background: linear-gradient(135deg, rgba(59, 130, 246, 0.15), rgba(139, 92, 246, 0.1));
+        border: 1px solid rgba(59, 130, 246, 0.3);
+        padding: 0.4rem 1rem;
+        border-radius: 100px;
+        font-size: 0.8rem;
+        font-weight: 500;
+        color: var(--accent-blue);
+        margin-bottom: 1.5rem;
+      }
+
+      .header-badge::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        background: var(--accent-blue);
+        border-radius: 50%;
+        animation: pulse 2s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        50% {
+          opacity: 0.5;
+          transform: scale(1.2);
+        }
+      }
+
+      h1 {
+        font-size: 3rem;
+        font-weight: 800;
+        margin-bottom: 0.75rem;
+        background: linear-gradient(135deg, #fff 0%, #a1a1aa 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        letter-spacing: -0.02em;
+      }
+
+      .subtitle {
+        color: var(--text-secondary);
+        font-size: 1.125rem;
+        max-width: 500px;
+        margin: 0 auto;
+      }
+
+      /* Navigation */
+      .nav-sidebar {
+        position: sticky;
+        top: 2rem;
+        float: right;
+        width: 220px;
+        margin-left: 2rem;
+        z-index: 10;
+      }
+
+      .nav-content {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1rem;
+      }
+
+      .nav-title {
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--text-muted);
+        padding: 0.5rem 0.75rem;
+        margin-bottom: 0.5rem;
+      }
+
+      .nav-list {
+        list-style: none;
+      }
+
+      .nav-item {
+        margin-bottom: 0.25rem;
+      }
+
+      .nav-link {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.625rem 0.75rem;
+        border-radius: 8px;
+        color: var(--text-secondary);
+        text-decoration: none;
+        font-size: 0.875rem;
+        transition: all 0.2s ease;
+        position: relative;
+      }
+
+      .nav-link:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+      }
+
+      .nav-link.active {
+        background: linear-gradient(135deg, rgba(59, 130, 246, 0.15), rgba(139, 92, 246, 0.1));
+        color: var(--accent-blue);
+      }
+
+      .nav-link::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+        opacity: 0.5;
+      }
+
+      .main-content {
+        display: flow-root;
+        padding-right: 260px;
+      }
+
+      /* Section */
+      .section {
+        margin-bottom: 4rem;
+        scroll-margin-top: 2rem;
+      }
+
+      .section-header {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 2rem;
+      }
+
+      .section-icon {
+        width: 48px;
+        height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: linear-gradient(135deg, var(--bg-tertiary), var(--bg-secondary));
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        font-size: 1.25rem;
+      }
+
+      .section-title-wrapper {
+        flex: 1;
+      }
+
+      .section-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.375rem;
+        font-size: 0.75rem;
+        font-weight: 500;
+        padding: 0.25rem 0.625rem;
+        border-radius: 6px;
+        margin-bottom: 0.5rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .tag-phase-1 {
+        background: rgba(59, 130, 246, 0.15);
+        color: var(--accent-blue);
+        border: 1px solid rgba(59, 130, 246, 0.3);
+      }
+      .tag-phase-2 {
+        background: rgba(139, 92, 246, 0.15);
+        color: var(--accent-purple);
+        border: 1px solid rgba(139, 92, 246, 0.3);
+      }
+      .tag-phase-3 {
+        background: rgba(236, 72, 153, 0.15);
+        color: var(--accent-pink);
+        border: 1px solid rgba(236, 72, 153, 0.3);
+      }
+      .tag-phase-4 {
+        background: rgba(6, 182, 212, 0.15);
+        color: var(--accent-cyan);
+        border: 1px solid rgba(6, 182, 212, 0.3);
+      }
+
+      h2.section-title {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: var(--text-primary);
+      }
+
+      /* Tool Card */
+      .tool-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 0;
+        margin-bottom: 1.5rem;
+        overflow: hidden;
+        transition: all 0.3s ease;
+      }
+
+      .tool-card:hover {
+        border-color: var(--border-light);
+        box-shadow:
+          0 8px 32px var(--shadow),
+          0 0 0 1px var(--shadow-glow);
+        transform: translateY(-2px);
+      }
+
+      .tool-card-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        padding: 1.5rem 1.75rem 1.25rem;
+        background: linear-gradient(180deg, var(--bg-tertiary) 0%, var(--bg-card) 100%);
+        border-bottom: 1px solid var(--border);
+        gap: 1rem;
+      }
+
+      .tool-card-left {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        flex: 1;
+      }
+
+      .tool-icon {
+        width: 42px;
+        height: 42px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        font-size: 1.125rem;
+      }
+
+      .tool-name {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 1rem;
+        font-weight: 600;
+        color: var(--accent-blue);
+      }
+
+      .tool-phase {
+        font-size: 0.7rem;
+        font-weight: 600;
+        padding: 0.3rem 0.75rem;
+        border-radius: 100px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        white-space: nowrap;
+      }
+
+      .tool-description {
+        padding: 1.25rem 1.75rem;
+        color: var(--text-secondary);
+        line-height: 1.75;
+        font-size: 0.95rem;
+      }
+
+      .tool-meta {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        padding: 0 1.75rem 1.25rem;
+      }
+
+      .meta-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.375rem;
+        font-size: 0.75rem;
+        padding: 0.375rem 0.625rem;
+        background: var(--bg-tertiary);
+        border-radius: 6px;
+        font-weight: 500;
+      }
+
+      .meta-badge.readonly {
+        color: var(--success);
+      }
+      .meta-badge.destructive {
+        color: var(--danger);
+      }
+      .meta-badge.idempotent {
+        color: var(--warning);
+      }
+      .meta-badge.openworld {
+        color: var(--accent-cyan);
+      }
+
+      /* Info Box */
+      .info-box {
+        margin: 0 1.75rem 1.25rem;
+        padding: 1rem 1.25rem;
+        border-radius: 10px;
+        font-size: 0.875rem;
+      }
+
+      .info-box.note {
+        background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(245, 158, 11, 0.05));
+        border-left: 3px solid var(--warning);
+      }
+
+      .info-box.warning {
+        background: linear-gradient(135deg, rgba(239, 68, 68, 0.1), rgba(239, 68, 68, 0.05));
+        border-left: 3px solid var(--danger);
+      }
+
+      .info-box.success {
+        background: linear-gradient(135deg, rgba(34, 197, 94, 0.1), rgba(34, 197, 94, 0.05));
+        border-left: 3px solid var(--success);
+      }
+
+      .info-box-title {
+        font-weight: 600;
+        margin-bottom: 0.25rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .info-box.note .info-box-title {
+        color: var(--warning);
+      }
+      .info-box.warning .info-box-title {
+        color: var(--danger);
+      }
+      .info-box.success .info-box-title {
+        color: var(--success);
+      }
+
+      /* Params/Returns Box */
+      .detail-box {
+        margin: 0 1.75rem 1.25rem;
+        background: var(--bg-tertiary);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+
+      .detail-box-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.875rem 1.25rem;
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .detail-box-title {
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--text-muted);
+      }
+
+      .detail-row {
+        display: flex;
+        padding: 0.875rem 1.25rem;
+        border-bottom: 1px solid var(--border);
+        align-items: flex-start;
+        gap: 1rem;
+      }
+
+      .detail-row:last-child {
+        border-bottom: none;
+      }
+
+      .detail-name {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 0.8rem;
+        color: var(--accent-purple);
+        min-width: 160px;
+        padding-top: 0.125rem;
+      }
+
+      .detail-content {
+        flex: 1;
+      }
+
+      .detail-desc {
+        font-size: 0.875rem;
+        color: var(--text-secondary);
+        line-height: 1.5;
+      }
+
+      .detail-type {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 0.7rem;
+        color: var(--text-muted);
+        background: var(--bg-primary);
+        padding: 0.125rem 0.375rem;
+        border-radius: 4px;
+        margin-top: 0.375rem;
+      }
+
+      .badge-required {
+        display: inline-flex;
+        align-items: center;
+        font-size: 0.65rem;
+        font-weight: 500;
+        padding: 0.125rem 0.375rem;
+        border-radius: 4px;
+      }
+
+      .badge-required.yes {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--danger);
+      }
+      .badge-required.no {
+        background: rgba(34, 197, 94, 0.15);
+        color: var(--success);
+      }
+
+      /* Tags Grid */
+      .tags-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+      }
+
+      .tag {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 0.75rem;
+        padding: 0.375rem 0.625rem;
+        background: var(--bg-primary);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text-secondary);
+      }
+
+      /* Freshness Grid */
+      .freshness-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 1rem;
+        margin-top: 1.5rem;
+      }
+
+      .freshness-card {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1.25rem;
+        text-align: center;
+        transition: all 0.3s ease;
+      }
+
+      .freshness-card:hover {
+        border-color: var(--accent-blue);
+        transform: translateY(-2px);
+      }
+
+      .freshness-value {
+        font-size: 2rem;
+        font-weight: 800;
+        background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      .freshness-label {
+        font-size: 0.8rem;
+        color: var(--text-muted);
+        margin-top: 0.5rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .freshness-desc {
+        font-size: 0.75rem;
+        color: var(--text-secondary);
+        margin-top: 0.375rem;
+      }
+
+      /* Footer */
+      footer {
+        text-align: center;
+        padding: 3rem 2rem;
+        border-top: 1px solid var(--border);
+        color: var(--text-muted);
+        font-size: 0.875rem;
+      }
+
+      /* Icons */
+      .icon {
+        width: 1.25em;
+        height: 1.25em;
+      }
+
+      /* Responsive */
+      @media (max-width: 1024px) {
+        .nav-sidebar {
+          display: none;
+        }
+        .main-content {
+          padding-right: 0;
+        }
+      }
+
+      @media (max-width: 768px) {
+        h1 {
+          font-size: 2rem;
+        }
+        .tool-card-header {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+        .freshness-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+        .detail-row {
+          flex-direction: column;
+          gap: 0.5rem;
+        }
+        .detail-name {
+          min-width: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="bg-gradient"></div>
+
+    <nav class="nav-sidebar">
+      <div class="nav-content">
+        <div class="nav-title">Tools</div>
+        <ul class="nav-list">
+          <li class="nav-item"><a href="#mission-tools" class="nav-link">Mission & Strategy</a></li>
+          <li class="nav-item"><a href="#market-tools" class="nav-link">Market Data</a></li>
+          <li class="nav-item"><a href="#account-tools" class="nav-link">Account & Position</a></li>
+          <li class="nav-item"><a href="#watch-tools" class="nav-link">Watches</a></li>
+          <li class="nav-item"><a href="#execution-tool" class="nav-link">Execution</a></li>
+        </ul>
+        <div class="nav-title" style="margin-top: 1rem">Reference</div>
+        <ul class="nav-list">
+          <li class="nav-item"><a href="#freshness" class="nav-link">Freshness</a></li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="container">
+      <header>
+        <div class="header-badge">Trading Toolkit API</div>
+        <h1>T3 Trade Tools Reference</h1>
+        <p class="subtitle">
+          Complete guide to autonomous trading tools — from mission control to order execution
+        </p>
+      </header>
+
+      <div class="main-content">
+        <!-- Mission & Strategy Tools -->
+        <section id="mission-tools" class="section">
+          <div class="section-header">
+            <div class="section-icon">🎯</div>
+            <div class="section-title-wrapper">
+              <span class="section-tag tag-phase-1">Phase 1</span>
+              <h2 class="section-title">Mission & Strategy Tools</h2>
+            </div>
+          </div>
+
+          <div class="tool-card">
+            <div class="tool-card-header">
+              <div class="tool-card-left">
+                <div class="tool-icon">📋</div>
+                <div class="tool-name">trading_get_mission</div>
+              </div>
+              <span
+                class="tool-phase"
+                style="background: rgba(59, 130, 246, 0.15); color: var(--accent-blue)"
+                >Phase 1</span
+              >
+            </div>
+            <p class="tool-description">
+              The entry point for every turn. Read the complete mission state: status, authority
+              (risk limits and capital allocation), the active momentum strategy, registered
+              watches, user control flags, and any executions still in flight. The
+              <code>withdrawable</code> field tells you what's actually free to trade right now —
+              the mandate ceilings are hard limits that never move with the balance.
+            </p>
+            <div class="tool-meta">
+              <span class="meta-badge readonly">✓ Read-only</span>
+              <span class="meta-badge idempotent">✓ Idempotent</span>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Parameters</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >missionId <span class="badge-required no">optional</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    The mission ID. Omit to use the mission this session is bound to.
+                  </div>
+                  <div class="detail-type">string</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Returns</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">bound</span>
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    <code>true</code> if thread is bound to an active mission,
+                    <code>false</code> otherwise
+                  </div>
+                  <div class="detail-type">boolean</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">mission</span>
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    Complete TradingMission with status, mandate, and configuration
+                  </div>
+                  <div class="detail-type">TradingMission</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">authority</span>
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    TradingAuthority with allocatedCapitalUsd and maximum position sizes
+                  </div>
+                  <div class="detail-type">TradingAuthority</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">strategy</span>
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    Current MomentumStrategyState if a strategy has been published
+                  </div>
+                  <div class="detail-type">MomentumStrategyState?</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">strategyVersion</span>
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    Current strategy version number — increments on each publish
+                  </div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">watches</span>
+                <div class="detail-content">
+                  <div class="detail-desc">All registered watches for this mission</div>
+                  <div class="detail-type">PersistedWatch[]</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">control</span>
+                <div class="detail-content">
+                  <div class="detail-desc">User control flags (pause, prevent entries, etc.)</div>
+                  <div class="detail-type">TradingMissionControl</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">pendingExecutions</span>
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    Executions written but not yet answered by the exchange — what causes the "no
+                    conflicting execution" lock
+                  </div>
+                  <div class="detail-type">TradingPendingExecution[]</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tool-card">
+            <div class="tool-card-header">
+              <div class="tool-card-left">
+                <div class="tool-icon">📝</div>
+                <div class="tool-name">trading_publish_momentum_strategy</div>
+              </div>
+              <span
+                class="tool-phase"
+                style="background: rgba(59, 130, 246, 0.15); color: var(--accent-blue)"
+                >Phase 1</span
+              >
+            </div>
+            <p class="tool-description">
+              Publish or switch the momentum strategy. Supply <code>expectedVersion</code> from your
+              last <code>trading_get_mission</code> call (0 before first publish). A stale version
+              is rejected with the current version — this prevents concurrent writes from clobbering
+              each other. Publishing supersedes all watches from the previous version; re-arm what
+              you still need. Cancel resting orders from the old thesis manually with
+              <code>trading_request_entry</code>.
+            </p>
+            <div class="info-box note">
+              <div class="info-box-title">
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+                Required Field
+              </div>
+              Every entry in <code>strategy.entryPlan.conditions[]</code> MUST have a non-empty
+              <code>description</code> field. You may also pass conditions as bare prose strings.
+            </div>
+            <div class="tool-meta">
+              <span class="meta-badge destructive">⚠ Writes State</span>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Parameters</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >missionId <span class="badge-required no">optional</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">The mission ID. Omit to use the bound mission.</div>
+                  <div class="detail-type">string</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >expectedVersion <span class="badge-required yes">required</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    The strategy version you believe is current (0 before any publish)
+                  </div>
+                  <div class="detail-type">number ≥ 0</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >strategy <span class="badge-required yes">required</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    Complete MomentumStrategy with belief, entryPlan, protection, timeframes, etc.
+                  </div>
+                  <div class="detail-type">PublishMomentumStrategyBody</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Returns</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">outcome</span>
+                <div class="detail-content">
+                  <div class="detail-desc"><code>"accepted"</code> or <code>"rejected"</code></div>
+                  <div class="detail-type">"accepted" | "rejected"</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">strategy</span>
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    The accepted MomentumStrategyState (when outcome is "accepted")
+                  </div>
+                  <div class="detail-type">MomentumStrategyState</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">strategyVersion</span>
+                <div class="detail-content">
+                  <div class="detail-desc">The new version number (always expectedVersion + 1)</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">supersededWatchIds</span>
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    Watches from the previous version that were superseded
+                  </div>
+                  <div class="detail-type">string[]</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">currentVersion</span>
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    The server's actual version (when outcome is "rejected")
+                  </div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Market Data Tools -->
+        <section id="market-tools" class="section">
+          <div class="section-header">
+            <div class="section-icon">📊</div>
+            <div class="section-title-wrapper">
+              <span class="section-tag tag-phase-2">Phase 2</span>
+              <h2 class="section-title">Market Data Tools</h2>
+            </div>
+          </div>
+
+          <div class="tool-card">
+            <div class="tool-card-header">
+              <div class="tool-card-left">
+                <div class="tool-icon">🔍</div>
+                <div class="tool-name">trading_resolve_market</div>
+              </div>
+              <span
+                class="tool-phase"
+                style="background: rgba(139, 92, 246, 0.15); color: var(--accent-purple)"
+                >Phase 2</span
+              >
+            </div>
+            <p class="tool-description">
+              Resolve canonical exchange identifiers for a market: asset index, size decimals,
+              maximum leverage, and availability. The asset index is resolved from live metadata —
+              never hard-code it. Call this before sizing or pricing any order.
+            </p>
+            <div class="tool-meta">
+              <span class="meta-badge readonly">✓ Read-only</span>
+              <span class="meta-badge idempotent">✓ Idempotent</span>
+              <span class="meta-badge openworld">○ Open World</span>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Parameters</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >market <span class="badge-required yes">required</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">The market symbol (e.g., "ETH")</div>
+                  <div class="detail-type">string</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Returns (ResolvedMarket)</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">symbol</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Market symbol</div>
+                  <div class="detail-type">string</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">assetIndex</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Runtime-resolved perp asset index — NEVER hard-code</div>
+                  <div class="detail-type">number ≥ 0</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">szDecimals</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Size decimal places for this market</div>
+                  <div class="detail-type">number ≥ 0</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">maxLeverage</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Maximum leverage advertised by exchange</div>
+                  <div class="detail-type">number ≥ 0</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">available</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Whether the market accepts new positions</div>
+                  <div class="detail-type">boolean</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tool-card">
+            <div class="tool-card-header">
+              <div class="tool-card-left">
+                <div class="tool-icon">💹</div>
+                <div class="tool-name">trading_get_market_snapshot</div>
+              </div>
+              <span
+                class="tool-phase"
+                style="background: rgba(139, 92, 246, 0.15); color: var(--accent-purple)"
+                >Phase 2</span
+              >
+            </div>
+            <p class="tool-description">
+              Read the current market snapshot: mark price, mid price, oracle price, 8-hour funding
+              rate, open interest, 24h volume, best bid/offer, and 24h percent change. Every value
+              carries a freshness stamp. Stale BBO (older than 2s) blocks marketable IOC execution.
+            </p>
+            <div class="tool-meta">
+              <span class="meta-badge readonly">✓ Read-only</span>
+              <span class="meta-badge idempotent">✓ Idempotent</span>
+              <span class="meta-badge openworld">○ Open World</span>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Parameters</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >market <span class="badge-required yes">required</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">Market symbol</div>
+                  <div class="detail-type">string</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Returns (AgentMarketSnapshot)</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">markPrice</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Current mark price</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">midPrice</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Mid price between best bid and ask</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">oraclePrice</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Oracle price</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">fundingRate8h</span>
+                <div class="detail-content">
+                  <div class="detail-desc">8-hour funding rate (may be negative)</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">openInterest</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Open interest in base units</div>
+                  <div class="detail-type">number ≥ 0</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">dayVolumeUsd</span>
+                <div class="detail-content">
+                  <div class="detail-desc">24h notional volume in USD</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">change24hPercent</span>
+                <div class="detail-content">
+                  <div class="detail-desc">24h percentage change</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">bestBidOffer</span>
+                <div class="detail-content">
+                  <div class="detail-desc">BBO with 2s freshness stamp</div>
+                  <div class="detail-type">MarketBestBidOffer</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tool-card">
+            <div class="tool-card-header">
+              <div class="tool-card-left">
+                <div class="tool-icon">📈</div>
+                <div class="tool-name">trading_get_market_history</div>
+              </div>
+              <span
+                class="tool-phase"
+                style="background: rgba(139, 92, 246, 0.15); color: var(--accent-purple)"
+                >Phase 2</span
+              >
+            </div>
+            <p class="tool-description">
+              Read bounded OHLCV candle history. Intervals: 1m, 3m, 5m, 15m, or 1h (no local
+              synthesis — §13 forbids synthesizing intervals from smaller ones). One response caps
+              at 500 bars. Form a thesis on enough bars to see the structure you're claiming.
+            </p>
+            <div class="info-box note">
+              <div class="info-box-title">
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+                Recommendation
+              </div>
+              Fewer than ~60 bars on the mission's timeframe is a guess about a chart you haven't
+              looked at.
+            </div>
+            <div class="tool-meta">
+              <span class="meta-badge readonly">✓ Read-only</span>
+              <span class="meta-badge idempotent">✓ Idempotent</span>
+              <span class="meta-badge openworld">○ Open World</span>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Parameters</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >market <span class="badge-required yes">required</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">Market symbol</div>
+                  <div class="detail-type">string</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >interval <span class="badge-required yes">required</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">Candle interval</div>
+                  <div class="detail-type">"1m" | "3m" | "5m" | "15m" | "1h"</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >startTime <span class="badge-required no">optional</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">Start time in Unix millis</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >endTime <span class="badge-required no">optional</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">End time in Unix millis</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >maxBars <span class="badge-required no">optional</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">Maximum bars to return (capped at 500)</div>
+                  <div class="detail-type">number ≥ 0</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Returns (MarketHistory)</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">candles</span>
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    Array of OHLCV candles with openTime, closeTime, open, high, low, close, volume
+                  </div>
+                  <div class="detail-type">MarketCandle[]</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">finalisedClose</span>
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    Close time of most recent finalised candle (processed at most once)
+                  </div>
+                  <div class="detail-type">number?</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tool-card">
+            <div class="tool-card-header">
+              <div class="tool-card-left">
+                <div class="tool-icon">📚</div>
+                <div class="tool-name">trading_get_order_book</div>
+              </div>
+              <span
+                class="tool-phase"
+                style="background: rgba(139, 92, 246, 0.15); color: var(--accent-purple)"
+                >Phase 2</span
+              >
+            </div>
+            <p class="tool-description">
+              Read the current order book with up to 20 levels per side, plus derived best bid/offer
+              with a 2-second freshness stamp. Use this for execution-critical reads where fresh
+              bid/ask matters.
+            </p>
+            <div class="tool-meta">
+              <span class="meta-badge readonly">✓ Read-only</span>
+              <span class="meta-badge idempotent">✓ Idempotent</span>
+              <span class="meta-badge openworld">○ Open World</span>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Parameters</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >market <span class="badge-required yes">required</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">Market symbol</div>
+                  <div class="detail-type">string</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Returns (OrderBook)</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">bids</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Bid levels (price, size), descending</div>
+                  <div class="detail-type">OrderBookLevel[]</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">asks</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Ask levels (price, size), ascending</div>
+                  <div class="detail-type">OrderBookLevel[]</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">bestBidOffer</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Derived BBO with 2s freshness stamp</div>
+                  <div class="detail-type">MarketBestBidOffer</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Account & Position Tools -->
+        <section id="account-tools" class="section">
+          <div class="section-header">
+            <div class="section-icon">💰</div>
+            <div class="section-title-wrapper">
+              <span class="section-tag tag-phase-2">Phase 2</span>
+              <h2 class="section-title">Account & Position Tools</h2>
+            </div>
+          </div>
+
+          <div class="tool-card">
+            <div class="tool-card-header">
+              <div class="tool-card-left">
+                <div class="tool-icon">🏦</div>
+                <div class="tool-name">trading_get_account_state</div>
+              </div>
+              <span
+                class="tool-phase"
+                style="background: rgba(139, 92, 246, 0.15); color: var(--accent-purple)"
+                >Phase 2</span
+              >
+            </div>
+            <p class="tool-description">
+              Read the canonical account state: total account value, margin used, withdrawable
+              collateral, and all open positions. Uses the master-wallet address as identity (the
+              execution wallet signs but is never used as account identity).
+              <code>withdrawable</code> is what's actually free to trade — the mandate ceilings in
+              <code>authority</code> don't move with the balance.
+            </p>
+            <div class="info-box note">
+              <div class="info-box-title">
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+                Important
+              </div>
+              <code>withdrawable</code> is the live balance, not your mandate. Mandate ceilings are
+              hard limits that never adjust when the account value moves.
+            </div>
+            <div class="tool-meta">
+              <span class="meta-badge readonly">✓ Read-only</span>
+              <span class="meta-badge idempotent">✓ Idempotent</span>
+              <span class="meta-badge openworld">○ Open World</span>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Returns (AgentAccountSnapshot)</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">address</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Master wallet address (identity for all reads)</div>
+                  <div class="detail-type">string (EVM address)</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">accountValue</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Total account equity in USD</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">marginUsed</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Margin in use across all positions</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">withdrawable</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Available collateral that could be withdrawn</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">positions</span>
+                <div class="detail-content">
+                  <div class="detail-desc">All positions in the account</div>
+                  <div class="detail-type">AccountPosition[]</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tool-card">
+            <div class="tool-card-header">
+              <div class="tool-card-left">
+                <div class="tool-icon">📍</div>
+                <div class="tool-name">trading_get_position</div>
+              </div>
+              <span
+                class="tool-phase"
+                style="background: rgba(139, 92, 246, 0.15); color: var(--accent-purple)"
+                >Phase 2</span
+              >
+            </div>
+            <p class="tool-description">
+              Read the canonical net position for a single market: signed size (positive = long,
+              negative = short), entry price, unrealized PnL, cumulative funding, and margin used.
+              Returns a flat position (size = 0, no entry price) when none is open — that's a valid
+              state, not an error.
+            </p>
+            <div class="tool-meta">
+              <span class="meta-badge readonly">✓ Read-only</span>
+              <span class="meta-badge idempotent">✓ Idempotent</span>
+              <span class="meta-badge openworld">○ Open World</span>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Parameters</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >market <span class="badge-required yes">required</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">Market symbol</div>
+                  <div class="detail-type">string</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Returns (AgentNetPosition)</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">size</span>
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    Signed net size (positive long, negative short, zero = flat)
+                  </div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">entryPrice</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Average entry price (absent when flat)</div>
+                  <div class="detail-type">number?</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">unrealisedPnl</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Unrealized PnL in USD</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">cumulativeFunding</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Accumulated funding in USD</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">marginUsed</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Margin allocated to this position</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tool-card">
+            <div class="tool-card-header">
+              <div class="tool-card-left">
+                <div class="tool-icon">📋</div>
+                <div class="tool-name">trading_get_open_orders</div>
+              </div>
+              <span
+                class="tool-phase"
+                style="background: rgba(139, 92, 246, 0.15); color: var(--accent-purple)"
+                >Phase 2</span
+              >
+            </div>
+            <p class="tool-description">
+              List all open orders for the mission's trading account. Each order includes: exchange
+              order ID, client order ID (cloid), side (buy/sell), limit price, remaining size,
+              status, and whether it's reduce-only or a trigger order.
+            </p>
+            <div class="tool-meta">
+              <span class="meta-badge readonly">✓ Read-only</span>
+              <span class="meta-badge idempotent">✓ Idempotent</span>
+              <span class="meta-badge openworld">○ Open World</span>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Returns (Array&lt;AgentOpenOrder&gt;)</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">orderId</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Exchange-assigned order ID</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">cloid</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Client order ID when supplied</div>
+                  <div class="detail-type">string?</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">side</span>
+                <div class="detail-content">
+                  <div class="detail-desc">"buy" or "sell"</div>
+                  <div class="detail-type">"buy" | "sell"</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">limitPrice</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Limit price</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">remainingSize</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Remaining size after partial fills</div>
+                  <div class="detail-type">number ≥ 0</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">status</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Exchange order status</div>
+                  <div class="detail-type">string</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">reduceOnly</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Whether order may only reduce position</div>
+                  <div class="detail-type">boolean</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Watch Tools -->
+        <section id="watch-tools" class="section">
+          <div class="section-header">
+            <div class="section-icon">⏰</div>
+            <div class="section-title-wrapper">
+              <span class="section-tag tag-phase-3">Phase 3</span>
+              <h2 class="section-title">Watch Tools</h2>
+            </div>
+          </div>
+
+          <div class="tool-card">
+            <div class="tool-card-header">
+              <div class="tool-card-left">
+                <div class="tool-icon">🔔</div>
+                <div class="tool-name">trading_register_watch</div>
+              </div>
+              <span
+                class="tool-phase"
+                style="background: rgba(236, 72, 153, 0.15); color: var(--accent-pink)"
+                >Phase 3</span
+              >
+            </div>
+            <p class="tool-description">
+              Register a typed market watch bound to the current strategy version. The watch fires
+              when its predicate matches and then becomes terminal (fires exactly once). Watches do
+              NOT survive a strategy publish — publishing supersedes all watches from the previous
+              version. Re-arm what you still need after publishing.
+            </p>
+            <div class="info-box warning">
+              <div class="info-box-title">
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path
+                    d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                  />
+                  <line x1="12" y1="9" x2="12" y2="13" />
+                  <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+                Critical Rules
+              </div>
+              A watch fires once and is terminal. Re-register after it fires to keep it standing.
+              Publishing a new strategy supersedes all watches — re-arm what you still need.
+            </div>
+            <div class="tool-meta">
+              <span class="meta-badge destructive">⚠ Writes State</span>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Parameters</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >watch <span class="badge-required yes">required</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">A MarketWatch union (see types below)</div>
+                  <div class="detail-type">MarketWatch</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Returns (PersistedWatch)</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">id</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Unique watch identifier</div>
+                  <div class="detail-type">string</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">strategyVersion</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Strategy version this watch is bound to</div>
+                  <div class="detail-type">number ≥ 0</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">status</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Watch lifecycle status</div>
+                  <div class="detail-type">
+                    "active" | "triggered" | "consumed" | "cancelled" | "expired" | "superseded"
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Watch Types</span>
+              </div>
+              <div class="detail-row" style="display: block">
+                <div class="tags-grid">
+                  <span class="tag">price_cross</span>
+                  <span class="tag">candle_close</span>
+                  <span class="tag">order_update</span>
+                  <span class="tag">position_update</span>
+                  <span class="tag">scheduled_reassessment</span>
+                  <span class="tag">pnl_above</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tool-card">
+            <div class="tool-card-header">
+              <div class="tool-card-left">
+                <div class="tool-icon">📅</div>
+                <div class="tool-name">trading_schedule_reassessment</div>
+              </div>
+              <span
+                class="tool-phase"
+                style="background: rgba(236, 72, 153, 0.15); color: var(--accent-pink)"
+                >Phase 3</span
+              >
+            </div>
+            <p class="tool-description">
+              Schedule a time-based reassessment at a future Unix-millisecond timestamp. Like every
+              watch, it fires once and is then terminal. Use this for known-time events (funding
+              settlements, etc.) rather than market signals.
+            </p>
+            <div class="tool-meta">
+              <span class="meta-badge destructive">⚠ Writes State</span>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Parameters</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >runAt <span class="badge-required yes">required</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">Epoch millis at which to reassess</div>
+                  <div class="detail-type">number &gt; 0</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Returns (PersistedWatch)</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">id</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Unique watch identifier</div>
+                  <div class="detail-type">string</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">watch</span>
+                <div class="detail-content">
+                  <div class="detail-desc">The scheduled_reassessment watch object</div>
+                  <div class="detail-type">MarketWatch</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tool-card">
+            <div class="tool-card-header">
+              <div class="tool-card-left">
+                <div class="tool-icon">📜</div>
+                <div class="tool-name">trading_list_watches</div>
+              </div>
+              <span
+                class="tool-phase"
+                style="background: rgba(236, 72, 153, 0.15); color: var(--accent-pink)"
+                >Phase 3</span
+              >
+            </div>
+            <p class="tool-description">
+              List all watches for this mission, newest first. Each watch shows its status (active,
+              triggered, superseded, cancelled), type, and when it was created. Use this to see what
+              conditions are currently armed before deciding whether to register another.
+            </p>
+            <div class="tool-meta">
+              <span class="meta-badge readonly">✓ Read-only</span>
+              <span class="meta-badge idempotent">✓ Idempotent</span>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Returns (Array&lt;PersistedWatch&gt;)</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">id</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Watch identifier</div>
+                  <div class="detail-type">string</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">watch</span>
+                <div class="detail-content">
+                  <div class="detail-desc">The MarketWatch object</div>
+                  <div class="detail-type">MarketWatch</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">status</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Current status</div>
+                  <div class="detail-type">
+                    "active" | "triggered" | "consumed" | "cancelled" | "expired" | "superseded"
+                  </div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">strategyVersion</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Strategy version this watch is bound to</div>
+                  <div class="detail-type">number ≥ 0</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tool-card">
+            <div class="tool-card-header">
+              <div class="tool-card-left">
+                <div class="tool-icon">❌</div>
+                <div class="tool-name">trading_cancel_watch</div>
+              </div>
+              <span
+                class="tool-phase"
+                style="background: rgba(236, 72, 153, 0.15); color: var(--accent-pink)"
+                >Phase 3</span
+              >
+            </div>
+            <p class="tool-description">
+              Cancel an active watch by ID. Only active watches can be cancelled — already-fired,
+              superseded, or non-existent watches are rejected.
+            </p>
+            <div class="tool-meta">
+              <span class="meta-badge destructive">⚠ Writes State</span>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Parameters</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >watchId <span class="badge-required yes">required</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">The watch ID to cancel</div>
+                  <div class="detail-type">string</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Returns (TradingCancelWatchResult)</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">outcome</span>
+                <div class="detail-content">
+                  <div class="detail-desc">"cancelled" or "rejected"</div>
+                  <div class="detail-type">"cancelled" | "rejected"</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">watch</span>
+                <div class="detail-content">
+                  <div class="detail-desc">The cancelled watch (when successful)</div>
+                  <div class="detail-type">PersistedWatch</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">reason</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Rejection reason</div>
+                  <div class="detail-type">"watch_not_found" | "watch_not_active"</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Execution Tool -->
+        <section id="execution-tool" class="section">
+          <div class="section-header">
+            <div class="section-icon">⚡</div>
+            <div class="section-title-wrapper">
+              <span class="section-tag tag-phase-4">Phase 4</span>
+              <h2 class="section-title">Execution Tool</h2>
+            </div>
+          </div>
+
+          <div class="tool-card">
+            <div class="tool-card-header">
+              <div class="tool-card-left">
+                <div class="tool-icon">🎯</div>
+                <div class="tool-name">trading_request_entry</div>
+              </div>
+              <span
+                class="tool-phase"
+                style="background: rgba(6, 182, 212, 0.15); color: var(--accent-cyan)"
+                >Phase 4</span
+              >
+            </div>
+            <p class="tool-description">
+              Submit one execution intent. This is the complete position lifecycle — not just
+              entries. The <code>actionType</code> selects the operation: <code>open</code>,
+              <code>scale_in</code>, <code>reduce</code>, <code>close</code>, <code>cancel</code>,
+              or <code>modify_stop</code>. Position-increasing actions require a valid stop. There
+              is no market order — use <code>marketable_ioc</code> order preference for immediate
+              execution.
+            </p>
+            <div class="info-box warning">
+              <div class="info-box-title">
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path
+                    d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                  />
+                  <line x1="12" y1="9" x2="12" y2="13" />
+                  <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+                Validation Checklist
+              </div>
+              Before signing: mission must be active, strategy version current, market = ETH,
+              position-increasing intents need a valid stop, loss budget must admit it, exchange
+              reads must be fresh, and NO other execution can be mid-submission.
+            </div>
+            <div class="info-box success">
+              <div class="info-box-title">
+                <svg
+                  class="icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+                Exhaustion Rule
+              </div>
+              <code>reduce</code>, <code>close</code>, <code>cancel</code>, and
+              <code>modify_stop</code> remain available even when the loss budget is exhausted.
+            </div>
+            <div class="tool-meta">
+              <span class="meta-badge destructive">⚠ Destructive</span>
+              <span class="meta-badge idempotent">✓ Idempotent</span>
+              <span class="meta-badge openworld">○ Open World</span>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Parameters</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >intent <span class="badge-required yes">required</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    TradingOrderIntent with actionType, market, side, size, stop, etc.
+                  </div>
+                  <div class="detail-type">TradingOrderIntent</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >expectedAuthorityVersion <span class="badge-required yes">required</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">The authority version you believe is current</div>
+                  <div class="detail-type">number</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name"
+                  >activeHarnessRunId <span class="badge-required yes">required</span></span
+                >
+                <div class="detail-content">
+                  <div class="detail-desc">Current harness run identifier</div>
+                  <div class="detail-type">string</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Action Types</span>
+              </div>
+              <div class="detail-row" style="display: block">
+                <div class="tags-grid">
+                  <span class="tag">open</span>
+                  <span class="tag">scale_in</span>
+                  <span class="tag">reduce</span>
+                  <span class="tag">close</span>
+                  <span class="tag">cancel</span>
+                  <span class="tag">modify_stop</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-box">
+              <div class="detail-box-header">
+                <span class="detail-box-title">Returns (TradingRequestEntryResult)</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">executionId</span>
+                <div class="detail-content">
+                  <div class="detail-desc">The execution record ID (when one was written)</div>
+                  <div class="detail-type">string?</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">status</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Execution status</div>
+                  <div class="detail-type">
+                    "submitted" | "accepted" | "filled" | "cancelled" | "rejected" | "failed" |
+                    "succeeded"
+                  </div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">cloid</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Client order ID</div>
+                  <div class="detail-type">string</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">budget</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Remaining loss budget and exhaustion status</div>
+                  <div class="detail-type">{ remainingCumulativeLossUsd, exhausted }</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">detail</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Why the request ended this way</div>
+                  <div class="detail-type">string?</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">remainingSize</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Position size after reduce/close</div>
+                  <div class="detail-type">number?</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">limitPrice</span>
+                <div class="detail-content">
+                  <div class="detail-desc">
+                    The limit price actually placed (for marketable_ioc, derived from BBO ±
+                    slippage)
+                  </div>
+                  <div class="detail-type">number?</div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <span class="detail-name">avgFillPrice</span>
+                <div class="detail-content">
+                  <div class="detail-desc">Size-weighted average fill price</div>
+                  <div class="detail-type">number?</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Freshness Requirements -->
+        <section id="freshness" class="section">
+          <div class="section-header">
+            <div class="section-icon">⏱️</div>
+            <div class="section-title-wrapper">
+              <h2 class="section-title">Freshness Requirements</h2>
+            </div>
+          </div>
+          <p style="color: var(--text-secondary); margin-bottom: 1.5rem">
+            Exchange data carries freshness stamps. Stale data blocks execution submission rather
+            than silently degrading. These windows are defined in §13.
+          </p>
+
+          <div class="freshness-grid">
+            <div class="freshness-card">
+              <div class="freshness-value">2s</div>
+              <div class="freshness-label">BBO Stale</div>
+              <div class="freshness-desc">Blocks marketable IOC pricing</div>
+            </div>
+            <div class="freshness-card">
+              <div class="freshness-value">5s</div>
+              <div class="freshness-label">Asset Context</div>
+              <div class="freshness-desc">Triggers refresh for mark/mid/oracle</div>
+            </div>
+            <div class="freshness-card">
+              <div class="freshness-value">5s</div>
+              <div class="freshness-label">Account State</div>
+              <div class="freshness-desc">During execution</div>
+            </div>
+            <div class="freshness-card">
+              <div class="freshness-value">500</div>
+              <div class="freshness-label">Max Candles</div>
+              <div class="freshness-desc">Per get_market_history call</div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <footer>
+        <p>T3 Trade Trading Tools Reference — Generated 2026-08-04</p>
+        <p style="margin-top: 0.5rem; color: var(--text-muted)">
+          Based on spec §10.6, §11.3, §13, §14.2–§14.4, §15–§18
+        </p>
+      </footer>
+    </div>
+  </body>
+</html>

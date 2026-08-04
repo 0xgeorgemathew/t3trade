@@ -215,13 +215,31 @@ const make = Effect.gen(function* () {
    * `Stream.take(1)` means the watcher terminates with the turn instead of
    * consuming the domain-event stream for the life of the process.
    */
+  /**
+   * The statuses a session writes once its turn is over.
+   *
+   * `starting` is deliberately absent. It is the first status a resumed
+   * session writes, it carries no active turn, and a "not running and no
+   * active turn" test therefore matched it — every run released its lease
+   * within a second of dispatching, before the harness had said anything.
+   * That let a second run start on top of the first and closed the inbox
+   * events the first run was still working from.
+   */
+  const TURN_END_STATUSES: ReadonlySet<string> = new Set([
+    "idle",
+    "ready",
+    "interrupted",
+    "stopped",
+    "error",
+  ]);
+
   const isTurnEndFor =
     (threadId: string) =>
     (event: OrchestrationEvent): boolean => {
       if (event.type !== "thread.session-set") return false;
       if (event.payload.threadId !== threadId) return false;
       const { status, activeTurnId } = event.payload.session;
-      return status !== "running" && activeTurnId === null;
+      return TURN_END_STATUSES.has(status) && activeTurnId === null;
     };
 
   const watchTurnEndAndRelease = (runId: string, missionId: string, threadId: string) =>
@@ -363,6 +381,13 @@ const make = Effect.gen(function* () {
    */
   const ensureNotDeaf = (missionId: string) =>
     Effect.gen(function* () {
+      // A mission that no longer holds authority has nothing to be woken for.
+      // Settling a thread revokes its mission while the final turn is still
+      // winding down, and arming a fresh watch on the way out is exactly the
+      // "settle did not stop everything" the control is supposed to prevent.
+      const mission = yield* missions.getMission(missionId);
+      if (!isActiveMissionStatus(mission.status)) return;
+
       const rows = yield* sql<{ readonly size: number; readonly mark_px: number | null }>`
         SELECT size, mark_px FROM trading_position_snapshots
         WHERE mission_id = ${missionId} AND size != 0
@@ -380,7 +405,6 @@ const make = Effect.gen(function* () {
       // whose triggers never come near the market goes silent forever, and a
       // silent mission is indistinguishable from a working one.
       if (position === undefined) {
-        const mission = yield* missions.getMission(missionId);
         if (!isOperativeMissionStatus(mission.status)) return;
         // No thesis: nothing to come back to. The mission is between strategies
         // and something else — a create, a publish, a user control — will move

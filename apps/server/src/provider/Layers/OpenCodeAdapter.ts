@@ -22,6 +22,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import type { OpencodeClient, Part, PermissionRequest, QuestionRequest } from "@opencode-ai/sdk/v2";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
@@ -220,6 +221,18 @@ interface OpenCodeSessionContext {
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
+  /**
+   * Serialises `sendTurn` for this session.
+   *
+   * `sendTurn` reads `activeTurnId` to decide start-vs-steer, then yields
+   * several times before writing it back. Two prompts in the same tick — a
+   * mission's bootstrap wake landing on top of the user's own message is the
+   * routine case — therefore both read `undefined`, both mint a turn id, and
+   * both emit `turn.started`. Orchestration accepts the first and rejects the
+   * second as conflicting, so the adapter's active turn and orchestration's
+   * disagree forever and no `turn.completed` can ever close the session.
+   */
+  readonly sendTurnLock: Semaphore.Semaphore;
   /**
    * One-shot guard flipped by `stopOpenCodeContext` / `emitUnexpectedExit`.
    * The session lifecycle is owned by `sessionScope`; this Ref exists only
@@ -1395,6 +1408,7 @@ export function makeOpenCodeAdapter(
           activeTurnId: undefined,
           activeAgent: undefined,
           activeVariant: undefined,
+          sendTurnLock: yield* Semaphore.make(1),
           stopped: yield* Ref.make(false),
           sessionScope: started.sessionScope,
         };
@@ -1420,8 +1434,10 @@ export function makeOpenCodeAdapter(
       },
     );
 
-    const sendTurn: OpenCodeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
-      const context = yield* ensureSessionContext(sessions, input.threadId);
+    const startOrSteerTurn = Effect.fn("startOrSteerTurn")(function* (
+      context: OpenCodeSessionContext,
+      input: Parameters<OpenCodeAdapterShape["sendTurn"]>[0],
+    ) {
       // A sendTurn while a turn is active is a steer: OpenCode queues the
       // prompt into the busy session and the work continues as one turn, so
       // the active turn id is reused instead of opening a new turn.
@@ -1546,6 +1562,11 @@ export function makeOpenCodeAdapter(
           ? { resumeCursor: context.session.resumeCursor }
           : {}),
       };
+    });
+
+    const sendTurn: OpenCodeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
+      const context = yield* ensureSessionContext(sessions, input.threadId);
+      return yield* context.sendTurnLock.withPermits(1)(startOrSteerTurn(context, input));
     });
 
     const interruptTurn: OpenCodeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(

@@ -1,0 +1,1870 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>How T3 Trade's trading tools work</title>
+    <style>
+      :root {
+        --ivory: #faf9f5;
+        --slate: #141413;
+        --clay: #d97757;
+        --oat: #e3dacc;
+        --olive: #788c5d;
+        --rose: #b5654a;
+        --gray-150: #f0eee6;
+        --gray-300: #d1cfc5;
+        --gray-500: #87867f;
+        --gray-700: #3d3d3a;
+        --unknown: #9a7b4a;
+        --serif: ui-serif, Georgia, "Times New Roman", serif;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background: var(--ivory);
+        color: var(--gray-700);
+        font-family: var(--sans);
+        font-size: 15px;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        padding: 48px 24px 120px;
+      }
+      .page {
+        max-width: 1180px;
+        margin: 0 auto;
+        display: grid;
+        grid-template-columns: 220px minmax(0, 1fr);
+        gap: 48px;
+      }
+      @media (max-width: 980px) {
+        .page {
+          grid-template-columns: 1fr;
+        }
+        nav.side {
+          display: none;
+        }
+      }
+
+      /* nav */
+      nav.side {
+        position: sticky;
+        top: 32px;
+        align-self: start;
+        font-size: 13px;
+        max-height: calc(100vh - 64px);
+        overflow-y: auto;
+      }
+      nav.side .label {
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--gray-500);
+        margin-bottom: 10px;
+      }
+      nav.side a {
+        display: block;
+        padding: 4px 0 4px 12px;
+        border-left: 2px solid var(--gray-300);
+        color: var(--gray-700);
+        text-decoration: none;
+      }
+      nav.side a:hover {
+        color: var(--slate);
+        border-color: var(--slate);
+      }
+      nav.side a.l2 {
+        padding-left: 24px;
+        font-size: 12px;
+        color: var(--gray-500);
+      }
+      nav.side .grp {
+        margin-top: 18px;
+      }
+      nav.side .files {
+        margin-top: 24px;
+        border-top: 1px solid var(--gray-300);
+        padding-top: 14px;
+      }
+      nav.side .files code {
+        display: block;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--gray-500);
+        padding: 2px 0;
+        word-break: break-all;
+      }
+
+      /* header */
+      header {
+        margin-bottom: 8px;
+      }
+      .eyebrow {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--gray-500);
+        margin-bottom: 10px;
+      }
+      h1 {
+        font-family: var(--serif);
+        font-weight: 500;
+        font-size: 30px;
+        color: var(--slate);
+        letter-spacing: -0.01em;
+        margin-bottom: 14px;
+        line-height: 1.2;
+      }
+      h1 code {
+        font-family: var(--mono);
+        font-size: 22px;
+      }
+      .tldr {
+        border: 1.5px solid var(--gray-300);
+        border-left: 3px solid var(--clay);
+        border-radius: 10px;
+        background: #fff;
+        padding: 16px 18px;
+        margin-bottom: 8px;
+      }
+      .tldr b {
+        color: var(--slate);
+      }
+      .tldr p {
+        margin-bottom: 8px;
+      }
+      .tldr p:last-child {
+        margin-bottom: 0;
+      }
+
+      h2 {
+        font-family: var(--serif);
+        font-weight: 500;
+        font-size: 22px;
+        color: var(--slate);
+        margin: 44px 0 6px;
+        scroll-margin-top: 24px;
+      }
+      h2 .num {
+        color: var(--clay);
+        font-family: var(--mono);
+        font-size: 13px;
+        margin-right: 8px;
+        vertical-align: 2px;
+      }
+      .sec-intro {
+        font-size: 14px;
+        color: var(--gray-500);
+        margin-bottom: 16px;
+        max-width: 720px;
+      }
+      p {
+        margin-bottom: 10px;
+        max-width: 720px;
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 12.5px;
+      }
+      a.src {
+        color: var(--clay);
+        text-decoration: none;
+        border-bottom: 1px dotted var(--clay);
+        font-family: var(--mono);
+        font-size: 11.5px;
+      }
+      a.src:hover {
+        color: var(--rose);
+        border-bottom-style: solid;
+      }
+
+      /* tool catalog grid */
+      .catalog {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 10px;
+        margin: 14px 0;
+      }
+      .tool-card {
+        border: 1.5px solid var(--gray-300);
+        border-radius: 9px;
+        background: #fff;
+        padding: 12px 13px;
+        cursor: pointer;
+        transition:
+          border-color 120ms,
+          box-shadow 120ms;
+      }
+      .tool-card:hover {
+        border-color: var(--clay);
+      }
+      .tool-card.sel {
+        border-color: var(--clay);
+        border-width: 2px;
+        background: #fff;
+        box-shadow: 0 0 0 3px rgba(217, 119, 87, 0.12);
+        padding: 11px 12px;
+      }
+      .tool-card .tn {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--slate);
+        font-weight: 600;
+        margin-bottom: 3px;
+        word-break: break-all;
+      }
+      .tool-card .tp {
+        font-size: 12px;
+        color: var(--gray-500);
+        line-height: 1.4;
+      }
+      .tool-card .tg {
+        font-family: var(--mono);
+        font-size: 9.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--olive);
+        margin-top: 6px;
+      }
+      .tool-card .tg.exec {
+        color: var(--rose);
+      }
+      .cluster-note {
+        font-size: 12px;
+        color: var(--gray-500);
+        font-style: italic;
+        margin: -4px 2px 10px;
+      }
+
+      /* trace */
+      .trace {
+        margin: 14px 0;
+      }
+      .trace-hop {
+        display: grid;
+        grid-template-columns: 30px 1fr;
+        gap: 12px;
+        padding: 10px 0;
+        border-top: 1px solid var(--gray-150);
+      }
+      .trace-hop:first-child {
+        border-top: none;
+      }
+      .trace-hop .hn {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--clay);
+        font-weight: 600;
+        text-align: right;
+        padding-top: 1px;
+      }
+      .trace-hop .hwhere {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--gray-500);
+      }
+      .trace-hop .hlabel {
+        font-family: var(--sans);
+        font-weight: 600;
+        color: var(--slate);
+        font-size: 14px;
+        margin-bottom: 2px;
+      }
+      .trace-hop .hdetail {
+        font-size: 13px;
+        color: var(--gray-700);
+        line-height: 1.55;
+      }
+      .trace-hop .hdetail code {
+        background: var(--gray-150);
+        padding: 1px 4px;
+        border-radius: 3px;
+      }
+      .trace-phase {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--olive);
+        margin: 14px 0 2px;
+        font-weight: 600;
+      }
+      .payload {
+        border: 1px solid var(--oat);
+        border-radius: 7px;
+        background: rgba(227, 218, 204, 0.2);
+        margin: 8px 0;
+        padding: 10px 12px;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        line-height: 1.55;
+        color: var(--slate);
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-x: auto;
+      }
+      .payload .k {
+        color: var(--clay);
+      }
+      .payload .c {
+        color: var(--gray-500);
+      }
+
+      /* harness stack */
+      .stack {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin: 14px 0;
+      }
+      .layer {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 14px;
+        border: 1.5px solid var(--gray-300);
+        border-left-width: 3px;
+        border-left-color: var(--gray-300);
+        border-radius: 8px;
+        background: #fff;
+        padding: 10px 13px;
+        opacity: 0.42;
+        transition:
+          opacity 150ms,
+          border-left-color 150ms;
+      }
+      .layer.on {
+        opacity: 1;
+        border-left-color: var(--clay);
+        background: #fff;
+      }
+      .layer.on.escalation {
+        border-left-color: var(--rose);
+      }
+      .layer .ln {
+        font-family: var(--sans);
+        font-weight: 600;
+        color: var(--slate);
+        font-size: 13.5px;
+      }
+      .layer .ln .tag {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--gray-500);
+        font-weight: 400;
+        margin-left: 6px;
+      }
+      .layer .lg {
+        font-size: 12.5px;
+        color: var(--gray-700);
+        line-height: 1.5;
+        margin-top: 2px;
+      }
+      .layer .lf {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--gray-500);
+        white-space: nowrap;
+      }
+      .layer-count {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--gray-500);
+        margin-bottom: 8px;
+      }
+      .layer-count b {
+        color: var(--clay);
+      }
+
+      /* system map */
+      .map {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 0;
+        margin: 14px 0;
+        border: 1.5px solid var(--gray-300);
+        border-radius: 10px;
+        overflow: hidden;
+        background: #fff;
+      }
+      @media (max-width: 760px) {
+        .map {
+          grid-template-columns: 1fr;
+        }
+      }
+      .map-col {
+        padding: 14px 16px;
+        border-right: 1px solid var(--gray-300);
+      }
+      .map-col:last-child {
+        border-right: none;
+      }
+      @media (max-width: 760px) {
+        .map-col {
+          border-right: none;
+          border-bottom: 1px solid var(--gray-300);
+        }
+      }
+      .map-col h4 {
+        font-family: var(--mono);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--gray-500);
+        margin-bottom: 8px;
+      }
+      .map-col .node {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--slate);
+        padding: 5px 8px;
+        border: 1px solid var(--gray-300);
+        border-radius: 5px;
+        margin-bottom: 5px;
+        background: var(--gray-150);
+      }
+      .map-col .node.ext {
+        border-color: var(--clay);
+      }
+      .map-col .node.mem {
+        border-style: dashed;
+      }
+      .map-col .sub {
+        font-size: 11.5px;
+        color: var(--gray-500);
+        margin-top: 4px;
+        line-height: 1.45;
+      }
+      .map-arrow {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--clay);
+        margin: 6px 0;
+      }
+
+      /* mission loop */
+      .loop {
+        border: 1.5px solid var(--gray-300);
+        border-radius: 10px;
+        background: #fff;
+        padding: 16px 18px;
+        margin: 14px 0;
+      }
+      .loop-step {
+        display: grid;
+        grid-template-columns: 24px 1fr;
+        gap: 10px;
+        padding: 7px 0;
+        border-top: 1px solid var(--gray-150);
+      }
+      .loop-step:first-of-type {
+        border-top: none;
+      }
+      .loop-step .ls-n {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--olive);
+        font-weight: 600;
+      }
+      .loop-step .ls-t {
+        font-size: 13px;
+      }
+      .loop-step .ls-t b {
+        color: var(--slate);
+      }
+      .loop-step .ls-t code {
+        font-size: 11.5px;
+      }
+
+      /* failures */
+      .fail {
+        border: 1.5px solid var(--gray-300);
+        border-radius: 9px;
+        background: #fff;
+        margin: 10px 0;
+        overflow: hidden;
+      }
+      .fail-head {
+        padding: 11px 14px;
+        border-bottom: 1px solid var(--gray-150);
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .fail-head .fm {
+        font-family: var(--sans);
+        font-weight: 600;
+        color: var(--slate);
+        font-size: 14px;
+      }
+      .fail-head .fwhere {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--gray-500);
+        margin-left: auto;
+      }
+      .fail-body {
+        padding: 0 14px 12px;
+        font-size: 13px;
+      }
+      .fail-row {
+        display: grid;
+        grid-template-columns: 130px 1fr;
+        gap: 10px;
+        padding: 5px 0;
+      }
+      .fail-row .rk {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--gray-500);
+        padding-top: 2px;
+      }
+      .fail-row .rv {
+        color: var(--gray-700);
+        line-height: 1.5;
+      }
+      .fail-row .rv code {
+        font-size: 11.5px;
+      }
+
+      /* unknowns */
+      .unk {
+        border: 1.5px dashed var(--unknown);
+        border-radius: 9px;
+        background: rgba(154, 123, 74, 0.06);
+        padding: 12px 14px;
+        margin: 10px 0;
+        font-size: 13px;
+      }
+      .unk .uk {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--unknown);
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+      .unk .ud {
+        color: var(--gray-700);
+        line-height: 1.5;
+      }
+
+      .callout {
+        display: flex;
+        gap: 12px;
+        border: 1.5px solid var(--oat);
+        background: rgba(227, 218, 204, 0.35);
+        border-radius: 10px;
+        padding: 13px 15px;
+        margin: 16px 0;
+        font-size: 13.5px;
+      }
+      .callout .ico {
+        color: var(--clay);
+        font-weight: 700;
+        font-size: 15px;
+      }
+      .legend {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        font-size: 11.5px;
+        color: var(--gray-500);
+        margin: 10px 0 4px;
+        font-family: var(--mono);
+      }
+      .legend span {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .legend .sw {
+        width: 11px;
+        height: 11px;
+        border-radius: 2px;
+        display: inline-block;
+      }
+      .legend .sw.on {
+        background: #fff;
+        border: 2px solid var(--clay);
+      }
+      .legend .sw.off {
+        background: #fff;
+        border: 2px solid var(--gray-300);
+        opacity: 0.5;
+      }
+      .legend .sw.esc {
+        background: #fff;
+        border: 2px solid var(--rose);
+      }
+      .empty {
+        font-size: 13px;
+        color: var(--gray-500);
+        font-style: italic;
+        padding: 14px;
+        border: 1px dashed var(--gray-300);
+        border-radius: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <!-- ─────────────────── SIDE NAV ─────────────────── -->
+      <nav class="side">
+        <div class="label">Sections</div>
+        <a href="#tldr">TL;DR</a>
+        <a href="#catalog">Tool catalog</a>
+        <a href="#trace">Invocation trace</a>
+        <a href="#harness">Harness stack</a>
+        <a href="#map">System map</a>
+        <a href="#loop">Mission loop</a>
+        <a href="#failures">Failure modes</a>
+        <a href="#unknowns">Unknowns</a>
+
+        <div class="grp">
+          <div class="label">Tools (click to trace)</div>
+          <a href="#trace" data-tool="trading_get_mission">trading_get_mission</a>
+          <a href="#trace" data-tool="trading_publish_momentum_strategy">trading_publish_…</a>
+          <a href="#trace" data-tool="cluster:market">market reads (4)</a>
+          <a href="#trace" data-tool="cluster:account">account reads (3)</a>
+          <a href="#trace" data-tool="trading_register_watch">trading_register_watch</a>
+          <a href="#trace" data-tool="trading_list_watches">trading_list_watches</a>
+          <a href="#trace" data-tool="trading_cancel_watch">trading_cancel_watch</a>
+          <a href="#trace" data-tool="trading_request_entry">trading_request_entry</a>
+        </div>
+
+        <div class="files">
+          <div class="label">Source of truth</div>
+          <code>mcp/toolkits/trading/tools.ts</code>
+          <code>mcp/toolkits/trading/handlers.ts</code>
+          <code>mcp/McpHttpServer.ts</code>
+          <code>trading/TradingMissionReactor.ts</code>
+          <code>trading/HyperliquidExecutionService.ts</code>
+          <code>trading/TradingPreviewService.ts</code>
+          <code>trading/TradingExecutionGuard.ts</code>
+          <code>packages/trading-contracts/src/*</code>
+        </div>
+      </nav>
+
+      <!-- ─────────────────── MAIN ─────────────────── -->
+      <main>
+        <header>
+          <div class="eyebrow">Repository-grounded system explainer · T3 Trade</div>
+          <h1>How the trading tools in <code>T3&nbsp;Trade</code> actually work</h1>
+          <div class="tldr" id="tldr">
+            <p>
+              <b>TL;DR</b> — The 14 trading tools are an AI agent's <em>only</em> API surface,
+              exposed over MCP at <code>POST&nbsp;/mcp</code> behind a per-session bearer. None are
+              user-facing; the UI never calls them. Twelve are thin (resolve the bound mission,
+              delegate to a gateway/service, return). Two are load-bearing:
+            </p>
+            <p>
+              • <code>trading_request_entry</code> is the <b>only tool that touches capital</b>. It
+              is split-phase — the handler dispatches a command and polls while a background reactor
+              runs
+              preview&nbsp;→&nbsp;guard&nbsp;→&nbsp;sign&nbsp;→&nbsp;submit&nbsp;→&nbsp;reconcile&nbsp;→&nbsp;protect.
+            </p>
+            <p>
+              • The <b>watch tools</b> register predicates that the
+              <code>WatchEvaluator</code> evaluates on market data; a fired watch drives the reactor
+              to wake the agent for another turn — closing the autonomous loop.
+            </p>
+            <p style="font-size: 12px; color: var(--gray-500); margin-top: 10px">
+              Click a tool below. Its invocation trace, the harness layers it passes through, and
+              its failure paths all update together. Everything cited is <code>file:line</code> in
+              this repo.
+            </p>
+          </div>
+        </header>
+
+        <!-- ════════ CATALOG ════════ -->
+        <h2 id="catalog"><span class="num">01</span>Tool catalog</h2>
+        <p class="sec-intro">
+          All 14 tools are defined in one file, registered once, and gated by the
+          <code>"trading"</code> capability. The seven read tools collapse to a single
+          delegate-to-gateway path — they're shown as clusters. Select any card to trace it.
+        </p>
+        <div class="catalog" id="catalogGrid"></div>
+        <p class="cluster-note" id="catalogHint"></p>
+
+        <!-- ════════ TRACE ════════ -->
+        <h2 id="trace">
+          <span class="num">02</span>Invocation trace
+          <span
+            style="font-family: var(--mono); font-size: 12px; color: var(--clay)"
+            id="traceToolName"
+          ></span>
+        </h2>
+        <p class="sec-intro" id="traceIntro"></p>
+        <div class="trace" id="traceBox"></div>
+
+        <!-- ════════ HARNESS ════════ -->
+        <h2 id="harness"><span class="num">03</span>Harness stack</h2>
+        <p class="sec-intro">
+          The layers that wrap every action, in composition order. <b>Highlighted</b> layers are the
+          ones the selected tool actually passes through. The contrast between a read tool (2
+          layers) and <code>trading_request_entry</code> (11) <em>is</em> the mental model.
+        </p>
+        <div class="legend">
+          <span><span class="sw on"></span> active for this tool</span>
+          <span><span class="sw off"></span> not on this path</span>
+          <span><span class="sw esc"></span> escalation only (§17.5)</span>
+        </div>
+        <div class="layer-count" id="layerCount"></div>
+        <div class="stack" id="stackBox"></div>
+
+        <!-- ════════ MAP ════════ -->
+        <h2 id="map">
+          <span class="num">04</span>System map — who talks to whom, over what boundary
+        </h2>
+        <p class="sec-intro">
+          One external venue (Hyperliquid testnet), one in-process sibling (the orchestration
+          engine), one SQLite file. The execution-wallet address signs; the master-wallet address is
+          identity — they are never conflated (<a class="src" href="#unknowns">§10.6</a>).
+        </p>
+        <div class="map">
+          <div class="map-col">
+            <h4>External (network)</h4>
+            <div class="node ext">Hyperliquid testnet</div>
+            <div class="sub">
+              <code>InfoClient</code> · POST <code>/info</code> (reads: mids, book, clears, fills,
+              orders)
+            </div>
+            <div class="sub">
+              <code>ExchangeClient</code> · POST <code>/exchange</code> (writes: order,
+              cancelByCloid)
+            </div>
+            <div class="sub">
+              <code>WebSocketClient</code> · <code>wss://…/ws</code> (fills subscription, bounded
+              reconnect)
+            </div>
+            <div class="sub" style="margin-top: 8px">
+              Endpoints hardcoded (<code>packages/hyperliquid/src/config.ts:14</code>).
+              <code>isTestnet:true</code> hardcoded at every sign site. Mainnet is out of scope for
+              the POC.
+            </div>
+            <div class="map-arrow">⇅ HTTPS / WSS</div>
+          </div>
+          <div class="map-col">
+            <h4>In-process (T3 server)</h4>
+            <div class="node">MCP boundary <code>/mcp</code></div>
+            <div class="sub">bearer → <code>McpInvocationScope</code> → capability gate</div>
+            <div class="node">Orchestration engine</div>
+            <div class="sub">
+              command queue → decider → event log → PubSub → projectors + reactors + WS push
+            </div>
+            <div class="node">TradingMissionReactor</div>
+            <div class="sub">
+              event-driven queue consumer; drives execution, controls, watch-fired → turn
+            </div>
+            <div class="node">Guards / Services / Reconciler</div>
+            <div class="sub">
+              preview, guard, execution, protection, emergency — the capital-spending stack
+            </div>
+            <div class="node">WatchEvaluator</div>
+            <div class="sub">
+              2s sweep + WS candles; fires <code>trading.mission.watch-fired</code>
+            </div>
+            <div class="map-arrow">⇅ SQLite (same process)</div>
+          </div>
+          <div class="map-col">
+            <h4>Persistence &amp; ephemeral</h4>
+            <h4 style="margin-top: 2px; color: var(--slate)">Persisted (SQLite, WAL)</h4>
+            <div class="node">orchestration_events</div>
+            <div class="node">trading_missions, trading_authority_versions</div>
+            <div class="node">momentum_strategy_versions, trading_watches</div>
+            <div class="node">trading_execution_records, trading_risk_reservations</div>
+            <div class="node">trading_orders, trading_fills, trading_position_snapshots</div>
+            <div class="node">
+              projection_trading_missions
+              <span style="color: var(--gray-500)">(rebuildable UI read model)</span>
+            </div>
+            <h4 style="margin-top: 12px; color: var(--slate)">
+              Ephemeral (memory, lost on restart)
+            </h4>
+            <div class="node mem">interim signer key (raw bytes)</div>
+            <div class="node mem">nonce high-water mark</div>
+            <div class="node mem">watch evaluator last-seen candles</div>
+            <div class="node mem">in-flight fibers (turn watchers, wake, reactor queue)</div>
+          </div>
+        </div>
+        <div class="callout">
+          <span class="ico">↻</span>
+          <div>
+            Restart reconverges. The reconciler runs on <code>server_startup</code> and
+            <code>websocket_reconnect</code> triggers (<a class="src" href="#"
+              >HyperliquidReconciler.ts:52</a
+            >), so canonical exchange state re-converges local tables after a crash. Abandoned
+            execution records (stuck &gt;60s pre-terminal) are settled to <code>failed</code> so
+            preview item&nbsp;16 stops refusing every subsequent entry.
+          </div>
+        </div>
+
+        <!-- ════════ LOOP ════════ -->
+        <h2 id="loop">
+          <span class="num">05</span>The mission loop — how the agent gets woken again
+        </h2>
+        <p class="sec-intro">
+          Tools are not only called on-demand. A watch firing is the mechanism that resumes the
+          agent on a schedule or market signal. This is the autonomous cycle — the same one a
+          reviewer most often underestimates.
+        </p>
+        <div class="loop">
+          <div class="loop-step">
+            <div class="ls-n">1</div>
+            <div class="ls-t">
+              <b>Agent turn</b> — during a turn, the agent calls
+              <code>trading_register_watch</code> with a typed predicate (price_cross, candle_close,
+              order_update, position_update, scheduled_reassessment) bound to the current strategy
+              version.
+            </div>
+          </div>
+          <div class="loop-step">
+            <div class="ls-n">2</div>
+            <div class="ls-t">
+              <b>WatchEvaluator evaluates</b> (<a class="src" href="#">WatchEvaluator.ts:95</a>) —
+              WS candle deliveries drive <code>candle_close</code>; a 2-second sweep drives the rest
+              against fresh gateway reads. On match: flips
+              <code>active → triggered</code> atomically (single-fire), persists a dedup-keyed inbox
+              event.
+            </div>
+          </div>
+          <div class="loop-step">
+            <div class="ls-n">3</div>
+            <div class="ls-t">
+              <b>Watch fires</b> — dispatches <code>trading.mission.watch-fired</code> on the
+              orchestration stream.
+            </div>
+          </div>
+          <div class="loop-step">
+            <div class="ls-n">4</div>
+            <div class="ls-t">
+              <b>Reactor requests a run</b> (<a class="src" href="#">TradingMissionReactor.ts:474</a
+              >) — <code>coordinator.requestRun</code> with retry (up to 60× / 5s, backing off
+              behind an active run).
+            </div>
+          </div>
+          <div class="loop-step">
+            <div class="ls-n">5</div>
+            <div class="ls-t">
+              <b>Turn coordinator gates</b> (<a class="src" href="#"
+                >TradingTurnCoordinator.ts:382</a
+              >) — seven pre-run checks; the single decision lease (DB unique index) is the
+              guarantee that exactly one run owns a mission at a time.
+            </div>
+          </div>
+          <div class="loop-step">
+            <div class="ls-n">6</div>
+            <div class="ls-t">
+              <b>Provider resumed</b> — dispatches <code>thread.turn.start</code> carrying a bounded
+              <code>TradingHarnessWakeup</code> (cause, triggering watch, versioned snapshot). The
+              persisted <code>resumeCursor</code> continues the same conversation.
+            </div>
+          </div>
+          <div class="loop-step">
+            <div class="ls-n">7</div>
+            <div class="ls-t">
+              <b>Loop closes</b> — agent reads <code>trading_get_mission</code>, sees the wakeup
+              context + pending inbox events, and issues new tool calls.
+            </div>
+          </div>
+        </div>
+        <div class="callout">
+          <span class="ico">⚠</span>
+          <div>
+            <b>Coverage floor — the "deaf mission" guard.</b> When a run ends holding a position
+            with no armed watches on both sides of the mark, <code>ensureNotDeaf</code> (<a
+              class="src"
+              href="#"
+              >TradingTurnCoordinator.ts:257</a
+            >) auto-registers a <code>scheduled_reassessment</code> at <code>now + 10min</code>. A
+            mission can never be silently deaf with exposure open.
+            <code>WATCH_COVERAGE_FLOOR_MILLIS</code> = 10 min (<a class="src" href="#"
+              >watch.ts:91</a
+            >).
+          </div>
+        </div>
+
+        <!-- ════════ FAILURES ════════ -->
+        <h2 id="failures">
+          <span class="num">06</span>Failure modes
+          <span
+            style="font-family: var(--mono); font-size: 12px; color: var(--clay)"
+            id="failToolName"
+          ></span>
+        </h2>
+        <p class="sec-intro" id="failIntro"></p>
+        <div id="failBox"></div>
+
+        <!-- ════════ UNKNOWNS ════════ -->
+        <h2 id="unknowns"><span class="num">07</span>What could not be determined from source</h2>
+        <p class="sec-intro">
+          Rendered explicitly, per the accuracy rule — never a plausible guess. Each was confirmed
+          absent by a subagent that searched the cited surfaces.
+        </p>
+
+        <div class="unk">
+          <div class="uk">unknown · no writer found</div>
+          <div class="ud">
+            <b>Transition to <code>completed</code></b> is in the state machine (<a
+              class="src"
+              href="#"
+              >MissionTransitions.ts</a
+            >) and the spec describes it ("the harness declared the objective done"), but no reactor
+            or service code transitions a mission to <code>completed</code>. Only
+            <code>revoked</code> is implemented as a terminal writer.
+          </div>
+        </div>
+
+        <div class="unk">
+          <div class="uk">unknown · no writer found</div>
+          <div class="ud">
+            <b><code>agent_unavailable</code> and <code>mission_resumed</code> causes</b> exist in
+            the literal unions, but no code path moves a mission to
+            <code>agent_unavailable</code> or sets the <code>mission_resumed</code> run cause.
+          </div>
+        </div>
+
+        <div class="unk">
+          <div class="uk">unknown · library code, not in this repo</div>
+          <div class="ud">
+            <b>MCP dispatch internals</b> — <code>McpServer.layerHttp</code> /
+            <code>callTool</code> are <code>@effect/platform</code> library code. Behavior (JSON-RPC
+            parsing, handler Effect execution, <code>CallToolResult</code> serialization) is
+            inferred from call sites + <code>McpHttpServer.test.ts</code>, not the library source.
+          </div>
+        </div>
+
+        <div class="unk">
+          <div class="uk">unknown · table declared, writer not found</div>
+          <div class="ud">
+            <b> <code>trading_account_snapshots</code> write path</b> — the table is created in
+            migration 038 and described as a reconciler-populated cache, but no explicit UPSERT was
+            found in <code>HyperliquidReconciler.ts</code>.
+          </div>
+        </div>
+
+        <div class="unk">
+          <div class="uk">unknown · explicitly deferred</div>
+          <div class="ud">
+            <b>Live testnet round-trip</b> — <code>ExecutionReactorLoop.test.ts</code> header defers
+            real signed-order acceptance to "Gate E (Task 14)". The repo proves the execution
+            boundary with a recording fake exchange, not a live acceptance.
+          </div>
+        </div>
+
+        <div class="unk">
+          <div class="uk">unknown · plumbing unconfirmed</div>
+          <div class="ud">
+            <b>Nonce persistence wiring</b> — the <code>HyperliquidNonceCoordinator</code> accepts a
+            <code>persist</code> callback for crash recovery, but whether the live layer hooks it to
+            a table is unconfirmed.
+          </div>
+        </div>
+
+        <div class="unk">
+          <div class="uk">unknown · POC limitation</div>
+          <div class="ud">
+            <b>Funding accounting</b> — <code>netFundingUsd</code> is hard-zero until a funding
+            source is wired (<code>TradingBudgetReader.ts:88</code> comment). No
+            <code>funding_rows</code> table exists in the POC schema.
+          </div>
+        </div>
+
+        <div
+          style="
+            margin-top: 48px;
+            padding-top: 20px;
+            border-top: 1px solid var(--gray-300);
+            font-size: 11.5px;
+            color: var(--gray-500);
+            font-family: var(--mono);
+          "
+        >
+          Generated 2026-08-03 from a 9-agent parallel investigation of the T3 Trade repository.
+          Every claim cites a
+          <code>file:line</code>. Open from <code>file://</code> — no network dependency.
+        </div>
+      </main>
+    </div>
+
+    <script>
+      // ─────────────────── STATE ───────────────────
+      const state = { tool: "trading_request_entry" };
+
+      // ─────────────────── DATA: tools ───────────────────
+      const TOOLS = {
+        trading_get_mission: {
+          name: "trading_get_mission",
+          group: "Mission",
+          purpose:
+            "Read the full state of the mission the agent is bound to (status, authority, strategy, watches, control). Call at the start of every turn.",
+          defined: "tools.ts:78",
+          handler: "handlers.ts:244",
+          facing: "agent",
+          traceClass: "read-mission",
+          active: ["mcp-capability", "bound-call"],
+          failClass: "read-mission",
+        },
+        trading_publish_momentum_strategy: {
+          name: "trading_publish_momentum_strategy",
+          group: "Mission",
+          purpose:
+            "Publish (or republish) the momentum strategy the mission executes against. Optimistic-concurrency on expectedVersion; an accepted publish supersedes prior watches.",
+          defined: "tools.ts:92",
+          handler: "handlers.ts:247",
+          facing: "agent",
+          traceClass: "strategy-publish",
+          active: ["mcp-capability", "bound-call", "strategy-service"],
+          failClass: "strategy-publish",
+        },
+        cluster_market: {
+          name: "market reads (4 tools)",
+          group: "Market reads",
+          isCluster: true,
+          members: [
+            "trading_resolve_market",
+            "trading_get_market_snapshot",
+            "trading_get_market_history",
+            "trading_get_order_book",
+          ],
+          purpose:
+            "Read market state from Hyperliquid: resolve_market, get_market_snapshot, get_market_history, get_order_book. All delegate to HyperliquidGateway → InfoClient POST /info.",
+          defined: "tools.ts:112-166",
+          handler: "handlers.ts:333-367",
+          facing: "agent",
+          traceClass: "read-market",
+          active: ["mcp-capability", "bound-call"],
+          failClass: "read-market",
+        },
+        cluster_account: {
+          name: "account reads (3 tools)",
+          group: "Account reads",
+          isCluster: true,
+          members: ["trading_get_account_state", "trading_get_position", "trading_get_open_orders"],
+          purpose:
+            "Read canonical account state for the mission's master wallet: get_account_state, get_position, get_open_orders. Server-resolves the master address; the execution wallet is never used as identity.",
+          defined: "tools.ts:168-208",
+          handler: "handlers.ts:369-400",
+          facing: "agent",
+          traceClass: "read-account",
+          active: ["mcp-capability", "bound-call"],
+          failClass: "read-market",
+        },
+        trading_register_watch: {
+          name: "trading_register_watch",
+          group: "Watches",
+          purpose:
+            "Register a typed market watch bound to the current strategy version. Created active; fires on predicate match. Watches do not survive a strategy publish.",
+          defined: "tools.ts:212",
+          handler: "handlers.ts:409",
+          facing: "agent",
+          traceClass: "watch-write",
+          active: ["mcp-capability", "bound-call", "watch-service"],
+          failClass: "watch",
+        },
+        trading_schedule_reassessment: {
+          name: "trading_schedule_reassessment",
+          group: "Watches",
+          purpose:
+            "Schedule a time-based reassessment at a future timestamp. Implemented by registering a scheduled_reassessment watch through the same path.",
+          defined: "tools.ts:228",
+          handler: "handlers.ts:432",
+          facing: "agent",
+          traceClass: "watch-write",
+          active: ["mcp-capability", "bound-call", "watch-service"],
+          failClass: "watch",
+        },
+        trading_list_watches: {
+          name: "trading_list_watches",
+          group: "Watches",
+          purpose:
+            "List every watch registered for this mission (newest first) with its status: active/triggered/superseded/cancelled/consumed/expired.",
+          defined: "tools.ts:242",
+          handler: "handlers.ts:462",
+          facing: "agent",
+          traceClass: "watch-read",
+          active: ["mcp-capability", "bound-call", "watch-service"],
+          failClass: "watch",
+        },
+        trading_cancel_watch: {
+          name: "trading_cancel_watch",
+          group: "Watches",
+          purpose:
+            "Cancel an active watch by id. Only an active watch can be cancelled; triggered/superseded/missing are rejected with a distinct reason.",
+          defined: "tools.ts:256",
+          handler: "handlers.ts:475",
+          facing: "agent",
+          traceClass: "watch-write",
+          active: ["mcp-capability", "bound-call", "watch-service"],
+          failClass: "watch",
+        },
+        trading_request_entry: {
+          name: "trading_request_entry",
+          group: "Execute",
+          purpose:
+            "Submit one execution intent — the entire position lifecycle: open, scale_in, reduce, close, cancel, modify_stop. The ONLY tool that touches capital. Split-phase: dispatches a command, polls for the reactor's outcome.",
+          defined: "tools.ts:270",
+          handler: "handlers.ts:281",
+          facing: "agent",
+          traceClass: "execute",
+          active: [
+            "mcp-capability",
+            "bound-call",
+            "reactor",
+            "guard",
+            "preview",
+            "signer",
+            "execution-svc",
+            "nonce-lane",
+            "reconciler",
+            "protection",
+          ],
+          escalation: ["emergency"],
+          failClass: "execute",
+        },
+      };
+
+      // ─────────────────── DATA: traces ───────────────────
+      const HOP = (n, label, where, detail, phase) => ({ n, label, where, detail, phase });
+      const PHASE = (t) => ({ phase: t });
+
+      const TRACES = {
+        "read-mission": {
+          intro:
+            "A synchronous read. No command is dispatched, no state is mutated, the UI does not see this call.",
+          steps: [
+            HOP(
+              1,
+              "MCP call arrives",
+              "McpHttpServer.ts:225",
+              "Agent POSTs to <code>/mcp</code> with <code>Authorization: Bearer &lt;token&gt;</code>. The <code>@effect/platform</code> McpServer parses JSON-RPC <code>tools/call</code>.",
+            ),
+            HOP(
+              2,
+              "Bearer → invocation scope",
+              "McpHttpServer.ts:68",
+              "<code>makeMcpAuthMiddleware</code> hashes the token → <code>McpSessionRegistry.resolve</code> → <code>McpInvocationScope</code> {environmentId, threadId, providerSessionId, capabilities}. Unknown token → 401.",
+            ),
+            HOP(
+              3,
+              "Capability + bound mission",
+              "handlers.ts:46",
+              "<code>resolveBoundCall</code>: <code>requireCapability('trading')</code> then <code>findMissionByThreadId(scope.threadId)</code>. The <b>thread on the credential</b> authorizes the mission — not the <code>missionId</code> argument, which is checked against the bound mission.",
+            ),
+            HOP(
+              4,
+              "Read mission + strategy + watches",
+              "handlers.ts:85",
+              "<code>readMission</code> assembles the snapshot from <code>TradingStrategyService</code> (mission row, authority, strategy, watches). Synchronous read from SQLite.",
+            ),
+            HOP(
+              5,
+              "Return to agent",
+              "handlers.ts:244",
+              "Result serialized as MCP <code>CallToolResult</code> over the HTTP response. <b>The UI does not see this</b> — it sees events + the projection read model.",
+            ),
+          ],
+        },
+        "strategy-publish": {
+          intro:
+            "The only write tool that goes straight to a service rather than through an event. On accept, it folds the analysing→waiting transition into the strategy bump and announces to the UI.",
+          steps: [
+            HOP(
+              1,
+              "MCP call arrives",
+              "McpHttpServer.ts:225",
+              "Agent POSTs to <code>/mcp</code> with bearer. JSON-RPC <code>tools/call</code> for <code>trading_publish_momentum_strategy</code>.",
+            ),
+            HOP(
+              2,
+              "Bearer → scope + bound mission",
+              "handlers.ts:46",
+              "Auth middleware → <code>resolveBoundCall</code> (capability + mission binding).",
+            ),
+            HOP(
+              3,
+              "Publish with optimistic concurrency",
+              "handlers.ts:247",
+              "<code>TradingStrategyService.publishMomentumStrategy(missionId, expectedVersion, strategy)</code>. The <code>expectedVersion</code> is checked against the current version; mismatch → in-band <code>{outcome:'rejected', reason:'stale_strategy_version'}</code>.",
+            ),
+            HOP(
+              4,
+              "On accept: supersedes + transition",
+              "TradingStrategyService.ts:178",
+              "Prior-version watches are superseded. The <code>analysing → waiting</code> status move is folded into the same SQL bump — the publish <em>is</em> the transition.",
+            ),
+            HOP(
+              5,
+              "Announce to UI",
+              "handlers.ts:102",
+              "Dispatches <code>trading.mission.strategy-published</code> and <code>trading.mission.status-set</code> so the projection refreshes and the WS push path carries the change to the client.",
+            ),
+            HOP(
+              6,
+              "Return outcome to agent",
+              "handlers.ts:279",
+              "Returns <code>{outcome:'accepted', strategy, strategyVersion, supersededWatchIds[]}</code> or the rejected variant with <code>currentVersion</code> so the harness can retry.",
+            ),
+          ],
+        },
+        "read-market": {
+          intro:
+            "Four tools (resolve_market, get_market_snapshot, get_market_history, get_order_book) share one path: resolve the bound mission, delegate to HyperliquidGateway, which POSTs to /info. No command, no mutation.",
+          steps: [
+            HOP(
+              1,
+              "MCP call arrives",
+              "McpHttpServer.ts:225",
+              "Agent POSTs to <code>/mcp</code> with bearer for one of the four market-read tools.",
+            ),
+            HOP(
+              2,
+              "Bearer → scope + bound mission",
+              "handlers.ts:46",
+              "Auth middleware → <code>resolveBoundCall</code> (capability + mission binding).",
+            ),
+            HOP(
+              3,
+              "Delegate to HyperliquidGateway",
+              "handlers.ts:333-367",
+              "Handler delegates to <code>HyperliquidGateway.{resolveMarket|getMarketSnapshot|getMarketHistory|getOrderBook}</code>. No command dispatched; no state mutated.",
+            ),
+            HOP(
+              4,
+              "Gateway → InfoClient POST /info",
+              "InfoClient.ts:38",
+              "<code>HyperliquidInfoClient</code> POSTs <code>{type,...}</code> to <code>https://api.hyperliquid-testnet.xyz/info</code>. Market metadata cached 5s (<code>MarketResolver.ts:75</code>); BBO/order book always fresh.",
+            ),
+            HOP(
+              5,
+              "Return to agent",
+              "handlers.ts",
+              "Result returned as MCP <code>CallToolResult</code>. Stale reads return a freshness stamp; <b>stale BBO (&gt;2s) blocks execution submission</b> but does not block the read itself.",
+            ),
+          ],
+          payload: {
+            title: "Example payload in (get_market_snapshot)",
+            body: `{
+  <span class="k">"missionId"</span>: <span class="c">// the bound mission (checked against the credential's thread)</span>,
+  <span class="k">"market"</span>: <span class="c">"ETH"   // POC is pinned to ETH</span>
+}`,
+          },
+        },
+        "read-account": {
+          intro:
+            "Three tools (get_account_state, get_position, get_open_orders) share one path. The server resolves the master wallet address — the execution wallet is never used as identity (§10.6).",
+          steps: [
+            HOP(
+              1,
+              "MCP call arrives",
+              "McpHttpServer.ts:225",
+              "Agent POSTs to <code>/mcp</code> with bearer for one of the three account-read tools.",
+            ),
+            HOP(
+              2,
+              "Bearer → scope + bound mission",
+              "handlers.ts:46",
+              "Auth middleware → <code>resolveBoundCall</code> (capability + mission binding).",
+            ),
+            HOP(
+              3,
+              "Resolve master wallet",
+              "TradingMissionService.ts:319",
+              "<code>getMasterWalletAddress(missionId)</code> — the address used for canonical reads. The execution-wallet address signs and appears only as <code>signerAddress</code>; it is never the read identity.",
+            ),
+            HOP(
+              4,
+              "Gateway → InfoClient",
+              "handlers.ts:369-389",
+              "<code>HyperliquidGateway.{getAccountSnapshot|getNetPosition|getOpenOrders}</code> → <code>InfoClient.clearinghouseState|frontendOpenOrders</code> POST <code>/info</code>. <code>frontendOpenOrders</code> is the only read that confirms exchange-native protection (carries <code>isTrigger</code> + <code>reduceOnly</code>).",
+            ),
+            HOP(
+              5,
+              "Return to agent",
+              "handlers.ts",
+              "A flat position is returned as size 0 with no entry price — valid, not an error. Result is MCP <code>CallToolResult</code>; UI sees events, not this.",
+            ),
+          ],
+        },
+        "watch-write": {
+          intro:
+            "register_watch, schedule_reassessment, and cancel_watch write through TradingWatchService then announce. list_watches is the read variant (same path, no announce). A registered watch is what later drives the autonomous loop.",
+          steps: [
+            HOP(
+              1,
+              "MCP call arrives",
+              "McpHttpServer.ts:225",
+              "Agent POSTs to <code>/mcp</code> with bearer for a watch tool.",
+            ),
+            HOP(
+              2,
+              "Bearer → scope + bound mission",
+              "handlers.ts:46",
+              "Auth middleware → <code>resolveBoundCall</code> (capability + mission binding).",
+            ),
+            HOP(
+              3,
+              "Write through TradingWatchService",
+              "handlers.ts:409-504",
+              "<code>TradingWatchService.{registerWatch|cancelWatch}</code>. Register creates the watch <code>active</code>, bound to the current <code>strategyVersion</code>. Cancel flips <code>active</code> only (triggered/superseded/missing → rejected with a distinct reason). <code>schedule_reassessment</code> registers a <code>scheduled_reassessment</code> watch through the same path.",
+            ),
+            HOP(
+              4,
+              "Announce to UI",
+              "handlers.ts:179",
+              "On write: dispatches <code>trading.mission.watch-registered</code> or <code>trading.mission.watch-cancelled</code>. Projection refreshes; WS push carries it to the client.",
+            ),
+            HOP(
+              5,
+              "WatchEvaluator arms the predicate",
+              "WatchEvaluator.ts:95",
+              "For an active watch, the evaluator begins evaluating it: WS candles drive <code>candle_close</code>; a 2s sweep drives <code>price_cross</code>, <code>position_update</code>, <code>order_update</code>, <code>scheduled_reassessment</code>. On match → the mission loop (section 05) fires.",
+            ),
+            HOP(
+              6,
+              "Return result to agent",
+              "handlers.ts",
+              "Returns the <code>PersistedWatch</code> (id, status, strategyVersion) or the cancel outcome.",
+            ),
+          ],
+          payload: {
+            title: "Watch predicate variants (watch.ts:20-47)",
+            body: `<span class="c">// five typed kinds — deterministic, inspectable, no judgment</span>
+{ <span class="k">type</span>: <span class="c">"price_cross"</span>, market, priceSource: <span class="c">"mark"|"mid"</span>, direction: <span class="c">"above"|"below"</span>, price }
+{ <span class="k">type</span>: <span class="c">"candle_close"</span>, market, interval, direction, price }
+{ <span class="k">type</span>: <span class="c">"order_update"</span>, cloid }
+{ <span class="k">type</span>: <span class="c">"position_update"</span>, market }
+{ <span class="k">type</span>: <span class="c">"scheduled_reassessment"</span>, runAt: UnixMillis }`,
+          },
+        },
+        "watch-read": {
+          intro:
+            "list_watches is the read variant of the watch path: same binding and delegation, no announce, no watch arming.",
+          steps: [
+            HOP(
+              1,
+              "MCP call arrives",
+              "McpHttpServer.ts:225",
+              "Agent POSTs to <code>/mcp</code> with bearer for <code>trading_list_watches</code>.",
+            ),
+            HOP(
+              2,
+              "Bearer → scope + bound mission",
+              "handlers.ts:46",
+              "Auth middleware → <code>resolveBoundCall</code> (capability + mission binding).",
+            ),
+            HOP(
+              3,
+              "Read via TradingStrategyService",
+              "handlers.ts:462",
+              "<code>listWatches(missionId)</code> — returns watches newest-first with status. Synchronous SQLite read.",
+            ),
+            HOP(
+              4,
+              "Return to agent",
+              "handlers.ts:473",
+              "Result is MCP <code>CallToolResult</code>. UI does not see this call.",
+            ),
+          ],
+        },
+        execute: {
+          intro:
+            "The load-bearing tool. Split-phase: the handler dispatches a command and polls (≤20s) while a background reactor worker runs the full execution stack. This is the only tool that touches capital.",
+          steps: [
+            PHASE("Phase A — handler (synchronous, holds the MCP request open)"),
+            HOP(
+              1,
+              "Agent raises intent",
+              "handlers.ts:281",
+              "Agent POSTs a <code>TradingOrderIntent</code> (actionType, side, size, limitPrice, stop, expectedAuthorityVersion, activeHarnessRunId). This is a question, not an answer.",
+            ),
+            HOP(
+              2,
+              "Bearer → scope + bound mission",
+              "handlers.ts:46",
+              "Auth middleware → <code>resolveBoundCall</code> (capability + mission binding).",
+            ),
+            HOP(
+              3,
+              "Dispatch command",
+              "handlers.ts:288",
+              "Dispatches <code>trading.execution.requested</code> to the orchestration engine → decider → <code>trading.execution-requested</code> event (<code>decider.ts:1365</code>).",
+            ),
+            HOP(
+              4,
+              "Poll for outcome",
+              "handlers.ts:311",
+              "<code>TradingExecutionOutcome.awaitOutcome</code> polls the execution record + refusal inbox every 250ms up to 20s. Returns when terminal (<code>filled|accepted|rejected</code>) or on timeout (<code>submitted</code>).",
+            ),
+            PHASE("Phase B — reactor worker (separate fiber, drains the event queue)"),
+            HOP(
+              5,
+              "Reactor dequeues",
+              "TradingMissionReactor.ts:814",
+              "<code>processExecutionRequested</code> runs. Every failure short of interrupt is logged + swallowed; <code>settleAfterExecution</code> runs on every exit via <code>Effect.ensuring</code> so the mission never strands in <code>executing</code>.",
+            ),
+            HOP(
+              6,
+              "Advance → executing",
+              "TradingMissionReactor.ts:826",
+              "<code>advance(waiting|position_open → executing)</code> before preview so §16.3 item 1 passes.",
+            ),
+            HOP(
+              7,
+              "Reconcile (before)",
+              "TradingMissionReactor.ts:835",
+              "<code>HyperliquidReconciler.reconcile(...,'before_execution')</code> — reads canonical position/fills/orders so preview sees reconciled truth.",
+            ),
+            HOP(
+              8,
+              "Build preview ctx + loss budget",
+              "TradingMissionReactor.ts:844",
+              "Reads taker fee rate, order book, evaluates <code>evaluateLossBudget</code>, counts pending executions. <code>budget.exhausted</code> feeds the next gate.",
+            ),
+            HOP(
+              9,
+              "§16.4 exhaustion gate",
+              "TradingMissionReactor.ts:881",
+              "<code>guard.guardAction(actionType, budget)</code> — blocks position-increasing actions when exhausted (<code>reduce/close/cancel/modify_stop</code> permitted).",
+            ),
+            HOP(
+              10,
+              "Route by actionType",
+              "TradingMissionReactor.ts:901",
+              "<code>close→guard.reduceOnlyClose</code>, <code>reduce→guard.reduceOnlySized</code>, <code>cancel→cancelRestingOrder</code>, <code>modify_stop→modifyStop</code>, <code>open|scale_in→execution.submitOrder</code>.",
+            ),
+            HOP(
+              11,
+              "submitOrder (9-step §17.2)",
+              "HyperliquidExecutionService.ts:388",
+              "resolve signer (fail-closed) → resolve market+BBO → <b>preview (17 checks)</b> → mapOrder + second stop-gate against wire price → persist record+reservation (idempotency key) → sign in nonce lane → <code>exchange.submit</code> POST /exchange → inspect every per-order status. Entry leg decides record status.",
+            ),
+            HOP(
+              12,
+              "Reconcile (after)",
+              "TradingMissionReactor.ts:928",
+              "Converge local tables to canonical exchange state (fills, position, orders).",
+            ),
+            HOP(
+              13,
+              "Protect the increase",
+              "TradingMissionReactor.ts:940",
+              "<code>protection.reconcileProtection</code> — confirms exchange-native reduce-only stop within 15s window. On <code>escalate</code> → <b>emergency close</b> (§17.5, deterministic, harness-free).",
+            ),
+            HOP(
+              14,
+              "Budget re-check",
+              "TradingMissionReactor.ts:956",
+              "If the post-submit budget is exhausted → <code>guard.blockForExhaustion</code> cancels increasing orders, mission → <code>blocked</code>/<code>cumulative_loss_limit</code>.",
+            ),
+            HOP(
+              15,
+              "Settle out of executing",
+              "TradingMissionReactor.ts:975",
+              "Reads reconciled position size: 0 → <code>waiting</code>, non-zero → <code>position_open</code>. Refusals recorded to inbox for the poller.",
+            ),
+            PHASE("Phase A resumes — the answer"),
+            HOP(
+              16,
+              "Return to agent",
+              "TradingExecutionOutcome.ts:136",
+              "Poller returns <code>TradingRequestEntryResult</code> with the real status + recomputed budget. The agent reads what actually happened, not a guess.",
+            ),
+          ],
+          payload: {
+            title: "Order intent in / result out (abbreviated, real fields)",
+            body: `<span class="c">// in: TradingOrderIntent (execution.ts:115)</span>
+{ missionId, strategyVersion, executionSequence, actionType: <span class="c">"open"|"scale_in"|"reduce"|"close"|"cancel"|"modify_stop"</span>,
+  market: <span class="c">"ETH"</span>, side: <span class="c">"buy"|"sell"</span>, size, orderPreference, limitPrice,
+  stop?: { stopPrice, plannedLossAtStopUsd }, reduceOnly, targetCloid? }
+
+<span class="c">// out: TradingRequestEntryResult (tools.ts:178)</span>
+{ executionId?, status: <span class="c">"submitted"|"accepted"|"rejected"</span>, cloid, orderResults[],
+  budget: { remainingCumulativeLossUsd, exhausted }, detail? }`,
+          },
+        },
+      };
+
+      // ─────────────────── DATA: harness layers ───────────────────
+      const LAYERS = [
+        {
+          id: "mcp-capability",
+          name: "MCP capability gate",
+          tag: "every tool",
+          file: "McpInvocationContext.ts:42",
+          g: "<code>requireCapability('trading')</code> — the per-session bearer must carry the trading capability. Granted to provider sessions in <code>McpSessionRegistry.ts:134</code>. Rejection here \"never reached the mission.\"",
+        },
+        {
+          id: "bound-call",
+          name: "Mission binding — resolveBoundCall",
+          tag: "every tool",
+          file: "handlers.ts:46",
+          g: "<code>findMissionByThreadId(scope.threadId)</code> — the <b>thread on the credential</b> authorizes the mission. The <code>missionId</code> argument is checked against the bound mission; mismatch → <code>mission_not_bound_to_thread</code>.",
+        },
+        {
+          id: "strategy-service",
+          name: "TradingStrategyService",
+          tag: "publish",
+          file: "TradingStrategyService.ts:60",
+          g: "Optimistic-concurrency publish (<code>expectedVersion</code>). On accept: supersedes prior-version watches, folds <code>analysing→waiting</code>.",
+        },
+        {
+          id: "watch-service",
+          name: "TradingWatchService",
+          tag: "watches",
+          file: "TradingWatchService.ts:89",
+          g: "Watch lifecycle writes. Single-fire: <code>active→triggered</code> is atomic. <code>schedule_reassessment</code> registers through this path.",
+        },
+        {
+          id: "turn-coordinator",
+          name: "TradingTurnCoordinator",
+          tag: "turn gate",
+          file: "TradingTurnCoordinator.ts:84",
+          g: "The single gate between an event and a started run. Seven pre-run checks; the decision lease (DB unique index) guarantees one run per mission. The only sanctioned way to resume a provider session.",
+        },
+        {
+          id: "reactor",
+          name: "TradingMissionReactor",
+          tag: "execute / controls / watch-fired",
+          file: "TradingMissionReactor.ts:124",
+          g: "Event-driven queue consumer. Every failure short of interrupt is logged + swallowed. <code>settleAfterExecution</code> runs on every exit via <code>Effect.ensuring</code> so a mission never strands in <code>executing</code>.",
+        },
+        {
+          id: "guard",
+          name: "TradingExecutionGuard (§16.4)",
+          tag: "execute",
+          file: "TradingExecutionGuard.ts:51",
+          g: "Exhaustion enforcement. Position-increasing actions blocked when <code>budget.exhausted</code>. <code>reduce/close/cancel/modify_stop</code> always permitted. Reduce-only paths clamp to canonical position size.",
+        },
+        {
+          id: "preview",
+          name: "TradingPreviewService (§16.3)",
+          tag: "execute (increases)",
+          file: "TradingPreviewService.ts:394",
+          g: "17-item checklist, pure validation. Direction, freshness (BBO 2s / account 5s), size, $10 min notional, leverage, gross notional, per-position risk, budget, no conflicting execution, valid stop. Computes <code>reservedRiskUsd</code>.",
+        },
+        {
+          id: "signer",
+          name: "InterimSignerConfig (fail-closed)",
+          tag: "execute",
+          file: "InterimSignerConfig.ts:86",
+          g: "The signer key is held in memory only, never persisted. Unarmed → every signable action rejects with <code>signer_not_configured</code>. The rest of the system (reads, controls) stays alive.",
+        },
+        {
+          id: "execution-svc",
+          name: "HyperliquidExecutionService",
+          tag: "execute",
+          file: "HyperliquidExecutionService.ts:108",
+          g: "The <b>ONLY code path that spends testnet capital</b>. Local idempotency (<code>idem_&lt;missionId&gt;_&lt;execSeq&gt;_&lt;actionType&gt;</code>). 9-step submit. Entry leg decides record status. An unresolved <code>submitted</code> is never retried blind.",
+        },
+        {
+          id: "nonce-lane",
+          name: "HyperliquidNonceCoordinator",
+          tag: "execute",
+          file: "NonceCoordinator.ts:56",
+          g: "Serialized signing lane (<code>Semaphore(1)</code>). Nonces are wall-clock ms; committed only on success. Orders, cancels, protection, and reduce-only exits all share it.",
+        },
+        {
+          id: "reconciler",
+          name: "HyperliquidReconciler (§18.2)",
+          tag: "execute",
+          file: "HyperliquidReconciler.ts:92",
+          g: "Local tables vs canonical exchange truth. 8 triggers. Confirms <code>protectedSize</code> from canonical resting orders — not from what T3 believes it placed. Settles abandoned (&gt;60s) and accepted executions.",
+        },
+        {
+          id: "protection",
+          name: "TradingProtectionService (§17)",
+          tag: "execute (increases)",
+          file: "TradingProtectionService.ts:111",
+          g: "No position increase without confirmed reduce-only protection beyond the 15s window. Replacement confirmed before old stop dropped. On <code>escalate</code> → emergency close.",
+        },
+        {
+          id: "emergency",
+          name: "TradingEmergencyCloseService (§17.5)",
+          tag: "escalation only",
+          file: "TradingEmergencyCloseService.ts:82",
+          g: "Deterministic, harness-free. ≤3 bounded attempts with fresh canonical reads. Never fails (reports what's left). Runs without strategy authority. A safety action, not a strategy decision.",
+        },
+      ];
+
+      // ─────────────────── DATA: failures ───────────────────
+      const F = (mode, where, response, sees) => ({ mode, where, response, sees });
+      const FAILURES = {
+        "read-mission": [
+          F(
+            "Capability not granted",
+            "McpInvocationContext.ts:42",
+            "<code>TradingToolRejectedError</code> reason=<code>capability_not_granted</code>",
+            "Declared failure → MCP boundary passes the message verbatim. Agent reads the reason.",
+          ),
+          F(
+            "Thread not bound to a mission",
+            "handlers.ts:74",
+            "<code>TradingToolRejectedError</code> reason=<code>thread_not_bound_to_mission</code>",
+            "Agent sees the reason; the credential has no mission.",
+          ),
+          F(
+            "Mission not found",
+            "handlers.ts:74",
+            "<code>TradingToolRejectedError</code> reason=<code>mission_not_found</code>",
+            "Agent sees the reason.",
+          ),
+        ],
+        "strategy-publish": [
+          F(
+            "Stale strategy version",
+            "TradingStrategyService.ts:163",
+            "In-band <code>{outcome:'rejected', reason:'stale_strategy_version', currentVersion}</code>",
+            "Agent retries against the returned <code>currentVersion</code>. The mission did not move.",
+          ),
+          F(
+            "Mission not active",
+            "TradingStrategyService.ts",
+            "In-band <code>{outcome:'rejected', reason:'mission_not_active'}</code>",
+            "Agent sees the reason; the publish is a no-op.",
+          ),
+          F(
+            "Capability / binding",
+            "McpInvocationContext.ts:42",
+            "<code>TradingToolRejectedError</code>",
+            "Same as read tools.",
+          ),
+        ],
+        "read-market": [
+          F(
+            "Capability / binding",
+            "McpInvocationContext.ts:42",
+            "<code>TradingToolRejectedError</code>",
+            "Declared failure → verbatim to agent.",
+          ),
+          F(
+            "Stale market data",
+            "TradingPreviewService.ts:248",
+            "Reads return what the cache has, with a freshness stamp.",
+            "Stale BBO (&gt;2s) <b>blocks execution submission</b> but does not block the read itself. The agent sees the freshness field.",
+          ),
+          F(
+            "Gateway / exchange transport failure",
+            "InfoClient.ts",
+            "<code>Effect.orDie</code> collapses to a defect",
+            "Generic MCP internal error — <b>not</b> a declared <code>TradingToolRejectedError</code>. The boundary collapses non-declared errors; the agent sees a generic error, not the cause.",
+          ),
+        ],
+        watch: [
+          F(
+            "Capability / binding",
+            "McpInvocationContext.ts:42",
+            "<code>TradingToolRejectedError</code>",
+            "Declared failure → verbatim to agent.",
+          ),
+          F(
+            "Cancel a non-active watch",
+            "handlers.ts:475",
+            "In-band <code>{outcome:'rejected', reason:'watch_not_found'|'watch_not_active'}</code>",
+            "Distinct reasons: not-found vs exists-but-terminal. Agent can tell which.",
+          ),
+          F(
+            "Watch supersedion on strategy publish",
+            "TradingStrategyService.ts:178",
+            "Prior-version watches flip to <code>superseded</code>",
+            "Not an error — the publish outcome carries <code>supersededWatchIds[]</code>. The agent knows which watches it must re-arm.",
+          ),
+        ],
+        execute: [
+          F(
+            "Preview rejection (17 checks)",
+            "TradingPreviewService.ts:135",
+            "<code>TradingPreviewRejection</code> with named <code>item</code> + detail → refusal inbox",
+            "Refusal written by <code>recordExecutionRefused</code> (<code>TradingMissionReactor.ts:1013</code>) → poller returns <code>{status:'rejected', detail}</code>. The agent reads which of the 17 checks failed.",
+          ),
+          F(
+            "Exhaustion (§16.4)",
+            "TradingExecutionGuard.ts:138",
+            "<code>TradingExhaustionError</code> reason=<code>action_not_permitted_under_exhaustion</code>",
+            "Position-increasing actions blocked; mission → <code>blocked</code>/<code>cumulative_loss_limit</code>. <code>reduce/close/cancel/modify_stop</code> still permitted.",
+          ),
+          F(
+            "Signer not configured",
+            "HyperliquidExecutionService.ts:402",
+            "<code>TradingExecutionError</code> stage=<code>signer_not_configured</code>",
+            "Fail-closed. The gate is unarmed rather than crashing; reads and non-signing controls stay alive.",
+          ),
+          F(
+            "Missing / wrong-side stop",
+            "HyperliquidExecutionService.ts:462",
+            "<code>TradingExecutionError</code> stage=<code>missing_stop</code>",
+            "Second stop-gate re-evaluates against the <b>wire</b> price right before signing. The mandatory-stop gate runs twice so the two cannot drift.",
+          ),
+          F(
+            "Partial fill",
+            "HyperliquidReconciler.ts:211",
+            "Post-submit reconcile against canonical state",
+            "Protection is sized to the <b>whole</b> canonical position, not the shortfall. Emergency close does ≤3 bounded attempts. A partial reduce is not an error — the canonical read is reported.",
+          ),
+          F(
+            "Duplicate submit (idempotency)",
+            "HyperliquidExecutionService.ts:536",
+            "Read-back by idempotency key; if not in pre-submission statuses, return existing record <b>without re-signing</b>",
+            "The retry is indistinguishable from the first call succeeding. The exchange does NOT dedup marketable IOCs — local idempotency stops the duplicate before the exchange.",
+          ),
+          F(
+            "Timeout (still executing)",
+            "TradingExecutionOutcome.ts:171",
+            "Returns <code>{status:'submitted', detail:'still being executed...'}</code>",
+            "The 20s poll elapsed. The agent is told to read position + open orders before assuming it filled. The 60s abandoned-execution settler will later move a stuck record to <code>failed</code>.",
+          ),
+          F(
+            "Protection cannot be confirmed (§17.5)",
+            "TradingProtectionService.ts:392",
+            "Outcome <code>escalate</code> → <code>TradingEmergencyCloseService.emergencyClose</code>",
+            "Deterministic emergency close: ≤3 attempts, fresh canonical read each. Mission → <code>blocked</code>/<code>protection_failure</code>. The agent sees the <code>failureNotice</code> with exact remaining size.",
+          ),
+        ],
+      };
+
+      // ─────────────────── RENDER ───────────────────
+      function renderCatalog() {
+        const grid = document.getElementById("catalogGrid");
+        const order = ["Mission", "Market reads", "Account reads", "Watches", "Execute"];
+        const byGroup = {};
+        Object.values(TOOLS).forEach((t) => {
+          (byGroup[t.group] ||= []).push(t);
+        });
+        let html = "";
+        order.forEach((g) => {
+          (byGroup[g] || []).forEach((t) => {
+            const sel =
+              state.tool === t.name ||
+              (t.isCluster && state.tool === "cluster:" + t.group.split(" ")[0].toLowerCase())
+                ? " sel"
+                : "";
+            const key = t.isCluster ? "cluster:" + t.group.split(" ")[0].toLowerCase() : t.name;
+            const execTag = t.group === "Execute" ? " exec" : "";
+            html += `<div class="tool-card${sel}" data-tool="${key}">
+        <div class="tn">${t.name}</div>
+        <div class="tp">${t.purpose.split(".")[0]}.</div>
+        <div class="tg${execTag}">${t.group}${t.isCluster ? " · " + t.members.length + " tools" : ""}</div>
+      </div>`;
+          });
+        });
+        grid.innerHTML = html;
+        grid.querySelectorAll(".tool-card").forEach((c) => {
+          c.addEventListener("click", () => {
+            state.tool = c.dataset.tool;
+            renderAll();
+            document.getElementById("trace").scrollIntoView({ behavior: "smooth", block: "start" });
+          });
+        });
+      }
+
+      function getCurrentTool() {
+        // resolve cluster keys
+        if (state.tool.startsWith("cluster:")) return TOOLS["cluster_" + state.tool.split(":")[1]];
+        return TOOLS[state.tool];
+      }
+
+      function renderTrace() {
+        const t = getCurrentTool();
+        const tr = TRACES[t.traceClass];
+        document.getElementById("traceToolName").textContent = "· " + t.name;
+        document.getElementById("traceIntro").textContent = tr.intro;
+        let html = "";
+        let lastPhase = null;
+        tr.steps.forEach((s) => {
+          if (s.phase) {
+            html += `<div class="trace-phase">${s.phase}</div>`;
+            lastPhase = s.phase;
+            return;
+          }
+          html += `<div class="trace-hop">
+      <div class="hn">${s.n}</div>
+      <div>
+        <div class="hlabel">${s.label} <span class="hwhere">· <a class="src" href="#">${s.where}</a></span></div>
+        <div class="hdetail">${s.detail}</div>
+      </div>
+    </div>`;
+        });
+        if (tr.payload) {
+          html += `<div style="margin-top:14px;"><div style="font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--gray-500);margin-bottom:4px;">${tr.payload.title}</div><div class="payload">${tr.payload.body}</div></div>`;
+        }
+        document.getElementById("traceBox").innerHTML = html;
+      }
+
+      function renderStack() {
+        const t = getCurrentTool();
+        const active = new Set(t.active);
+        const escalation = new Set(t.escalation || []);
+        document.getElementById("layerCount").innerHTML =
+          `<b>${t.active.length}</b> of ${LAYERS.length} layers active on this path${t.escalation ? ` · <b>${t.escalation.length}</b> on escalation` : ""}.`;
+        let html = "";
+        LAYERS.forEach((l) => {
+          const on = active.has(l.id);
+          const esc = escalation.has(l.id);
+          const cls = on ? " on" : esc ? " on escalation" : "";
+          html += `<div class="layer${cls}">
+      <div>
+        <div class="ln">${l.name}<span class="tag">${l.tag}</span></div>
+        <div class="lg">${l.g}</div>
+      </div>
+      <div class="lf">${l.file}</div>
+    </div>`;
+        });
+        document.getElementById("stackBox").innerHTML = html;
+      }
+
+      function renderFailures() {
+        const t = getCurrentTool();
+        const fs = FAILURES[t.failClass] || [];
+        document.getElementById("failToolName").textContent = "· " + t.name;
+        document.getElementById("failIntro").textContent = fs.length
+          ? "Walkable end-to-end. Each shows where it's caught, what the system does, and what the agent actually sees."
+          : "";
+        if (!fs.length) {
+          document.getElementById("failBox").innerHTML =
+            `<div class="empty">No tool-specific failure modes documented for this class.</div>`;
+          return;
+        }
+        let html = "";
+        fs.forEach((f) => {
+          html += `<div class="fail">
+      <div class="fail-head"><span class="fm">${f.mode}</span><span class="fwhere">${f.where}</span></div>
+      <div class="fail-body">
+        <div class="fail-row"><div class="rk">response</div><div class="rv">${f.response}</div></div>
+        <div class="fail-row"><div class="rk">agent sees</div><div class="rv">${f.sees}</div></div>
+      </div>
+    </div>`;
+        });
+        document.getElementById("failBox").innerHTML = html;
+      }
+
+      function renderAll() {
+        renderCatalog();
+        renderTrace();
+        renderStack();
+        renderFailures();
+      }
+
+      // side nav tool links
+      document.querySelectorAll("nav.side a[data-tool]").forEach((a) => {
+        a.addEventListener("click", (e) => {
+          e.preventDefault();
+          state.tool = a.dataset.tool;
+          renderAll();
+        });
+      });
+
+      renderAll();
+    </script>
+  </body>
+</html>

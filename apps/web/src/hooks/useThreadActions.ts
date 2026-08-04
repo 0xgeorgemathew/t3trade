@@ -4,7 +4,7 @@ import {
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { canSettle, canSnooze } from "@t3tools/client-runtime/state/thread-settled";
+import { canSnooze } from "@t3tools/client-runtime/state/thread-settled";
 import { EnvironmentId, type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
@@ -426,20 +426,11 @@ export function useThreadActions() {
           ),
         );
       }
-      const resolved = resolveThreadTarget(target);
-      // Settle may only target what effectiveSettled could classify as
-      // settled: not starting/running sessions, not threads waiting on
-      // approvals or user input. Anything else would hide live work.
-      if (resolved && !canSettle(resolved.thread, { now: new Date().toISOString() })) {
-        return AsyncResult.failure(
-          Cause.fail(
-            new ThreadSettleBlockedError({
-              environmentId: resolved.threadRef.environmentId,
-              threadId: resolved.threadRef.threadId,
-            }),
-          ),
-        );
-      }
+      // Settle is the user's final word on a thread: it stops the session and
+      // ends any mission bound to it, so it is never gated on the thread being
+      // quiet first. The server settles a running thread by stopping it in the
+      // same command.
+      //
       // Settle is a high-frequency lifecycle action and stays silent — no
       // toast.
       return settleThreadMutation({
@@ -447,7 +438,7 @@ export function useThreadActions() {
         input: { threadId: target.threadId },
       });
     },
-    [resolveThreadTarget, settleThreadMutation],
+    [settleThreadMutation],
   );
 
   const unsettleThread = useCallback(

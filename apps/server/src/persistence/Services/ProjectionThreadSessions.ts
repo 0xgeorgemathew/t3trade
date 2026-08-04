@@ -55,6 +55,18 @@ export interface ProjectionThreadSessionRepositoryShape {
   readonly upsert: (row: ProjectionThreadSession) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
+   * Every thread whose projected session is mid-flight (`starting` or
+   * `running`).
+   *
+   * Used at startup: no provider session survives a server restart, so a row
+   * still claiming to be live is stale by definition.
+   */
+  readonly listLive: () => Effect.Effect<
+    ReadonlyArray<ProjectionThreadSession>,
+    ProjectionRepositoryError
+  >;
+
+  /**
    * Read projected thread-session state by thread id.
    */
   readonly getByThreadId: (

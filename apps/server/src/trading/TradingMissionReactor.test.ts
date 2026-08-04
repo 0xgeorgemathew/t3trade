@@ -30,6 +30,7 @@ import { OrchestrationProjectionSnapshotQueryLive } from "../orchestration/Layer
 import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers/OrchestrationCommandReceipts.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistryMock.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import type { HarnessRunRequest } from "./Schemas.ts";
 import { TradingMissionProjection } from "./TradingMissionProjection.ts";
@@ -61,6 +62,10 @@ const TestLayer = TradingMissionReactorLive.pipe(
   Layer.provideMerge(OrchestrationEventStoreLive),
   Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
   Layer.provideMerge(RepositoryIdentityResolver.layer),
+  // The reactor resolves a mission's harness driver kind by provider instance
+  // id. No test here configures provider instances, so an empty registry is
+  // the honest stand-in: the lookup finds nothing and the binding falls back.
+  Layer.provideMerge(makeProviderRegistryLayer()),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-reactor-" })),
   Layer.provideMerge(SqlitePersistenceMemory),
   Layer.provideMerge(NodeServices.layer),
@@ -711,6 +716,10 @@ it.live("asks the coordinator for a run when a watch fires", () =>
       Layer.provideMerge(OrchestrationEventStoreLive),
       Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
       Layer.provideMerge(RepositoryIdentityResolver.layer),
+      // The reactor resolves a mission's harness driver kind by provider instance
+      // id. No test here configures provider instances, so an empty registry is
+      // the honest stand-in: the lookup finds nothing and the binding falls back.
+      Layer.provideMerge(makeProviderRegistryLayer()),
       Layer.provideMerge(
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-watchfired-" }),
       ),
@@ -789,6 +798,10 @@ it.live("reconciles before resuming a paused mission", () =>
       Layer.provideMerge(OrchestrationEventStoreLive),
       Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
       Layer.provideMerge(RepositoryIdentityResolver.layer),
+      // The reactor resolves a mission's harness driver kind by provider instance
+      // id. No test here configures provider instances, so an empty registry is
+      // the honest stand-in: the lookup finds nothing and the binding falls back.
+      Layer.provideMerge(makeProviderRegistryLayer()),
       Layer.provideMerge(
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-resumereconcile-" }),
       ),
@@ -880,6 +893,10 @@ it.live("sizes a mission with no stated capital from the live account value", ()
       Layer.provideMerge(OrchestrationEventStoreLive),
       Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
       Layer.provideMerge(RepositoryIdentityResolver.layer),
+      // The reactor resolves a mission's harness driver kind by provider instance
+      // id. No test here configures provider instances, so an empty registry is
+      // the honest stand-in: the lookup finds nothing and the binding falls back.
+      Layer.provideMerge(makeProviderRegistryLayer()),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-capital-" })),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(NodeServices.layer),
@@ -968,6 +985,10 @@ it.live(
         Layer.provideMerge(OrchestrationEventStoreLive),
         Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
         Layer.provideMerge(RepositoryIdentityResolver.layer),
+        // The reactor resolves a mission's harness driver kind by provider instance
+        // id. No test here configures provider instances, so an empty registry is
+        // the honest stand-in: the lookup finds nothing and the binding falls back.
+        Layer.provideMerge(makeProviderRegistryLayer()),
         Layer.provideMerge(
           ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-protection-" }),
         ),

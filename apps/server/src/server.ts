@@ -100,6 +100,7 @@ import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClien
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
+import { StaleSessionReconcilerLive } from "./orchestration/Layers/StaleSessionReconciler.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import {
   clearPersistedServerRuntimeState,
@@ -342,6 +343,9 @@ const CloudManagedEndpointRuntimeLive = Layer.mergeAll(
 
 const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
   Layer.provideMerge(ProviderLayerLive),
+  // Sessions are stopped before anything can start a new one: a row still
+  // reading "running" at boot belongs to a process that is gone.
+  Layer.provideMerge(StaleSessionReconcilerLive),
   Layer.provideMerge(OrchestrationLayerLive),
 );
 

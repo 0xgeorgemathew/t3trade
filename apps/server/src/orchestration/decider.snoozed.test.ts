@@ -139,6 +139,101 @@ it.layer(NodeServices.layer)("snoozed thread decider", (it) => {
     }),
   );
 
+  it.effect("clears an open request when its respond failure marks it stale", () =>
+    Effect.gen(function* () {
+      const activity = (
+        kind: string,
+        requestId: string,
+        detail: string,
+      ): OrchestrationThread["activities"][number] =>
+        ({
+          id: EventId.make(`activity-${requestId}-${kind}`),
+          tone: "approval" as const,
+          kind,
+          summary: kind,
+          payload: detail === "" ? { requestId } : { requestId, detail },
+          turnId: null,
+          createdAt: NOW,
+        }) as OrchestrationThread["activities"][number];
+
+      // A stale-failure detail closes the request — this mirrors the
+      // projection's pending accounting, which is what the client sees.
+      const snoozed = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.snooze",
+          commandId: CommandId.make("cmd-snooze-stale-failed"),
+          threadId: ThreadId.make("thread-1"),
+          snoozedUntil: FUTURE_WAKE,
+        },
+        readModel: makeReadModel({
+          activities: [
+            activity("approval.requested", "req-1", ""),
+            activity(
+              "provider.approval.respond.failed",
+              "req-1",
+              "Unknown pending approval request req-1",
+            ),
+            activity("user-input.requested", "req-2", ""),
+            activity(
+              "provider.user-input.respond.failed",
+              "req-2",
+              "stale pending user-input request req-2",
+            ),
+          ],
+        }),
+      });
+      const snoozedEvents = Array.isArray(snoozed) ? snoozed : [snoozed];
+      expect(snoozedEvents[0]?.type).toBe("thread.snoozed");
+
+      // A non-stale respond failure (transient provider error) keeps the
+      // request open: the user can retry, so it is still blocked-on-you.
+      const stillOpen = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.snooze",
+          commandId: CommandId.make("cmd-snooze-transient-failed"),
+          threadId: ThreadId.make("thread-1"),
+          snoozedUntil: FUTURE_WAKE,
+        },
+        readModel: makeReadModel({
+          activities: [
+            activity("approval.requested", "req-3", ""),
+            activity("provider.approval.respond.failed", "req-3", "provider connection reset"),
+          ],
+        }),
+      }).pipe(Effect.flip);
+      expect(stillOpen._tag).toBe("OrchestrationCommandInvariantError");
+    }),
+  );
+
+  it.effect("bounds the queued-turn grace window against client clock skew", () =>
+    Effect.gen(function* () {
+      const userMessage = (createdAt: string): OrchestrationThread["messages"][number] => ({
+        id: MessageId.make("message-queued"),
+        role: "user",
+        text: "Continue",
+        turnId: null,
+        streaming: false,
+        createdAt,
+        updatedAt: createdAt,
+      });
+
+      // A message timestamp far in the FUTURE (client clock ahead of the
+      // server) yields a negative age; without the lower bound it would read
+      // as queued for the whole skew and block the command forever.
+      const skewed = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.snooze",
+          commandId: CommandId.make("cmd-snooze-skewed"),
+          threadId: ThreadId.make("thread-1"),
+          snoozedUntil: FUTURE_WAKE,
+        },
+        readModel: makeReadModel({ messages: [userMessage("1970-01-01T01:00:00.000Z")] }),
+      });
+      const skewedEvents = Array.isArray(skewed) ? skewed : [skewed];
+      expect(skewedEvents[0]?.type).toBe("thread.snoozed");
+    }),
+  );
+
   it.effect("re-emits idempotently for a duplicate snooze to the same wake time", () =>
     Effect.gen(function* () {
       const reEmit = yield* decideOrchestrationCommand({

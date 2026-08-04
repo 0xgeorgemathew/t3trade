@@ -884,7 +884,23 @@ const makeWsRpcLayer = (
             });
 
           const bootstrapProgram = Effect.gen(function* () {
-            if (bootstrap?.createThread) {
+            // Creating the thread is the "ensure it exists" half of the
+            // bootstrap, not a claim that it does not. A client that sends a
+            // second message before the first turn's creation is reflected in
+            // its own state sends the same `createThread` bootstrap again, and
+            // the `thread.create` invariant rejected that second command —
+            // taking the user's message down with it. Skipping the create for
+            // a thread that already exists keeps the message.
+            const threadAlreadyExists = bootstrap?.createThread
+              ? yield* projectionSnapshotQuery.getThreadShellById(command.threadId).pipe(
+                  Effect.map(Option.isSome),
+                  // An unreadable projection is not evidence of absence, and
+                  // the create below is the same call this code always made:
+                  // let it decide.
+                  Effect.orElseSucceed(() => false),
+                )
+              : false;
+            if (bootstrap?.createThread && !threadAlreadyExists) {
               yield* orchestrationEngine.dispatch({
                 type: "thread.create",
                 commandId: yield* serverCommandId("bootstrap-thread-create"),

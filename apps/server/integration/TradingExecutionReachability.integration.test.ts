@@ -74,6 +74,7 @@ import { OrchestrationCommandReceiptRepositoryLive } from "../src/persistence/La
 import { OrchestrationEventStoreLive } from "../src/persistence/Layers/OrchestrationEventStore.ts";
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "../src/project/RepositoryIdentityResolver.ts";
+import { makeProviderRegistryLayer } from "../src/provider/testUtils/providerRegistryMock.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -445,6 +446,10 @@ function buildLayer(workspaceDir: string, rootDir: string, dbPath: string) {
     Layer.provideMerge(OrchestrationEventStoreLive),
     Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
     Layer.provideMerge(RepositoryIdentityResolver.layer),
+    // The reactor resolves a mission's harness driver kind by provider
+    // instance id; this test configures no provider instances, so the lookup
+    // finds nothing and the binding falls back.
+    Layer.provideMerge(makeProviderRegistryLayer()),
     Layer.provideMerge(ServerConfig.layerTest(workspaceDir, rootDir)),
     Layer.provideMerge(makeSqlitePersistenceLive(dbPath)),
     Layer.provideMerge(NodeServices.layer),

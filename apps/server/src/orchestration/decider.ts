@@ -452,43 +452,37 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      // Server-side twin of the client's canSettle session check: a stale
-      // or raced client must not settle a thread whose session is coming
-      // alive or working.
-      if (thread.session?.status === "starting" || thread.session?.status === "running") {
-        return yield* Effect.fail(
-          new OrchestrationCommandInvariantError({
-            commandType: command.type,
-            detail: `thread ${command.threadId} has an active session and cannot be settled`,
-          }),
-        );
-      }
-      // Pending approval / user-input requests are blocked-on-you work: a
-      // raced or stale client must not park them behind a settled override
-      // that would surface only after the request resolves.
-      if (hasOpenBlockingRequest(thread)) {
-        return yield* Effect.fail(
-          new OrchestrationCommandInvariantError({
-            commandType: command.type,
-            detail: `thread ${command.threadId} has a pending approval or user-input request and cannot be settled`,
-          }),
-        );
-      }
       const occurredAt = yield* nowIso;
-      // Settling inside the adoption window would hide just-requested work.
-      if (threadHasQueuedTurnStart(thread, occurredAt)) {
-        return yield* Effect.fail(
-          new OrchestrationCommandInvariantError({
-            commandType: command.type,
-            detail: `thread ${command.threadId} has a queued turn start and cannot be settled`,
-          }),
-        );
-      }
+      // Settle is the user's final word on a thread, so it never fails and
+      // never waits for the thread to be quiet first. It used to refuse a
+      // thread with a live session, an open approval, or a just-queued turn —
+      // exactly the states a running trading mission is always in, which made
+      // the one control meant to stop a mission the one control that could not.
+      //
+      // Stopping comes first: a running session is asked to stop in the same
+      // command, so the settle is not a label on a thread that keeps working.
+      // `thread.session-stop-requested` is the same event the Stop button
+      // emits, and the provider reactor tears the session down on it.
+      const stopsRunningSession =
+        thread.session?.status === "starting" || thread.session?.status === "running";
+      const sessionStopEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.session-stop-requested",
+        payload: {
+          threadId: command.threadId,
+          createdAt: occurredAt,
+        },
+      };
       // Settling an already-settled thread re-emits with the original
       // settledAt: the engine rejects zero-event commands, and bulk-settle /
       // double-click must stay silent no-ops rather than surface errors.
       const alreadySettled = thread.settledOverride === "settled" && thread.settledAt !== null;
-      return {
+      const settledEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -505,6 +499,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: alreadySettled ? thread.updatedAt : occurredAt,
         },
       };
+      return stopsRunningSession ? [sessionStopEvent, settledEvent] : settledEvent;
     }
 
     case "thread.unsettle": {

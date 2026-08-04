@@ -65,6 +65,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -195,6 +196,21 @@ interface ClaudeSessionContext {
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
   readonly claudeTasks: Map<string, ClaudeTaskState>;
+  /**
+   * Serialises `sendTurn` for this session.
+   *
+   * `sendTurn` reads `turnState`, then yields (uuid, clock, event stamp) before
+   * writing it back. Two prompts that arrive in the same tick — a mission's
+   * bootstrap wake landing on top of the user's own first message is the
+   * routine case — therefore both read `undefined`, both mint a turn id, and
+   * both emit `turn.started`. Orchestration accepts the first and rejects the
+   * second as conflicting, while the adapter keeps the second: from then on the
+   * two disagree about the active turn forever, every `turn.completed` is
+   * discarded as stale, and the thread sits at "running" until it is settled.
+   * Holding the permit across the whole read-modify-write makes the second
+   * prompt see the live turn and steer into it, which is what it meant to do.
+   */
+  readonly sendTurnLock: Semaphore.Semaphore;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
@@ -3634,6 +3650,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         turns: [],
         inFlightTools,
         claudeTasks,
+        sendTurnLock: yield* Semaphore.make(1),
         turnState: undefined,
         lastKnownContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,
@@ -3719,8 +3736,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
-  const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
-    const context = yield* requireSession(input.threadId);
+  const startOrSteerTurn = Effect.fn("startOrSteerTurn")(function* (
+    context: ClaudeSessionContext,
+    input: Parameters<ClaudeAdapterShape["sendTurn"]>[0],
+  ) {
     const modelSelection =
       input.modelSelection !== undefined && input.modelSelection.instanceId === boundInstanceId
         ? input.modelSelection
@@ -3820,6 +3839,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ? { resumeCursor: context.session.resumeCursor }
         : {}),
     };
+  });
+
+  const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
+    const context = yield* requireSession(input.threadId);
+    return yield* context.sendTurnLock.withPermits(1)(startOrSteerTurn(context, input));
   });
 
   const interruptTurn: ClaudeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(

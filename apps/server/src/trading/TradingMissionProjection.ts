@@ -77,6 +77,50 @@ const decodeStatus = Schema.decodeUnknownSync(TradingMissionStatus);
 const decodeBlockedReason = Schema.decodeUnknownSync(TradingMissionBlockedReason);
 const decodeWatchStatus = Schema.decodeUnknownSync(PersistedWatch.fields.status);
 
+/**
+ * Decode one mission's persisted strategy, degrading to "no strategy" when the
+ * stored JSON no longer satisfies `MomentumStrategyState`.
+ *
+ * A strategy published before a field became required (`protection.targetProfitUsd`
+ * is the first such field) used to throw a defect straight out of `list()`, which
+ * took the whole trading mission snapshot down for every mission and left the
+ * workspace polling a permanently failing RPC. One unreadable historical row
+ * should cost that one mission's strategy card, nothing more.
+ *
+ * The warning is logged once per row rather than once per read: the workspace
+ * polls this projection, so a handful of legacy missions otherwise reprint the
+ * same schema error every few seconds for as long as the server is up.
+ */
+const loggedUndecodableStrategies = new Set<string>();
+
+const readStrategy = (row: {
+  readonly mission_id: string;
+  readonly strategy_json: string | null;
+  readonly strategy_version: number;
+}): Effect.Effect<MomentumStrategyState | null> => {
+  const strategyJson = row.strategy_json;
+  if (strategyJson === null) {
+    return Effect.succeed(null);
+  }
+  return Effect.try({
+    try: () => decodeStrategyJson(strategyJson),
+    catch: (cause) => cause,
+  }).pipe(
+    Effect.catch((cause) => {
+      const key = `${row.mission_id}:${row.strategy_version}`;
+      if (loggedUndecodableStrategies.has(key)) {
+        return Effect.succeed(null);
+      }
+      loggedUndecodableStrategies.add(key);
+      return Effect.logWarning("trading mission projection could not decode a persisted strategy", {
+        missionId: row.mission_id,
+        strategyVersion: row.strategy_version,
+        cause,
+      }).pipe(Effect.as(null));
+    }),
+  );
+};
+
 interface ProjectionRow {
   readonly mission_id: string;
   readonly thread_id: string;
@@ -181,7 +225,11 @@ const EMPTY_SURFACES: ExecutionSurfaces = {
   result: EMPTY_RESULT,
 };
 
-const toMission = (row: ProjectionRow, exec: ExecutionSurfaces): OrchestrationTradingMission =>
+const toMission = (
+  row: ProjectionRow,
+  exec: ExecutionSurfaces,
+  strategy: MomentumStrategyState | null,
+): OrchestrationTradingMission =>
   ({
     id: TradingMissionId.make(row.mission_id),
     threadId: ThreadId.make(row.thread_id),
@@ -194,7 +242,7 @@ const toMission = (row: ProjectionRow, exec: ExecutionSurfaces): OrchestrationTr
     blockedReason: row.blocked_reason === null ? null : decodeBlockedReason(row.blocked_reason),
     authority: decodeAuthorityJson(row.authority_json),
     authorityVersion: row.authority_version,
-    strategy: row.strategy_json === null ? null : decodeStrategyJson(row.strategy_json),
+    strategy,
     strategyVersion: row.strategy_version,
     watches: decodeWatchesJson(row.watches_json),
     control: decodeControlJson(row.control_json),
@@ -438,7 +486,8 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       const row = rows[0];
       if (row === undefined) return Option.none();
       const exec = yield* readExecutionSurfaces(row.mission_id);
-      return Option.some(toMission(row, exec));
+      const strategy = yield* readStrategy(row);
+      return Option.some(toMission(row, exec, strategy));
     });
 
   const list: TradingMissionProjectionShape["list"] = () =>
@@ -448,7 +497,10 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       `.pipe(Effect.mapError(sqlFail("list")));
       const missions = yield* Effect.all(
         rows.map((row) =>
-          Effect.map(readExecutionSurfaces(row.mission_id), (exec) => toMission(row, exec)),
+          Effect.map(
+            Effect.all([readExecutionSurfaces(row.mission_id), readStrategy(row)]),
+            ([exec, strategy]) => toMission(row, exec, strategy),
+          ),
         ),
         { concurrency: "unbounded" },
       );

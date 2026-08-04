@@ -1,5 +1,4 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { canSettle } from "@t3tools/client-runtime/state/thread-settled";
 import * as Cause from "effect/Cause";
 import * as Haptics from "expo-haptics";
 import { useCallback, useRef } from "react";
@@ -83,16 +82,10 @@ function useThreadActionExecutor(
           );
           return false;
         }
-        // Settle may only target what effectiveSettled could classify as
-        // settled: not starting/running sessions, not threads waiting on
-        // approvals or user input. Anything else would hide live work.
-        if (action === "settle" && !canSettle(thread, { now: new Date().toISOString() })) {
-          Alert.alert(
-            actionFailureTitle(action),
-            "This thread still needs attention. Resolve or interrupt it first, then try again.",
-          );
-          return false;
-        }
+        // Settle is the user's final word on a thread — it stops the session
+        // and ends any mission bound to it — so it is never gated on the thread
+        // being quiet first.
+        //
         // Archive keeps its original, narrower guard: never interrupt a
         // thread mid-turn.
         if (

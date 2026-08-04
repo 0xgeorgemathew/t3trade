@@ -358,6 +358,32 @@ const turnEndEvent = (threadId: string): OrchestrationEvent => ({
   },
 });
 
+/** The first status a resumed session writes: no active turn, turn not begun. */
+const sessionStartingEvent = (threadId: string): OrchestrationEvent => ({
+  sequence: 1,
+  eventId: EventId.make("evt-session-starting"),
+  aggregateKind: "thread",
+  aggregateId: ThreadId.make(threadId),
+  occurredAt: "2026-07-30T00:00:00.500Z",
+  commandId: null,
+  causationEventId: null,
+  correlationId: null,
+  metadata: {},
+  type: "thread.session-set",
+  payload: {
+    threadId: ThreadId.make(threadId),
+    session: {
+      threadId: ThreadId.make(threadId),
+      status: "starting",
+      providerName: "claude",
+      runtimeMode: "approval-required",
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: "2026-07-30T00:00:00.500Z",
+    },
+  },
+});
+
 /** Poll a read until `done`, sleeping between attempts (the watcher is a fiber). */
 const awaitCondition = <A, E>(read: Effect.Effect<A, E>, done: (value: A) => boolean) =>
   Effect.gen(function* () {
@@ -433,6 +459,14 @@ it.live("releases the lease and consumes claimed inbox events when the turn ends
       // The run claimed the pending event and holds the lease.
       yield* awaitCondition(inboxStatus, (status) => status === "included_in_run");
       assert.equal(yield* runStatus, "starting");
+
+      // The resumed session announces itself as "starting" — no active turn,
+      // but the turn has not happened yet. Releasing here would hand the
+      // lease to a second run while this one was still being woken.
+      yield* Queue.offer(queue, sessionStartingEvent("thread_1"));
+      yield* Effect.sleep("50 millis");
+      assert.equal(yield* runStatus, "starting");
+      assert.equal(yield* inboxStatus, "included_in_run");
 
       // The turn ends: the watcher releases the lease and closes the inbox.
       yield* Queue.offer(queue, turnEndEvent("thread_1"));

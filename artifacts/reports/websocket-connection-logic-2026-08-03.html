@@ -1,0 +1,3220 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>T3 Code · WebSocket Connection Logic</title>
+    <style>
+      /* ────────────── reset & tokens ────────────── */
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html {
+        -webkit-text-size-adjust: 100%;
+      }
+      body {
+        margin: 0;
+        font:
+          14px/1.55 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          Helvetica,
+          Arial,
+          sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+        /* No continuous animation — AGENTS.md: dropped frames peg the GPU on high-refresh displays. */
+      }
+      :root {
+        --bg: #0b0d12;
+        --bg-elev: #11141b;
+        --bg-elev-2: #161a23;
+        --bg-soft: #0f1218;
+        --fg: #e6e9ef;
+        --fg-mute: #9aa3b2;
+        --fg-dim: #6b7488;
+        --line: #222733;
+        --line-soft: #1a1e28;
+        --accent: #7dd3fc; /* sky — primary signal */
+        --accent-2: #a78bfa; /* violet — secondary */
+        --good: #86efac; /* green */
+        --warn: #fcd34d; /* amber */
+        --bad: #fca5a5; /* red */
+        --live: #f472b6; /* pink — live/stream */
+        --code-bg: #090b10;
+        --mono: "SF Mono", ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+        --radius: 10px;
+        --radius-sm: 7px;
+        --shadow: 0 1px 0 rgba(255, 255, 255, 0.03), 0 12px 28px rgba(0, 0, 0, 0.45);
+        --nav-w: 248px;
+        --maxw: 1180px;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          transition: none !important;
+          animation: none !important;
+        }
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      hr {
+        border: 0;
+        border-top: 1px solid var(--line);
+        margin: 28px 0;
+      }
+      code,
+      kbd,
+      samp {
+        font-family: var(--mono);
+        font-size: 0.86em;
+      }
+      ::selection {
+        background: rgba(125, 211, 252, 0.25);
+      }
+
+      /* ────────────── layout shell ────────────── */
+      .shell {
+        display: grid;
+        grid-template-columns: var(--nav-w) 1fr;
+        min-height: 100vh;
+      }
+      nav.side {
+        position: sticky;
+        top: 0;
+        align-self: start;
+        height: 100vh;
+        overflow-y: auto;
+        background: var(--bg-soft);
+        border-right: 1px solid var(--line);
+        padding: 22px 14px 60px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 4px 8px 18px;
+        border-bottom: 1px solid var(--line-soft);
+        margin-bottom: 14px;
+      }
+      .brand .logo {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        background: linear-gradient(135deg, #7dd3fc, #a78bfa);
+        display: grid;
+        place-items: center;
+        color: #0b0d12;
+        font-weight: 800;
+        font-size: 13px;
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+      }
+      .brand .t {
+        font-weight: 700;
+        font-size: 13.5px;
+        letter-spacing: 0.2px;
+      }
+      .brand .s {
+        font-size: 10.5px;
+        color: var(--fg-dim);
+        font-family: var(--mono);
+      }
+      nav .group-label {
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 10px;
+        color: var(--fg-dim);
+        padding: 14px 8px 6px;
+        font-weight: 600;
+      }
+      nav a.nav-item {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 7px 9px;
+        border-radius: 7px;
+        color: var(--fg-mute);
+        font-size: 13px;
+        line-height: 1.3;
+      }
+      nav a.nav-item:hover {
+        background: var(--bg-elev);
+        color: var(--fg);
+        text-decoration: none;
+      }
+      nav a.nav-item.active {
+        background: var(--bg-elev-2);
+        color: var(--fg);
+      }
+      nav a.nav-item .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        flex: none;
+        background: var(--fg-dim);
+      }
+      nav a.nav-item.active .dot {
+        background: var(--accent);
+      }
+      nav .meta {
+        margin-top: 24px;
+        padding: 12px 10px;
+        font-size: 11px;
+        color: var(--fg-dim);
+        border-top: 1px solid var(--line-soft);
+        font-family: var(--mono);
+        line-height: 1.7;
+      }
+
+      main {
+        padding: 0;
+        min-width: 0;
+      }
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background: rgba(11, 13, 18, 0.82);
+        backdrop-filter: saturate(140%) blur(10px);
+        -webkit-backdrop-filter: saturate(140%) blur(10px);
+        border-bottom: 1px solid var(--line);
+        padding: 11px 28px;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+      .topbar .crumb {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--fg-dim);
+      }
+      .topbar .crumb b {
+        color: var(--fg-mute);
+        font-weight: 500;
+      }
+      .topbar .spacer {
+        flex: 1;
+      }
+      .pill {
+        font-family: var(--mono);
+        font-size: 11px;
+        padding: 3px 9px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        color: var(--fg-mute);
+        background: var(--bg-elev);
+        white-space: nowrap;
+      }
+      .pill.live {
+        color: var(--live);
+        border-color: rgba(244, 114, 182, 0.35);
+      }
+      .pill.good {
+        color: var(--good);
+        border-color: rgba(134, 239, 172, 0.35);
+      }
+      .pill.warn {
+        color: var(--warn);
+        border-color: rgba(252, 211, 77, 0.35);
+      }
+
+      .wrap {
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 34px 28px 120px;
+      }
+
+      /* ────────────── typography blocks ────────────── */
+      section {
+        scroll-margin-top: 64px;
+      }
+      h1 {
+        font-size: 28px;
+        line-height: 1.15;
+        margin: 0 0 10px;
+        letter-spacing: -0.01em;
+      }
+      h2 {
+        font-size: 20px;
+        margin: 42px 0 4px;
+        letter-spacing: -0.005em;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      h2 .ix {
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--fg-dim);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 2px 7px;
+        background: var(--bg-elev);
+      }
+      h3 {
+        font-size: 15px;
+        margin: 24px 0 6px;
+        color: var(--fg);
+      }
+      p {
+        margin: 10px 0;
+        color: var(--fg);
+      }
+      .lede {
+        color: var(--fg-mute);
+        font-size: 15.5px;
+        max-width: 70ch;
+        margin: 6px 0 0;
+      }
+      ul,
+      ol {
+        padding-left: 1.25em;
+      }
+      li {
+        margin: 5px 0;
+      }
+      li::marker {
+        color: var(--fg-dim);
+      }
+      .small {
+        font-size: 12px;
+        color: var(--fg-dim);
+      }
+      .mono {
+        font-family: var(--mono);
+      }
+      .kbd {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        background: var(--code-bg);
+        border: 1px solid var(--line);
+        border-bottom-width: 2px;
+        border-radius: 5px;
+        padding: 1px 5px;
+        color: var(--fg-mute);
+      }
+
+      .callout {
+        border: 1px solid var(--line);
+        border-left: 3px solid var(--accent);
+        background: var(--bg-elev);
+        border-radius: var(--radius);
+        padding: 14px 16px;
+        margin: 16px 0;
+      }
+      .callout.warn {
+        border-left-color: var(--warn);
+      }
+      .callout.bad {
+        border-left-color: var(--bad);
+      }
+      .callout.good {
+        border-left-color: var(--good);
+      }
+      .callout .lab {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--fg-dim);
+        margin-bottom: 6px;
+        display: block;
+      }
+      .callout p {
+        margin: 4px 0;
+        font-size: 13.5px;
+      }
+
+      /* ────────────── code ────────────── */
+      pre {
+        background: var(--code-bg);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 14px 16px;
+        overflow: auto;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.6;
+        margin: 14px 0;
+        color: #cdd5e1;
+      }
+      pre .com {
+        color: #5b6678;
+      }
+      pre .key {
+        color: #7dd3fc;
+      }
+      pre .str {
+        color: #86efac;
+      }
+      pre .num {
+        color: #fcd34d;
+      }
+      pre .tag {
+        color: #a78bfa;
+      }
+      pre .punc {
+        color: #8a93a6;
+      }
+      pre .fn {
+        color: #f472b6;
+      }
+      pre .path {
+        color: #fcd34d;
+      }
+      pre .ln {
+        color: #3b4456;
+        display: inline-block;
+        width: 30px;
+        text-align: right;
+        margin-right: 14px;
+        user-select: none;
+      }
+      pre .src {
+        color: #5b6678;
+        font-size: 11px;
+        float: right;
+      }
+      code:not(pre code) {
+        background: var(--code-bg);
+        border: 1px solid var(--line-soft);
+        border-radius: 5px;
+        padding: 1px 5px;
+        font-size: 12px;
+        color: #cdd5e1;
+      }
+
+      /* ────────────── cards & grids ────────────── */
+      .grid {
+        display: grid;
+        gap: 14px;
+      }
+      .grid.cols-2 {
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      }
+      .grid.cols-3 {
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .card {
+        background: var(--bg-elev);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 16px;
+      }
+      .card .h {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--fg-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        margin-bottom: 8px;
+      }
+      .card .v {
+        font-size: 13.5px;
+        color: var(--fg);
+      }
+      .stat {
+        background: var(--bg-elev);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 14px 16px;
+      }
+      .stat .n {
+        font-family: var(--mono);
+        font-size: 22px;
+        color: var(--accent);
+        font-weight: 600;
+        line-height: 1;
+      }
+      .stat .l {
+        font-size: 12px;
+        color: var(--fg-dim);
+        margin-top: 6px;
+      }
+
+      /* ────────────── architecture diagram (SVG) ────────────── */
+      .diagram {
+        background: var(--bg-elev);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 18px;
+        overflow: auto;
+      }
+      .diagram svg {
+        display: block;
+        max-width: 100%;
+        height: auto;
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+
+      /* ────────────── tabs ────────────── */
+      .tabs {
+        display: flex;
+        gap: 4px;
+        border-bottom: 1px solid var(--line);
+        margin: 18px 0 0;
+        flex-wrap: wrap;
+      }
+      .tab {
+        appearance: none;
+        background: none;
+        border: 0;
+        cursor: pointer;
+        color: var(--fg-mute);
+        font: inherit;
+        font-size: 13px;
+        padding: 9px 13px;
+        border-radius: 8px 8px 0 0;
+        margin-bottom: -1px;
+        border: 1px solid transparent;
+        border-bottom: none;
+      }
+      .tab:hover {
+        color: var(--fg);
+        background: var(--bg-elev);
+      }
+      .tab.active {
+        color: var(--fg);
+        background: var(--bg-elev-2);
+        border-color: var(--line);
+        border-bottom-color: var(--bg-elev-2);
+      }
+      .tab .cnt {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--fg-dim);
+        margin-left: 6px;
+      }
+      .tab.active .cnt {
+        color: var(--accent);
+      }
+      .tab-panel {
+        display: none;
+        padding-top: 16px;
+      }
+      .tab-panel.active {
+        display: block;
+      }
+
+      /* ────────────── state machine ────────────── */
+      .phase-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 14px 0;
+      }
+      .chip {
+        font-family: var(--mono);
+        font-size: 12px;
+        padding: 5px 11px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: var(--bg-elev);
+        color: var(--fg-mute);
+        cursor: default;
+        user-select: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .chip .swatch {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+      .chip[data-phase="available"] {
+        color: var(--fg-mute);
+      }
+      .chip[data-phase="available"] .swatch {
+        background: var(--fg-dim);
+      }
+      .chip[data-phase="connecting"] {
+        color: var(--warn);
+      }
+      .chip[data-phase="connecting"] .swatch {
+        background: var(--warn);
+      }
+      .chip[data-phase="reconnecting"] {
+        color: #fb923c;
+      }
+      .chip[data-phase="reconnecting"] .swatch {
+        background: #fb923c;
+      }
+      .chip[data-phase="backoff"] {
+        color: #fb923c;
+      }
+      .chip[data-phase="backoff"] .swatch {
+        background: #fb923c;
+      }
+      .chip[data-phase="connected"] {
+        color: var(--good);
+      }
+      .chip[data-phase="connected"] .swatch {
+        background: var(--good);
+      }
+      .chip[data-phase="offline"] {
+        color: var(--bad);
+      }
+      .chip[data-phase="offline"] .swatch {
+        background: var(--bad);
+      }
+      .chip[data-phase="blocked"] {
+        color: var(--bad);
+      }
+      .chip[data-phase="blocked"] .swatch {
+        background: var(--bad);
+      }
+
+      .fsm {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+      .fsm-row {
+        display: grid;
+        grid-template-columns: 160px 1fr;
+        gap: 14px;
+        align-items: start;
+        padding: 12px 14px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        background: var(--bg-elev);
+      }
+      .fsm-row .ph {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .fsm-row .ph .swatch {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+      }
+      .fsm-row .desc {
+        font-size: 13px;
+        color: var(--fg-mute);
+      }
+      .fsm-row .desc b {
+        color: var(--fg);
+        font-weight: 600;
+      }
+
+      /* ────────────── timeline / backoff ────────────── */
+      .backoff {
+        background: var(--bg-elev);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 18px;
+        margin: 14px 0;
+      }
+      .bars {
+        display: flex;
+        align-items: flex-end;
+        gap: 8px;
+        height: 120px;
+        margin: 14px 0;
+        padding: 0 4px;
+      }
+      .bar {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        position: relative;
+        height: 100%;
+        justify-content: flex-end;
+      }
+      .bar .blk {
+        width: 100%;
+        border-radius: 5px 5px 0 0;
+        background: linear-gradient(180deg, #fb923c, #f97316);
+        min-height: 6px;
+        border-bottom: 1px solid var(--line);
+      }
+      .bar .lbl {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--fg-mute);
+      }
+      .bar .val {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--fg);
+      }
+      position: absolute;
+      bottom: calc(100% + 2px);
+      white-space: nowrap;
+      .axis {
+        border-top: 1px solid var(--line);
+        margin-top: 0;
+      }
+
+      /* ────────────── wire inspector ────────────── */
+      .wire-frame {
+        background: var(--code-bg);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        overflow: hidden;
+        margin: 14px 0;
+      }
+      .wire-head {
+        background: var(--bg-elev);
+        border-bottom: 1px solid var(--line);
+        padding: 9px 14px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      .wire-head .led {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--good);
+      }
+      .wire-head .led.s2c {
+        background: var(--accent);
+      }
+      .wire-head .led.c2s {
+        background: var(--accent-2);
+      }
+      .wire-body {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        min-height: 0;
+      }
+      .wire-col {
+        border-right: 1px solid var(--line);
+        min-width: 0;
+        overflow: auto;
+        max-height: 380px;
+      }
+      .wire-col:last-child {
+        border-right: 0;
+      }
+      .wire-col h4 {
+        margin: 0;
+        padding: 9px 14px;
+        font-size: 11px;
+        font-family: var(--mono);
+        color: var(--fg-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        background: var(--bg-soft);
+        border-bottom: 1px solid var(--line);
+        position: sticky;
+        top: 0;
+      }
+      .wire-msg {
+        padding: 9px 14px;
+        border-bottom: 1px solid var(--line-soft);
+        font-family: var(--mono);
+        font-size: 11.5px;
+        line-height: 1.55;
+        cursor: pointer;
+      }
+      .wire-msg:hover {
+        background: var(--bg-elev);
+      }
+      .wire-msg .who {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--fg-dim);
+        margin-bottom: 3px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .wire-msg.c2s .who {
+        color: var(--accent-2);
+      }
+      .wire-msg.s2c .who {
+        color: var(--accent);
+      }
+      .wire-msg .json {
+        color: #cdd5e1;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      /* ────────────── mode cards ────────────── */
+      .mode {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--bg-elev);
+        overflow: hidden;
+      }
+      .mode .hd {
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        background: var(--bg-elev-2);
+      }
+      .mode .hd .t {
+        font-weight: 600;
+        font-size: 14.5px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+      }
+      .mode .hd .t .ic {
+        width: 26px;
+        height: 26px;
+        border-radius: 7px;
+        display: grid;
+        place-items: center;
+        background: var(--code-bg);
+        border: 1px solid var(--line);
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--accent);
+      }
+      .mode .bd {
+        padding: 14px 16px;
+      }
+      .mode .bd dl {
+        margin: 0;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 6px 14px;
+        font-size: 13px;
+      }
+      .mode .bd dt {
+        color: var(--fg-dim);
+        font-family: var(--mono);
+        font-size: 11.5px;
+      }
+      .mode .bd dd {
+        margin: 0;
+        color: var(--fg);
+      }
+
+      /* ────────────── provider pipeline ────────────── */
+      .pipeline {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+        margin: 18px 0;
+      }
+      .pipe-node {
+        position: relative;
+        padding: 12px 16px;
+        background: var(--bg-elev);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+      }
+      .pipe-node + .pipe-node {
+        margin-top: 0;
+        border-top-left-radius: 0;
+        border-top-right-radius: 0;
+        border-top: 0;
+      }
+      .pipe-node .role {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--fg-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+      }
+      .pipe-node .name {
+        font-weight: 600;
+        font-size: 13.5px;
+        margin: 3px 0 6px;
+      }
+      .pipe-node .note {
+        font-size: 12.5px;
+        color: var(--fg-mute);
+        margin: 0;
+      }
+      .pipe-node .where {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--warn);
+        margin-top: 6px;
+        display: inline-block;
+      }
+      .arrow {
+        text-align: center;
+        color: var(--fg-dim);
+        font-family: var(--mono);
+        font-size: 14px;
+        padding: 3px 0;
+        line-height: 1;
+      }
+
+      /* ────────────── risk table ────────────── */
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        margin: 12px 0;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 11px 13px;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+      }
+      th {
+        font-family: var(--mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--fg-dim);
+        font-weight: 600;
+      }
+      tbody tr:hover {
+        background: var(--bg-elev);
+      }
+      td .sev {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        padding: 2px 7px;
+        border-radius: 5px;
+        border: 1px solid var(--line);
+      }
+      td .sev.high {
+        color: var(--bad);
+        border-color: rgba(252, 165, 165, 0.4);
+      }
+      td .sev.med {
+        color: var(--warn);
+        border-color: rgba(252, 211, 77, 0.4);
+      }
+      td .sev.low {
+        color: var(--good);
+        border-color: rgba(134, 239, 172, 0.4);
+      }
+
+      /* ────────────── disclosure ────────────── */
+      details {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--bg-elev);
+        margin: 12px 0;
+      }
+      details > summary {
+        cursor: pointer;
+        padding: 13px 16px;
+        font-weight: 600;
+        font-size: 13.5px;
+        list-style: none;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      details > summary::-webkit-details-marker {
+        display: none;
+      }
+      details > summary::after {
+        content: "+";
+        font-family: var(--mono);
+        color: var(--fg-dim);
+      }
+      details[open] > summary::after {
+        content: "–";
+      }
+      details .inner {
+        padding: 0 16px 14px;
+      }
+
+      /* ────────────── footer ────────────── */
+      footer {
+        border-top: 1px solid var(--line);
+        margin-top: 60px;
+        padding-top: 22px;
+        font-size: 12px;
+        color: var(--fg-dim);
+        font-family: var(--mono);
+        line-height: 1.7;
+      }
+
+      /* ────────────── responsive ────────────── */
+      @media (max-width: 980px) {
+        :root {
+          --nav-w: 0px;
+        }
+        .shell {
+          grid-template-columns: 1fr;
+        }
+        nav.side {
+          position: fixed;
+          z-index: 60;
+          left: 0;
+          top: 0;
+          width: 248px;
+          transform: translateX(-100%);
+          transition: transform 0.18s ease;
+        }
+        nav.side.open {
+          transform: translateX(0);
+          box-shadow: var(--shadow);
+        }
+        .menu-btn {
+          display: inline-flex !important;
+        }
+        .wrap {
+          padding: 24px 18px 80px;
+        }
+        .topbar {
+          padding: 11px 16px;
+        }
+        .wire-body {
+          grid-template-columns: 1fr;
+        }
+        .wire-col {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+        .fsm-row {
+          grid-template-columns: 1fr;
+        }
+      }
+      .menu-btn {
+        display: none;
+        appearance: none;
+        background: var(--bg-elev);
+        border: 1px solid var(--line);
+        color: var(--fg);
+        border-radius: 8px;
+        padding: 7px 11px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      .scrim {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 55;
+      }
+      .scrim.show {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="scrim" id="scrim" onclick="closeNav()"></div>
+
+    <div class="shell">
+      <!-- ───────────── SIDEBAR ───────────── -->
+      <nav class="side" id="sideNav" aria-label="Sections">
+        <div class="brand">
+          <div class="logo">T3</div>
+          <div>
+            <div class="t">T3 Code</div>
+            <div class="s">ws:// · connection logic</div>
+          </div>
+        </div>
+
+        <div class="group-label">Overview</div>
+        <a class="nav-item" href="#summary"><span class="dot"></span>Executive summary</a>
+        <a class="nav-item" href="#architecture"><span class="dot"></span>Architecture map</a>
+        <a class="nav-item" href="#transport"><span class="dot"></span>Transport &amp; framing</a>
+
+        <div class="group-label">Server</div>
+        <a class="nav-item" href="#server"><span class="dot"></span>Server lifecycle</a>
+        <a class="nav-item" href="#auth"><span class="dot"></span>Pairing &amp; auth</a>
+
+        <div class="group-label">Client</div>
+        <a class="nav-item" href="#state-machine"
+          ><span class="dot"></span>Connection state machine</a
+        >
+        <a class="nav-item" href="#backoff"><span class="dot"></span>Backoff &amp; liveness</a>
+        <a class="nav-item" href="#modes"><span class="dot"></span>Connection modes</a>
+
+        <div class="group-label">Data path</div>
+        <a class="nav-item" href="#wire"><span class="dot"></span>Wire inspector</a>
+        <a class="nav-item" href="#provider"><span class="dot"></span>Provider pipeline</a>
+        <a class="nav-item" href="#subs"><span class="dot"></span>Subscriptions &amp; resume</a>
+
+        <div class="group-label">Surfaces</div>
+        <a class="nav-item" href="#surfaces"><span class="dot"></span>Web · Desktop · Mobile</a>
+
+        <div class="group-label">Risk</div>
+        <a class="nav-item" href="#risks"><span class="dot"></span>Risk register</a>
+        <a class="nav-item" href="#evidence"><span class="dot"></span>Evidence index</a>
+
+        <div class="meta">
+          Generated 2026-08-03<br />
+          Branch <b style="color: var(--fg-mute)">main</b><br />
+          8 investigation threads<br />
+          ~680k tokens explored
+        </div>
+      </nav>
+
+      <main>
+        <!-- ───────────── TOPBAR ───────────── -->
+        <div class="topbar">
+          <button class="menu-btn" onclick="openNav()" aria-label="Menu">☰</button>
+          <div class="crumb">
+            <b>artifacts/reports</b> / websocket-connection-logic-2026-08-03.html
+          </div>
+          <div class="spacer"></div>
+          <span class="pill live">single socket · GET /ws</span>
+          <span class="pill">Effect RPC · JSON</span>
+        </div>
+
+        <div class="wrap">
+          <!-- ═════════════ SUMMARY ═════════════ -->
+          <section id="summary">
+            <h1>The WebSocket connection logic of T3 Code</h1>
+            <p class="lede">
+              One socket. One JSON-RPC surface. A supervisor-driven state machine on the client, a
+              scope-bound event-sourced core on the server, and three transport modes that all
+              converge on the same handshake. This report is a forensic walkthrough of how a T3 Code
+              client stays connected to a T3 Code environment &mdash; and what happens when it
+              doesn&rsquo;t.
+            </p>
+
+            <div class="grid cols-3" style="margin-top: 22px">
+              <div class="stat">
+                <div class="n">1</div>
+                <div class="l">
+                  WebSocket endpoint per environment<br /><span class="mono">GET /ws</span>, JSON
+                  frames
+                </div>
+              </div>
+              <div class="stat">
+                <div class="n">5<span style="font-size: 14px; color: var(--fg-mute)">s</span></div>
+                <div class="l">
+                  Client ping interval (Effect RPC framework)<br />pong-timeout tears down the
+                  socket
+                </div>
+              </div>
+              <div class="stat">
+                <div class="n">16<span style="font-size: 14px; color: var(--fg-mute)">s</span></div>
+                <div class="l">
+                  Reconnect backoff ceiling<br /><span class="mono">[1,2,4,8,16]s</span>, no jitter,
+                  no cap
+                </div>
+              </div>
+              <div class="stat">
+                <div class="n">3</div>
+                <div class="l">
+                  Connection modes share one protocol<br />Local · Remote/Relay · Tunnel
+                </div>
+              </div>
+              <div class="stat">
+                <div class="n">1000</div>
+                <div class="l">
+                  Max events replayed on resume<br /><span class="mono">SHELL_RESUME_MAX_GAP</span>
+                </div>
+              </div>
+              <div class="stat">
+                <div class="n">0</div>
+                <div class="l">
+                  Outbound message queue while offline<br />RPC fails fast; no outbox
+                </div>
+              </div>
+            </div>
+
+            <div class="callout">
+              <span class="lab">The one-sentence model</span>
+              <p>
+                The browser never calls <code>new WebSocket</code> directly. A supervisor in
+                <code class="mono">packages/client-runtime</code> owns the socket, authenticates
+                each upgrade with a 5-minute HMAC <code class="mono">wsTicket</code>, and feeds a
+                single JSON-RPC group (<code class="mono">WsRpcGroup</code>) whose streaming methods
+                are the entire push channel. Big read-model snapshots go over gzip-compressed
+                <b>HTTP</b>; the socket carries only small live deltas.
+              </p>
+            </div>
+          </section>
+
+          <hr />
+
+          <!-- ═════════════ ARCHITECTURE ═════════════ -->
+          <section id="architecture">
+            <h2><span class="ix">01</span> Architecture map</h2>
+            <p class="lede">
+              Six layers, top to bottom. The thin client surface injects capabilities; the shared
+              runtime owns the socket; the contract defines every message; the server authenticates,
+              dispatches, and streams; providers run as subprocesses; git refs persist checkpoints
+              at end-of-turn.
+            </p>
+
+            <div class="diagram" style="margin-top: 18px">
+              <svg viewBox="0 0 1080 560" role="img" aria-label="T3 Code WebSocket architecture">
+                <defs>
+                  <marker
+                    id="ah"
+                    viewBox="0 0 10 10"
+                    refX="9"
+                    refY="5"
+                    markerWidth="7"
+                    markerHeight="7"
+                    orient="auto-start-reverse"
+                  >
+                    <path d="M0,0 L10,5 L0,10 z" fill="#5b6678" />
+                  </marker>
+                  <linearGradient id="g1" x1="0" x2="0" y1="0" y2="1">
+                    <stop offset="0" stop-color="#161a23" />
+                    <stop offset="1" stop-color="#11141b" />
+                  </linearGradient>
+                </defs>
+
+                <!-- column headers -->
+                <text x="80" y="22" fill="#6b7488" font-size="11" font-family="ui-monospace">
+                  CLIENT
+                </text>
+                <text x="500" y="22" fill="#6b7488" font-size="11" font-family="ui-monospace">
+                  SERVER
+                </text>
+                <text x="880" y="22" fill="#6b7488" font-size="11" font-family="ui-monospace">
+                  SUBPROCESSES
+                </text>
+
+                <!-- vertical guides -->
+                <line x1="380" y1="40" x2="380" y2="540" stroke="#1a1e28" stroke-dasharray="3 5" />
+                <line x1="780" y1="40" x2="780" y2="540" stroke="#1a1e28" stroke-dasharray="3 5" />
+
+                <!-- CLIENT stack -->
+                <g>
+                  <rect
+                    x="40"
+                    y="50"
+                    width="320"
+                    height="60"
+                    rx="8"
+                    fill="url(#g1)"
+                    stroke="#222733"
+                  />
+                  <text x="56" y="74" fill="#e6e9ef" font-size="13" font-weight="600">
+                    React app (web/desktop/mobile)
+                  </text>
+                  <text x="56" y="92" fill="#9aa3b2" font-size="11">
+                    connection atoms · shell/threads/vcs state
+                  </text>
+
+                  <rect
+                    x="40"
+                    y="130"
+                    width="320"
+                    height="60"
+                    rx="8"
+                    fill="url(#g1)"
+                    stroke="#222733"
+                  />
+                  <text x="56" y="154" fill="#e6e9ef" font-size="13" font-weight="600">
+                    EnvironmentSupervisor
+                  </text>
+                  <text x="56" y="172" fill="#9aa3b2" font-size="11">
+                    phase FSM · backoff · probe-on-foreground
+                  </text>
+
+                  <rect
+                    x="40"
+                    y="210"
+                    width="320"
+                    height="60"
+                    rx="8"
+                    fill="url(#g1)"
+                    stroke="#222733"
+                  />
+                  <text x="56" y="234" fill="#e6e9ef" font-size="13" font-weight="600">
+                    RpcSession + WsRpcProtocolClient
+                  </text>
+                  <text x="56" y="252" fill="#9aa3b2" font-size="11">
+                    Effect RPC over Socket.layerWebSocket
+                  </text>
+
+                  <rect
+                    x="40"
+                    y="290"
+                    width="320"
+                    height="60"
+                    rx="8"
+                    fill="url(#g1)"
+                    stroke="#7dd3fc"
+                    stroke-opacity=".4"
+                  />
+                  <text x="56" y="314" fill="#7dd3fc" font-size="13" font-weight="600">
+                    Browser WebSocket
+                  </text>
+                  <text x="56" y="332" fill="#9aa3b2" font-size="11">
+                    globalThis.WebSocket (injected)
+                  </text>
+                </g>
+
+                <!-- arrow through the wire -->
+                <line
+                  x1="360"
+                  y1="320"
+                  x2="420"
+                  y2="320"
+                  stroke="#5b6678"
+                  stroke-width="1.5"
+                  marker-end="url(#ah)"
+                />
+                <line
+                  x1="420"
+                  y1="320"
+                  x2="360"
+                  y2="320"
+                  stroke="#5b6678"
+                  stroke-width="1.5"
+                  marker-end="url(#ah)"
+                  transform="translate(0,8)"
+                />
+                <text x="390" y="312" fill="#f472b6" font-size="10" text-anchor="middle">
+                  wss://…/ws?wsTicket=…
+                </text>
+                <text x="390" y="346" fill="#6b7488" font-size="10" text-anchor="middle">
+                  JSON-RPC frames
+                </text>
+
+                <!-- SERVER stack -->
+                <g>
+                  <rect
+                    x="420"
+                    y="50"
+                    width="340"
+                    height="60"
+                    rx="8"
+                    fill="url(#g1)"
+                    stroke="#a78bfa"
+                    stroke-opacity=".4"
+                  />
+                  <text x="436" y="74" fill="#a78bfa" font-size="13" font-weight="600">
+                    GET /ws · RpcServer.toHttpEffectWebsocket
+                  </text>
+                  <text x="436" y="92" fill="#9aa3b2" font-size="11">
+                    authenticateWebSocketUpgrade · per-RPC scope
+                  </text>
+
+                  <rect
+                    x="420"
+                    y="130"
+                    width="340"
+                    height="60"
+                    rx="8"
+                    fill="url(#g1)"
+                    stroke="#222733"
+                  />
+                  <text x="436" y="154" fill="#e6e9ef" font-size="13" font-weight="600">
+                    WsRpcGroup handlers (ws.ts:1044-2087)
+                  </text>
+                  <text x="436" y="172" fill="#9aa3b2" font-size="11">
+                    observeRpcEffect → authorizeEffect → instrument
+                  </text>
+
+                  <rect
+                    x="420"
+                    y="210"
+                    width="340"
+                    height="60"
+                    rx="8"
+                    fill="url(#g1)"
+                    stroke="#222733"
+                  />
+                  <text x="436" y="234" fill="#e6e9ef" font-size="13" font-weight="600">
+                    OrchestrationEngine (single-writer)
+                  </text>
+                  <text x="436" y="252" fill="#9aa3b2" font-size="11">
+                    command queue → decider → eventStore → PubSub
+                  </text>
+
+                  <rect
+                    x="420"
+                    y="290"
+                    width="340"
+                    height="60"
+                    rx="8"
+                    fill="url(#g1)"
+                    stroke="#222733"
+                  />
+                  <text x="436" y="314" fill="#e6e9ef" font-size="13" font-weight="600">
+                    Reactors · drainable workers
+                  </text>
+                  <text x="436" y="332" fill="#9aa3b2" font-size="11">
+                    ProviderCommand · RuntimeIngestion · Checkpoint
+                  </text>
+
+                  <rect
+                    x="420"
+                    y="370"
+                    width="340"
+                    height="60"
+                    rx="8"
+                    fill="url(#g1)"
+                    stroke="#86efac"
+                    stroke-opacity=".35"
+                  />
+                  <text x="436" y="394" fill="#86efac" font-size="13" font-weight="600">
+                    SQLite event store + projector
+                  </text>
+                  <text x="436" y="412" fill="#9aa3b2" font-size="11">
+                    streamDomainEvents · afterSequence resume
+                  </text>
+                </g>
+
+                <!-- SUBPROC stack -->
+                <g>
+                  <rect
+                    x="820"
+                    y="130"
+                    width="220"
+                    height="60"
+                    rx="8"
+                    fill="url(#g1)"
+                    stroke="#222733"
+                  />
+                  <text x="836" y="154" fill="#e6e9ef" font-size="13" font-weight="600">
+                    Provider CLIs
+                  </text>
+                  <text x="836" y="172" fill="#9aa3b2" font-size="11">
+                    codex · claude · cursor · grok · opencode
+                  </text>
+
+                  <rect
+                    x="820"
+                    y="210"
+                    width="220"
+                    height="60"
+                    rx="8"
+                    fill="url(#g1)"
+                    stroke="#222733"
+                  />
+                  <text x="836" y="234" fill="#e6e9ef" font-size="13" font-weight="600">
+                    JSON-RPC over stdio
+                  </text>
+                  <text x="836" y="252" fill="#9aa3b2" font-size="11">
+                    notifications → ProviderRuntimeEvent
+                  </text>
+                </g>
+
+                <!-- cross arrows -->
+                <line
+                  x1="760"
+                  y1="160"
+                  x2="820"
+                  y2="160"
+                  stroke="#5b6678"
+                  stroke-dasharray="4 4"
+                  marker-end="url(#ah)"
+                />
+                <line
+                  x1="820"
+                  y1="240"
+                  x2="760"
+                  y2="240"
+                  stroke="#5b6678"
+                  stroke-dasharray="4 4"
+                  marker-end="url(#ah)"
+                />
+                <text x="790" y="152" fill="#6b7488" font-size="9.5" text-anchor="middle">
+                  spawn
+                </text>
+                <text x="790" y="258" fill="#6b7488" font-size="9.5" text-anchor="middle">
+                  events
+                </text>
+
+                <!-- contracts band -->
+                <rect
+                  x="40"
+                  y="460"
+                  width="1000"
+                  height="46"
+                  rx="8"
+                  fill="#0f1218"
+                  stroke="#222733"
+                />
+                <text
+                  x="540"
+                  y="482"
+                  fill="#fcd34d"
+                  font-size="12"
+                  text-anchor="middle"
+                  font-family="ui-monospace"
+                >
+                  packages/contracts · WsRpcGroup · Effect/Schema · typed requests, responses,
+                  streaming success, tagged errors
+                </text>
+                <text x="540" y="498" fill="#6b7488" font-size="10.5" text-anchor="middle">
+                  shared by web · mobile · desktop · server — schema is the only validation surface
+                </text>
+
+                <!-- git band -->
+                <rect
+                  x="820"
+                  y="370"
+                  width="220"
+                  height="60"
+                  rx="8"
+                  fill="url(#g1)"
+                  stroke="#fcd34d"
+                  stroke-opacity=".35"
+                />
+                <text x="836" y="394" fill="#fcd34d" font-size="13" font-weight="600">
+                  git checkpoint refs
+                </text>
+                <text x="836" y="412" fill="#9aa3b2" font-size="11">
+                  refs/t3/checkpoints/&hellip;
+                </text>
+                <line
+                  x1="820"
+                  y1="400"
+                  x2="760"
+                  y2="400"
+                  stroke="#5b6678"
+                  stroke-dasharray="4 4"
+                  marker-end="url(#ah)"
+                />
+                <text x="790" y="394" fill="#6b7488" font-size="9.5" text-anchor="middle">
+                  per turn
+                </text>
+
+                <!-- legend -->
+                <g transform="translate(40,528)">
+                  <circle cx="6" cy="0" r="5" fill="#7dd3fc" />
+                  <text x="18" y="4" fill="#9aa3b2" font-size="10.5">transport boundary</text>
+                  <circle cx="166" cy="0" r="5" fill="#a78bfa" />
+                  <text x="178" y="4" fill="#9aa3b2" font-size="10.5">server entry</text>
+                  <circle cx="286" cy="0" r="5" fill="#86efac" />
+                  <text x="298" y="4" fill="#9aa3b2" font-size="10.5">persistence</text>
+                  <circle cx="396" cy="0" r="5" fill="#fcd34d" />
+                  <text x="408" y="4" fill="#9aa3b2" font-size="10.5">side effects</text>
+                  <circle cx="516" cy="0" r="5" fill="#f472b6" />
+                  <text x="528" y="4" fill="#9aa3b2" font-size="10.5">the wire</text>
+                </g>
+              </svg>
+            </div>
+
+            <div class="callout good">
+              <span class="lab">Why this shape</span>
+              <p>
+                Complexity lives at the adapter boundary (provider stdio &harr; runtime events).
+                Orchestration stays pure (decider + projector), the wire stays dumb (schema-defined
+                RPC), and the client never trusts the socket (supervisor probes + sequence-resume).
+              </p>
+            </div>
+          </section>
+
+          <hr />
+
+          <!-- ═════════════ TRANSPORT ═════════════ -->
+          <section id="transport">
+            <h2><span class="ix">02</span> Transport &amp; framing</h2>
+            <p class="lede">
+              T3 does not hand-roll a wire format. It uses Effect&rsquo;s
+              <code class="mono">unstable/rpc</code> over a single WebSocket upgrade. Every frame is
+              JSON, discriminated by <code class="mono">_tag</code>, correlated by
+              <code class="mono">requestId</code>.
+            </p>
+
+            <div class="grid cols-2">
+              <div class="card">
+                <div class="h">Endpoint</div>
+                <div class="v">
+                  <code>GET /ws</code> &mdash; one route per environment<br />
+                  <span class="small">apps/server/src/ws.ts:2095</span>
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Framing</div>
+                <div class="v">
+                  Text frames only · <code class="mono">RpcSerialization.layerJson</code><br />
+                  <span class="small">No binary frames. PTY output is JSON-stringified.</span>
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Compression</div>
+                <div class="v">
+                  <span class="mono">perMessageDeflate: true</span> on the patched
+                  <code>ws</code> server<br />
+                  <span class="small"
+                    >Patches: effect / platform-node / platform-bun @ beta.102</span
+                  >
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Underlying library</div>
+                <div class="v">
+                  Node: <code class="mono">ws@8</code> (via
+                  <code>@effect/platform-node-shared</code>)<br />
+                  Bun: native <code class="mono">upgradeWebSocket</code>
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Heartbeat</div>
+                <div class="v">
+                  Client pings every <b>5s</b>; server only pongs.<br />
+                  <span class="small"
+                    >No server-initiated heartbeat. Half-open detection is client-owned.</span
+                  >
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Correlation</div>
+                <div class="v">
+                  <code class="mono">id</code> (string|number) per request;
+                  <code class="mono">requestId</code> echoes on every reply.<br />
+                  <span class="small"
+                    >Streaming RPCs use <code>Ack</code> + <code>Interrupt</code>.</span
+                  >
+                </div>
+              </div>
+            </div>
+
+            <h3>The five envelope shapes</h3>
+            <div class="phase-chips">
+              <span class="chip"
+                ><span class="swatch" style="background: var(--accent-2)"></span>Request (c→s)</span
+              >
+              <span class="chip"
+                ><span class="swatch" style="background: var(--accent-2)"></span>Ack (c→s)</span
+              >
+              <span class="chip"
+                ><span class="swatch" style="background: var(--accent-2)"></span>Interrupt
+                (c→s)</span
+              >
+              <span class="chip"
+                ><span class="swatch" style="background: var(--accent-2)"></span>Ping (c→s)</span
+              >
+              <span class="chip"
+                ><span class="swatch" style="background: var(--accent)"></span>Chunk (s→c)</span
+              >
+              <span class="chip"
+                ><span class="swatch" style="background: var(--accent)"></span>Exit (s→c)</span
+              >
+              <span class="chip"
+                ><span class="swatch" style="background: var(--accent)"></span>Pong (s→c)</span
+              >
+              <span class="chip"
+                ><span class="swatch" style="background: var(--bad)"></span>Defect (s→c)</span
+              >
+            </div>
+            <p class="small">
+              Source: <code class="mono">.repos/effect-smol/…/RpcMessage.ts</code>. There is no
+              <code class="mono">version</code> field; the envelope <code class="mono">tag</code>
+              (method name) is the versioning unit, and schemas use
+              <code class="mono">withDecodingDefault</code> / <code class="mono">optional</code> for
+              forward compatibility.
+            </p>
+          </section>
+
+          <hr />
+
+          <!-- ═════════════ SERVER ═════════════ -->
+          <section id="server">
+            <h2><span class="ix">03</span> Server lifecycle</h2>
+            <p class="lede">
+              A single Effect <code class="mono">HttpServer</code> hosts one
+              <code class="mono">ws</code> <code class="mono">WebSocketServer</code> (<code
+                class="mono"
+                >noServer: true</code
+              >, <code class="mono">Effect.cached</code>). Per-connection state is a refcounted
+              session map, not a set of sockets. T3 deliberately disables Effect&rsquo;s 20-second
+              HTTP drain so WS finalizers run immediately on shutdown.
+            </p>
+
+            <pre><span class="src">apps/server/src/ws.ts:2142</span><span class="ln"></span><span class="com">// Per-connection lifecycle wraps the RPC effect</span>
+<span class="ln"></span>return yield* Effect.<span class="fn">acquireUseRelease</span>(
+<span class="ln"></span>  sessions.<span class="fn">markConnected</span>(session.sessionId),
+<span class="ln"></span>  () =&gt; rpcWebSocketHttpEffect,
+<span class="ln"></span>  () =&gt; sessions.<span class="fn">markDisconnected</span>(session.sessionId),
+<span class="ln"></span>);</pre>
+
+            <div class="grid cols-2" style="margin-top: 14px">
+              <div class="card">
+                <div class="h">Connection tracking</div>
+                <div class="v">
+                  <code class="mono">Ref.make(Map&lt;SessionId, count&gt;)</code> &mdash;
+                  refcounted.<br />
+                  <span class="small"
+                    >Multiple tabs = multiple sockets, one session. The "connected" flag only flips
+                    at zero.</span
+                  >
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Graceful shutdown</div>
+                <div class="v">
+                  <code class="mono">HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0</code><br />
+                  <span class="small"
+                    >Per-WS <code class="mono">acquireRelease</code> closes sockets; no artificial
+                    drain.</span
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="callout warn">
+              <span class="lab">Footgun &mdash; refcount composite isn't atomic</span>
+              <p>
+                <code class="mono">markConnected</code> does atomic
+                <code class="mono">Ref.modify</code> for the count, but the surrounding &ldquo;load
+                session + emit upsert&rdquo; is eventually-consistent. Two concurrent connects for
+                one session can each publish; a failed emit is swallowed (<code class="mono"
+                  >Effect.catchCause</code
+                >
+                logs only) and desyncs the UI&rsquo;s session list without breaking the socket.
+              </p>
+            </div>
+
+            <details>
+              <summary>How a malformed message is handled</summary>
+              <div class="inner">
+                <p>
+                  Effect&rsquo;s RPC loop (<code class="mono">RpcServer.js:440-515</code>) is the
+                  only validation surface. Every bad input becomes a typed defect on the matching
+                  <code class="mono">requestId</code> &mdash; nothing kills the socket or the
+                  process.
+                </p>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Failure</th>
+                      <th>Response</th>
+                      <th>Outcome</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Unknown method tag</td>
+                      <td><code class="mono">sendRequestDefect("Unknown request tag: …")</code></td>
+                      <td><span class="sev low">typed Exit.Failure</span></td>
+                    </tr>
+                    <tr>
+                      <td>Payload schema fail</td>
+                      <td><code class="mono">sendRequestDefect(issue.toString())</code></td>
+                      <td><span class="sev low">typed Exit.Failure</span></td>
+                    </tr>
+                    <tr>
+                      <td>Bad request id</td>
+                      <td><code class="mono">sendDefect("Invalid request id")</code></td>
+                      <td><span class="sev low">connection survives</span></td>
+                    </tr>
+                    <tr>
+                      <td>Unknown envelope <code class="mono">_tag</code></td>
+                      <td><code class="mono">sendDefect("Unknown request tag")</code></td>
+                      <td><span class="sev low">connection survives</span></td>
+                    </tr>
+                    <tr>
+                      <td>Auth scope missing</td>
+                      <td>
+                        <code class="mono">EnvironmentAuthorizationError</code> (typed schema error)
+                      </td>
+                      <td><span class="sev low">RPC fails, socket lives</span></td>
+                    </tr>
+                    <tr>
+                      <td>Protocol-loop defect</td>
+                      <td><code class="mono">Effect.tapCause(logFatal)</code></td>
+                      <td><span class="sev med">scope closed, not process</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          </section>
+
+          <hr />
+
+          <!-- ═════════════ AUTH ═════════════ -->
+          <section id="auth">
+            <h2><span class="ix">04</span> Pairing &amp; authentication</h2>
+            <p class="lede">
+              The WS upgrade authenticates via a short-lived HMAC
+              <code class="mono">wsTicket</code> query parameter (5-minute TTL, session-bound,
+              revocation-checked). That ticket is minted from a session that began life as a pairing
+              code &mdash; a 12-character string over an ambiguous-char-free alphabet.
+            </p>
+
+            <h3>The credential ladder</h3>
+            <div class="pipeline">
+              <div class="pipe-node">
+                <div class="role">Step 1 · bootstrap</div>
+                <div class="name">Pairing code &amp; one-time token</div>
+                <p class="note">
+                  12-char code over <code class="mono">23456789ABCDEFGHJKLMNPQRSTUVWXYZ</code>,
+                  rejection-sampled. Token in URL <b>hash fragment</b> so it never hits a CDN log.
+                </p>
+                <span class="where"
+                  >PairingGrantStore.ts:271-293 · TTL 5min (24h for desktop/dev seeds)</span
+                >
+              </div>
+              <div class="arrow">↓</div>
+              <div class="pipe-node">
+                <div class="role">Step 2 · exchange</div>
+                <div class="name">Session (cookie or bearer / DPoP)</div>
+                <p class="note">
+                  <code class="mono">POST /api/auth/browser-session</code> sets an
+                  <code class="mono">HttpOnly; SameSite=Lax</code> cookie.
+                  <code class="mono">POST /oauth/token</code> returns a bearer (or DPoP-bound) token
+                  with subset-scope enforcement.
+                </p>
+                <span class="where">http.ts:222-319 · session TTL 30d</span>
+              </div>
+              <div class="arrow">↓</div>
+              <div class="pipe-node">
+                <div class="role">Step 3 · per-socket</div>
+                <div class="name">wsTicket (HMAC, 5min)</div>
+                <p class="note">
+                  <code class="mono">POST /api/auth/websocket-ticket</code> mints
+                  <code class="mono">{v:1, kind:"websocket", sid, iat, exp}</code> signed with
+                  <code class="mono">server-signing-key</code>. Verified on upgrade; falls back to
+                  cookie/bearer if absent.
+                </p>
+                <span class="where">SessionStore.ts:720-821 · NOT a JWT (no alg header)</span>
+              </div>
+              <div class="arrow">↓</div>
+              <div class="pipe-node">
+                <div class="role">Step 4 · per-RPC</div>
+                <div class="name">Scope authorization</div>
+                <p class="note">
+                  <code class="mono">requiredScopeForRpcMethod(method)</code> gates each handler. A
+                  connected socket is not a license to call every method.
+                </p>
+                <span class="where">RpcAuthorization.ts · ws.ts:416-429</span>
+              </div>
+            </div>
+
+            <div class="callout warn">
+              <span class="lab">Acknowledged trade-off</span>
+              <p>
+                The <code class="mono">wsTicket</code> rides in a query parameter. Query strings are
+                commonly logged by proxies/CDNs. The 5-minute TTL and single-purpose scope mitigate
+                but do not eliminate log-leak risk &mdash; which is exactly why tickets exist
+                instead of putting a long-lived bearer in the URL.
+              </p>
+            </div>
+
+            <details>
+              <summary>Signing key rotation</summary>
+              <div class="inner">
+                <p>
+                  <code class="mono">server-signing-key</code> is a random 32-byte value persisted
+                  via <code class="mono">ServerSecretStore.getOrCreateRandom</code>. It is
+                  <b>not rotated automatically</b>; rotating it invalidates every outstanding
+                  session and WS ticket. The cloud-mint keypair (for T3 Connect) is provisioned once
+                  via Alchemy and supports multi-key verification for rotation (<code class="mono"
+                    >EnvironmentConnector.ts:203-224</code
+                  >
+                  tries all stored public keys).
+                </p>
+              </div>
+            </details>
+          </section>
+
+          <hr />
+
+          <!-- ═════════════ STATE MACHINE ═════════════ -->
+          <section id="state-machine">
+            <h2><span class="ix">05</span> Connection state machine</h2>
+            <p class="lede">
+              A single supervisor fiber per environment owns the socket. It is driven by a typed
+              signal queue and exposes two status layers: an inner phase (<code class="mono"
+                >SupervisorConnectionPhase</code
+              >) and a UI projection (<code class="mono">EnvironmentConnectionPhase</code>) that
+              distinguishes &ldquo;connecting&rdquo; from &ldquo;reconnecting&rdquo;.
+            </p>
+
+            <div class="phase-chips">
+              <span class="chip" data-phase="available"><span class="swatch"></span>available</span>
+              <span class="chip" data-phase="connecting"
+                ><span class="swatch"></span>connecting</span
+              >
+              <span class="chip" data-phase="reconnecting"
+                ><span class="swatch"></span>reconnecting</span
+              >
+              <span class="chip" data-phase="backoff"><span class="swatch"></span>backoff</span>
+              <span class="chip" data-phase="connected"><span class="swatch"></span>connected</span>
+              <span class="chip" data-phase="offline"><span class="swatch"></span>offline</span>
+              <span class="chip" data-phase="blocked"
+                ><span class="swatch"></span>blocked (error)</span
+              >
+            </div>
+
+            <div class="fsm">
+              <div class="fsm-row">
+                <div class="ph">
+                  <span class="swatch" style="background: var(--fg-dim)"></span>available
+                </div>
+                <div class="desc">
+                  No active connection, no attempt in flight. Entry state and post-disconnect
+                  resting state. <b>Trigger:</b> <code class="mono">ConnectRequested</code> signal →
+                  <code class="mono">connecting</code>.
+                </div>
+              </div>
+              <div class="fsm-row">
+                <div class="ph">
+                  <span class="swatch" style="background: var(--warn)"></span>connecting
+                </div>
+                <div class="desc">
+                  Preparing → opening → synchronizing (driver staging). Raced against a
+                  <b>15s establishment timeout</b> and any interrupt signal. <b>On success:</b> →
+                  <code class="mono">connected</code>. <b>On transient failure:</b> →
+                  <code class="mono">backoff</code>.
+                </div>
+              </div>
+              <div class="fsm-row">
+                <div class="ph">
+                  <span class="swatch" style="background: #fb923c"></span>backoff
+                </div>
+                <div class="desc">
+                  Sleeping before next attempt. Delay =
+                  <code class="mono">retryDelayMs(failureCount)</code>. <b>Interruptible:</b> a
+                  manual retry, network change, or wakeup signal breaks the sleep immediately. UI
+                  projects this as <code class="mono">reconnecting</code>.
+                </div>
+              </div>
+              <div class="fsm-row">
+                <div class="ph">
+                  <span class="swatch" style="background: var(--good)"></span>connected
+                </div>
+                <div class="desc">
+                  Socket open, initial <code class="mono">serverGetConfig</code> succeeded, probe
+                  registered. The run loop races <code class="mono">session.closed</code> against
+                  the active-lease monitor. <b>Reset window:</b> held ≥30s →
+                  <code class="mono">failureCount = 0</code>.
+                </div>
+              </div>
+              <div class="fsm-row">
+                <div class="ph">
+                  <span class="swatch" style="background: var(--bad)"></span>offline
+                </div>
+                <div class="desc">
+                  <code class="mono">navigator.onLine === false</code> (or RN equivalent).
+                  Supervisor parks here, aborts in-flight establishment, and waits for the network
+                  to return. <b>Not</b> a retry-eligible state.
+                </div>
+              </div>
+              <div class="fsm-row">
+                <div class="ph">
+                  <span class="swatch" style="background: var(--bad)"></span>blocked
+                </div>
+                <div class="desc">
+                  <code class="mono">ConnectionBlockedError</code> &mdash;
+                  auth/permission/config/<code class="mono">unsupported</code>. Does
+                  <b>not</b> retry; waits for a signal (credential refresh, user action). UI
+                  projects this as <code class="mono">error</code>.
+                </div>
+              </div>
+            </div>
+
+            <div class="callout">
+              <span class="lab">Why "reconnecting" is a distinct UI phase</span>
+              <p>
+                <code class="mono">connecting</code> projects to
+                <code class="mono">"connecting"</code> only when
+                <code class="mono">attempt ≤ 1 &amp;&amp; lastFailure === null</code>; otherwise to
+                <code class="mono">"reconnecting"</code>. A user seeing
+                &ldquo;Connecting&hellip;&rdquo; on a 6th retry would be lied to. The failure reason
+                is appended:
+                <i>&ldquo;Failed to connect. Reconnecting&hellip; Reason: &lt;error&gt;&rdquo;</i>.
+              </p>
+            </div>
+
+            <details>
+              <summary>The signal queue (5 signal types)</summary>
+              <div class="inner">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Signal</th>
+                      <th>Source</th>
+                      <th>Effect</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><code class="mono">ConnectRequested</code></td>
+                      <td>registry acquire, manual connect</td>
+                      <td>start an attempt</td>
+                    </tr>
+                    <tr>
+                      <td><code class="mono">DisconnectRequested</code></td>
+                      <td>user/env removal</td>
+                      <td>tear down, go available</td>
+                    </tr>
+                    <tr>
+                      <td><code class="mono">RetryRequested</code></td>
+                      <td>manual retry button</td>
+                      <td>interrupt backoff sleep / probe</td>
+                    </tr>
+                    <tr>
+                      <td><code class="mono">NetworkChanged</code></td>
+                      <td>
+                        <code class="mono">online</code>/<code class="mono">offline</code> events
+                      </td>
+                      <td>park offline, or resume</td>
+                    </tr>
+                    <tr>
+                      <td><code class="mono">Wakeup</code></td>
+                      <td>tab visible · credentials-changed</td>
+                      <td>probe liveness or force reconnect</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          </section>
+
+          <hr />
+
+          <!-- ═════════════ BACKOFF ═════════════ -->
+          <section id="backoff">
+            <h2><span class="ix">06</span> Backoff &amp; liveness</h2>
+            <p class="lede">
+              Pure exponential, no jitter, no cap on attempts. Three independent 15-second timeouts
+              guard three different layers. There is no continuous keepalive; the socket is probed
+              on demand when the app reactivates.
+            </p>
+
+            <div class="backoff">
+              <div
+                class="h"
+                style="
+                  font-family: var(--mono);
+                  font-size: 11px;
+                  color: var(--fg-dim);
+                  text-transform: uppercase;
+                  letter-spacing: 0.1em;
+                "
+              >
+                Reconnect delay by failure count
+              </div>
+              <div class="bars">
+                <div class="bar">
+                  <div class="val">1s</div>
+                  <div class="blk" style="height: 8%"></div>
+                  <div class="lbl">attempt 1</div>
+                </div>
+                <div class="bar">
+                  <div class="val">2s</div>
+                  <div class="blk" style="height: 14%"></div>
+                  <div class="lbl">2</div>
+                </div>
+                <div class="bar">
+                  <div class="val">4s</div>
+                  <div class="blk" style="height: 26%"></div>
+                  <div class="lbl">3</div>
+                </div>
+                <div class="bar">
+                  <div class="val">8s</div>
+                  <div class="blk" style="height: 52%"></div>
+                  <div class="lbl">4</div>
+                </div>
+                <div class="bar">
+                  <div class="val">16s</div>
+                  <div class="blk" style="height: 100%"></div>
+                  <div class="lbl">5+</div>
+                </div>
+                <div class="bar">
+                  <div class="val">16s</div>
+                  <div class="blk" style="height: 100%; opacity: 0.5"></div>
+                  <div class="lbl">&hellip;forever</div>
+                </div>
+              </div>
+              <p class="small" style="margin: 10px 0 0">
+                Pinned at 16s after the 5th failure. Resets to 0 only after a connection held ≥30s
+                (<code class="mono">BACKOFF_RESET_AFTER_MS</code>). No jitter means simultaneous
+                clients can thunder-herd on a server restart.
+              </p>
+            </div>
+
+            <h3>Three 15-second timeouts, three layers</h3>
+            <div class="grid cols-3">
+              <div class="card">
+                <div class="h">Socket open</div>
+                <div class="v">
+                  <b>SOCKET_OPEN_TIMEOUT</b><br /><span class="small"
+                    >Effect&rsquo;s <code class="mono">Socket.layerWebSocket</code> handshake. Fires
+                    before the RPC layer sees anything.</span
+                  >
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Establishment</div>
+                <div class="v">
+                  <b>CONNECTION_ESTABLISHMENT_TIMEOUT</b><br /><span class="small"
+                    >Socket + initial <code class="mono">serverGetConfig</code> round-trip. Trips →
+                    <code class="mono">ConnectionTransientError({reason:"timeout"})</code>.</span
+                  >
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Liveness probe</div>
+                <div class="v">
+                  <b>CONNECTION_PROBE_TIMEOUT</b><br /><span class="small"
+                    >On <code class="mono">application-active</code> wakeup. Calls
+                    <code class="mono">serverProbe</code> (or falls back to
+                    <code class="mono">serverGetConfig</code>).</span
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="callout bad">
+              <span class="lab">Gap &mdash; no continuous liveness bound</span>
+              <p>
+                A foregrounded tab with pings flowing but a silently-stalled reactor will show
+                <code class="mono">"live"</code> indefinitely. The 5s ping only proves
+                <i>transport</i> liveness, not <i>event-stream</i> liveness. Detection requires a
+                user action (visibility change → probe) or a transport failure.
+              </p>
+            </div>
+
+            <details>
+              <summary>What the 5-second ping actually does</summary>
+              <div class="inner">
+                <p>
+                  Effect&rsquo;s RPC client (<code class="mono">RpcClient.js:718-738</code>) runs a
+                  pinger:
+                </p>
+                <ol>
+                  <li>
+                    Every 5s, if the previous pong arrived, send <code class="mono">Ping</code>.
+                  </li>
+                  <li>
+                    If no pong arrived, <b>open a latch</b> &mdash;
+                    <code class="mono">pinger.timeout</code> resolves.
+                  </li>
+                  <li>
+                    <code class="mono">makeProtocolSocket</code> races the read loop against
+                    <code class="mono">pinger.timeout</code>.
+                  </li>
+                  <li>
+                    Timeout →
+                    <code class="mono">SocketOpenError({kind:"Timeout", cause:"ping timeout"})</code
+                    >.
+                  </li>
+                  <li>
+                    T3&rsquo;s Effect patch adds an <code class="mono">onPingTimeout</code> hook
+                    that fires before the failure.
+                  </li>
+                </ol>
+                <p>
+                  The server only ever <i>responds</i> to pings (<code class="mono"
+                    >RpcServer.js:487-490</code
+                  >); it never initiates. A half-open server-to-client direction is invisible until
+                  the client&rsquo;s own ping fails.
+                </p>
+              </div>
+            </details>
+          </section>
+
+          <hr />
+
+          <!-- ═════════════ MODES ═════════════ -->
+          <section id="modes">
+            <h2><span class="ix">07</span> Connection modes</h2>
+            <p class="lede">
+              All three modes converge on the same handshake: every client ends up speaking
+              <code class="mono">wss://&lt;endpoint&gt;/ws?wsTicket=&lt;ticket&gt;</code> to a T3
+              environment server. The modes differ only in <i>how the endpoint is reached</i> and
+              <i>how the bootstrap credential is obtained</i>. The WS protocol is identical.
+            </p>
+
+            <div class="grid cols-2" style="margin-top: 18px">
+              <div class="mode">
+                <div class="hd">
+                  <div class="t"><span class="ic">L</span>Local (primary)</div>
+                  <span class="pill good">trusted channel</span>
+                </div>
+                <div class="bd">
+                  <dl>
+                    <dt>Broker</dt>
+                    <dd><code class="mono">makePrimaryBroker</code></dd>
+                    <dt>Endpoint</dt>
+                    <dd>window origin (dev) or desktop-injected base URL</dd>
+                    <dt>Auth</dt>
+                    <dd>
+                      same-origin cookie, or desktop bearer via
+                      <code class="mono">PrimaryEnvironmentAuth</code>
+                    </dd>
+                    <dt>WS ticket</dt>
+                    <dd>
+                      only if a bearer is present; otherwise the upgrade falls back to cookie auth
+                    </dd>
+                  </dl>
+                  <p class="small" style="margin: 10px 0 0">
+                    Desktop renderer ↔ its bundled server. Web in single-origin dev. No tunnel, no
+                    relay.
+                  </p>
+                </div>
+              </div>
+
+              <div class="mode">
+                <div class="hd">
+                  <div class="t"><span class="ic">R</span>Remote / Relay (bearer)</div>
+                  <span class="pill">self-hosted · SSH-forwarded</span>
+                </div>
+                <div class="bd">
+                  <dl>
+                    <dt>Broker</dt>
+                    <dd>
+                      <code class="mono">makeBearerBroker</code> /
+                      <code class="mono">makeSshBroker</code>
+                    </dd>
+                    <dt>Endpoint</dt>
+                    <dd>
+                      saved profile (<code class="mono">httpBaseUrl</code> /
+                      <code class="mono">wsBaseUrl</code>)
+                    </dd>
+                    <dt>Auth</dt>
+                    <dd>bearer token from credential store</dd>
+                    <dt>WS ticket</dt>
+                    <dd>
+                      minted via <code class="mono">POST /api/auth/websocket-ticket</code> with
+                      <code class="mono">Authorization: Bearer …</code>
+                    </dd>
+                  </dl>
+                  <p class="small" style="margin: 10px 0 0">
+                    SSH path spawns a local port-forward in the desktop main process; the renderer
+                    treats <code class="mono">ws://127.0.0.1:&lt;port&gt;</code> as a normal bearer
+                    target.
+                  </p>
+                </div>
+              </div>
+
+              <div class="mode">
+                <div class="hd">
+                  <div class="t"><span class="ic">T</span>Tunnel (T3 Connect · DPoP)</div>
+                  <span class="pill warn">cloud-provisioned</span>
+                </div>
+                <div class="bd">
+                  <dl>
+                    <dt>Broker</dt>
+                    <dd><code class="mono">makeRelayBroker</code></dd>
+                    <dt>Endpoint</dt>
+                    <dd>Cloudflare Tunnel CNAME → user&rsquo;s loopback server</dd>
+                    <dt>Auth</dt>
+                    <dd>
+                      DPoP-bound access token (1h TTL), exchanged via
+                      <code class="mono">/oauth/token</code> using a relay-minted credential
+                    </dd>
+                    <dt>Hard boundary</dt>
+                    <dd>tunnel ingress restricted to <b>loopback origin only</b></dd>
+                  </dl>
+                  <p class="small" style="margin: 10px 0 0">
+                    The relay Worker never terminates a WebSocket. It provisions a Cloudflare Tunnel
+                    whose ingress points at the user&rsquo;s local T3 server; the client connects to
+                    the public hostname directly.
+                  </p>
+                </div>
+              </div>
+
+              <div class="mode">
+                <div class="hd">
+                  <div class="t"><span class="ic">~</span>One rule they all obey</div>
+                  <span class="pill live">resolver.ts:49</span>
+                </div>
+                <div class="bd">
+                  <pre style="margin: 0"><span class="com">// primarySocketUrl</span>
+<span class="key">if</span> (url.pathname === <span class="str">""</span> || url.pathname === <span class="str">"/"</span>) {
+  url.pathname = <span class="str">"/ws"</span>;
+}</pre>
+                  <p class="small" style="margin: 10px 0 0">
+                    Every T3 server speaks WebSocket at <code class="mono">${httpBaseUrl}/ws</code>.
+                    The resolver guarantees this regardless of how the base URL was discovered.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div class="callout warn">
+              <span class="lab"
+                >Footgun &mdash; AGENTS.md rule 3 is enforced only by convention</span
+              >
+              <p>
+                <code class="mono">resolveConfiguredPrimaryTarget</code> happily reads
+                <code class="mono">VITE_HTTP_URL</code>/<code class="mono">VITE_WS_URL</code> if
+                set. Dev is single-origin and positively signalled (<code class="mono"
+                  >T3CODE_SINGLE_ORIGIN_DEV=1</code
+                >) precisely because the config-merge layering can otherwise silently re-introduce
+                those vars, bake localhost into the bundle, and break every remote browser with no
+                compile-time guard.
+              </p>
+            </div>
+          </section>
+
+          <hr />
+
+          <!-- ═════════════ WIRE INSPECTOR ═════════════ -->
+          <section id="wire">
+            <h2><span class="ix">08</span> Wire inspector</h2>
+            <p class="lede">
+              A representative trace of one assistant token delta traveling from provider stdout to
+              a browser frame. Click any message to see it full-width. Every step is
+              schema-validated; the <code class="mono">tag</code> field is the RPC method name.
+            </p>
+
+            <div class="tabs" role="tablist">
+              <button class="tab active" data-tab="handshake" role="tab">
+                Connect handshake <span class="cnt">3</span>
+              </button>
+              <button class="tab" data-tab="dispatch" role="tab">
+                Command dispatch <span class="cnt">2</span>
+              </button>
+              <button class="tab" data-tab="stream" role="tab">
+                Streaming delta <span class="cnt">5</span>
+              </button>
+              <button class="tab" data-tab="resume" role="tab">
+                Reconnect &amp; resume <span class="cnt">3</span>
+              </button>
+            </div>
+
+            <!-- handshake -->
+            <div class="tab-panel active" data-panel="handshake">
+              <div class="wire-frame">
+                <div class="wire-head">
+                  <span class="led c2s"></span> Establishing a session &mdash; upgrade + initial
+                  config
+                </div>
+                <div class="wire-body">
+                  <div class="wire-col">
+                    <h4>Client → Server</h4>
+                    <div class="wire-msg c2s" onclick="expandMsg(this)">
+                      <div class="who">c→s · http upgrade</div>
+                      <div class="json">
+                        GET /ws?wsTicket=AbCd1234… HTTP/1.1 Upgrade: websocket Connection: Upgrade
+                      </div>
+                    </div>
+                    <div class="wire-msg c2s" onclick="expandMsg(this)">
+                      <div class="who">c→s · request #1</div>
+                      <div class="json">
+                        {"_tag":"Request","id":1,
+                        "tag":"server.getConfig","payload":{},"headers":[]}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="wire-col">
+                    <h4>Server → Client</h4>
+                    <div class="wire-msg s2c" onclick="expandMsg(this)">
+                      <div class="who">s→c · http 101</div>
+                      <div class="json">
+                        HTTP/1.1 101 Switching Protocols Upgrade: websocket Connection: Upgrade
+                        Sec-WebSocket-Accept: …
+                      </div>
+                    </div>
+                    <div class="wire-msg s2c" onclick="expandMsg(this)">
+                      <div class="who">s→c · reply #1</div>
+                      <div class="json">
+                        {"_tag":"Chunk","requestId":1,"values":[{
+                        "environment":{"id":"…","label":"t3trade",
+                        "capabilities":{"connectionProbe":true}}, "providers":[…],"version":"…"}]}
+                        {"_tag":"Exit","requestId":1, "exit":{"_tag":"Success","value":{…}}}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <p class="small">
+                The probe capability advertises whether <code class="mono">serverProbe</code> is
+                available; otherwise the client falls back to
+                <code class="mono">serverGetConfig</code> for liveness checks.
+              </p>
+            </div>
+
+            <!-- dispatch -->
+            <div class="tab-panel" data-panel="dispatch">
+              <div class="wire-frame">
+                <div class="wire-head">
+                  <span class="led c2s"></span> Dispatching a user message &mdash; command → events
+                </div>
+                <div class="wire-body">
+                  <div class="wire-col">
+                    <h4>Client → Server</h4>
+                    <div class="wire-msg c2s" onclick="expandMsg(this)">
+                      <div class="who">c→s · request #2</div>
+                      <div class="json">
+                        {"_tag":"Request","id":2, "tag":"orchestration.dispatchCommand",
+                        "payload":{"commandId":"cmd_01HZ…", "command":{"_tag":"thread.message-sent",
+                        "threadId":"thr_…","message":{…}}},"headers":[]}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="wire-col">
+                    <h4>Server → Client</h4>
+                    <div class="wire-msg s2c" onclick="expandMsg(this)">
+                      <div class="who">s→c · reply #2 (ack + sequence)</div>
+                      <div class="json">
+                        {"_tag":"Chunk","requestId":2,"values":[{
+                        "sequence":108,"commandId":"cmd_01HZ…"}]} {"_tag":"Exit","requestId":2,
+                        "exit":{"_tag":"Success","value":{"sequence":108}}}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <p class="small">
+                The reply only confirms the command was accepted and its sequence. The actual turn
+                output arrives on the <code class="mono">subscribeThread</code> stream, not as the
+                dispatch response. Commands are idempotent by <code class="mono">commandId</code>.
+              </p>
+            </div>
+
+            <!-- streaming delta -->
+            <div class="tab-panel" data-panel="stream">
+              <div class="wire-frame">
+                <div class="wire-head">
+                  <span class="led s2c"></span> One assistant token delta &mdash; the full
+                  server-side path
+                </div>
+                <div class="wire-body">
+                  <div class="wire-col">
+                    <h4>Client → Server</h4>
+                    <div class="wire-msg c2s" onclick="expandMsg(this)">
+                      <div class="who">c→s · request #3 (stream)</div>
+                      <div class="json">
+                        {"_tag":"Request","id":3, "tag":"orchestration.subscribeThread",
+                        "payload":{"threadId":"thr_…", "afterSequence":107,
+                        "requestCompletionMarker":true},"headers":[]}
+                      </div>
+                    </div>
+                    <div class="wire-msg c2s" onclick="expandMsg(this)">
+                      <div class="who">c→s · ack</div>
+                      <div class="json">{"_tag":"Ack","requestId":3}</div>
+                    </div>
+                  </div>
+                  <div class="wire-col">
+                    <h4>Server → Client</h4>
+                    <div class="wire-msg s2c" onclick="expandMsg(this)">
+                      <div class="who">s→c · chunk · snapshot marker</div>
+                      <div class="json">
+                        {"_tag":"Chunk","requestId":3,"values":[ {"kind":"synchronized"}]}
+                      </div>
+                    </div>
+                    <div class="wire-msg s2c" onclick="expandMsg(this)">
+                      <div class="who">s→c · chunk · streaming delta</div>
+                      <div class="json">
+                        {"_tag":"Chunk","requestId":3,"values":[{
+                        "kind":"thread-upserted","sequence":109,
+                        "thread":{"messages":[{"id":"msg_…", "text":"Here is the function…",
+                        "streaming":true}]}}]}
+                      </div>
+                    </div>
+                    <div class="wire-msg s2c" onclick="expandMsg(this)">
+                      <div class="who">s→c · chunk · coalesced burst</div>
+                      <div class="json">
+                        {"_tag":"Chunk","requestId":3,"values":[{
+                        "kind":"thread-upserted","sequence":110, "thread":{…}}]}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="callout" style="margin-top: 14px">
+                <span class="lab">Coalescing protects the shell stream</span>
+                <p>
+                  <code class="mono">Stream.groupedWithin(512, 50ms)</code> + per-aggregate dedup
+                  means a burst of 50 token deltas for one thread collapses into a single shell
+                  refetch (<code class="mono">SHELL_COALESCE_WINDOW = 50ms</code>,
+                  <code class="mono">SHELL_COALESCE_MAX_CHUNK = 512</code>). The live buffer is
+                  attached <i>before</i> the snapshot read so events in flight aren&rsquo;t lost.
+                </p>
+              </div>
+            </div>
+
+            <!-- resume -->
+            <div class="tab-panel" data-panel="resume">
+              <div class="wire-frame">
+                <div class="wire-head">
+                  <span class="led s2c"></span> Reconnect &amp; resume &mdash; HTTP snapshot, then
+                  sequence gap
+                </div>
+                <div class="wire-body">
+                  <div class="wire-col">
+                    <h4>Client → Server</h4>
+                    <div class="wire-msg c2s" onclick="expandMsg(this)">
+                      <div class="who">c→s · http (gzip)</div>
+                      <div class="json">
+                        GET /api/orchestration/shell Accept-Encoding: gzip # →
+                        snapshot.snapshotSequence = 107
+                      </div>
+                    </div>
+                    <div class="wire-msg c2s" onclick="expandMsg(this)">
+                      <div class="who">c→s · request #4 (stream)</div>
+                      <div class="json">
+                        {"_tag":"Request","id":4, "tag":"orchestration.subscribeShell",
+                        "payload":{"afterSequence":107,
+                        "requestCompletionMarker":true},"headers":[]}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="wire-col">
+                    <h4>Server → Client</h4>
+                    <div class="wire-msg s2c" onclick="expandMsg(this)">
+                      <div class="who">s→c · http 200 · gzipped json</div>
+                      <div class="json">
+                        Content-Encoding: gzip {"snapshotSequence":107,"threads":[…]}
+                      </div>
+                    </div>
+                    <div class="wire-msg s2c" onclick="expandMsg(this)">
+                      <div class="who">s→c · chunk · replay gap then live</div>
+                      <div class="json">
+                        {"_tag":"Chunk","requestId":4,"values":[ {"kind":"event","sequence":108,…},
+                        {"kind":"event","sequence":109,…}, {"kind":"synchronized"}]}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <p class="small">
+                If the gap exceeds <code class="mono">SHELL_RESUME_MAX_GAP = 1000</code>, the server
+                sends a fresh snapshot instead of replaying per-event. The client dedupes by
+                sequence, so catch-up + live tail never double-apply.
+              </p>
+            </div>
+          </section>
+
+          <hr />
+
+          <!-- ═════════════ PROVIDER ═════════════ -->
+          <section id="provider">
+            <h2><span class="ix">09</span> Provider pipeline</h2>
+            <p class="lede">
+              A provider CLI (Codex, Claude, Cursor, Grok, OpenCode) runs as a subprocess speaking
+              JSON-RPC over stdio. Its notifications are normalized into
+              <code class="mono">ProviderRuntimeEvent</code>s, ingested into the event-sourced core,
+              and re-emitted as domain events that flow to every subscribed WS client. The client
+              disconnecting mid-turn does <b>not</b> stop the provider.
+            </p>
+
+            <div class="pipeline">
+              <div class="pipe-node">
+                <div class="role">subprocess</div>
+                <div class="name">
+                  Provider CLI (e.g. <code class="mono">codex app-server</code>)
+                </div>
+                <p class="note">
+                  Spawned per session. Codex/Cursor/Grok speak framed JSON-RPC over stdio. Claude
+                  uses an async-iterable stdin pump + NDJSON stdout.
+                </p>
+                <span class="where">CodexSessionRuntime.ts:742-761 · ChildProcess.make</span>
+              </div>
+              <div class="arrow">↓ stdout notification</div>
+              <div class="pipe-node">
+                <div class="role">adapter</div>
+                <div class="name">emitEvent → runtime.events queue</div>
+                <p class="note">
+                  Every notification (e.g. <code class="mono">item/agentMessage/delta</code>) is
+                  funneled into a <code class="mono">Queue.unbounded&lt;ProviderEvent&gt;</code>.
+                  stderr is re-emitted as synthetic <code class="mono">process/stderr</code> events.
+                </p>
+                <span class="where">CodexSessionRuntime.ts:842-900, 1155-1186</span>
+              </div>
+              <div class="arrow">↓ mapToRuntimeEvents</div>
+              <div class="pipe-node">
+                <div class="role">service</div>
+                <div class="name">ProviderService PubSub fan-in</div>
+                <p class="note">
+                  One <code class="mono">PubSub.unbounded&lt;ProviderRuntimeEvent&gt;</code> merges
+                  all adapter instances. Consumers read via
+                  <code class="mono">Stream.fromPubSub</code>.
+                </p>
+                <span class="where">ProviderService.ts:215, 300-353</span>
+              </div>
+              <div class="arrow">↓ ProviderRuntimeIngestion worker</div>
+              <div class="pipe-node">
+                <div class="role">reactor</div>
+                <div class="name">
+                  Dispatch <code class="mono">thread.message.assistant.delta</code>
+                </div>
+                <p class="note">
+                  Computes the assistant message id, respects
+                  <code class="mono">enableAssistantStreaming</code> (buffered vs streaming mode),
+                  dispatches a domain command.
+                </p>
+                <span class="where">ProviderRuntimeIngestion.ts:1293-1501</span>
+              </div>
+              <div class="arrow">↓ decider → eventStore (SQL txn)</div>
+              <div class="pipe-node">
+                <div class="role">engine</div>
+                <div class="name">Append event + publish to PubSub</div>
+                <p class="note">
+                  Single-writer fiber serializes all commands.
+                  <code class="mono">streamDomainEvents</code> is a fresh
+                  <code class="mono">Stream.fromPubSub</code> per consumer &mdash; the WS layer,
+                  reactors, and ingestion each get their own copy.
+                </p>
+                <span class="where">OrchestrationEngine.ts:90-337</span>
+              </div>
+              <div class="arrow">↓ subscribeThread handler</div>
+              <div class="pipe-node">
+                <div class="role">ws handler</div>
+                <div class="name">Scope-bound live buffer → WS Chunk frame</div>
+                <p class="note">
+                  Filtered by thread, buffered before snapshot read, coalesced 50ms/512. The
+                  projector folds streaming <code class="mono">message-sent</code> by appending to
+                  <code class="mono">message.text</code>.
+                </p>
+                <span class="where">ws.ts:1292-1401 · projector.ts:439-498</span>
+              </div>
+            </div>
+
+            <div class="grid cols-2" style="margin-top: 18px">
+              <div class="callout good">
+                <span class="lab">Cancellation</span>
+                <p>
+                  A user stopping a turn sends <code class="mono">thread.turn.interrupt</code>. The
+                  decider emits <code class="mono">thread.turn-interrupt-requested</code>;
+                  <code class="mono">ProviderCommandReactor</code> calls
+                  <code class="mono">providerService.interruptTurn</code> &mdash;
+                  <b>by threadId, not turnId</b>, because orchestration turn ids are not provider
+                  turn ids. Codex sends JSON-RPC <code class="mono">turn/interrupt</code>; ACP
+                  adapters send <code class="mono">session_cancel</code>.
+                </p>
+              </div>
+              <div class="callout warn">
+                <span class="lab">All queues are unbounded</span>
+                <p>
+                  Every queue and PubSub in this chain is <code class="mono">unbounded</code>. A
+                  slow WS client or stalled reactor accumulates memory. The design assumes consumers
+                  keep up; the only safety net is scope-based cleanup on disconnect. The 5s ping
+                  timeout bounds it in practice.
+                </p>
+              </div>
+            </div>
+
+            <details>
+              <summary>Checkpointing &amp; receipts</summary>
+              <div class="inner">
+                <p>
+                  At turn completion, <code class="mono">CheckpointReactor</code> captures a hidden
+                  git ref:
+                </p>
+                <pre
+                  style="margin: 0"
+                ><span class="com"># refs/t3/checkpoints/&lt;base64url(threadId)&gt;/turn/&lt;turnCount&gt;</span>
+git read-tree HEAD   <span class="com"># into a temp GIT_INDEX_FILE</span>
+git add -A -- .
+git write-tree
+git commit-tree &lt;tree&gt; -m <span class="str">"t3 checkpoint ref=…"</span>
+git update-ref &lt;checkpointRef&gt; &lt;commitOid&gt;</pre>
+                <p>
+                  The finalized turn diff flows to clients via a
+                  <code class="mono">thread.turn.diff.complete</code> domain event (in the
+                  <code class="mono">isThreadDetailEvent</code> set).
+                  <code class="mono">RuntimeReceiptBus</code> publishes typed receipts &mdash; but
+                  the production layer is a <b>no-op</b>; receipts exist purely for test
+                  determinism. End-of-turn completion is signaled to clients by the domain event,
+                  not a receipt.
+                </p>
+              </div>
+            </details>
+          </section>
+
+          <hr />
+
+          <!-- ═════════════ SUBSCRIPTIONS ═════════════ -->
+          <section id="subs">
+            <h2><span class="ix">10</span> Subscriptions &amp; resume</h2>
+            <p class="lede">
+              There is no global broadcast primitive. Every server→client push is the
+              <code class="mono">success</code> schema of a streaming RPC the client explicitly
+              subscribed to. The strongest part of the design is how these subscriptions survive
+              reconnects: <code class="mono">subscribeDynamic</code> re-binds to whichever session
+              the supervisor currently holds, and resumes by sequence.
+            </p>
+
+            <div class="grid cols-2">
+              <div class="card">
+                <div class="h">Re-subscribe on session change</div>
+                <div class="v">
+                  <code class="mono">SubscriptionRef.changes(supervisor.session)</code> →
+                  <code class="mono">Stream.switchMap</code>. A new connection automatically
+                  re-issues every active subscription with a freshly-computed input.
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Resume by sequence, not replay</div>
+                <div class="v">
+                  Client loads HTTP snapshot, passes <code class="mono">afterSequence</code>. Server
+                  replays only the gap; falls back to a fresh snapshot if gap &gt; 1000.
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Transport-failure resilience</div>
+                <div class="v">
+                  A stream that fails with only <code class="mono">RpcClientError</code> reasons
+                  logs a warning and <b>drains</b> &mdash; it waits silently for the next session
+                  rather than failing the subscription. UI atoms are oblivious.
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">No outbound queue</div>
+                <div class="v">
+                  A <code class="mono">dispatchCommand</code> while offline fails fast with
+                  <code class="mono">EnvironmentRpcUnavailableError</code>. Nothing is buffered. The
+                  composer surfaces this as a send failure &mdash; not a silent outbox.
+                </div>
+              </div>
+            </div>
+
+            <h3>The push surface (all streaming RPCs)</h3>
+            <div class="grid cols-3" style="font-size: 12.5px">
+              <div class="card">
+                <div class="h">orchestration</div>
+                <div class="v">
+                  <code class="mono">subscribeShell</code><br /><code class="mono"
+                    >subscribeThread</code
+                  >
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">vcs</div>
+                <div class="v"><code class="mono">subscribe.vcsStatus</code></div>
+              </div>
+              <div class="card">
+                <div class="h">terminal</div>
+                <div class="v">
+                  <code class="mono">terminal.attach</code><br /><code class="mono"
+                    >subscribeTerminalEvents</code
+                  ><br /><code class="mono">subscribeTerminalMetadata</code>
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">preview</div>
+                <div class="v">
+                  <code class="mono">subscribePreviewEvents</code><br /><code class="mono"
+                    >previewAutomation.connect</code
+                  >
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">server</div>
+                <div class="v">
+                  <code class="mono">subscribeServerConfig</code><br /><code class="mono"
+                    >subscribeServerLifecycle</code
+                  ><br /><code class="mono">subscribeResourceTelemetry</code><br /><code
+                    class="mono"
+                    >subscribeBackgroundPolicy</code
+                  >
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">auth · discovery</div>
+                <div class="v">
+                  <code class="mono">subscribeAuthAccess</code><br /><code class="mono"
+                    >subscribeDiscoveredLocalServers</code
+                  >
+                </div>
+              </div>
+            </div>
+            <p class="small" style="margin-top: 10px">
+              Coalescing: shell <code class="mono">50ms / 512</code>, concurrency 8. Provider status
+              debounced <code class="mono">200ms</code>.
+              <code class="mono">enableAssistantStreaming</code>
+              switches delta dispatch between streaming and buffered modes.
+            </p>
+          </section>
+
+          <hr />
+
+          <!-- ═════════════ SURFACES ═════════════ -->
+          <section id="surfaces">
+            <h2><span class="ix">11</span> Web · Desktop · Mobile</h2>
+            <p class="lede">
+              There is no surface-specific WebSocket code. All three share one connection stack in
+              <code class="mono">packages/client-runtime</code>. Each surface differs only in (a)
+              which <code>WebSocket</code> constructor it provides, (b) which platform capabilities
+              it injects, and (c) how it bootstraps the list of environments.
+            </p>
+
+            <div class="grid cols-3">
+              <div class="card">
+                <div class="h">Web (browser)</div>
+                <div class="v">
+                  Browser&rsquo;s native <code>WebSocket</code>.<br /><br />
+                  <b>Has a primary?</b> Only if <code class="mono">window.desktopBridge</code> is
+                  present (desktop renderer). Hosted <code class="mono">app.t3.codes</code> has none
+                  &mdash; every environment is user-added remote.<br /><br />
+                  <b>Poll:</b> 3s <code class="mono">PLATFORM_POLL_INTERVAL</code> for desktop
+                  bootstraps (no change event).<br /><br />
+                  <b>Connectivity:</b> <code class="mono">navigator.onLine</code> + window events.
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Desktop (Electron)</div>
+                <div class="v">
+                  Same renderer as web. <b>Hosts the server</b> as an
+                  <code class="mono">ELECTRON_RUN_AS_NODE=1</code> child via
+                  <code class="mono">fd3</code> bootstrap.<br /><br />
+                  <b>WS server is the bundled <code class="mono">apps/server</code></b> &mdash;
+                  Electron main never creates one. The renderer connects to its own server the same
+                  way it connects to any remote.<br /><br />
+                  <b>Exposure:</b> LAN (<code class="mono">0.0.0.0</code>) · Tailscale Serve · T3
+                  Connect relay. Mode changes require relaunch (bind host fixed at spawn).
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Mobile (React Native)</div>
+                <div class="v">
+                  RN&rsquo;s built-in global <code>WebSocket</code> via
+                  <code class="mono">Socket.layerWebSocketConstructorGlobal</code>.
+                  <b>No native WS module, no fallback.</b><br /><br />
+                  <b>Never hosts.</b> No primary. SSH hard-blocked. All connections are bearer or
+                  DPoP-relay.<br /><br />
+                  <b>Background:</b> OS kills the socket. Recovery is the foreground probe. A 25s
+                  activity report + 45s server lease keeps server-side awareness.
+                </div>
+              </div>
+            </div>
+
+            <h3>What&rsquo;s shared vs surface-specific</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Concern</th>
+                  <th>Web</th>
+                  <th>Desktop</th>
+                  <th>Mobile</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>WebSocket constructor</td>
+                  <td>browser</td>
+                  <td>browser (renderer)</td>
+                  <td>RN global</td>
+                </tr>
+                <tr>
+                  <td>Supervisor + backoff</td>
+                  <td colspan="3" style="text-align: center">
+                    <span class="sev low">shared · client-runtime</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td>RPC session + protocol</td>
+                  <td colspan="3" style="text-align: center">
+                    <span class="sev low">shared · client-runtime</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Resolver + brokers</td>
+                  <td colspan="3" style="text-align: center">
+                    <span class="sev low">shared · client-runtime</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Primary environment</td>
+                  <td>desktop-managed / window-origin / env</td>
+                  <td>spawns + injects bootstrap</td>
+                  <td><span class="sev med">none</span></td>
+                </tr>
+                <tr>
+                  <td>SSH gateway</td>
+                  <td>via desktopBridge</td>
+                  <td>spawns port-forward</td>
+                  <td><span class="sev med">unsupported</span></td>
+                </tr>
+                <tr>
+                  <td>Background keepalive</td>
+                  <td>n/a</td>
+                  <td>n/a</td>
+                  <td>25s report + 45s lease</td>
+                </tr>
+                <tr>
+                  <td>Connectivity source</td>
+                  <td><code class="mono">navigator.onLine</code></td>
+                  <td>(web renderer)</td>
+                  <td><code class="mono">expo-network</code></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div class="callout warn">
+              <span class="lab">Mobile relies on RN&rsquo;s WebSocket only</span>
+              <p>
+                If a platform update changes RN&rsquo;s WebSocket behavior (iOS network.framework
+                migration, HTTP/3), every connection breaks with no escape hatch. RN&rsquo;s WS is
+                also known to be less tolerant of HTTP upgrade edge cases than browsers.
+              </p>
+            </div>
+          </section>
+
+          <hr />
+
+          <!-- ═════════════ RISKS ═════════════ -->
+          <section id="risks">
+            <h2><span class="ix">12</span> Risk register</h2>
+            <p class="lede">
+              Concrete gaps observed in the source, ordered by severity. Each is grounded in a
+              specific file and line. None are speculative.
+            </p>
+
+            <table>
+              <thead>
+                <tr>
+                  <th style="width: 54px">Sev</th>
+                  <th>Risk</th>
+                  <th>Evidence</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><span class="sev high">high</span></td>
+                  <td>
+                    <b>No outbound queue while offline.</b> A message typed while disconnected fails
+                    fast and is lost unless re-sent. For a coding-agent product where a turn is
+                    expensive, a transparent outbox would be a meaningful resilience upgrade.
+                  </td>
+                  <td>
+                    <code class="mono">rpc/client.ts:107-123</code><br /><code class="mono"
+                      >EnvironmentRpcUnavailableError</code
+                    >
+                  </td>
+                </tr>
+                <tr>
+                  <td><span class="sev high">high</span></td>
+                  <td>
+                    <b>No event-stream liveness bound.</b> <code class="mono">"live"</code> shell
+                    status means &ldquo;caught up to last sequence,&rdquo; not &ldquo;events still
+                    flowing.&rdquo; A silently-stalled reactor (transport fine, pings fine, no
+                    events) shows <code class="mono">"live"</code> indefinitely.
+                  </td>
+                  <td>
+                    <code class="mono">state/shell.ts:29</code><br />No staleness watchdog exists
+                  </td>
+                </tr>
+                <tr>
+                  <td><span class="sev med">med</span></td>
+                  <td>
+                    <b>All queues unbounded.</b> A slow/stuck client accumulates server memory. The
+                    5s ping timeout bounds it in practice, but a malicious or very-slow client could
+                    pressure memory. Shell coalescing mitigates event volume, not queue backlog.
+                  </td>
+                  <td>
+                    <code class="mono">ws.ts:1154, 1311</code><br /><code class="mono"
+                      >OrchestrationEngine.ts:90-91</code
+                    >
+                  </td>
+                </tr>
+                <tr>
+                  <td><span class="sev med">med</span></td>
+                  <td>
+                    <b>No jitter in backoff.</b> Pure <code class="mono">[1,2,4,8,16]s</code>. Many
+                    simultaneous clients reconnecting after a server restart herd on the same
+                    schedule.
+                  </td>
+                  <td><code class="mono">supervisor.ts:32, 102-104</code></td>
+                </tr>
+                <tr>
+                  <td><span class="sev med">med</span></td>
+                  <td>
+                    <b>No max-retry cap.</b> A permanently-unreachable environment retries forever
+                    at 16s. Bounded only by user disconnect or network offline.
+                  </td>
+                  <td>
+                    <code class="mono">supervisor.test.ts:314</code><br />&ldquo;retries
+                    forever&rdquo;
+                  </td>
+                </tr>
+                <tr>
+                  <td><span class="sev med">med</span></td>
+                  <td>
+                    <b><code class="mono">getFullThreadDiff</code> is unbounded.</b>
+                    <code class="mono">diff: Schema.String</code>, no truncation, no chunking,
+                    full-thread scope, over an uncompressed WS frame. The single biggest candidate
+                    message in the system.
+                  </td>
+                  <td>
+                    <code class="mono">orchestration.ts:1376-1382, 1442</code><br /><code
+                      class="mono"
+                      >ws.ts:1125-1138</code
+                    >
+                  </td>
+                </tr>
+                <tr>
+                  <td><span class="sev med">med</span></td>
+                  <td>
+                    <b>Beta + locally-patched Effect platform.</b>
+                    <code class="mono">effect@4.0.0-beta.102</code> and platform patches add
+                    <code class="mono">perMessageDeflate: true</code>. Upgrading Effect without
+                    re-confirming the patch silently regresses WS compression.
+                  </td>
+                  <td>
+                    <code class="mono">patches/effect@4.0.0-beta.102.patch</code><br /><code
+                      class="mono"
+                      >patches/@effect__platform-node@…patch</code
+                    >
+                  </td>
+                </tr>
+                <tr>
+                  <td><span class="sev med">med</span></td>
+                  <td>
+                    <b>Exposure-mode change requires relaunch.</b> The bind host is fixed at child
+                    spawn. Toggling LAN→local-only keeps the open socket on
+                    <code class="mono">0.0.0.0</code> until restart.
+                  </td>
+                  <td><code class="mono">DesktopServerExposure.ts:267</code></td>
+                </tr>
+                <tr>
+                  <td><span class="sev low">low</span></td>
+                  <td>
+                    <b>Refcount composite not atomic.</b> <code class="mono">markConnected</code> is
+                    atomic for the count, but the surrounding load+emit is eventually-consistent; a
+                    failed emit is swallowed and desyncs the UI session list.
+                  </td>
+                  <td><code class="mono">SessionStore.ts:513-545</code></td>
+                </tr>
+                <tr>
+                  <td><span class="sev low">low</span></td>
+                  <td>
+                    <b>No explicit <code class="mono">maxPayload</code>.</b> Relies on platform
+                    defaults (Node <code>ws</code>: 100 MiB). Combined with the unbounded diff, a
+                    latent footgun.
+                  </td>
+                  <td>No override in <code class="mono">apps/server/src</code></td>
+                </tr>
+                <tr>
+                  <td><span class="sev low">low</span></td>
+                  <td>
+                    <b>Receipt bus is a no-op in production.</b> Typed receipts fire but go nowhere;
+                    they exist for test determinism. End-of-turn is signaled by domain events, not
+                    receipts.
+                  </td>
+                  <td><code class="mono">Layers/RuntimeReceiptBus.ts:22-25</code></td>
+                </tr>
+                <tr>
+                  <td><span class="sev low">low</span></td>
+                  <td>
+                    <b>Web&rsquo;s 3s platform poll.</b> No change event from the desktop bridge, so
+                    topology changes (WSL toggle) take up to 3s. Cache-by-signature mitigates but
+                    doesn&rsquo;t eliminate wasted fetches.
+                  </td>
+                  <td><code class="mono">platform.ts:363</code></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div class="callout good">
+              <span class="lab">What recovers gracefully</span>
+              <p>
+                Transient drops, ping timeouts, tab/laptop sleep, server restarts, mid-turn client
+                disconnect, malformed inbound messages, and brief network flapping all recover
+                correctly. The supervisor + sequence-resume + coalescing design is genuinely robust
+                for the common failure modes.
+              </p>
+            </div>
+          </section>
+
+          <hr />
+
+          <!-- ═════════════ EVIDENCE ═════════════ -->
+          <section id="evidence">
+            <h2><span class="ix">13</span> Evidence index</h2>
+            <p class="lede">
+              Every claim above is grounded in these files. The report was built from eight parallel
+              investigation threads (~680k tokens of source read).
+            </p>
+
+            <div class="grid cols-2">
+              <div class="card">
+                <div class="h">Server transport</div>
+                <div class="v" style="font-size: 12px; line-height: 1.8">
+                  <code class="mono">apps/server/src/server.ts:118,172-196,435-583</code><br />
+                  <code class="mono">apps/server/src/ws.ts:2091-2153</code> (route)<br />
+                  <code class="mono">apps/server/src/ws.ts:342-2089</code> (handlers)<br />
+                  <code class="mono">apps/server/src/config.ts:17</code> (port 3773)
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Client runtime</div>
+                <div class="v" style="font-size: 12px; line-height: 1.8">
+                  <code class="mono">packages/client-runtime/src/rpc/session.ts:68-148</code><br />
+                  <code class="mono">…/connection/supervisor.ts:32-104, 456-668</code><br />
+                  <code class="mono">…/connection/resolver.ts:49-242</code><br />
+                  <code class="mono">…/rpc/client.ts:177-292</code> (durable subs)<br />
+                  <code class="mono">…/connection/model.ts:125-173</code>
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Contracts</div>
+                <div class="v" style="font-size: 12px; line-height: 1.8">
+                  <code class="mono">packages/contracts/src/rpc.ts:1-843</code> (WsRpcGroup)<br />
+                  <code class="mono">packages/contracts/src/orchestration.ts</code><br />
+                  <code class="mono">.repos/effect-smol/…/RpcMessage.ts</code> (envelope)
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Auth &amp; pairing</div>
+                <div class="v" style="font-size: 12px; line-height: 1.8">
+                  <code class="mono">apps/server/src/auth/SessionStore.ts:403-821</code><br />
+                  <code class="mono">apps/server/src/auth/PairingGrantStore.ts:241-568</code><br />
+                  <code class="mono">apps/server/src/auth/EnvironmentAuth.ts:941-961</code><br />
+                  <code class="mono">apps/server/src/auth/http.ts:222-434</code>
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Orchestration</div>
+                <div class="v" style="font-size: 12px; line-height: 1.8">
+                  <code class="mono"
+                    >apps/server/src/orchestration/Layers/OrchestrationEngine.ts</code
+                  ><br />
+                  <code class="mono">apps/server/src/orchestration/decider.ts</code><br />
+                  <code class="mono">apps/server/src/orchestration/projector.ts:439-498</code><br />
+                  <code class="mono"
+                    >apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts</code
+                  >
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Providers</div>
+                <div class="v" style="font-size: 12px; line-height: 1.8">
+                  <code class="mono"
+                    >apps/server/src/provider/Layers/CodexSessionRuntime.ts:742-1341</code
+                  ><br />
+                  <code class="mono"
+                    >apps/server/src/provider/Services/ProviderAdapter.ts:45-126</code
+                  ><br />
+                  <code class="mono">packages/effect-codex-app-server/src/client.ts:258-269</code>
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">Surfaces</div>
+                <div class="v" style="font-size: 12px; line-height: 1.8">
+                  <code class="mono">apps/web/src/connection/platform.ts</code><br />
+                  <code class="mono">apps/web/src/environments/primary/target.ts:184-294</code
+                  ><br />
+                  <code class="mono">apps/mobile/src/lib/runtime.ts:25-44</code><br />
+                  <code class="mono">apps/mobile/src/connection/platform.ts:87-175</code><br />
+                  <code class="mono"
+                    >apps/desktop/src/backend/DesktopBackendManager.ts:435-600</code
+                  >
+                </div>
+              </div>
+              <div class="card">
+                <div class="h">T3 Connect (tunnel)</div>
+                <div class="v" style="font-size: 12px; line-height: 1.8">
+                  <code class="mono">infra/relay/src/environments/ManagedEndpointProvider.ts</code
+                  ><br />
+                  <code class="mono">infra/relay/src/environments/EnvironmentConnector.ts</code
+                  ><br />
+                  <code class="mono">apps/server/src/cloud/ManagedEndpointRuntime</code>
+                </div>
+              </div>
+            </div>
+
+            <footer>
+              <div>T3 Code · WebSocket connection logic · 2026-08-03</div>
+              <div>
+                Built from 8 parallel investigation subagents · standalone artifact, no external
+                dependencies
+              </div>
+              <div>
+                Verify claims against the listed file:line evidence &mdash; the source is
+                authoritative.
+              </div>
+            </footer>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      // ── active nav highlight on scroll ──
+      (function () {
+        const links = Array.from(document.querySelectorAll("nav.side a.nav-item"));
+        const sections = links
+          .map((a) => document.querySelector(a.getAttribute("href")))
+          .filter(Boolean);
+        function update() {
+          const y = window.scrollY + 80;
+          let active = sections[0];
+          for (const s of sections) {
+            if (s.offsetTop <= y) active = s;
+          }
+          links.forEach((a) =>
+            a.classList.toggle("active", a.getAttribute("href") === "#" + (active && active.id)),
+          );
+        }
+        let ticking = false;
+        window.addEventListener(
+          "scroll",
+          () => {
+            if (!ticking) {
+              requestAnimationFrame(() => {
+                update();
+                ticking = false;
+              });
+              ticking = true;
+            }
+          },
+          { passive: true },
+        );
+        update();
+      })();
+
+      // ── smooth-scroll nav clicks (and close mobile) ──
+      document.querySelectorAll("nav.side a.nav-item").forEach((a) => {
+        a.addEventListener("click", (e) => {
+          const id = a.getAttribute("href");
+          const el = document.querySelector(id);
+          if (el) {
+            e.preventDefault();
+            const top = el.getBoundingClientRect().top + window.scrollY - 56;
+            window.scrollTo({
+              top,
+              behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+                ? "auto"
+                : "smooth",
+            });
+            closeNav();
+          }
+        });
+      });
+
+      // ── tabs ──
+      document.querySelectorAll(".tab").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const tab = btn.dataset.tab;
+          document
+            .querySelectorAll(".tab")
+            .forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+          document
+            .querySelectorAll(".tab-panel")
+            .forEach((p) => p.classList.toggle("active", p.dataset.panel === tab));
+        });
+      });
+
+      // ── expand wire message on click ──
+      function expandMsg(el) {
+        const json = el.querySelector(".json");
+        if (!json) return;
+        if (json.style.whiteSpace === "pre") {
+          json.style.whiteSpace = "pre-wrap";
+          el.style.background = "";
+        } else {
+          json.style.whiteSpace = "pre";
+          el.style.background = "var(--bg-elev-2)";
+        }
+      }
+
+      // ── mobile nav ──
+      function openNav() {
+        document.getElementById("sideNav").classList.add("open");
+        document.getElementById("scrim").classList.add("show");
+      }
+      function closeNav() {
+        document.getElementById("sideNav").classList.remove("open");
+        document.getElementById("scrim").classList.remove("show");
+      }
+      window.openNav = openNav;
+      window.closeNav = closeNav;
+      window.expandMsg = expandMsg;
+    </script>
+  </body>
+</html>

@@ -41,6 +41,7 @@ import * as Stream from "effect/Stream";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import type { PersistedWatch, TradingHarnessRunCause } from "./Schemas.ts";
 import { executionRefusedKey, executionSettledKey } from "./ExecutionRefusal.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
@@ -207,6 +208,7 @@ const make = Effect.gen(function* () {
   const gateway = yield* HyperliquidGateway;
   const signerConfig = yield* InterimSignerConfig;
   const protection = yield* TradingProtectionService;
+  const providerRegistry = yield* ProviderRegistry;
   const emergency = yield* TradingEmergencyCloseService;
   const controls = yield* TradingControlService;
   const autoMission = yield* AutoMissionConfig;
@@ -289,14 +291,35 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * The driver kind that runs one configured provider instance, or null when
+   * the registry does not know the instance (an id from settings this build has
+   * no driver for). A null falls through to `toTradingProvider`'s default.
+   */
+  const driverKindForInstance = (instanceId: string) =>
+    providerRegistry.getProviders.pipe(
+      Effect.map(
+        (providers) =>
+          providers.find((snapshot) => snapshot.instanceId === instanceId)?.driver ?? null,
+      ),
+    );
+
+  /**
    * Derive the harness binding from the thread the mission is bound to.
    *
    * The provider and instance come from the thread's session (the live provider
-   * session the mission's turns will resume). The session may not exist yet at
-   * mission-create time (the first turn establishes it); in that case the
-   * model selection's instance id is the fallback, and the provider defaults to
-   * "codex" until a session materialises. The binding is identity-frozen for an
-   * active mission (§10.2), so this is the one place it is resolved.
+   * session the mission's turns will resume). The session usually does not
+   * exist yet at mission-create time — the first turn establishes it — so the
+   * instance id comes from the thread's model selection, and the driver kind is
+   * looked up from the provider registry by that instance id.
+   *
+   * That lookup is not a nicety. The binding is identity-frozen for an active
+   * mission (§10.2), so a provider guessed wrong here can never be corrected,
+   * and the workspace reads `harness.provider` as the driver the composer's
+   * model picker is locked to (`missionHarnessProvider` in `ChatView`).
+   * Defaulting to "codex" bound every OpenCode and Claude mission to a driver
+   * that was not the one running the thread, which locked the picker to the
+   * wrong provider and left the mission unable to take a follow-up message
+   * after its first turn.
    */
   const resolveHarnessBinding = Effect.fn("TradingMissionReactor.resolveHarnessBinding")(function* (
     threadId: ThreadId,
@@ -315,9 +338,11 @@ const make = Effect.gen(function* () {
       };
     }
     const session = shell.value.session;
+    const providerInstanceId = session?.providerInstanceId ?? shell.value.modelSelection.instanceId;
+    const driverKind = session?.providerName ?? (yield* driverKindForInstance(providerInstanceId));
     return {
-      provider: toTradingProvider(session?.providerName ?? null),
-      providerInstanceId: session?.providerInstanceId ?? shell.value.modelSelection.instanceId,
+      provider: toTradingProvider(driverKind),
+      providerInstanceId,
       threadId,
       status: "available" as const,
     };

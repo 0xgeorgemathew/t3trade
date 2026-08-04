@@ -8,7 +8,6 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  canSettle,
   effectiveSettled,
   hasQueuedTurnStart,
   threadLastActivityAt,
@@ -332,32 +331,13 @@ describe("hasQueuedTurnStart", () => {
   });
 });
 
-describe("canSettle", () => {
-  it("blocks every state effectiveSettled refuses to classify as settled", () => {
-    expect(canSettle(makeShell({ activityAt: FRESH }), { now: NOW })).toBe(true);
-    expect(
-      canSettle(makeShell({ activityAt: FRESH, sessionStatus: "starting" }), { now: NOW }),
-    ).toBe(false);
-    expect(
-      canSettle(makeShell({ activityAt: FRESH, sessionStatus: "running" }), { now: NOW }),
-    ).toBe(false);
-    expect(canSettle(makeShell({ activityAt: FRESH, pending: "approval" }), { now: NOW })).toBe(
-      false,
-    );
-    expect(canSettle(makeShell({ activityAt: FRESH, pending: "user-input" }), { now: NOW })).toBe(
-      false,
-    );
-  });
-
-  it("blocks settling a queued turn start, only within the grace window", () => {
+describe("settled classification", () => {
+  it("never auto-settles a queued turn start inside the grace window", () => {
     const queued = {
       ...makeShell({ activityAt: FRESH }),
       latestUserMessageAt: "2026-04-09T12:00:00.000Z",
     };
     const justAfter = "2026-04-09T12:00:30.000Z";
-    expect(canSettle(queued, { now: justAfter })).toBe(false);
-    // effectiveSettled must agree: queued work never auto-settles either,
-    // even with a merged PR.
     expect(
       effectiveSettled(queued, {
         now: justAfter,
@@ -365,8 +345,6 @@ describe("canSettle", () => {
         changeRequestState: "merged",
       }),
     ).toBe(false);
-    // Past the window the message is a failed/stale start: settleable again.
-    expect(canSettle(queued, { now: NOW })).toBe(true);
   });
 
   it("lets a server-accepted settle overrule the clock-derived queued blocker", () => {
@@ -403,15 +381,12 @@ describe("canSettle", () => {
     ).toBe(false);
   });
 
-  it("agrees with effectiveSettled's blockers for explicitly settled shells", () => {
-    // Anything canSettle rejects must render as active even when the user
-    // settled it earlier.
+  it("renders a thread with a raised hand as active even when it was settled", () => {
     const blocked = makeShell({
       settledOverride: "settled",
       activityAt: FRESH,
       pending: "user-input",
     });
-    expect(canSettle(blocked, { now: NOW })).toBe(false);
     expect(effectiveSettled(blocked, { now: NOW, autoSettleAfterDays: 3 })).toBe(false);
   });
 });

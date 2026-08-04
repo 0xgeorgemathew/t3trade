@@ -1040,6 +1040,70 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("opens one turn when two prompts arrive at once", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      // The mission case: a trading harness wake lands in the same tick as the
+      // user's own message. Unserialised, both read "no active turn", both mint
+      // a turn id, and orchestration rejects the loser's turn.completed forever.
+      // The model switch is the interleaving point: it awaits the SDK's
+      // setModel promise between reading the turn state and writing it back.
+      const modelSelection = createModelSelection(
+        ProviderInstanceId.make("claudeAgent"),
+        "claude-sonnet-4-6",
+        [],
+      );
+      const [first, second] = yield* Effect.all(
+        [
+          adapter.sendTurn({
+            threadId: session.threadId,
+            input: "Hi there",
+            attachments: [],
+            modelSelection,
+          }),
+          adapter.sendTurn({
+            threadId: session.threadId,
+            input: "mission wake",
+            attachments: [],
+            modelSelection,
+          }),
+        ],
+        { concurrency: 2 },
+      );
+      assert.equal(String(second.turnId), String(first.turnId));
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-concurrent",
+        uuid: "result-concurrent-1",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const turnStartedEvents = runtimeEvents.filter((event) => event.type === "turn.started");
+      assert.equal(turnStartedEvents.length, 1);
+      assert.equal(String(turnStartedEvents[0]?.turnId), String(first.turnId));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("maps Claude reasoning deltas, streamed tool inputs, and tool results", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
