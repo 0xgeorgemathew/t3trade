@@ -24,6 +24,7 @@ import * as Schema from "effect/Schema";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { POC_DEFAULT_TIMEFRAME } from "@t3tools/trading-contracts/strategy";
+import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 
 import type { TradingAuthority } from "./Schemas.ts";
 import type { MomentumStrategyState } from "./Schemas.ts";
@@ -38,6 +39,9 @@ import {
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
+
+/** §12.2 bounds the candles a wakeup carries directly. */
+const WAKEUP_RECENT_CANDLES = 20;
 
 /** The wakeup serialized as the resumed turn's `message.text`. */
 const WakeupJson = Schema.fromJsonString(TradingHarnessWakeup);
@@ -138,19 +142,36 @@ const make = Effect.gen(function* () {
       // it holds and what price just did, without boilerplate tool calls. A
       // history-read failure fails compose the same way a snapshot failure does.
       const primaryTimeframe = activeStrategy.timeframes[0] ?? POC_DEFAULT_TIMEFRAME;
-      const [marketSnapshot, accountSnapshot, position, recentCandles] = yield* Effect.all(
+      const [marketSnapshot, accountSnapshot, position, history] = yield* Effect.all(
         [
           gateway.getMarketSnapshot(mission.market),
           gateway.getAccountSnapshot(address),
           gateway.getPosition(address, mission.market),
+          // One read serves both halves of "what did price just do?": the last
+          // 20 bars the harness reads directly, and the longer window the
+          // volatility measurement needs to say anything trustworthy.
           gateway.getMarketHistory({
             market: mission.market,
             interval: primaryTimeframe,
-            maxBars: 20,
+            maxBars: VOLATILITY_LOOKBACK_BARS,
           }),
         ],
         { concurrency: "unbounded" },
       ).pipe(Effect.mapError((error) => fail("snapshot_read_failed", error)));
+
+      // §12.2 bounds `recentCandles` at 20 bars; the measurement reads the whole
+      // window. A target derived from 20 one-minute bars is a target derived
+      // from twenty minutes of noise.
+      const recentCandles = {
+        ...history,
+        candles: history.candles.slice(-WAKEUP_RECENT_CANDLES),
+      };
+      const observedVolatility = measureVolatility({
+        market: mission.market,
+        interval: primaryTimeframe,
+        candles: history.candles,
+        measuredAt: history.freshness.observedAt,
+      });
 
       const triggeringWatch = yield* resolveTriggeringWatch(input.triggeringWatchId);
 
@@ -182,6 +203,7 @@ const make = Effect.gen(function* () {
         accountSnapshot,
         position,
         recentCandles,
+        observedVolatility,
         activeStrategy,
         strategyAgeMillis: Math.max(0, occurredAt - activeStrategy.updatedAt),
         armedWatches,

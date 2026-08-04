@@ -731,6 +731,7 @@ describe("subpath exports", () => {
         "./loss-accounting",
         "./protection",
         "./wakeup",
+        "./volatility",
       ].sort(),
     );
 

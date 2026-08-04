@@ -3,9 +3,10 @@
  *
  * Covers the persist functions (position upsert, fill idempotency, order
  * replace, reservation release) and the full `reconcile` entry point with a
- * fake InfoClient + fake gateway. The fill identity `f.hash ?? cloid-time-idx`
- * is the load-bearing fix under test: two same-ms partials of one order must
- * land as two rows, not collapse on a bare cloid.
+ * fake InfoClient + fake gateway. Fill identity is the load-bearing thing under
+ * test: every partial of an order must land as its own row. `tid` is the
+ * identity; `hash` is not one (it is shared by every fill of an action) and
+ * keying on it collapsed an order into a single under-reported row.
  *
  * Pattern: a single `it.layer` shares one in-memory sqlite db (migrated to
  * 040) + a MUTABLE fake gateway/info pair. Each test seeds the db, swaps the
@@ -186,6 +187,90 @@ const fillAt = (
   ...(hash !== undefined ? { hash } : {}),
 });
 
+/**
+ * One sub-fill of an order, shaped as `userFills` returns it — every field the
+ * identity and the money columns are read from is explicit.
+ */
+const subFill = (f: {
+  readonly oid: number;
+  readonly time: number;
+  readonly px: string;
+  readonly sz: string;
+  readonly fee: string;
+  readonly closedPnl: string;
+  readonly tid?: number;
+  readonly hash?: string;
+}) => ({
+  coin: "ETH",
+  side: "A" as const,
+  px: f.px,
+  sz: f.sz,
+  time: f.time,
+  fee: f.fee,
+  oid: f.oid,
+  cloid: "beef".padEnd(32, "0"),
+  feeToken: "USDC",
+  closedPnl: f.closedPnl,
+  ...(f.tid !== undefined ? { tid: f.tid } : {}),
+  ...(f.hash !== undefined ? { hash: f.hash } : {}),
+});
+
+/**
+ * The 01:12:56 close from the exchange's own trade history: 1.0632 ETH at an
+ * average of 1879.8784142212, fee 0.899407, closedPnl -1.453957 — matched in
+ * three slices that all share one L1 transaction hash.
+ */
+const CLOSE_ORDER_ID = 57_431_816_538;
+const CLOSE_HASH = "0xbl0ck";
+const CLOSE_SUBFILLS = [
+  { sz: "0.2295", px: "1879.6", fee: "0.194149", closedPnl: "-0.313857", tid: 1 },
+  { sz: "0.5", px: "1880.1", fee: "0.423028", closedPnl: "-0.684000", tid: 2 },
+  { sz: "0.3337", px: "1879.7378783338", fee: "0.282230", closedPnl: "-0.456100", tid: 3 },
+] as const;
+const CLOSE_TOTAL = {
+  size: 1.0632,
+  avgPrice: 1879.8784142212,
+  fee: 0.899407,
+  closedPnl: -1.453957,
+};
+
+const closeFills = (options: { readonly withTid: boolean }) =>
+  CLOSE_SUBFILLS.map((f) =>
+    subFill({
+      oid: CLOSE_ORDER_ID,
+      time: 1_754_356_376_000,
+      px: f.px,
+      sz: f.sz,
+      fee: f.fee,
+      closedPnl: f.closedPnl,
+      hash: CLOSE_HASH,
+      ...(options.withTid ? { tid: f.tid } : {}),
+    }),
+  );
+
+/** Sum the mission's fills the way the projection's receipt query does. */
+const readOrderTotals = (orderId: number) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{
+      readonly rows: number;
+      readonly size: number;
+      readonly avg_price: number;
+      readonly fee: number;
+      readonly closed_pnl: number;
+    }>`
+      SELECT
+        COUNT(*) AS rows,
+        SUM(filled_size) AS size,
+        SUM(filled_size * avg_fill_price) / SUM(filled_size) AS avg_price,
+        SUM(fee_usd) AS fee,
+        SUM(closed_pnl) AS closed_pnl
+      FROM trading_fills
+      WHERE mission_id = ${MISSION} AND order_id = ${orderId}
+    `;
+    return rows[0]!;
+  });
+
 const order = (
   cloidChar: string,
   orderId: number,
@@ -290,6 +375,84 @@ layer("HyperliquidReconciler", (it) => {
         `;
         assert.equal(rows[0]?.c, 2);
       }),
+  );
+
+  // -------------------------------------------------------------------------
+  // 1c. The hash-collision regression: every sub-fill of one order carries the
+  //     SAME `hash` (it is the L1 transaction hash of the action, not a fill
+  //     id). Keying identity on it kept one slice's size and overwrote fee and
+  //     PnL with another slice's, so a 1.0632 ETH close was reported as 0.2295
+  //     ETH costing $0.33 with -$0.20 realised.
+  // -------------------------------------------------------------------------
+  it.effect("keeps every sub-fill of one order that shares an L1 hash", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* setState({ fills: closeFills({ withTid: true }) });
+
+      const reconciler = yield* HyperliquidReconciler;
+      yield* reconciler.reconcile(input, "after_fill");
+      // A second pass must not duplicate them — identity is still stable.
+      yield* reconciler.reconcile(input, "after_fill");
+
+      const totals = yield* readOrderTotals(CLOSE_ORDER_ID);
+      assert.equal(totals.rows, 3);
+      assert.closeTo(totals.size, CLOSE_TOTAL.size, 1e-9);
+      assert.closeTo(totals.avg_price, CLOSE_TOTAL.avgPrice, 1e-6);
+      assert.closeTo(totals.fee, CLOSE_TOTAL.fee, 1e-9);
+      assert.closeTo(totals.closed_pnl, CLOSE_TOTAL.closedPnl, 1e-9);
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // 1d. Same, with no `tid` on the wire: the content+ordinal fallback must
+  //     still separate slices that share a hash.
+  // -------------------------------------------------------------------------
+  it.effect("separates hash-sharing sub-fills when the wire carries no tid", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* setState({ fills: closeFills({ withTid: false }) });
+
+      const reconciler = yield* HyperliquidReconciler;
+      yield* reconciler.reconcile(input, "after_fill");
+      yield* reconciler.reconcile(input, "after_fill");
+
+      const totals = yield* readOrderTotals(CLOSE_ORDER_ID);
+      assert.equal(totals.rows, 3);
+      assert.closeTo(totals.size, CLOSE_TOTAL.size, 1e-9);
+      assert.closeTo(totals.fee, CLOSE_TOTAL.fee, 1e-9);
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // 1e. Healing: a row written under the old hash-keyed identity is replaced
+  //     by the order's canonical set rather than left to double-count.
+  // -------------------------------------------------------------------------
+  it.effect("replaces a legacy hash-keyed row with the order's canonical fills", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      // What the old identity left behind: one row per (order, transaction),
+      // holding the first slice's size and the last slice's fee and PnL.
+      yield* sql`
+        INSERT INTO trading_fills (
+          fill_id, mission_id, cloid, order_id, market, side, filled_size,
+          avg_fill_price, fee_usd, fee_token, closed_pnl, traded_at, observed_at
+        ) VALUES (
+          ${CLOSE_HASH}, ${MISSION}, NULL, ${CLOSE_ORDER_ID}, 'ETH', 'sell',
+          0.2295, 1879.8, 0.33, 'USDC', -0.2, 1754356376000, 1754356376000
+        )
+      `;
+      yield* setState({ fills: closeFills({ withTid: true }) });
+
+      const reconciler = yield* HyperliquidReconciler;
+      yield* reconciler.reconcile(input, "after_fill");
+
+      const totals = yield* readOrderTotals(CLOSE_ORDER_ID);
+      assert.equal(totals.rows, 3);
+      assert.closeTo(totals.size, CLOSE_TOTAL.size, 1e-9);
+      assert.closeTo(totals.fee, CLOSE_TOTAL.fee, 1e-9);
+      assert.closeTo(totals.closed_pnl, CLOSE_TOTAL.closedPnl, 1e-9);
+    }),
   );
 
   // -------------------------------------------------------------------------

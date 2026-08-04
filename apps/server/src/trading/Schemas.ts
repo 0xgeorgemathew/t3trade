@@ -57,12 +57,22 @@ export {
 
 export {
   AgentConditionDescription,
+  MomentumProtection,
   MomentumStrategyAction,
   MomentumStrategyDirection,
   MomentumStrategyMode,
   MomentumStrategyState,
+  ProfitTargetBasis,
+  ProfitTargetMeasurement,
   TradingTimeframe,
 } from "@t3tools/trading-contracts/strategy";
+
+export {
+  measureVolatility,
+  ObservedVolatility,
+  VOLATILITY_LOOKBACK_BARS,
+  VolatilityHorizon,
+} from "@t3tools/trading-contracts/volatility";
 
 export {
   PublishMomentumStrategyBody,

@@ -21,13 +21,15 @@ import { AgentAccountSnapshot, AgentNetPosition, AgentOpenOrder } from "./accoun
 import { TradingAuthority } from "./authority.ts";
 import {
   AgentMarketSnapshot,
+  MarketCandleInterval,
   MarketHistory,
   MarketHistoryRequest,
   OrderBook,
   ResolvedMarket,
 } from "./market.ts";
+import { ObservedVolatility } from "./volatility.ts";
 import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./mission.ts";
-import { TradingId } from "./primitives.ts";
+import { TradingId, TradingMarket } from "./primitives.ts";
 import { TradingOrderIntent } from "./execution.ts";
 import { momentumStrategyAuthoredFields, MomentumStrategyState } from "./strategy.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
@@ -41,6 +43,7 @@ export const TRADING_RESOLVE_MARKET_TOOL = "trading_resolve_market";
 export const TRADING_GET_MARKET_SNAPSHOT_TOOL = "trading_get_market_snapshot";
 export const TRADING_GET_MARKET_HISTORY_TOOL = "trading_get_market_history";
 export const TRADING_GET_ORDER_BOOK_TOOL = "trading_get_order_book";
+export const TRADING_MEASURE_VOLATILITY_TOOL = "trading_measure_volatility";
 export const TRADING_GET_ACCOUNT_STATE_TOOL = "trading_get_account_state";
 export const TRADING_GET_POSITION_TOOL = "trading_get_position";
 export const TRADING_GET_OPEN_ORDERS_TOOL = "trading_get_open_orders";
@@ -330,6 +333,28 @@ export const TradingGetOrderBookInput = Schema.Struct({
   market: Schema.String,
 });
 export type TradingGetOrderBookInput = typeof TradingGetOrderBookInput.Type;
+
+/**
+ * Measure the fluctuation a market is producing, on any interval.
+ *
+ * The wakeup already carries this for the mission's primary timeframe; the tool
+ * exists for the other two questions — a different interval, or a longer
+ * lookback than the wakeup's window.
+ */
+export const TradingMeasureVolatilityInput = Schema.Struct({
+  ...missionBound,
+  // The measurement reads candles, so the symbol is the one a history request
+  // takes — the POC `TradingMarket` literal, not a free-form string.
+  market: TradingMarket,
+  interval: MarketCandleInterval,
+  /** Bars to measure over. Defaults to `VOLATILITY_LOOKBACK_BARS`, capped at the §13 500. */
+  lookbackBars: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
+  /** Holding periods, in bars, to report the move distribution for. */
+  holdBars: Schema.optional(Schema.Array(Schema.Number.check(Schema.isGreaterThan(0)))),
+});
+export type TradingMeasureVolatilityInput = typeof TradingMeasureVolatilityInput.Type;
+
+export type TradingMeasureVolatilityResult = ObservedVolatility;
 
 /** Account-state and position tools take only the missionId; the address is server-resolved. */
 export const TradingGetAccountStateInput = Schema.Struct({ ...missionBound });

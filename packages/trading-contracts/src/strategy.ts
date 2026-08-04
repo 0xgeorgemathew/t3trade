@@ -46,7 +46,9 @@ export const POC_DEFAULT_TIMEFRAME: TradingTimeframe = "1m";
  */
 export const POC_DEFAULT_INSTRUCTION =
   "Trade ETH momentum on testnet using 1m candles. Arm candle-close watches on the 1m interval so each run wakes within a minute. " +
-  "State a concrete profit target in USD for every position and manage the position against it: bank it, or justify raising it.";
+  "Derive the profit target from the fluctuation the market is actually producing — read `observedVolatility` in the wakeup (or call trading_measure_volatility) and take the target off a measured move over your expected holding period, never off a round number you like the look of. " +
+  "Publish that derivation in `protection.targetProfitBasis`: the measurement, the lookback, the holding period, the resulting percentage price move, and the USD PnL it is worth on the position notional. " +
+  "If the observed fluctuation does not support a target worth taking, say so and stand down rather than inventing one.";
 
 /**
  * A condition the harness published in prose, with optional structured hints -
@@ -154,7 +156,68 @@ const MomentumPositionManagement = Schema.Struct({
   trailingMethod: Schema.optional(TradingText),
 });
 
-const MomentumProtection = Schema.Struct({
+/**
+ * Which measurement a profit target was read off - see `./volatility.ts`.
+ *
+ * `excursion_quantile` is the one to reach for by default: it is the move price
+ * actually delivered over a holding period of this length in the recent window,
+ * so a target set at its median has a hit rate behind it. The other three are
+ * single-number summaries of the same window.
+ */
+export const ProfitTargetMeasurement = Schema.Literals([
+  "atr",
+  "realized_volatility",
+  "swing_range",
+  "excursion_quantile",
+]);
+export type ProfitTargetMeasurement = typeof ProfitTargetMeasurement.Type;
+
+/**
+ * The arithmetic that produced `targetProfitUsd`, published alongside it.
+ *
+ * This is the harness showing its work, not a form the server grades. The
+ * target is a measurement carried through three steps — measured move →
+ * percentage price move → USD on the notional — and recording all three is
+ * what lets a later turn, and the user, see whether the number came from the
+ * data or from nowhere.
+ */
+export const ProfitTargetBasis = Schema.Struct({
+  measurement: ProfitTargetMeasurement,
+  /** The interval the measurement was taken on. */
+  timeframe: TradingTimeframe,
+  /** Bars the measurement looked back over. */
+  lookbackBars: Schema.Number,
+  /**
+   * The move that measurement says the instrument produces over
+   * `expectedHoldBars`, in USD of price.
+   */
+  measuredMoveUsd: Schema.Number,
+  /** How long the position is expected to be held, in bars of `timeframe`. */
+  expectedHoldBars: Schema.Number,
+  /** The price the target move is measured from — normally the current mark. */
+  referencePrice: Price,
+  /** The target as a percentage price move from `referencePrice`. */
+  targetPriceMovePercent: Schema.Number,
+  /** Margin x leverage: the notional `targetProfitUsd` is earned on. */
+  positionNotionalUsd: Schema.Number,
+  /**
+   * Share of historical windows of `expectedHoldBars` bars in which the move
+   * was available, when the measurement reports one (the excursion quantiles
+   * do: a median is 50).
+   */
+  historicalHitRatePercent: Schema.optional(Schema.Number),
+  /** Which measurement, over what lookback, and why the target is attainable. */
+  rationale: TradingText,
+  /**
+   * Set when the harness judges the window too quiet to support a target worth
+   * taking. Nothing downstream keys off it — it is how the harness records that
+   * it stood down rather than invented a number.
+   */
+  insufficientVolatility: Schema.optional(Schema.Boolean),
+});
+export type ProfitTargetBasis = typeof ProfitTargetBasis.Type;
+
+export const MomentumProtection = Schema.Struct({
   stopMethod: TradingText,
   stopPrice: Schema.optional(Price),
   takeProfitMethod: Schema.optional(TradingText),
@@ -171,6 +234,13 @@ const MomentumProtection = Schema.Struct({
    * extending.
    */
   targetProfitUsd: PositiveUsdAmount,
+  /**
+   * Where `targetProfitUsd` came from — the measurement, the lookback, and the
+   * arithmetic. Expected on any target the harness sets, and read back to it on
+   * the next wake so it can tell whether the move it was waiting for is still
+   * the move the market is producing.
+   */
+  targetProfitBasis: Schema.optional(ProfitTargetBasis),
   /** Optional rationale for the chosen target. */
   targetProfitRationale: Schema.optional(TradingText),
   maximumPlannedLossUsd: Schema.optional(UsdAmount),

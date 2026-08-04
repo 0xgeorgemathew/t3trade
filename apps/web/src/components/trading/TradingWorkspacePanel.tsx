@@ -1,5 +1,6 @@
 import type { EnvironmentId, OrchestrationTradingMission } from "@t3tools/contracts";
 import { pocRiskPolicyDefaults } from "@t3tools/trading-contracts/authority";
+import type { ProfitTargetBasis } from "@t3tools/trading-contracts/strategy";
 import { RefreshCwIcon, TrendingUpIcon } from "lucide-react";
 import { useMemo } from "react";
 
@@ -44,6 +45,32 @@ function Field({ label, value }: { label: string; value: string }) {
       <span className="text-sm text-muted-foreground">{label}</span>
       <span className="text-sm font-medium tabular-nums text-foreground">{value}</span>
     </div>
+  );
+}
+
+/**
+ * Where the profit target came from.
+ *
+ * The target on its own is a number the user has to take on trust; the
+ * measurement, the holding period, and the percentage move behind it are what
+ * make it checkable. Absent only on strategies published before the basis was
+ * required.
+ */
+function TargetBasis({ basis }: { basis: ProfitTargetBasis | undefined }) {
+  if (basis === undefined) return null;
+
+  return (
+    <>
+      <Field
+        label="Target basis"
+        value={`${humanizeLiteral(basis.measurement)} · ${basis.lookbackBars} bars of ${basis.timeframe}`}
+      />
+      <Field
+        label="Target move"
+        value={`${basis.targetPriceMovePercent.toFixed(2)}% over ~${basis.expectedHoldBars} bars on $${basis.positionNotionalUsd} notional`}
+      />
+      <p className="px-3 pb-1 text-sm text-muted-foreground sm:px-4">{basis.rationale}</p>
+    </>
   );
 }
 
@@ -158,6 +185,7 @@ function Strategy({ mission }: { mission: OrchestrationTradingMission }) {
       <Field label="Order preference" value={strategy.entryPlan.orderPreference} />
       <Field label="Stop method" value={strategy.protection.stopMethod} />
       <Field label="Target" value={`+$${strategy.protection.targetProfitUsd}`} />
+      <TargetBasis basis={strategy.protection.targetProfitBasis} />
       <p className="px-3 pt-2 text-sm text-muted-foreground sm:px-4">{strategy.belief.summary}</p>
       <p className="px-3 pb-2 text-sm text-muted-foreground sm:px-4">{strategy.explanation}</p>
     </SettingsSection>
