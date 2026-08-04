@@ -582,7 +582,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   mcpServers: [
                     {
                       type: "http" as const,
-                      name: "t3-code",
+                      name: "t3-trade",
                       url: mcpSession.endpoint,
                       headers: [
                         {

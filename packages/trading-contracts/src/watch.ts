@@ -75,11 +75,16 @@ export type WatchArmedReason = typeof WatchArmedReason.Type;
  *
  * `watch` carries the published `MarketWatch` union verbatim; `strategyVersion`
  * is what makes a watch supersedable when the harness publishes v(n+1).
+ *
+ * Version 0 means the watch was armed before the first strategy publish. It is
+ * not a degenerate case: like any other watch, the publish of v1 supersedes it.
+ * Allowing 0 here is what lets `trading_register_watch` succeed for a mission
+ * whose bootstrap turn registers coverage before it has published anything.
  */
 export const PersistedWatch = Schema.Struct({
   id: TradingId,
   missionId: TradingId,
-  strategyVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(1)),
+  strategyVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   watch: MarketWatch,
   status: PersistedWatchStatus,
   armedReason: Schema.optional(WatchArmedReason),
