@@ -71,8 +71,9 @@ export type PersistedWatchStatus = typeof PersistedWatchStatus.Type;
  * that could wake it — a wake from one of these is the cue that nothing crossed
  * and the thesis is the thing to reconsider. `profit_target` means the runtime
  * armed a `pnl_above` watch at the strategy's declared profit target while the
- * mission holds a position — a wake from it is the cue that the win is worth
- * banking (or re-justifying with a higher target).
+ * mission holds a position — a wake from it is a decision point: bank the win
+ * (close, or reduce and keep a runner) if momentum is fading, or extend to the
+ * ladder's next rung by republishing with a fresh basis if it is not.
  */
 export const WatchArmedReason = Schema.Literals(["staleness_floor", "profit_target"]);
 export type WatchArmedReason = typeof WatchArmedReason.Type;

@@ -47,8 +47,11 @@ export const POC_DEFAULT_TIMEFRAME: TradingTimeframe = "1m";
 export const POC_DEFAULT_INSTRUCTION =
   "Trade ETH momentum on testnet using 1m candles. Arm candle-close watches on the 1m interval so each run wakes within a minute. " +
   "Derive the profit target from the fluctuation the market is actually producing — read `observedVolatility` in the wakeup (or call trading_measure_volatility) and take the target off a measured move over your expected holding period, never off a round number you like the look of. " +
-  "Publish that derivation in `protection.targetProfitBasis`: the measurement, the lookback, the holding period, the resulting percentage price move, and the USD PnL it is worth on the position notional. " +
-  "If the observed fluctuation does not support a target worth taking, say so and stand down rather than inventing one.";
+  "Measure TWO timeframes before you set one: the thesis timeframe you trade and one higher timeframe (15m or 1h). A 1m window alone cannot tell you whether the structure supports the move you are asking for. " +
+  "Discount for where you are entering. The excursion quantiles measure the move from a flat bar close; a momentum entry happens after the impulse has already begun, so subtract roughly half the impulse already travelled before calling the rest yours. " +
+  "Then check the target against its cost. A round trip is two taker fills: at 5 bps per side that is 0.10% of notional, so a 2000 USD notional costs about 2.00 USD to open and close before spread and slippage. A target that does not clear TWICE the round-trip cost is not a trade — it is a fee donation with variance. " +
+  "Publish the derivation in `protection.targetProfitBasis`: the measurement, the lookback, the holding period, the resulting percentage price move, and the USD PnL it is worth on the position notional. Put the whole ladder — conservative, base, extension — in `protection.targetProfitRationale`, and set `targetProfitUsd` to the CONSERVATIVE rung, the one you would genuinely bank. " +
+  "If the observed fluctuation does not support a target worth taking after costs, say so and stand down rather than inventing one.";
 
 /**
  * A condition the harness published in prose, with optional structured hints -
@@ -224,14 +227,19 @@ export const MomentumProtection = Schema.Struct({
   takeProfitPrice: Schema.optional(Price),
   /**
    * The unrealised PnL, in USD, at which this position should be closed or
-   * re-justified.
+   * re-justified — the conservative rung of the published ladder.
    *
-   * This is the win worth banking. While a position is open the runtime arms a
-   * `pnl_above` watch at it; when that watch wakes the harness, the default
-   * action is to close (or reduce) and reassess. The server never auto-places a
-   * take-profit order on the exchange — this is wake-and-decide, and the harness
-   * may instead republish with a higher target if it judges the move still
-   * extending.
+   * While a position is open the runtime arms a `pnl_above` watch at it. That
+   * wake is a decision point, not an instruction to close: the harness reads the
+   * book and the momentum and either banks (close, or reduce and keep a
+   * runner) or extends (republish at the next version with the base rung and a
+   * fresh basis). Treating it as an automatic close is what turns a deliberately
+   * conservative estimate into a hard cap on every win.
+   *
+   * The number is gross of fees and funding — `pnl_above` fires on the
+   * exchange's unrealised PnL — so it has to clear the round trip on its own.
+   * The server never auto-places a take-profit order on the exchange; this is
+   * wake-and-decide throughout.
    */
   targetProfitUsd: PositiveUsdAmount,
   /**
@@ -241,7 +249,16 @@ export const MomentumProtection = Schema.Struct({
    * the move the market is producing.
    */
   targetProfitBasis: Schema.optional(ProfitTargetBasis),
-  /** Optional rationale for the chosen target. */
+  /**
+   * The target ladder in prose: the conservative rung (published as
+   * `targetProfitUsd`), the base rung the position is extended to on a
+   * profit-target wake that still looks like momentum, and the extension rung
+   * bounded by the nearest structure — each net of the round-trip cost.
+   *
+   * Only one number can be armed as a watch, so this is where the other two
+   * live. Without them, the wake that fires at the conservative rung arrives
+   * with nowhere to extend to.
+   */
   targetProfitRationale: Schema.optional(TradingText),
   maximumPlannedLossUsd: Schema.optional(UsdAmount),
 });

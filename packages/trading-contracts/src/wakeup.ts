@@ -108,8 +108,10 @@ export const TradingHarnessWakeup = Schema.Struct({
    * doing. `staleness_floor` means the triggering reassessment was auto-armed
    * because nothing else could have woken the mission — nothing crossed, and
    * the thesis is the thing to reconsider. `profit_target` means the position
-   * reached the strategy's declared `protection.targetProfitUsd`: bank the win,
-   * or republish with a higher target and say why.
+   * reached the strategy's declared `protection.targetProfitUsd`. That is a
+   * decision point, not a close order: read the book and the momentum, then
+   * either bank (close, or reduce and keep a runner) or extend — republish at
+   * the next version with the ladder's base rung and a fresh basis, and say why.
    */
   wakeReason: Schema.optional(WatchArmedReason),
   /** The user message that woke the run, when the cause is `user_message`. */
@@ -145,9 +147,14 @@ export const TradingHarnessWakeup = Schema.Struct({
    * This is the basis a profit target has to be derived from: ATR, realized
    * volatility, the window's swing range, and — the one to read a target off —
    * the distribution of the move price delivered over each candidate holding
-   * period. A target published without a matching `protection.targetProfitBasis`
-   * is rejected, so this is measured on every wake rather than left to a tool
-   * call the harness may skip.
+   * period. It is measured on every wake rather than left to a tool call the
+   * harness may skip.
+   *
+   * One timeframe is not enough to set a target from: this is the primary
+   * timeframe only, so pair it with a `trading_measure_volatility` call on a
+   * higher one (15m or 1h) before publishing. Nothing here is netted of fees —
+   * a round trip is two taker fills, 5 bps per side, and the target has to
+   * clear twice that before it is worth taking.
    */
   observedVolatility: ObservedVolatility,
   activeStrategy: MomentumStrategyState,
