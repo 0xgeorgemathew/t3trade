@@ -43,6 +43,7 @@ import { TradingEmergencyCloseServiceLive } from "./TradingEmergencyCloseService
 import { TradingControlServiceLive } from "./TradingControlService.ts";
 import { TradingCostEstimatorLive } from "./TradingCostEstimator.ts";
 import { TradingTradeHistoryServiceLive } from "./TradingTradeHistoryService.ts";
+import { TradingCalibrationServiceLive } from "./TradingCalibrationService.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
@@ -157,6 +158,9 @@ export const TradingLayerLive = Layer.mergeAll(
   // `trading_get_trade_history` is a pure read-join over the mission's own
   // fills and strategy versions.
   TradingTradeHistoryServiceLive,
+  // `trading_get_target_calibration` scores those targets against the closed
+  // trades the reconciler recorded.
+  TradingCalibrationServiceLive,
   coordinatorWithDeps,
   TradingExecutionLayerLive,
   HyperliquidWsLayerLive,

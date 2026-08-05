@@ -10,6 +10,7 @@
 import {
   TradingToolRejectedError,
   type TradingGetMissionResult,
+  type TradingRequestEntryInput,
 } from "@t3tools/trading-contracts/tools";
 import { CommandId, ThreadId, TradingMissionId } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
@@ -35,6 +36,7 @@ import {
   MOMENTUM_TIMEFRAMES,
 } from "@t3tools/trading-contracts/momentum";
 import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
+import { TradingCalibrationService } from "../../../trading/TradingCalibrationService.ts";
 import { TradingTradeHistoryService } from "../../../trading/TradingTradeHistoryService.ts";
 import { TradingToolkit } from "./tools.ts";
 
@@ -175,6 +177,10 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (mission: 
   // The same set preview item 16 refuses against, so a harness told
   // `no_conflicting_execution_pending` can read what is holding the lock.
   const pendingExecutions = yield* missions.listPendingExecutions(mission.id).pipe(Effect.orDie);
+  // What the mission has believed, not only what it believes now. A harness
+  // that has republished three times cannot otherwise see the targets it set
+  // before this one.
+  const strategyHistory = yield* strategies.listStrategyVersions(mission.id).pipe(Effect.orDie);
 
   return {
     bound: true,
@@ -187,6 +193,7 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (mission: 
     control: mission.control,
     harness: mission.harness,
     pendingExecutions,
+    strategyHistory,
   } satisfies TradingGetMissionResult;
 });
 
@@ -355,6 +362,52 @@ const announceWatchCancelled = Effect.fn("TradingToolkit.announceWatchCancelled"
   },
 );
 
+/**
+ * Submit one execution intent and wait for what actually happened to it.
+ *
+ * Shared by `trading_execute` and its older alias `trading_request_entry` —
+ * one implementation, so the two names can never drift into two behaviours.
+ */
+const executeIntent = (input: TradingRequestEntryInput) =>
+  Effect.gen(function* () {
+    const { threadId, mission } = yield* resolveBoundCall(input.missionId);
+    const engine = yield* OrchestrationEngineService;
+    const crypto = yield* Crypto.Crypto;
+    const commandId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+    const createdAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+    yield* engine
+      .dispatch({
+        type: "trading.execution.requested",
+        commandId: CommandId.make(commandId),
+        threadId: ThreadId.make(threadId),
+        missionId: TradingMissionId.make(mission.id),
+        intent: input.intent,
+        expectedAuthorityVersion: input.expectedAuthorityVersion,
+        activeHarnessRunId: input.activeHarnessRunId,
+        createdAt,
+      })
+      .pipe(Effect.orDie);
+
+    // The dispatch is a question; the reactor answers it on its own worker.
+    // Wait for that answer rather than reporting the question as an outcome —
+    // a harness told "submitted" for a request that was refused at preview
+    // goes on to manage a position that does not exist.
+    const outcomes = yield* TradingExecutionOutcome;
+    const missions = yield* TradingMissionService;
+    const masterAddress = yield* missions
+      .getMasterWalletAddress(mission.tradingAccountId)
+      .pipe(Effect.orDie);
+
+    return yield* outcomes.awaitOutcome({
+      missionId: mission.id,
+      executionSequence: input.intent.executionSequence,
+      actionType: input.intent.actionType,
+      maximumCumulativeLossUsd: mission.authority.maximumCumulativeLossUsd,
+      fallbackTakerFeeBpsPerSide: mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
+      masterAddress,
+    });
+  });
+
 const handlers = {
   trading_get_mission: (input) =>
     Effect.gen(function* () {
@@ -409,45 +462,9 @@ const handlers = {
       return published;
     }),
 
-  trading_request_entry: (input) =>
-    Effect.gen(function* () {
-      const { threadId, mission } = yield* resolveBoundCall(input.missionId);
-      const engine = yield* OrchestrationEngineService;
-      const crypto = yield* Crypto.Crypto;
-      const commandId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
-      const createdAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
-      yield* engine
-        .dispatch({
-          type: "trading.execution.requested",
-          commandId: CommandId.make(commandId),
-          threadId: ThreadId.make(threadId),
-          missionId: TradingMissionId.make(mission.id),
-          intent: input.intent,
-          expectedAuthorityVersion: input.expectedAuthorityVersion,
-          activeHarnessRunId: input.activeHarnessRunId,
-          createdAt,
-        })
-        .pipe(Effect.orDie);
+  trading_request_entry: (input) => executeIntent(input),
 
-      // The dispatch is a question; the reactor answers it on its own worker.
-      // Wait for that answer rather than reporting the question as an outcome —
-      // a harness told "submitted" for a request that was refused at preview
-      // goes on to manage a position that does not exist.
-      const outcomes = yield* TradingExecutionOutcome;
-      const missions = yield* TradingMissionService;
-      const masterAddress = yield* missions
-        .getMasterWalletAddress(mission.tradingAccountId)
-        .pipe(Effect.orDie);
-
-      return yield* outcomes.awaitOutcome({
-        missionId: mission.id,
-        executionSequence: input.intent.executionSequence,
-        actionType: input.intent.actionType,
-        maximumCumulativeLossUsd: mission.authority.maximumCumulativeLossUsd,
-        fallbackTakerFeeBpsPerSide: mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
-        masterAddress,
-      });
-    }),
+  trading_execute: (input) => executeIntent(input),
 
   // -- §14.2 read-only market-data tools -------------------------------------
   //
@@ -577,6 +594,14 @@ const handlers = {
       return yield* history.read({ missionId: mission.id, limit: input.limit }).pipe(Effect.orDie);
     }),
 
+  trading_get_target_calibration: (input) =>
+    Effect.gen(function* () {
+      // A mission grading its own targets is mission state.
+      const { mission } = yield* resolveBoundCall(input.missionId);
+      const calibration = yield* TradingCalibrationService;
+      return yield* calibration.read({ missionId: mission.id }).pipe(Effect.orDie);
+    }),
+
   trading_get_order_book: (input) =>
     Effect.gen(function* () {
       // Market data, not mission state: an unbound thread reads it too.
@@ -630,7 +655,7 @@ const handlers = {
     Effect.gen(function* () {
       const { threadId, mission } = yield* resolveBoundCall(input.missionId);
       const watches = yield* TradingWatchService;
-      const watch = yield* watches.registerWatch({ ...input, missionId: mission.id }).pipe(
+      const registered = yield* watches.registerWatch({ ...input, missionId: mission.id }).pipe(
         Effect.catchTags({
           TradingMissionNotFoundError: () =>
             new TradingToolRejectedError({
@@ -644,9 +669,18 @@ const handlers = {
       yield* announceWatchRegistered({
         threadId,
         missionId: mission.id,
-        watch,
+        watch: registered.watch,
       });
-      return watch;
+      // A replacement is two changes to the armed set, and the workspace has to
+      // see both or it renders a level that is no longer standing.
+      if (registered.replaced !== undefined) {
+        yield* announceWatchCancelled({
+          threadId,
+          missionId: mission.id,
+          watchId: registered.replaced.id,
+        });
+      }
+      return registered;
     }),
 
   trading_schedule_reassessment: (input) =>
@@ -655,7 +689,7 @@ const handlers = {
       const watches = yield* TradingWatchService;
       // A scheduled reassessment is a watch of type `scheduled_reassessment`;
       // it rides the same register/announce path as any other watch.
-      const watch = yield* watches
+      const { watch } = yield* watches
         .registerWatch({
           missionId: mission.id,
           watch: { type: "scheduled_reassessment", runAt: input.runAt },

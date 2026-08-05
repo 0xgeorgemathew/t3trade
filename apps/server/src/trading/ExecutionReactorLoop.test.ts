@@ -274,7 +274,7 @@ const layer = it.layer(TradingExecutionGuardLive.pipe(Layer.provideMerge(coreLay
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 46 });
+  yield* runMigrations({ toMigrationInclusive: 47 });
   yield* sql`DELETE FROM trading_execution_records`;
   yield* sql`DELETE FROM trading_risk_reservations`;
   yield* sql`DELETE FROM trading_fills`;

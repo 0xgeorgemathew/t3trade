@@ -291,7 +291,7 @@ const make = Effect.gen(function* () {
   }) =>
     Effect.gen(function* () {
       const runAt = input.nowMillis + input.floorMillis;
-      const watch = yield* watches.registerWatch({
+      const { watch } = yield* watches.registerWatch({
         missionId: input.missionId,
         watch: { type: "scheduled_reassessment", runAt },
         armedReason: "staleness_floor",
@@ -340,7 +340,7 @@ const make = Effect.gen(function* () {
       );
       if (alreadyArmed) return;
 
-      const watch = yield* watches.registerWatch({
+      const { watch } = yield* watches.registerWatch({
         missionId: input.missionId,
         watch: {
           type: "pnl_above",

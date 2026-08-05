@@ -24,6 +24,7 @@ import {
   TradingGetOpenOrdersInput,
   TradingGetOrderBookInput,
   TradingGetPositionInput,
+  TradingGetTargetCalibrationInput,
   TradingGetTradeHistoryInput,
   TradingListWatchesInput,
   TradingListWatchesResult,
@@ -53,6 +54,7 @@ import {
 import { TradingCostEstimate } from "@t3tools/trading-contracts/costs";
 import { MomentumContext } from "@t3tools/trading-contracts/momentum";
 import { TradingTradeHistory } from "@t3tools/trading-contracts/history";
+import { TargetCalibration } from "@t3tools/trading-contracts/calibration";
 import { ObservedVolatility } from "@t3tools/trading-contracts/volatility";
 import { Schema } from "effect";
 import * as Crypto from "effect/Crypto";
@@ -61,6 +63,7 @@ import { Tool, Toolkit } from "effect/unstable/ai";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
+import { TradingCalibrationService } from "../../../trading/TradingCalibrationService.ts";
 import { TradingTradeHistoryService } from "../../../trading/TradingTradeHistoryService.ts";
 import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
@@ -84,6 +87,8 @@ const dependencies = [
   TradingCostEstimator,
   // `trading_get_trade_history` reads the mission's own completed orders.
   TradingTradeHistoryService,
+  // `trading_get_target_calibration` grades the targets against those trades.
+  TradingCalibrationService,
   // `trading_request_entry` reports what the reactor actually did with the
   // request, not that the request was raised.
   TradingExecutionOutcome,
@@ -93,7 +98,8 @@ export const TradingGetMissionTool = Tool.make("trading_get_mission", {
   description:
     "Read the current state of the trading mission this agent session is bound to: status, mandate (authority and risk policy), the published momentum strategy and its version, registered watches, the user's control flags, and any executions still in flight. Call this at the start of every turn before deciding anything. " +
     "The mandate is the user's hard rails, not a balance: `authority.allocatedCapitalUsd` and the maximums derived from it are ceilings you may never exceed, and they do not move when the account value does. What is actually free to trade right now is `accountSnapshot.withdrawable` from trading_get_account_state. Sizing within the rails, against the live balance, is your judgement to exercise. " +
-    "`pendingExecutions[]` is the lock behind the `no_conflicting_execution_pending` refusal: while any entry is listed there, trading_request_entry refuses every new intent. Each entry names the cloid, the action, its status, and how long it has sat there. " +
+    "`pendingExecutions[]` is the lock behind the `no_conflicting_execution_pending` refusal: while any entry is listed there, trading_execute refuses every new intent. Each entry names the cloid, the action, its status, and how long it has sat there. " +
+    '`strategyHistory[]` is every version this mission has published, newest first, with each one\'s target and the basis it was derived from. `strategy` is only the current thesis; the history is how you tell "the thesis changed" from "the thesis has changed four times in an hour", and how you see the targets you set before this one. Pair it with trading_get_target_calibration to find out whether any of them were reachable. ' +
     "When the mission this thread held has ended, this returns `bound: false` instead of failing — with `lastMission` (its terminal status is the answer to what happened) and `activeMissionId` when a newer mission holds the slot. Market reads keep working on an unbound thread; nothing that writes does. " +
     "`missionId` is optional — omit it and the call acts on the mission this session is bound to.",
   parameters: TradingGetMissionInput,
@@ -109,11 +115,11 @@ export const TradingGetMissionTool = Tool.make("trading_get_mission", {
 
 export const TradingPublishMomentumStrategyTool = Tool.make("trading_publish_momentum_strategy", {
   description:
-    "Publish the momentum strategy this mission should now be executed against. Supply expectedVersion as the strategy version you read from trading_get_mission (0 before any publish). A stale expectedVersion is rejected with the server's current version and leaves the published strategy untouched; an accepted publish increments the version and supersedes the watches registered by the previous one — re-arm the watches you still want, and cancel any resting order from the old thesis with trading_request_entry actionType `cancel`, which a publish does not touch. " +
+    "Publish the momentum strategy this mission should now be executed against. Supply expectedVersion as the strategy version you read from trading_get_mission (0 before any publish). A stale expectedVersion is rejected with the server's current version and leaves the published strategy untouched; an accepted publish increments the version and supersedes the watches registered by the previous one — re-arm the watches you still want, and cancel any resting order from the old thesis with trading_execute actionType `cancel`, which a publish does not touch. " +
     "This is also how you switch strategies: republish at the next version with a different mode or direction when the thesis fails or the market goes stale. " +
     "`strategy.timeframes[0]` is the primary timeframe that drives the monitoring cadence; it must name at least one timeframe. " +
     "Every entry in `strategy.entryPlan.conditions[]` REQUIRES a non-empty `description` — the prose conclusion is the field that matters; `timeframe`, `priceLevel`, and `invalidatedBy` are optional display hints. A conditions entry without a description is rejected. A condition may also be supplied as a bare prose string, which is read as `{ description: <the string> }`. " +
-    "`protection.targetProfitUsd` is REQUIRED: the unrealised-PnL level, in USD, at which this position is worth banking or re-justifying — the CONSERVATIVE rung of the ladder you derive below, not your best case. It is shown to the user and the runtime arms a `pnl_above` watch at it while you hold a position. That wake is a DECISION POINT, not a close order: read the book and the momentum, then bank (close, or `reduce` half and keep a runner) if the move is fading, or extend — republish at the next version with the base rung and a fresh basis — if it is not. Treating every target wake as an automatic close turns a deliberately conservative estimate into a cap on every win you will ever take. You may additionally place your own resting take-profit order via trading_request_entry if you judge one right; the target watch still stands. " +
+    "`protection.targetProfitUsd` is REQUIRED: the unrealised-PnL level, in USD, at which this position is worth banking or re-justifying — the CONSERVATIVE rung of the ladder you derive below, not your best case. It is shown to the user and the runtime arms a `pnl_above` watch at it while you hold a position. That wake is a DECISION POINT, not a close order: read the book and the momentum, then bank (close, or `reduce` half and keep a runner) if the move is fading, or extend — republish at the next version with the base rung and a fresh basis — if it is not. Treating every target wake as an automatic close turns a deliberately conservative estimate into a cap on every win you will ever take. You may additionally place your own resting take-profit order via trading_execute if you judge one right; the target watch still stands. " +
     "Derive that target from the fluctuation this instrument is actually producing, not from a round number or a feeling about the setup. Four steps, in order: " +
     "(1) MEASURE TWO TIMEFRAMES. Read `observedVolatility` from the wakeup for your thesis timeframe and call trading_measure_volatility on ONE HIGHER timeframe (15m or 1h) as well. A 1m window alone maxes out at a 20-minute view and cannot tell you whether the structure supports the move you are about to ask for. Pick the measurement that fits your thesis: `horizons[].favourableUpUsd.p50` for a long, `favourableDownUsd.p50` for a short, is the move price actually delivered over that many bars in half the recent windows; the p75 in a quarter of them. `atr`, `realized_volatility`, and `swing_range` are single-number summaries of the same window. " +
     "(2) DISCOUNT FOR ENTRY LOCATION. Those quantiles measure the move from a flat bar close. A momentum entry happens AFTER the impulse has begun, so the whole measured move is not still ahead of you. Call trading_get_momentum_context and use its numbers rather than guessing: subtract roughly half of `lastImpulse.sizeUsd` from the measured move, check `ageBars` (a leg that ended twenty bars ago is over, not pulling back), require `atrExpansionRatio` above 1 and an `alignment` that is not `mixed`, and cap the target at `distanceToSwingHighUsd` (long) or `distanceToSwingLowUsd` (short) on the higher timeframe. " +
@@ -253,6 +259,23 @@ export const TradingGetTradeHistoryTool = Tool.make("trading_get_trade_history",
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+export const TradingGetTargetCalibrationTool = Tool.make("trading_get_target_calibration", {
+  description:
+    "Score the profit targets this mission has published against what its trades actually reached. This is the only read that can tell you your own habit is wrong: a target derived from a p50 measurement should be reached about half the time, and one reached a fifth of the time was not bad luck — it was read off the wrong rung. Call it in the cooldown after a close, before setting the next target. " +
+    "A target counts as REACHED when the trade's unrealised PnL ever touched it, not when it was banked there. Those grade different things: the first grades the target, the second grades your decision to hold. `peakUnrealisedPnlUsd` is what makes the distinction possible and it exists nowhere else. " +
+    "Each entry is one strategy version: its `targetProfitUsd`, the `claimedHitRatePercent` its basis published, the `observedHitRatePercent` its trades produced, and `meanPeakUsd`/`meanTroughUsd` — how good and how bad those trades got. `verdict` is `optimistic` when the target came in well under its claim, `conservative` when it came in well over (the move was there and you were not asking for it), `as_claimed` in between, and `insufficient_sample` under five trades, where the count is published and the rate is withheld rather than computed from noise. " +
+    "`recommendation` is the single line to act on. Until there is a sample it says so — no evidence and evidence that you are fine are different answers, and only one of them should change what you do next.",
+  parameters: TradingGetTargetCalibrationInput,
+  success: TargetCalibration,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Get target calibration")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const TradingGetOrderBookTool = Tool.make("trading_get_order_book", {
   description:
     "Read the current order book (up to 20 levels per side) with the derived best bid/offer and a 2-second freshness stamp. Use this for execution-critical reads where a fresh bid/ask matters.",
@@ -317,6 +340,7 @@ export const TradingRegisterWatchTool = Tool.make("trading_register_watch", {
   description:
     "Register a typed market watch bound to the mission's current strategy version. The watch is created active; it fires when its predicate matches (a candle's final close, a price cross against a fresh mark/mid, an order or position update, the unrealised PnL reaching a target). The evaluator sweeps every 2 seconds, so a fire lands within a couple of seconds of the condition — not on the tick. " +
     "A watch fires EXACTLY ONCE and is then terminal. A level you want to keep standing has to be re-registered after it fires; nothing re-arms it for you. " +
+    "To MOVE a level rather than add one, pass `replacesWatchId` with the id of the watch it supersedes: the cancel and the new arm happen in one transaction, so the side you are re-levelling is never momentarily unwatched, and a failure leaves the OLD level standing rather than nothing. The result returns `replaced` with the watch that was cancelled — if it comes back absent, the watch you named had already fired or been superseded, so what you just armed is an ADDITION, not a swap, and the old level is not there to be relied on. " +
     "Each type carries its own required fields, and a missing one is rejected outright: `price_cross` takes market, priceSource, direction, price; `candle_close` takes market, INTERVAL (1m/3m/5m/15m/1h — the timeframe whose close is read), direction, price; `order_update` takes cloid; `position_update` takes market; `pnl_above` takes market and valueUsd; `pnl_below` takes market and valueUsd, SIGNED (a loss floor is negative, e.g. -6); `pnl_giveback` takes market and drawdownUsd; `scheduled_reassessment` takes runAt. " +
     "Watches also do NOT survive a strategy publish — publishing supersedes every watch the previous version armed, so re-arm what you still need after switching. " +
     "`position_update` and `order_update` read T3's reconciled local tables, not the exchange directly: they fire on a change in the size the last reconcile recorded, so they follow fills and cancels rather than quotes. " +
@@ -377,9 +401,9 @@ export const TradingCancelWatchTool = Tool.make("trading_cancel_watch", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
-export const TradingRequestEntryTool = Tool.make("trading_request_entry", {
+export const TradingExecuteTool = Tool.make("trading_execute", {
   description:
-    "Submit one execution intent for the bound mission. Despite the name this is the whole position lifecycle, not just entries — `intent.actionType` selects which: " +
+    "Submit one execution intent for the bound mission. This is the whole position lifecycle, not just entries — `intent.actionType` selects which: " +
     "`open` starts a position and `scale_in` adds to one; both are position-increasing and are REFUSED without valid `intent.stop` (a stopPrice on the losing side of entry, plus plannedLossAtStopUsd). " +
     "`reduce` takes part of the position off — set `size` to the amount to remove and the server clamps it to the canonical position, submits it reduce-only, and reports what remains; this is how you scale out or take partial profit. " +
     "`close` flattens the whole position regardless of the size you name. " +
@@ -394,7 +418,31 @@ export const TradingRequestEntryTool = Tool.make("trading_request_entry", {
   failure: TradingToolRejectedError,
   dependencies,
 })
-  .annotate(Tool.Title, "Request trading entry")
+  .annotate(Tool.Title, "Execute trading intent")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
+/**
+ * The original name, kept working.
+ *
+ * `trading_request_entry` describes one of the six things the call does, and a
+ * harness picks a tool by name before it reads the description — which is how a
+ * `close` ends up looking like the wrong tool for the job. The name changed;
+ * the behaviour did not. This alias exists so a session that already learned
+ * the old one is not broken by the rename, and its description is short on
+ * purpose: it points at the tool whose description carries the detail.
+ */
+export const TradingRequestEntryTool = Tool.make("trading_request_entry", {
+  description:
+    "DEPRECATED ALIAS of trading_execute — identical parameters, identical behaviour, same server path. Prefer trading_execute: this call is the whole position lifecycle (`open`, `scale_in`, `reduce`, `close`, `cancel`, `modify_stop` via `intent.actionType`), not just entries, and the old name reads as though `close` belongs somewhere else. Read trading_execute's description for the pricing rules, the mandatory stop on position-increasing intents, the preview checklist, and what each returned status means.",
+  parameters: TradingRequestEntryInput,
+  success: TradingRequestEntryResult,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Request trading entry (deprecated)")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, true)
   .annotate(Tool.Idempotent, true)
@@ -410,6 +458,7 @@ export const TradingToolkit = Toolkit.make(
   TradingEstimateCostsTool,
   TradingGetMomentumContextTool,
   TradingGetTradeHistoryTool,
+  TradingGetTargetCalibrationTool,
   TradingGetOrderBookTool,
   TradingGetAccountStateTool,
   TradingGetPositionTool,
@@ -418,5 +467,6 @@ export const TradingToolkit = Toolkit.make(
   TradingScheduleReassessmentTool,
   TradingListWatchesTool,
   TradingCancelWatchTool,
+  TradingExecuteTool,
   TradingRequestEntryTool,
 );

@@ -43,6 +43,28 @@ export interface RegisterWatchInput {
    * eventually produces can say why it happened.
    */
   readonly armedReason?: WatchArmedReason;
+  /**
+   * An active watch to cancel in the same transaction as this one is created.
+   *
+   * Re-levelling used to be two calls, and between them the mission had no
+   * level armed on that side at all. On a 2-second evaluator sweep that gap is
+   * usually harmless and occasionally the exact window a move happens in — and
+   * a failure between the two leaves the mission uncovered indefinitely, with
+   * nothing to say it happened.
+   */
+  readonly replacesWatchId?: string | undefined;
+}
+
+/** What a register call did: the new watch, and the one it replaced. */
+export interface RegisteredWatch {
+  readonly watch: PersistedWatch;
+  /**
+   * The watch `replacesWatchId` cancelled. Absent when none was named, or when
+   * the one named was already terminal — which the caller has to be told
+   * about, since it means the level it meant to retire either fired or was
+   * never there, and the replacement is an addition rather than a swap.
+   */
+  readonly replaced?: PersistedWatch;
 }
 
 export interface CancelWatchInput {
@@ -57,10 +79,13 @@ export interface TradingWatchServiceShape {
    * The watch is created `active`. It is supersedable later by a strategy
    * publish (see `TradingStrategyService.publishMomentumStrategy`) or
    * cancelable by harness or user.
+   *
+   * With `replacesWatchId`, the cancel and the insert are one transaction, so
+   * the mission is never momentarily uncovered on the side being re-levelled.
    */
   readonly registerWatch: (
     input: RegisterWatchInput,
-  ) => Effect.Effect<PersistedWatch, PersistenceSqlError | TradingMissionNotFoundError>;
+  ) => Effect.Effect<RegisteredWatch, PersistenceSqlError | TradingMissionNotFoundError>;
 
   /**
    * Cancel an active watch. Only an active watch can be cancelled; triggered,
@@ -141,6 +166,15 @@ const makeTradingWatchService = Effect.gen(function* () {
     return row;
   });
 
+  /** Cancel one active watch, returning it, or `null` if it was not active. */
+  const cancelActive = (missionId: string, watchId: string, now: number) =>
+    sql<WatchRow>`
+      UPDATE trading_watches
+      SET status = 'cancelled', version = version + 1, updated_at = ${now}
+      WHERE watch_id = ${watchId} AND mission_id = ${missionId} AND status = 'active'
+      RETURNING watch_id, mission_id, strategy_version, watch_json, status, armed_reason, created_at, updated_at
+    `.pipe(Effect.map((rows) => (rows[0] ? toPersistedWatch(rows[0]) : null)));
+
   const registerWatch: TradingWatchServiceShape["registerWatch"] = (input) =>
     Effect.gen(function* () {
       const mission = yield* requireActiveMission(input.missionId);
@@ -150,25 +184,43 @@ const makeTradingWatchService = Effect.gen(function* () {
       const watchId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
       const watchJson = encodeWatch(input.watch);
 
-      yield* sql`
-        INSERT INTO trading_watches
-          (watch_id, mission_id, strategy_version, watch_json, status, armed_reason, version,
-           created_at, updated_at)
-        VALUES
-          (${watchId}, ${input.missionId}, ${strategyVersion}, ${watchJson}, 'active',
-           ${input.armedReason ?? null}, 1, ${now}, ${now})
-      `.pipe(Effect.mapError(sqlFail("register:insert")));
+      // One transaction, so a re-level never leaves the side it is re-levelling
+      // momentarily unwatched — and a failure half-way leaves the OLD watch
+      // standing rather than nothing at all.
+      const replaced = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const cancelled =
+              input.replacesWatchId === undefined
+                ? null
+                : yield* cancelActive(input.missionId, input.replacesWatchId, now);
+
+            yield* sql`
+              INSERT INTO trading_watches
+                (watch_id, mission_id, strategy_version, watch_json, status, armed_reason, version,
+                 created_at, updated_at)
+              VALUES
+                (${watchId}, ${input.missionId}, ${strategyVersion}, ${watchJson}, 'active',
+                 ${input.armedReason ?? null}, 1, ${now}, ${now})
+            `;
+            return cancelled;
+          }),
+        )
+        .pipe(Effect.mapError(sqlFail("register:replace")));
 
       return {
-        id: watchId,
-        missionId: input.missionId,
-        strategyVersion,
-        watch: input.watch,
-        status: "active",
-        ...(input.armedReason === undefined ? {} : { armedReason: input.armedReason }),
-        createdAt: now,
-        updatedAt: now,
-      } satisfies PersistedWatch;
+        watch: {
+          id: watchId,
+          missionId: input.missionId,
+          strategyVersion,
+          watch: input.watch,
+          status: "active",
+          ...(input.armedReason === undefined ? {} : { armedReason: input.armedReason }),
+          createdAt: now,
+          updatedAt: now,
+        },
+        ...(replaced === null ? {} : { replaced }),
+      } satisfies RegisteredWatch;
     });
 
   const cancelWatch: TradingWatchServiceShape["cancelWatch"] = (input) =>

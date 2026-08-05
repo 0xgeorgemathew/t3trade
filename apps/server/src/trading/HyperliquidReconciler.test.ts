@@ -54,7 +54,7 @@ const input: ReconcileInput = {
 /** Migrate the shared in-memory db, then truncate the 038 tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 46 });
+  yield* runMigrations({ toMigrationInclusive: 47 });
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM trading_orders`;
@@ -62,6 +62,7 @@ const migrated = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_execution_records`;
   yield* sql`DELETE FROM trading_event_inbox`;
   yield* sql`DELETE FROM trading_account_observations`;
+  yield* sql`DELETE FROM trading_closed_trades`;
 });
 
 // ---------------------------------------------------------------------------
@@ -662,6 +663,49 @@ layer("HyperliquidReconciler", (it) => {
 
       assert.equal(state.closedTrade?.worstUnrealisedPnlUsd, -30);
       assert.equal(state.closedTrade?.peakUnrealisedPnlUsd, 5);
+    }),
+  );
+
+  it.effect("keeps the closed trade after the turn that reads it", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const reconciler = yield* HyperliquidReconciler;
+      const openedAt = yield* Clock.currentTimeMillis;
+
+      yield* setState({
+        account: snapshotFromClearinghouse(clearinghouseWithPnl("18")),
+        fills: [],
+      });
+      yield* reconciler.reconcile(input, "after_position_update");
+      yield* setState({
+        account: snapshotFromClearinghouse(flatClearinghouse),
+        fills: [sellFill(openedAt + 1_000, "18", "1")],
+      });
+      yield* reconciler.reconcile(input, "after_fill");
+
+      // The inbox copy is a message the closing turn consumes. This row is what
+      // calibration reads later, and `peak_unrealised_pnl` exists nowhere else
+      // once the position snapshot has been cleared.
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{
+        readonly net_pnl: number;
+        readonly peak_unrealised_pnl: number;
+        readonly direction: string;
+      }>`
+        SELECT net_pnl, peak_unrealised_pnl, direction
+        FROM trading_closed_trades WHERE mission_id = ${MISSION}
+      `;
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]?.net_pnl, 17);
+      assert.equal(rows[0]?.peak_unrealised_pnl, 18);
+      assert.equal(rows[0]?.direction, "long");
+
+      // A second pass over the same close does not count the trade twice.
+      yield* reconciler.reconcile(input, "after_fill");
+      const again = yield* sql<{ readonly c: number }>`
+        SELECT COUNT(*) AS c FROM trading_closed_trades WHERE mission_id = ${MISSION}
+      `;
+      assert.equal(again[0]?.c, 1);
     }),
   );
 

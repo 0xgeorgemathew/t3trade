@@ -68,6 +68,10 @@
       "types": "./src/momentum.ts",
       "import": "./src/momentum.ts"
     },
+    "./calibration": {
+      "types": "./src/calibration.ts",
+      "import": "./src/calibration.ts"
+    },
     "./history": {
       "types": "./src/history.ts",
       "import": "./src/history.ts"

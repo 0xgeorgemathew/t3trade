@@ -202,7 +202,7 @@ const withMcpServer = <A, E>(
         `.pipe(Effect.asVoid, Effect.orDie);
       const httpClient = yield* HttpClient.HttpClient;
 
-      yield* runMigrations({ toMigrationInclusive: 46 }).pipe(Effect.provide(built), Effect.orDie);
+      yield* runMigrations({ toMigrationInclusive: 47 }).pipe(Effect.provide(built), Effect.orDie);
       yield* missions
         .createMission({
           missionId: MISSION_ID,
@@ -455,7 +455,9 @@ it.effect("registers a watch before the first strategy publish with strategyVers
         },
       });
       assert.equal(registered.result.isError, false);
-      const registeredWatch = registered.result.structuredContent;
+      const registeredWatch = registered.result.structuredContent.watch;
+      // Nothing was named to replace, so nothing was.
+      assert.equal(registered.result.structuredContent.replaced, undefined);
       assert.equal(registeredWatch.strategyVersion, 0);
       assert.equal(registeredWatch.status, "active");
       assert.equal(registeredWatch.watch.type, "price_cross");
@@ -476,6 +478,97 @@ it.effect("registers a watch before the first strategy publish with strategyVers
         dispatchedCommands.map((command) => command.type),
         ["trading.mission.watch-registered"],
       );
+    }),
+  ),
+);
+
+it.effect("moves a level atomically through replacesWatchId", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      const level = (price: number) => ({
+        type: "price_cross",
+        market: "ETH",
+        priceSource: "mark",
+        direction: "above",
+        price,
+      });
+
+      const first = yield* callTool(BOUND_THREAD, "trading_register_watch", {
+        watch: level(3200),
+      });
+      const originalId = first.result.structuredContent.watch.id;
+
+      const moved = yield* callTool(BOUND_THREAD, "trading_register_watch", {
+        watch: level(3250),
+        replacesWatchId: originalId,
+      });
+      assert.equal(moved.result.isError, false);
+      assert.equal(moved.result.structuredContent.replaced.id, originalId);
+
+      const listed = yield* callTool(BOUND_THREAD, "trading_list_watches", {});
+      const watches = listed.result.structuredContent;
+      const byId = new Map(watches.map((w: { id: string; status: string }) => [w.id, w.status]));
+      assert.equal(byId.get(originalId), "cancelled");
+      assert.equal(byId.get(moved.result.structuredContent.watch.id), "active");
+
+      // Both halves of the swap reach the workspace: an unannounced cancel
+      // leaves a level rendered that is no longer standing.
+      assert.deepStrictEqual(
+        dispatchedCommands.map((command) => command.type),
+        [
+          "trading.mission.watch-registered",
+          "trading.mission.watch-registered",
+          "trading.mission.watch-cancelled",
+        ],
+      );
+    }),
+  ),
+);
+
+it.effect("serves trading_execute and its trading_request_entry alias as one call", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      // Both names reach the same handler. The intent is deliberately one the
+      // preview refuses (no stop on a position-increasing action), because what
+      // is being pinned is that the two names answer identically — not that an
+      // order goes out.
+      const intent = {
+        missionId: MISSION_ID,
+        strategyVersion: 1,
+        executionSequence: 1,
+        actionType: "open",
+        market: "ETH",
+        side: "buy",
+        size: 0.1,
+        limitPrice: 3000,
+        orderPreference: "marketable_ioc",
+        reduceOnly: false,
+      };
+      const args = { intent, expectedAuthorityVersion: 1, activeHarnessRunId: "run_1" };
+
+      const viaNewName = yield* callTool(BOUND_THREAD, "trading_execute", args);
+      const viaAlias = yield* callTool(BOUND_THREAD, "trading_request_entry", {
+        ...args,
+        intent: { ...intent, executionSequence: 2 },
+      });
+
+      // Neither name is unknown to the server — an unrouted tool comes back as
+      // a "tool not found" JSON-RPC error rather than a result at all.
+      assert.notEqual(viaNewName.result, undefined);
+      assert.notEqual(viaAlias.result, undefined);
+      // And they answer identically, because they are one handler. This test
+      // environment has no exchange behind it, so what both return is the same
+      // failure — which is exactly the equality worth pinning for an alias.
+      assert.equal(viaNewName.result.isError, viaAlias.result.isError);
+      // The text carries the executionSequence, which deliberately differs; the
+      // shape of the answer is what has to match.
+      // Both names get past parameter decoding and into the same handler, and
+      // answer identically. There is no exchange behind this environment, so
+      // what both return is the same failure — which is exactly the equality
+      // worth pinning for an alias: one implementation, two names.
+      assert.equal(viaNewName.result.isError, viaAlias.result.isError);
+      assert.deepStrictEqual(viaNewName.result.content, viaAlias.result.content);
+      assert.notMatch(viaNewName.result.content?.[0]?.text ?? "", /Invalid parameters/);
     }),
   ),
 );

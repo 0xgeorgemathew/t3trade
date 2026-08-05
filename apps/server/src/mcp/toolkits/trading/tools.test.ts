@@ -2,7 +2,9 @@ import { expect, it } from "@effect/vitest";
 import {
   TRADING_CANCEL_WATCH_TOOL,
   TRADING_ESTIMATE_COSTS_TOOL,
+  TRADING_EXECUTE_TOOL,
   TRADING_GET_MOMENTUM_CONTEXT_TOOL,
+  TRADING_GET_TARGET_CALIBRATION_TOOL,
   TRADING_GET_TRADE_HISTORY_TOOL,
   TRADING_GET_ACCOUNT_STATE_TOOL,
   TRADING_GET_MARKET_HISTORY_TOOL,
@@ -40,11 +42,13 @@ it("exposes the §14.3 mission tools, the §14.2 read tools, and the §14.4 watc
       TRADING_ESTIMATE_COSTS_TOOL,
       TRADING_GET_MOMENTUM_CONTEXT_TOOL,
       TRADING_GET_TRADE_HISTORY_TOOL,
+      TRADING_GET_TARGET_CALIBRATION_TOOL,
       TRADING_GET_ORDER_BOOK_TOOL,
       TRADING_GET_ACCOUNT_STATE_TOOL,
       TRADING_GET_POSITION_TOOL,
       TRADING_GET_OPEN_ORDERS_TOOL,
       TRADING_REGISTER_WATCH_TOOL,
+      TRADING_EXECUTE_TOOL,
       TRADING_REQUEST_ENTRY_TOOL,
       TRADING_SCHEDULE_REASSESSMENT_TOOL,
       TRADING_LIST_WATCHES_TOOL,
@@ -146,6 +150,56 @@ it("points the research reads at the fields that carry the answer", () => {
   expect(history).toContain("netPnlUsd");
   // Each order scored against the target it was actually published under.
   expect(history).toContain("targetProfitUsd");
+});
+
+// Phase 3 renamed the execution tool and kept the old name working. The alias
+// has to stay a pointer, not a second copy of the methodology — two long
+// descriptions of the same call is the prompt paying twice for one tool.
+it("keeps trading_request_entry as a short alias pointing at trading_execute", () => {
+  const execute = TradingToolkit.tools[TRADING_EXECUTE_TOOL];
+  const alias = TradingToolkit.tools[TRADING_REQUEST_ENTRY_TOOL];
+
+  // Identical call, so identical parameters.
+  expect(Tool.getJsonSchema(alias)).toEqual(Tool.getJsonSchema(execute));
+
+  const aliasText = alias.description ?? "";
+  expect(aliasText).toContain("DEPRECATED ALIAS");
+  expect(aliasText).toContain("trading_execute");
+  expect(aliasText.length).toBeLessThan((execute.description ?? "").length / 2);
+
+  // The methodology lives on the new name, and the old name is not still
+  // being quoted as the tool to reach for.
+  const executeText = execute.description ?? "";
+  expect(executeText).toContain("marketable_ioc");
+  expect(executeText).toContain("no_conflicting_execution_pending");
+  const publish = TradingToolkit.tools[TRADING_PUBLISH_MOMENTUM_STRATEGY_TOOL].description ?? "";
+  expect(publish).not.toContain("trading_request_entry");
+});
+
+// The two learning reads: what the mission believed before, and whether any of
+// it worked. Both are useless unless the description names the field that
+// carries the answer.
+it("points the calibration read at the verdict it exists to produce", () => {
+  const calibration = TradingToolkit.tools[TRADING_GET_TARGET_CALIBRATION_TOOL].description ?? "";
+  // The distinction the whole read turns on.
+  expect(calibration).toContain("REACHED");
+  expect(calibration).toContain("observedHitRatePercent");
+  expect(calibration).toContain("claimedHitRatePercent");
+  expect(calibration).toContain("recommendation");
+
+  const mission = TradingToolkit.tools[TRADING_GET_MISSION_TOOL].description ?? "";
+  expect(mission).toContain("strategyHistory");
+});
+
+// Re-levelling used to be cancel-then-register, with the side being re-levelled
+// unwatched in between. The description has to name the parameter that closes
+// that, and the case where it silently does not.
+it("tells the harness how to move a level rather than add one", () => {
+  const register = TradingToolkit.tools[TRADING_REGISTER_WATCH_TOOL].description ?? "";
+  expect(register).toContain("replacesWatchId");
+  expect(register).toContain("one transaction");
+  // The failure mode: a stale id means an addition, not a swap.
+  expect(register).toContain("ADDITION");
 });
 
 it("marks reading as safe and publishing as non-idempotent", () => {

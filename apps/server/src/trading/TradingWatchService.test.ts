@@ -40,7 +40,7 @@ const candleCloseWatch: MarketWatch = {
 /** Shared in-memory database; each test migrates then truncates the trading tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 46 });
+  yield* runMigrations({ toMigrationInclusive: 47 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
@@ -115,7 +115,7 @@ layer("TradingWatchService", (it) => {
       yield* seedMission;
 
       const watches = yield* TradingWatchService;
-      const watch = yield* watches.registerWatch({
+      const { watch, replaced } = yield* watches.registerWatch({
         missionId: "mission_1",
         watch: candleCloseWatch,
       });
@@ -124,6 +124,7 @@ layer("TradingWatchService", (it) => {
       assert.equal(watch.strategyVersion, 1);
       assert.equal(watch.status, "active");
       assert.deepStrictEqual(watch.watch, candleCloseWatch);
+      assert.equal(replaced, undefined);
     }),
   );
 
@@ -133,7 +134,7 @@ layer("TradingWatchService", (it) => {
       yield* seedMission;
 
       const watches = yield* TradingWatchService;
-      const registered = yield* watches.registerWatch({
+      const { watch: registered } = yield* watches.registerWatch({
         missionId: "mission_1",
         watch: candleCloseWatch,
       });
@@ -160,7 +161,7 @@ layer("TradingWatchService", (it) => {
       yield* seedMission;
 
       const watches = yield* TradingWatchService;
-      const registered = yield* watches.registerWatch({
+      const { watch: registered } = yield* watches.registerWatch({
         missionId: "mission_1",
         watch: candleCloseWatch,
       });
@@ -172,6 +173,94 @@ layer("TradingWatchService", (it) => {
       // Re-firing a triggered watch does nothing — it is already terminal.
       const again = yield* watches.markTriggered(registered.id);
       assert.strictEqual(again, null);
+    }),
+  );
+
+  // A watch fires once, so keeping a level standing means re-registering it —
+  // and cancel-then-register leaves the side being re-levelled unwatched in
+  // between, which on a fast market is the exact window that matters.
+  it.effect("retires the old level and arms the new one in one transaction", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission;
+
+      const watches = yield* TradingWatchService;
+      const { watch: original } = yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: candleCloseWatch,
+      });
+
+      const { watch: moved, replaced } = yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: { ...candleCloseWatch, price: 3_100 },
+        replacesWatchId: original.id,
+      });
+
+      assert.equal(replaced?.id, original.id);
+      assert.equal(replaced?.status, "cancelled");
+      assert.notEqual(moved.id, original.id);
+      assert.equal(moved.status, "active");
+
+      // The old level is genuinely gone, not merely reported as such.
+      const stillThere = yield* watches.getWatch(original.id);
+      assert.equal(stillThere?.status, "cancelled");
+    }),
+  );
+
+  // The harness has to be able to tell a swap from an addition: if the level it
+  // meant to retire had already fired, it now holds two live conditions and
+  // only one of them is the one it thinks it has.
+  it.effect("reports no replacement when the named watch was already terminal", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission;
+
+      const watches = yield* TradingWatchService;
+      const { watch: original } = yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: candleCloseWatch,
+      });
+      yield* watches.markTriggered(original.id);
+
+      const { watch: added, replaced } = yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: { ...candleCloseWatch, price: 3_100 },
+        replacesWatchId: original.id,
+      });
+
+      assert.equal(replaced, undefined);
+      assert.equal(added.status, "active");
+      // The triggered watch keeps its terminal status; nothing rewrote it.
+      const untouched = yield* watches.getWatch(original.id);
+      assert.equal(untouched?.status, "triggered");
+    }),
+  );
+
+  it.effect("will not let one mission retire another mission's watch", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission;
+
+      const watches = yield* TradingWatchService;
+      const { watch: mine } = yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: candleCloseWatch,
+      });
+
+      // A replace naming a watch this mission does not own cancels nothing —
+      // the WHERE clause is scoped to the mission, not just the watch id.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE trading_watches SET mission_id = 'mission_other' WHERE watch_id = ${mine.id}`;
+
+      const { replaced } = yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: { ...candleCloseWatch, price: 3_100 },
+        replacesWatchId: mine.id,
+      });
+      assert.equal(replaced, undefined);
+
+      const untouched = yield* watches.getWatch(mine.id);
+      assert.equal(untouched?.status, "active");
     }),
   );
 

@@ -34,7 +34,11 @@ import type {
 
 import { describeClosedTrade, type ClosedTradeReview } from "@t3tools/trading-contracts/history";
 
-import { buildClosedTradeReview, type PreviousPositionRow } from "./TradingClosedTradeReview.ts";
+import {
+  buildClosedTradeReview,
+  persistClosedTradeReview,
+  type PreviousPositionRow,
+} from "./TradingClosedTradeReview.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 
 /** The reconciler failed at a named stage. */
@@ -736,6 +740,10 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
         closedAt: observedAt,
       });
       if (review === null) return null;
+
+      // Durable first, then queued: the row is what later turns calibrate
+      // against, and the inbox copy is consumed by the very next one.
+      yield* persistClosedTradeReview(review);
 
       const summary = describeClosedTrade(review);
       yield* inbox

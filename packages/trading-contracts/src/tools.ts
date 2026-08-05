@@ -30,11 +30,16 @@ import {
 import type { TradingCostEstimate } from "./costs.ts";
 import type { MomentumContext } from "./momentum.ts";
 import type { TradingTradeHistory } from "./history.ts";
+import type { TargetCalibration } from "./calibration.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./mission.ts";
-import { TradingId, TradingMarket } from "./primitives.ts";
+import { TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
 import { TradingOrderIntent } from "./execution.ts";
-import { momentumStrategyAuthoredFields, MomentumStrategyState } from "./strategy.ts";
+import {
+  momentumStrategyAuthoredFields,
+  MomentumStrategyState,
+  ProfitTargetBasis,
+} from "./strategy.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
 
 export const TRADING_GET_MISSION_TOOL = "trading_get_mission";
@@ -50,9 +55,24 @@ export const TRADING_MEASURE_VOLATILITY_TOOL = "trading_measure_volatility";
 export const TRADING_ESTIMATE_COSTS_TOOL = "trading_estimate_costs";
 export const TRADING_GET_MOMENTUM_CONTEXT_TOOL = "trading_get_momentum_context";
 export const TRADING_GET_TRADE_HISTORY_TOOL = "trading_get_trade_history";
+export const TRADING_GET_TARGET_CALIBRATION_TOOL = "trading_get_target_calibration";
 export const TRADING_GET_ACCOUNT_STATE_TOOL = "trading_get_account_state";
 export const TRADING_GET_POSITION_TOOL = "trading_get_position";
 export const TRADING_GET_OPEN_ORDERS_TOOL = "trading_get_open_orders";
+/**
+ * The whole position lifecycle, not just entries.
+ *
+ * `intent.actionType` selects between `open`, `scale_in`, `reduce`, `close`,
+ * `cancel`, and `modify_stop`, so the older name below described one of six
+ * things it does. A harness reading a tool list picks by name before it reads
+ * the description, and "request entry" is the wrong name to pick `close` from.
+ */
+export const TRADING_EXECUTE_TOOL = "trading_execute";
+
+/**
+ * The original name, kept as an alias so nothing that already learned it
+ * breaks. Identical parameters, identical behaviour, same handler.
+ */
 export const TRADING_REQUEST_ENTRY_TOOL = "trading_request_entry";
 
 // -- shared tool rejection ---------------------------------------------------
@@ -127,6 +147,30 @@ export const TradingPendingExecution = Schema.Struct({
 });
 export type TradingPendingExecution = typeof TradingPendingExecution.Type;
 
+/**
+ * One strategy version the mission published, as its own history reads it.
+ *
+ * `trading_get_mission` returns the CURRENT strategy, so a mission that has
+ * republished four times can see only its latest thesis — and "did the last
+ * three targets work?" was a question with no way to ask it. This is the
+ * skeleton of each: what was believed, what was targeted, and on what basis.
+ */
+export const PublishedStrategySummary = Schema.Struct({
+  version: Schema.Number,
+  publishedAt: UnixMillis,
+  mode: Schema.String,
+  direction: Schema.String,
+  currentAction: Schema.String,
+  /** Primary timeframe — `timeframes[0]` of that version. */
+  timeframe: Schema.optional(Schema.String),
+  targetProfitUsd: Schema.optional(Schema.Number),
+  /** The derivation published beside the target, when there was one. */
+  targetProfitBasis: Schema.optional(ProfitTargetBasis),
+  /** The one-line belief that version was published on. */
+  beliefSummary: Schema.optional(Schema.String),
+});
+export type PublishedStrategySummary = typeof PublishedStrategySummary.Type;
+
 /** Current mission, authority, strategy, watches, and control flags. */
 export const TradingBoundMissionResult = Schema.Struct({
   /** Discriminates this from the unbound-thread answer below. */
@@ -141,6 +185,15 @@ export const TradingBoundMissionResult = Schema.Struct({
   harness: TradingHarnessBinding,
   /** Executions written but not yet answered — what a lock rejection means. */
   pendingExecutions: Schema.Array(TradingPendingExecution),
+  /**
+   * Every strategy version this mission has published, newest first.
+   *
+   * `strategy` above is only the current one. Without the rest, a harness that
+   * has republished three times cannot see what it previously believed, what it
+   * targeted, or on what basis — which makes "was the last target the right
+   * rung?" unanswerable from inside the loop.
+   */
+  strategyHistory: Schema.Array(PublishedStrategySummary),
 });
 export type TradingBoundMissionResult = typeof TradingBoundMissionResult.Type;
 
@@ -334,6 +387,13 @@ export const TradingRequestEntryResult = Schema.Struct({
 });
 export type TradingRequestEntryResult = typeof TradingRequestEntryResult.Type;
 
+// `trading_execute` is the same call under the name that describes it. The
+// aliases are exported separately so a caller reads the name it is using.
+export const TradingExecuteInput = TradingRequestEntryInput;
+export type TradingExecuteInput = TradingRequestEntryInput;
+export const TradingExecuteResult = TradingRequestEntryResult;
+export type TradingExecuteResult = TradingRequestEntryResult;
+
 export const TradingResolveMarketInput = Schema.Struct({
   ...missionBound,
   market: Schema.String,
@@ -437,6 +497,19 @@ export type TradingGetTradeHistoryInput = typeof TradingGetTradeHistoryInput.Typ
 
 export type TradingGetTradeHistoryResult = TradingTradeHistory;
 
+/**
+ * Score the targets this mission published against what its trades actually
+ * reached.
+ *
+ * The one read that can tell the harness its own habit is wrong: a p50 target
+ * reached a fifth of the time is not bad luck, it is a target read off the
+ * wrong rung.
+ */
+export const TradingGetTargetCalibrationInput = Schema.Struct({ ...missionBound });
+export type TradingGetTargetCalibrationInput = typeof TradingGetTargetCalibrationInput.Type;
+
+export type TradingGetTargetCalibrationResult = TargetCalibration;
+
 /** Account-state and position tools take only the missionId; the address is server-resolved. */
 export const TradingGetAccountStateInput = Schema.Struct({ ...missionBound });
 export type TradingGetAccountStateInput = typeof TradingGetAccountStateInput.Type;
@@ -474,11 +547,30 @@ export const TRADING_CANCEL_WATCH_TOOL = "trading_cancel_watch";
 export const TradingRegisterWatchInput = Schema.Struct({
   ...missionBound,
   watch: MarketWatch,
+  /**
+   * An active watch to retire as this one is armed, in a single transaction.
+   *
+   * A watch fires once and is terminal, so keeping a level standing means
+   * re-registering it — and doing that as cancel-then-register leaves the side
+   * being re-levelled unwatched in between. This closes that window.
+   */
+  replacesWatchId: Schema.optional(TradingId),
 });
 export type TradingRegisterWatchInput = typeof TradingRegisterWatchInput.Type;
 
-export const TradingRegisterWatchResult = PersistedWatch;
-export type TradingRegisterWatchResult = PersistedWatch;
+export const TradingRegisterWatchResult = Schema.Struct({
+  watch: PersistedWatch,
+  /**
+   * The watch `replacesWatchId` actually cancelled.
+   *
+   * Absent when none was named — and, importantly, also absent when the one
+   * named was already terminal. That case is the harness's cue that the level
+   * it meant to retire had already fired or been superseded, so what it just
+   * armed is an addition, not a swap.
+   */
+  replaced: Schema.optional(PersistedWatch),
+});
+export type TradingRegisterWatchResult = typeof TradingRegisterWatchResult.Type;
 
 export const TradingScheduleReassessmentInput = Schema.Struct({
   ...missionBound,

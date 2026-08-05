@@ -30,6 +30,7 @@ import {
   TradingPublishMomentumStrategyInput,
   TradingPublishMomentumStrategyResult,
 } from "./Schemas.ts";
+import type { PublishedStrategySummary } from "@t3tools/trading-contracts/tools";
 
 export interface TradingStrategyServiceShape {
   /**
@@ -57,6 +58,22 @@ export interface TradingStrategyServiceShape {
   readonly listWatches: (
     missionId: string,
   ) => Effect.Effect<ReadonlyArray<PersistedWatch>, PersistenceSqlError>;
+
+  /**
+   * Every strategy version the mission has published, newest first.
+   *
+   * `getCurrentStrategy` answers what the mission believes now. This answers
+   * what it has believed — which is what a harness needs to tell "the thesis
+   * changed" from "the thesis has changed four times in an hour", and to see
+   * the targets it set before this one.
+   *
+   * A version whose stored JSON no longer decodes is skipped rather than
+   * failing the read: one unreadable historical row should not cost the caller
+   * the whole history.
+   */
+  readonly listStrategyVersions: (
+    missionId: string,
+  ) => Effect.Effect<ReadonlyArray<PublishedStrategySummary>, PersistenceSqlError>;
 }
 
 export class TradingStrategyService extends Context.Service<
@@ -84,6 +101,46 @@ interface WatchRow {
   readonly created_at: number;
   readonly updated_at: number;
 }
+
+/**
+ * One published version as its history summary, or nothing.
+ *
+ * The full `MomentumStrategyState` is large and mostly prose; a history of ten
+ * of them would crowd out the mission snapshot it rides in. This keeps the
+ * skeleton — what was believed, what was targeted, on what basis — and drops
+ * the rest.
+ *
+ * A row that no longer decodes returns `[]`: strategies published before a
+ * field became required still sit in this table, and a history is a nicety
+ * that must never take a mission read down with it.
+ */
+const toStrategySummary = (row: {
+  readonly version: number;
+  readonly strategy_json: string;
+  readonly created_at: number;
+}): ReadonlyArray<PublishedStrategySummary> => {
+  let strategy: MomentumStrategyState;
+  try {
+    strategy = decodeStrategyJson(row.strategy_json);
+  } catch {
+    return [];
+  }
+  return [
+    {
+      version: row.version,
+      publishedAt: row.created_at,
+      mode: strategy.mode,
+      direction: strategy.direction,
+      currentAction: strategy.currentAction,
+      ...(strategy.timeframes[0] === undefined ? {} : { timeframe: strategy.timeframes[0] }),
+      targetProfitUsd: strategy.protection.targetProfitUsd,
+      ...(strategy.protection.targetProfitBasis === undefined
+        ? {}
+        : { targetProfitBasis: strategy.protection.targetProfitBasis }),
+      beliefSummary: strategy.belief.summary,
+    },
+  ];
+};
 
 const makeTradingStrategyService = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -115,6 +172,17 @@ const makeTradingStrategyService = Effect.gen(function* () {
     `.pipe(
       Effect.mapError(sqlFail("listWatches")),
       Effect.map((rows) => rows.map(toPersistedWatch)),
+    );
+
+  const listStrategyVersions: TradingStrategyServiceShape["listStrategyVersions"] = (missionId) =>
+    sql<{ readonly version: number; readonly strategy_json: string; readonly created_at: number }>`
+      SELECT version, strategy_json, created_at
+      FROM momentum_strategy_versions
+      WHERE mission_id = ${missionId}
+      ORDER BY version DESC
+    `.pipe(
+      Effect.mapError(sqlFail("listStrategyVersions")),
+      Effect.map((rows) => rows.flatMap((row) => toStrategySummary(row))),
     );
 
   const publishMomentumStrategy: TradingStrategyServiceShape["publishMomentumStrategy"] = (input) =>
@@ -239,6 +307,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
     publishMomentumStrategy,
     getCurrentStrategy,
     listWatches,
+    listStrategyVersions,
   } satisfies TradingStrategyServiceShape;
 });
 

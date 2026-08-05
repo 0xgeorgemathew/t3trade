@@ -65,7 +65,7 @@ const body = (name: string): PublishMomentumStrategyBody => ({
 
 const setup = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 46 });
+  yield* runMigrations({ toMigrationInclusive: 47 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM momentum_strategy_versions`;
@@ -454,6 +454,61 @@ layer("trading_publish_momentum_strategy (§14.3)", (it) => {
       if (result.outcome === "accepted") {
         assert.deepEqual(result.warnings, []);
       }
+    }),
+  );
+  // `getCurrentStrategy` answers what the mission believes now. A harness that
+  // has republished three times could not see what it believed before, which is
+  // what "was the last target the right rung?" needs.
+  it.effect("publishes every version it has ever published, newest first", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const strategies = yield* TradingStrategyService;
+
+      yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedVersion: 0,
+        strategy: body("first thesis"),
+      });
+      yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedVersion: 1,
+        strategy: body("second thesis"),
+      });
+
+      const history = yield* strategies.listStrategyVersions("mission_1");
+
+      assert.equal(history.length, 2);
+      assert.equal(history[0]?.version, 2);
+      assert.equal(history[1]?.version, 1);
+      // The skeleton, not the whole strategy: enough to score a target against.
+      assert.equal(history[0]?.targetProfitUsd, body("x").protection.targetProfitUsd);
+      assert.equal(history[0]?.targetProfitBasis?.measurement, "excursion_quantile");
+      assert.equal(history[0]?.timeframe, "5m");
+      assert.ok((history[0]?.beliefSummary ?? "").length > 0);
+    }),
+  );
+
+  it.effect("skips a version whose stored JSON no longer decodes", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const strategies = yield* TradingStrategyService;
+      yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedVersion: 0,
+        strategy: body("readable"),
+      });
+
+      // A strategy published before a field became required still sits in this
+      // table. One unreadable row should cost that row, not the history.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+        VALUES ('mission_1', 2, '{"legacy":true}', 9999)
+      `;
+
+      const history = yield* strategies.listStrategyVersions("mission_1");
+      assert.equal(history.length, 1);
+      assert.equal(history[0]?.version, 1);
     }),
   );
 });

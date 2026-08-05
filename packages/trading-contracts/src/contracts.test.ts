@@ -311,11 +311,25 @@ describe("§14.3 mission tool contracts", () => {
       pendingExecutions: [
         { cloid: "0xblocking", actionType: "open", status: "submitted", ageMillis: 45_000 },
       ],
+      strategyHistory: [
+        {
+          version: 1,
+          publishedAt: 1_000,
+          mode: "breakout_continuation",
+          direction: "long",
+          currentAction: "waiting",
+          timeframe: "1m",
+          targetProfitUsd: 12,
+          beliefSummary: "higher lows on the 1m",
+        },
+      ],
     });
     assert(decoded.bound);
     expect(decoded.watches).toEqual([]);
     // The lock a `no_conflicting_execution_pending` rejection names.
     expect(decoded.pendingExecutions[0]?.cloid).toBe("0xblocking");
+    // What the mission believed before it believed the current thing.
+    expect(decoded.strategyHistory[0]?.targetProfitUsd).toBe(12);
   });
 
   it("decodes the unbound answer a thread gets once its mission has ended", () => {
@@ -736,6 +750,7 @@ describe("subpath exports", () => {
         "./costs",
         "./momentum",
         "./history",
+        "./calibration",
       ].sort(),
     );
 

@@ -134,3 +134,41 @@ export const buildClosedTradeReview = (input: {
     // worst possible trade for it.
     Effect.orElseSucceed(() => null),
   );
+
+/**
+ * Keep the review after the turn that reads it.
+ *
+ * The inbox is a queue: the closing turn drains its copy and it is gone. The
+ * questions worth asking across trades — was the target ever reached, is this
+ * mission's habit of setting them wrong — need the record to outlive the
+ * message, and `peakUnrealisedPnlUsd` exists nowhere else once the position
+ * snapshot is cleared.
+ *
+ * Keyed on (mission, closedAt), so a re-run of the same reconcile pass rewrites
+ * its row instead of counting the trade twice.
+ */
+export const persistClosedTradeReview = (
+  review: ClosedTradeReview,
+): Effect.Effect<void, never, SqlClient.SqlClient> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO trading_closed_trades (
+        mission_id, market, opened_at, closed_at, hold_millis, direction, size,
+        entry_price, exit_price, realized_pnl, fees_paid, net_pnl,
+        peak_unrealised_pnl, trough_unrealised_pnl, giveback_from_peak,
+        fill_count, strategy_version, target_profit_usd
+      ) VALUES (
+        ${review.missionId}, ${review.market}, ${review.openedAt}, ${review.closedAt},
+        ${review.holdMillis}, ${review.direction}, ${review.sizeEth},
+        ${review.entryPrice ?? null}, ${review.exitPrice ?? null},
+        ${review.realizedPnlUsd}, ${review.feesPaidUsd}, ${review.netPnlUsd},
+        ${review.peakUnrealisedPnlUsd}, ${review.worstUnrealisedPnlUsd},
+        ${review.givebackFromPeakUsd}, ${review.fillCount},
+        ${review.strategyVersion ?? null}, ${review.targetProfitUsd ?? null}
+      )
+      ON CONFLICT(mission_id, closed_at) DO UPDATE SET
+        realized_pnl = ${review.realizedPnlUsd}, fees_paid = ${review.feesPaidUsd},
+        net_pnl = ${review.netPnlUsd}, fill_count = ${review.fillCount}
+    `;
+  }).pipe(Effect.ignore);

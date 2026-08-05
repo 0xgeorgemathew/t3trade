@@ -104,7 +104,7 @@ const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   // `trading_orders` arrives in 038 (the `order_update` watch reads it) and
   // `peak_unrealised_pnl` in 045 (the `pnl_giveback` watch reads it).
-  yield* runMigrations({ toMigrationInclusive: 46 });
+  yield* runMigrations({ toMigrationInclusive: 47 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
@@ -230,7 +230,8 @@ const seed = (watch: MarketWatch) =>
     if (published.outcome !== "accepted") throw new Error("seed publish rejected");
 
     const watches = yield* TradingWatchService;
-    return yield* watches.registerWatch({ missionId: "mission_1", watch });
+    const registered = yield* watches.registerWatch({ missionId: "mission_1", watch });
+    return registered.watch;
   });
 
 /** Build a WS delivery for the 5m candle closing at `closeTime`, priced `closePrice`. */
