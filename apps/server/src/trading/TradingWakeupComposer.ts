@@ -31,7 +31,7 @@ import type { ObservedVolatility } from "@t3tools/trading-contracts/volatility";
 import { TradingCostEstimator } from "./TradingCostEstimator.ts";
 
 import type { TradingAuthority } from "./Schemas.ts";
-import type { MomentumStrategyState } from "./Schemas.ts";
+import type { TradingPlanState } from "./Schemas.ts";
 import type { PersistedWatch } from "./Schemas.ts";
 import type { TradingMission } from "./Schemas.ts";
 import {
@@ -100,7 +100,7 @@ export interface ComposeWakeupInput {
    * the composer does not re-fetch and observe a different version than the one
    * the lease was acquired against.
    */
-  readonly activeStrategy: MomentumStrategyState;
+  readonly activeStrategy: TradingPlanState;
 }
 
 export interface TradingWakeupComposerShape {

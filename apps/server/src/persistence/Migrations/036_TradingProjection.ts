@@ -12,7 +12,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  * while 035 stores INTEGER epoch millis. The trading projector is the single
  * place that converts between them. The JSON payload columns are the deliberate
  * exception: they carry the published spec contracts (`TradingAuthority`,
- * `MomentumStrategyState`, `PersistedWatch`) verbatim, so a reader sees exactly
+ * `TradingPlanState`, `PersistedWatch`) verbatim, so a reader sees exactly
  * the shape the harness published.
  */
 export default Effect.gen(function* () {

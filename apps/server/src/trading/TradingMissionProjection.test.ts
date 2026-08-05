@@ -23,7 +23,7 @@ import * as Schema from "effect/Schema";
 
 import { pocAuthorityDefaults, TradingAuthority } from "@t3tools/trading-contracts/authority";
 import { TradingHarnessBinding, TradingMissionControl } from "@t3tools/trading-contracts/mission";
-import { MomentumStrategyState } from "@t3tools/trading-contracts/strategy";
+import { TradingPlanState } from "@t3tools/trading-contracts/strategy";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
@@ -113,10 +113,10 @@ const readFills = Effect.gen(function* () {
   return Option.getOrThrow(mission).recentFills;
 });
 
-const encodeStrategy = Schema.encodeSync(Schema.fromJsonString(MomentumStrategyState));
+const encodeStrategy = Schema.encodeSync(Schema.fromJsonString(TradingPlanState));
 
 /** A published range scalp, as the strategy projector would have written it. */
-const rangeReversionStrategy: MomentumStrategyState = {
+const rangeReversionStrategy: TradingPlanState = {
   version: 1,
   name: "ETH 1m range reversion",
   market: "ETH",

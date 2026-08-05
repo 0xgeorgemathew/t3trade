@@ -24,11 +24,11 @@ import { TradingMissionNotFoundError } from "./Errors.ts";
 import { isActiveMissionStatus } from "./MissionTransitions.ts";
 import { toPersistedWatch } from "./TradingWatchService.ts";
 import {
-  MomentumStrategyState,
+  TradingPlanState,
   PersistedWatch,
   TradingMissionStatus,
-  TradingPublishMomentumStrategyInput,
-  TradingPublishMomentumStrategyResult,
+  TradingPublishPlanInput,
+  TradingPublishPlanResult,
 } from "./Schemas.ts";
 import type { PublishedStrategySummary } from "@t3tools/trading-contracts/tools";
 
@@ -40,15 +40,12 @@ export interface TradingStrategyServiceShape {
    * current state; the rejection carries the version the server actually holds.
    */
   readonly publishMomentumStrategy: (
-    input: TradingPublishMomentumStrategyInput,
-  ) => Effect.Effect<
-    TradingPublishMomentumStrategyResult,
-    PersistenceSqlError | TradingMissionNotFoundError
-  >;
+    input: TradingPublishPlanInput,
+  ) => Effect.Effect<TradingPublishPlanResult, PersistenceSqlError | TradingMissionNotFoundError>;
 
   readonly getCurrentStrategy: (
     missionId: string,
-  ) => Effect.Effect<Option.Option<MomentumStrategyState>, PersistenceSqlError>;
+  ) => Effect.Effect<Option.Option<TradingPlanState>, PersistenceSqlError>;
 
   /**
    * Every persisted watch for a mission, newest first — including the
@@ -81,7 +78,7 @@ export class TradingStrategyService extends Context.Service<
   TradingStrategyServiceShape
 >()("t3/trading/TradingStrategyService") {}
 
-const StrategyJson = Schema.fromJsonString(MomentumStrategyState);
+const StrategyJson = Schema.fromJsonString(TradingPlanState);
 const decodeStrategyJson = Schema.decodeUnknownSync(StrategyJson);
 const encodeStrategyJson = Schema.encodeUnknownSync(StrategyJson);
 const decodeMissionStatus = Schema.decodeUnknownSync(TradingMissionStatus);
@@ -105,7 +102,7 @@ interface WatchRow {
 /**
  * One published version as its history summary, or nothing.
  *
- * The full `MomentumStrategyState` is large and mostly prose; a history of ten
+ * The full `TradingPlanState` is large and mostly prose; a history of ten
  * of them would crowd out the mission snapshot it rides in. This keeps the
  * skeleton — what was believed, what was targeted, on what basis — and drops
  * the rest.
@@ -119,7 +116,7 @@ const toStrategySummary = (row: {
   readonly strategy_json: string;
   readonly created_at: number;
 }): ReadonlyArray<PublishedStrategySummary> => {
-  let strategy: MomentumStrategyState;
+  let strategy: TradingPlanState;
   try {
     strategy = decodeStrategyJson(row.strategy_json);
   } catch {
@@ -243,7 +240,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
 
       const version = input.expectedVersion + 1;
       const now = yield* Clock.currentTimeMillis;
-      const strategy: MomentumStrategyState = {
+      const strategy: TradingPlanState = {
         version,
         ...input.strategy,
         updatedAt: now,

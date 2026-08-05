@@ -6,7 +6,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
-import type { PublishMomentumStrategyBody } from "./Schemas.ts";
+import type { PublishTradingPlanBody } from "./Schemas.ts";
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingStrategyService, TradingStrategyServiceLive } from "./TradingStrategyService.ts";
 
@@ -16,7 +16,7 @@ const layer = it.layer(
   ),
 );
 
-const body = (name: string): PublishMomentumStrategyBody => ({
+const body = (name: string): PublishTradingPlanBody => ({
   name,
   market: "ETH",
   mode: "breakout_continuation",
@@ -115,7 +115,7 @@ const watchStatus = (watchId: string) =>
     return rows[0]?.status;
   });
 
-layer("trading_publish_momentum_strategy (§14.3)", (it) => {
+layer("trading_publish_plan (§14.3)", (it) => {
   it.effect("accepts the first publish at expected version 0 and assigns version 1", () =>
     Effect.gen(function* () {
       yield* setup;
@@ -354,8 +354,8 @@ layer("trading_publish_momentum_strategy (§14.3)", (it) => {
 
   const withProtection = (
     name: string,
-    protection: Partial<PublishMomentumStrategyBody["protection"]>,
-  ): PublishMomentumStrategyBody => {
+    protection: Partial<PublishTradingPlanBody["protection"]>,
+  ): PublishTradingPlanBody => {
     const base = body(name);
     return { ...base, protection: { ...base.protection, ...protection } };
   };

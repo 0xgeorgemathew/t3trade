@@ -19,7 +19,7 @@ import { VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility"
 
 import { estimateTradingCosts } from "@t3tools/trading-contracts/costs";
 
-import type { MomentumStrategyState, PersistedWatch, TradingMission } from "./Schemas.ts";
+import type { TradingPlanState, PersistedWatch, TradingMission } from "./Schemas.ts";
 import { TradingCostEstimator } from "./TradingCostEstimator.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
@@ -56,7 +56,7 @@ const strategy = {
   currentAction: "holding",
   explanation: "long the reclaim",
   updatedAt: NOW - 900_000,
-} as unknown as MomentumStrategyState;
+} as unknown as TradingPlanState;
 
 const mission = {
   id: "mission_1",

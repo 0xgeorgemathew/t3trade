@@ -20,11 +20,11 @@ import {
   ResolvedMarket,
 } from "./market.ts";
 import { TradingHarnessRun, TradingMission } from "./mission.ts";
-import { AgentConditionInput, MomentumStrategyState } from "./strategy.ts";
+import { AgentConditionInput, TradingPlanState } from "./strategy.ts";
 import {
   TradingGetMissionResult,
-  TradingPublishMomentumStrategyInput,
-  TradingPublishMomentumStrategyResult,
+  TradingPublishPlanInput,
+  TradingPublishPlanResult,
 } from "./tools.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
 import {
@@ -39,13 +39,13 @@ import {
 const decodeAccount = Schema.decodeUnknownSync(TradingAccount);
 const decodeAuthority = Schema.decodeUnknownSync(TradingAuthority);
 const decodeMission = Schema.decodeUnknownSync(TradingMission);
-const decodeStrategy = Schema.decodeUnknownSync(MomentumStrategyState);
+const decodeStrategy = Schema.decodeUnknownSync(TradingPlanState);
 const decodeWatch = Schema.decodeUnknownSync(MarketWatch);
 const decodePersistedWatch = Schema.decodeUnknownSync(PersistedWatch);
 const decodeInboxEvent = Schema.decodeUnknownSync(MissionInboxEvent);
 const decodeHarnessRun = Schema.decodeUnknownSync(TradingHarnessRun);
-const decodePublishInput = Schema.decodeUnknownSync(TradingPublishMomentumStrategyInput);
-const decodePublishResult = Schema.decodeUnknownSync(TradingPublishMomentumStrategyResult);
+const decodePublishInput = Schema.decodeUnknownSync(TradingPublishPlanInput);
+const decodePublishResult = Schema.decodeUnknownSync(TradingPublishPlanResult);
 const decodeGetMissionResult = Schema.decodeUnknownSync(TradingGetMissionResult);
 const decodeResolvedMarket = Schema.decodeUnknownSync(ResolvedMarket);
 const decodeAgentMarketSnapshot = Schema.decodeUnknownSync(AgentMarketSnapshot);
@@ -83,7 +83,7 @@ const account: TradingAccount = {
   updatedAt: 1_753_000_000_000,
 };
 
-const strategy: MomentumStrategyState = {
+const strategy: TradingPlanState = {
   version: 1,
   name: "ETH 5m breakout continuation",
   market: "ETH",
@@ -188,7 +188,7 @@ describe("trading contracts decode published shapes", () => {
     expect(() => decodeMission({ ...mission, status: "liquidating" })).toThrow();
   });
 
-  it("decodes a MomentumStrategyState", () => {
+  it("decodes a TradingPlanState", () => {
     expect(decodeStrategy(strategy).timeframes).toEqual(["5m", "15m"]);
   });
 

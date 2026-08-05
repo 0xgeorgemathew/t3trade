@@ -9,7 +9,7 @@
  * Timestamps here are ISO strings because this is the upstream read-model
  * boundary. The trading tables store INTEGER epoch millis (migration 035), and
  * the trading projector converts between the two. The one deliberate exception
- * is the embedded `MomentumStrategyState` and `PersistedWatch` payloads: those
+ * is the embedded `TradingPlanState` and `PersistedWatch` payloads: those
  * are published spec contracts carried verbatim, millis and all, so the shape
  * the harness published is the shape the UI reads.
  *
@@ -17,7 +17,7 @@
  */
 import {
   MarketWatch,
-  MomentumStrategyState,
+  TradingPlanState,
   PersistedWatch,
   PersistedWatchStatus,
   TradingAuthority,
@@ -184,7 +184,7 @@ export const OrchestrationTradingMission = Schema.Struct({
   authority: TradingAuthority,
   authorityVersion: NonNegativeInt,
 
-  strategy: Schema.NullOr(MomentumStrategyState),
+  strategy: Schema.NullOr(TradingPlanState),
   strategyVersion: NonNegativeInt,
 
   watches: Schema.Array(PersistedWatch),

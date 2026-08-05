@@ -1,10 +1,10 @@
 /**
- * Momentum strategy state - spec §10.5.
+ * Trading plan state - spec §10.5.
  *
  * This stores the harness's published conclusions, not its hidden reasoning.
  * Every execution is gated against the version recorded here.
  *
- * @module MomentumStrategy
+ * @module TradingPlan
  */
 import { Effect, Option, Schema, SchemaIssue, SchemaTransformation } from "effect";
 import {
@@ -46,7 +46,7 @@ export const POC_DEFAULT_TIMEFRAME: TradingTimeframe = "1m";
  */
 export const POC_DEFAULT_INSTRUCTION =
   "Trade ETH on testnet using 1m candles. Arm candle-close watches on the 1m interval so each run wakes within a minute. " +
-  "READ THE REGIME BEFORE YOU LOOK FOR A TRADE. The first thing every turn produces is a classification, not an entry. Take `observedVolatility` and trading_get_momentum_context and decide which of two markets you are in. TRENDING: the excursion quantiles are asymmetric (favourableUp and favourableDown differ materially at the same horizon), `directionScore` is away from zero, `atrExpansionRatio` is above 1, and the mark sits near a window extreme. RANGING: `excursionSymmetryRatio` is near 1, the swing range has been stable across the window, `directionScore` is near zero, and `positionInRangePercent` is near 50. State the classification and the evidence for it in `belief.regime` before choosing a mode. Trending takes the momentum procedure below; ranging takes the range scalp. If the two readings disagree, you are not in a regime you can trade — say so and wait. " +
+  "READ THE REGIME BEFORE YOU LOOK FOR A TRADE. The first thing every turn produces is a classification, not an entry. Take `observedVolatility` and trading_get_market_structure and decide which of two markets you are in. TRENDING: the excursion quantiles are asymmetric (favourableUp and favourableDown differ materially at the same horizon), `directionScore` is away from zero, `atrExpansionRatio` is above 1, and the mark sits near a window extreme. RANGING: `excursionSymmetryRatio` is near 1, the swing range has been stable across the window, `directionScore` is near zero, and `positionInRangePercent` is near 50. State the classification and the evidence for it in `belief.regime` before choosing a mode. Trending takes the momentum procedure below; ranging takes the range scalp. If the two readings disagree, you are not in a regime you can trade — say so and wait. " +
   "One trap in that read: `positionInRangePercent` is regime evidence only on the turn you classify from. Once you have called a range and armed a boundary watch, the wake that watch brings you arrives BY DESIGN with the mark on an edge — that is the entry you asked for, not the market turning trending underneath you. On a boundary wake the standing classification holds unless the quantiles have gone asymmetric or the swing range has moved; re-read those two, not where the mark is. " +
   "RANGE SCALP, published as mode `range_reversion`. Identify the range from the 120-bar swing structure — `swingHighUsd` and `swingLowUsd` are the measured boundaries and `swingRangeUsd` the height, so read them rather than re-deriving them; confirm the market has turned at each of them more than once, and read the typical time a crossing takes off `horizons[]` — the 30- and 60-bar entries are there so an hour-scale oscillation is visible on 1m, and the shortest hold whose `favourableUpUsd.p50` approaches the range height is roughly how long a crossing takes. That hold is `expectedHoldBars` in the basis. Then check the range is worth trading: call trading_estimate_costs fresh at the size you intend, and require range height >= 2.2x `breakEvenPriceMoveUsd`. If it is not, stand down and show the arithmetic — the height, the break-even move, and the multiple you got. " +
   "Enter only at a boundary, never mid-range — `positionInRangePercent` says where you are, and an entry taken between 20 and 80 is mid-range no matter how the setup reads. Arm a watch at the range high (for a short) or the range low (for a long) and let the wake bring you the entry rather than paying up in the middle, where the move you are being paid for is already half spent. " +
@@ -57,7 +57,7 @@ export const POC_DEFAULT_INSTRUCTION =
   "MOMENTUM, when the regime is trending: " +
   "Derive the profit target from the fluctuation the market is actually producing — read `observedVolatility` in the wakeup (or call trading_measure_volatility) and take the target off a measured move over your expected holding period, never off a round number you like the look of. " +
   "Measure TWO timeframes before you set one: the thesis timeframe you trade and one higher timeframe (15m or 1h). A 1m window alone, even out to its 60-bar horizon, cannot tell you whether the structure supports the move you are asking for. " +
-  "Discount for where you are entering. The excursion quantiles measure the move from a flat bar close; a momentum entry happens after the impulse has already begun, so subtract roughly half the impulse already travelled before calling the rest yours. Call trading_get_momentum_context for that number — `lastImpulse.sizeUsd` is the leg to discount against, `ageBars` says whether it is still running, and the swing distances cap where the target can sit. " +
+  "Discount for where you are entering. The excursion quantiles measure the move from a flat bar close; a momentum entry happens after the impulse has already begun, so subtract roughly half the impulse already travelled before calling the rest yours. Call trading_get_market_structure for that number — `lastImpulse.sizeUsd` is the leg to discount against, `ageBars` says whether it is still running, and the swing distances cap where the target can sit. " +
   "Then check the target against its cost. Call trading_estimate_costs at your size — it prices the round trip from the fee rate this wallet pays and the live book — and hold the target against the `minimumViableTargetUsd` it reports. A target that does not clear TWICE the round-trip cost is not a trade; it is a fee donation with variance. " +
   "Publish the derivation in `protection.targetProfitBasis` — it is required, and the publish checks that the target actually follows from it: the measurement, the lookback, the holding period, the resulting percentage price move, and the USD PnL it is worth on the position notional. Put the whole ladder — conservative, base, extension — in `protection.targetProfitRationale`, and set `targetProfitUsd` to the CONSERVATIVE rung, the one you would genuinely bank. " +
   "BOTH MODES, whichever one the regime put you in: " +
@@ -125,26 +125,14 @@ export const AgentConditionInput = Schema.Union([
 export type AgentConditionInput = typeof AgentConditionInput.Type;
 
 /**
- * The shape of the trade a strategy is making.
- *
- * The first four are continuation modes: they hold for a move that has already
- * started and treat a profit-target wake as a chance to extend. `range_reversion`
- * is the opposite trade — fading a boundary back toward the middle of a range
- * that keeps holding. It is typically published with direction `both` and a
- * boundary watch on each side, since the range pays whichever edge price
- * reaches first, and its default on a profit-target wake is to BANK, not to
- * extend: the move it is riding mean-reverts, so an extension gives the
- * capture back.
+ * The shape of the trade a plan is making, as a free-text label the harness
+ * names for its strategy. The closed enum this used to be (the four
+ * continuation modes plus `range_reversion`) widened to free text because
+ * nothing in the runtime branches on the value — the only two reads are a
+ * passthrough copy in `TradingStrategyService` and a generic display in the
+ * web client — so a closed list was a restraint with no enforcement behind
+ * it. The five old values remain valid (they are strings).
  */
-export const MomentumStrategyMode = Schema.Literals([
-  "breakout_continuation",
-  "breakdown_continuation",
-  "pullback_continuation",
-  "volatility_expansion",
-  "range_reversion",
-]);
-export type MomentumStrategyMode = typeof MomentumStrategyMode.Type;
-
 export const MomentumStrategyDirection = Schema.Literals(["long", "short", "both", "conditional"]);
 export type MomentumStrategyDirection = typeof MomentumStrategyDirection.Type;
 
@@ -296,16 +284,16 @@ export const MomentumProtection = Schema.Struct({
 });
 
 /**
- * Every `MomentumStrategyState` field the harness authors.
+ * Every `TradingPlanState` field the harness authors.
  *
  * `version` and `updatedAt` are excluded because the server assigns them on
- * publish; see `PublishMomentumStrategyBody` in `./tools.ts`.
+ * publish; see `PublishTradingPlanBody` in `./tools.ts`.
  */
-export const momentumStrategyAuthoredFields = {
+export const tradingPlanAuthoredFields = {
   name: TradingText,
   market: TradingMarket,
 
-  mode: MomentumStrategyMode,
+  mode: TradingText,
 
   direction: MomentumStrategyDirection,
   /**
@@ -329,9 +317,9 @@ export const momentumStrategyAuthoredFields = {
   explanation: TradingText,
 } as const;
 
-export const MomentumStrategyState = Schema.Struct({
+export const TradingPlanState = Schema.Struct({
   version: Schema.Number.check(Schema.isGreaterThanOrEqualTo(1)),
-  ...momentumStrategyAuthoredFields,
+  ...tradingPlanAuthoredFields,
   updatedAt: UnixMillis,
 });
-export type MomentumStrategyState = typeof MomentumStrategyState.Type;
+export type TradingPlanState = typeof TradingPlanState.Type;

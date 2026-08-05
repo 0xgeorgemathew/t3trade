@@ -139,13 +139,13 @@ export const MomentumAlignment = Schema.Struct({
 });
 export type MomentumAlignment = typeof MomentumAlignment.Type;
 
-export const MomentumContext = Schema.Struct({
+export const MarketStructure = Schema.Struct({
   market: ExchangeMarket,
   measuredAt: UnixMillis,
   timeframes: Schema.Array(MomentumTimeframeContext),
   alignment: MomentumAlignment,
 });
-export type MomentumContext = typeof MomentumContext.Type;
+export type MarketStructure = typeof MarketStructure.Type;
 
 // ---------------------------------------------------------------------------
 // Arithmetic
@@ -434,7 +434,7 @@ export function analyseMomentum(input: {
     readonly interval: MarketCandleInterval;
     readonly candles: ReadonlyArray<MarketCandle>;
   }>;
-}): MomentumContext {
+}): MarketStructure {
   const timeframes = input.frames.map(analyseTimeframe);
   return {
     market: input.market,

@@ -57,7 +57,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import {
   HarnessRunOutcome,
   HarnessRunRequest,
-  type MomentumStrategyState,
+  type TradingPlanState,
   type PersistedWatch,
   TradingDomainEventSummary,
   TradingHarnessRunCause,
@@ -309,7 +309,7 @@ const make = Effect.gen(function* () {
    * cadence. Falls back to the POC default when no strategy is published so a
    * mission between strategies still gets a floor.
    */
-  const primaryTimeframeFor = (strategy: Option.Option<MomentumStrategyState>): TradingTimeframe =>
+  const primaryTimeframeFor = (strategy: Option.Option<TradingPlanState>): TradingTimeframe =>
     // The strategy schema requires a non-empty `timeframes` array, so index 0 is
     // present at runtime; the fallback only satisfies `noUncheckedIndexedAccess`.
     strategy._tag === "Some"
@@ -328,7 +328,7 @@ const make = Effect.gen(function* () {
    */
   const ensureProfitTargetArmed = (input: {
     readonly missionId: string;
-    readonly strategy: MomentumStrategyState;
+    readonly strategy: TradingPlanState;
     readonly armed: ReadonlyArray<PersistedWatch>;
   }) =>
     Effect.gen(function* () {

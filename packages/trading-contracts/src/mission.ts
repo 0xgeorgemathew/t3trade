@@ -10,7 +10,7 @@
 import { Schema } from "effect";
 import { TradingAuthority } from "./authority.ts";
 import { TradingId, TradingMarket, TradingText, UnixMillis } from "./primitives.ts";
-import { MomentumStrategyState } from "./strategy.ts";
+import { TradingPlanState } from "./strategy.ts";
 
 export const TradingProvider = Schema.Literals(["codex", "claude", "opencode"]);
 export type TradingProvider = typeof TradingProvider.Type;
@@ -69,7 +69,7 @@ export const TradingMission = Schema.Struct({
   harness: TradingHarnessBinding,
 
   authority: TradingAuthority,
-  strategy: Schema.optional(MomentumStrategyState),
+  strategy: Schema.optional(TradingPlanState),
 
   status: TradingMissionStatus,
   blockedReason: Schema.optional(TradingMissionBlockedReason),

@@ -25,7 +25,7 @@ import { ServerConfig } from "../../../config.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { runMigrations } from "../../../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../../../persistence/NodeSqliteClient.ts";
-import type { PublishMomentumStrategyBody } from "../../../trading/Schemas.ts";
+import type { PublishTradingPlanBody } from "../../../trading/Schemas.ts";
 import { TradingLayerLive } from "../../../trading/runtimeLayer.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
@@ -45,7 +45,7 @@ const fakeEnvironment = ServerEnvironment.ServerEnvironment.of({
   getDescriptor: Effect.die("unused"),
 });
 
-const strategyBody = (name: string): PublishMomentumStrategyBody => ({
+const strategyBody = (name: string): PublishTradingPlanBody => ({
   name,
   market: "ETH",
   mode: "breakout_continuation",
@@ -274,7 +274,7 @@ it.effect("serves trading_get_mission and a versioned publish over the real /mcp
       assert.equal(before.harness.threadId, BOUND_THREAD);
       assert.deepStrictEqual(before.watches, []);
 
-      const published = yield* callTool(BOUND_THREAD, "trading_publish_momentum_strategy", {
+      const published = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
         missionId: MISSION_ID,
         expectedVersion: 0,
         strategy: strategyBody("overnight range break"),
@@ -306,13 +306,13 @@ it.effect("serves trading_get_mission and a versioned publish over the real /mcp
 it.effect("rejects a stale expectedVersion over MCP and leaves v(n) intact", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
-      yield* callTool(BOUND_THREAD, "trading_publish_momentum_strategy", {
+      yield* callTool(BOUND_THREAD, "trading_publish_plan", {
         missionId: MISSION_ID,
         expectedVersion: 0,
         strategy: strategyBody("v1"),
       });
 
-      const stale = yield* callTool(BOUND_THREAD, "trading_publish_momentum_strategy", {
+      const stale = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
         missionId: MISSION_ID,
         expectedVersion: 0,
         strategy: strategyBody("v2 attempt from a stale reader"),
@@ -337,7 +337,7 @@ it.effect("rejects a stale expectedVersion over MCP and leaves v(n) intact", () 
 it.effect("supersedes the prior version's active watches on an accepted publish", () =>
   withMcpServer(({ callTool, seedActiveWatch }) =>
     Effect.gen(function* () {
-      yield* callTool(BOUND_THREAD, "trading_publish_momentum_strategy", {
+      yield* callTool(BOUND_THREAD, "trading_publish_plan", {
         missionId: MISSION_ID,
         expectedVersion: 0,
         strategy: strategyBody("v1"),
@@ -345,7 +345,7 @@ it.effect("supersedes the prior version's active watches on an accepted publish"
 
       yield* seedActiveWatch("watch_v1_active", 1);
 
-      const republished = yield* callTool(BOUND_THREAD, "trading_publish_momentum_strategy", {
+      const republished = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
         missionId: MISSION_ID,
         expectedVersion: 1,
         strategy: strategyBody("v2"),
@@ -396,7 +396,7 @@ it.effect("answers an unbound thread instead of failing every tool on it", () =>
 it.effect("keeps write tools closed on an unbound thread", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
-      const published = yield* callTool(UNBOUND_THREAD, "trading_publish_momentum_strategy", {
+      const published = yield* callTool(UNBOUND_THREAD, "trading_publish_plan", {
         missionId: MISSION_ID,
         expectedVersion: 0,
         strategy: strategyBody("v1"),
@@ -525,54 +525,6 @@ it.effect("moves a level atomically through replacesWatchId", () =>
   ),
 );
 
-it.effect("serves trading_execute and its trading_request_entry alias as one call", () =>
-  withMcpServer(({ callTool }) =>
-    Effect.gen(function* () {
-      // Both names reach the same handler. The intent is deliberately one the
-      // preview refuses (no stop on a position-increasing action), because what
-      // is being pinned is that the two names answer identically — not that an
-      // order goes out.
-      const intent = {
-        missionId: MISSION_ID,
-        strategyVersion: 1,
-        executionSequence: 1,
-        actionType: "open",
-        market: "ETH",
-        side: "buy",
-        size: 0.1,
-        limitPrice: 3000,
-        orderPreference: "marketable_ioc",
-        reduceOnly: false,
-      };
-      const args = { intent, expectedAuthorityVersion: 1, activeHarnessRunId: "run_1" };
-
-      const viaNewName = yield* callTool(BOUND_THREAD, "trading_execute", args);
-      const viaAlias = yield* callTool(BOUND_THREAD, "trading_request_entry", {
-        ...args,
-        intent: { ...intent, executionSequence: 2 },
-      });
-
-      // Neither name is unknown to the server — an unrouted tool comes back as
-      // a "tool not found" JSON-RPC error rather than a result at all.
-      assert.notEqual(viaNewName.result, undefined);
-      assert.notEqual(viaAlias.result, undefined);
-      // And they answer identically, because they are one handler. This test
-      // environment has no exchange behind it, so what both return is the same
-      // failure — which is exactly the equality worth pinning for an alias.
-      assert.equal(viaNewName.result.isError, viaAlias.result.isError);
-      // The text carries the executionSequence, which deliberately differs; the
-      // shape of the answer is what has to match.
-      // Both names get past parameter decoding and into the same handler, and
-      // answer identically. There is no exchange behind this environment, so
-      // what both return is the same failure — which is exactly the equality
-      // worth pinning for an alias: one implementation, two names.
-      assert.equal(viaNewName.result.isError, viaAlias.result.isError);
-      assert.deepStrictEqual(viaNewName.result.content, viaAlias.result.content);
-      assert.notMatch(viaNewName.result.content?.[0]?.text ?? "", /Invalid parameters/);
-    }),
-  ),
-);
-
 it.effect("serves the mission its own completed trades over MCP", () =>
   withMcpServer(({ callTool, seedFill }) =>
     Effect.gen(function* () {
@@ -610,7 +562,7 @@ it.effect("resolves an omitted missionId to the bound mission for a write tool",
     Effect.gen(function* () {
       // A publish with no `missionId` reaches the bound mission and increments
       // its strategy version, just as a publish that named it would.
-      const published = yield* callTool(BOUND_THREAD, "trading_publish_momentum_strategy", {
+      const published = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
         expectedVersion: 0,
         strategy: strategyBody("no missionId supplied"),
       });
@@ -655,7 +607,7 @@ it.effect("decodes a prose-string exit condition and round-trips it as the objec
         ...strategyBody("prose exit condition"),
         exitConditions: ["Exit if a finalized 1m candle closes back above 1865.9."],
       };
-      const published = yield* callTool(BOUND_THREAD, "trading_publish_momentum_strategy", {
+      const published = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
         missionId: MISSION_ID,
         expectedVersion: 0,
         strategy: strategyBodyWithProseExit,

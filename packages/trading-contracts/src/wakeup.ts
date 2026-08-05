@@ -16,7 +16,7 @@ import { TradingCostEstimate } from "./costs.ts";
 import { AgentMarketSnapshot, MarketHistory } from "./market.ts";
 import { TradingHarnessRunCause } from "./mission.ts";
 import { TradingId, TradingText, UnixMillis } from "./primitives.ts";
-import { MomentumStrategyState, TradingTimeframe } from "./strategy.ts";
+import { TradingPlanState, TradingTimeframe } from "./strategy.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import { PersistedWatch, WatchArmedReason } from "./watch.ts";
 
@@ -192,7 +192,7 @@ export const TradingHarnessWakeup = Schema.Struct({
    * it. Absent when the cost read failed; `degraded` marks a partial one.
    */
   positionCosts: Schema.optional(TradingCostEstimate),
-  activeStrategy: MomentumStrategyState,
+  activeStrategy: TradingPlanState,
   /**
    * How long ago the active strategy was published, in milliseconds.
    *

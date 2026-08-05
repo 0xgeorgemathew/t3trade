@@ -3,7 +3,7 @@ import {
   TRADING_CANCEL_WATCH_TOOL,
   TRADING_ESTIMATE_COSTS_TOOL,
   TRADING_EXECUTE_TOOL,
-  TRADING_GET_MOMENTUM_CONTEXT_TOOL,
+  TRADING_GET_MARKET_STRUCTURE_TOOL,
   TRADING_GET_TARGET_CALIBRATION_TOOL,
   TRADING_GET_TRADE_HISTORY_TOOL,
   TRADING_GET_ACCOUNT_STATE_TOOL,
@@ -15,11 +15,9 @@ import {
   TRADING_GET_ORDER_BOOK_TOOL,
   TRADING_GET_POSITION_TOOL,
   TRADING_LIST_WATCHES_TOOL,
-  TRADING_PUBLISH_MOMENTUM_STRATEGY_TOOL,
+  TRADING_PUBLISH_PLAN_TOOL,
   TRADING_REGISTER_WATCH_TOOL,
-  TRADING_REQUEST_ENTRY_TOOL,
   TRADING_RESOLVE_MARKET_TOOL,
-  TRADING_SCHEDULE_REASSESSMENT_TOOL,
 } from "@t3tools/trading-contracts/tools";
 import * as Context from "effect/Context";
 import { Tool } from "effect/unstable/ai";
@@ -34,13 +32,13 @@ it("exposes the §14.3 mission tools, the §14.2 read tools, and the §14.4 watc
   ).toEqual(
     [
       TRADING_GET_MISSION_TOOL,
-      TRADING_PUBLISH_MOMENTUM_STRATEGY_TOOL,
+      TRADING_PUBLISH_PLAN_TOOL,
       TRADING_RESOLVE_MARKET_TOOL,
       TRADING_GET_MARKET_SNAPSHOT_TOOL,
       TRADING_GET_MARKET_HISTORY_TOOL,
       TRADING_MEASURE_VOLATILITY_TOOL,
       TRADING_ESTIMATE_COSTS_TOOL,
-      TRADING_GET_MOMENTUM_CONTEXT_TOOL,
+      TRADING_GET_MARKET_STRUCTURE_TOOL,
       TRADING_GET_TRADE_HISTORY_TOOL,
       TRADING_GET_TARGET_CALIBRATION_TOOL,
       TRADING_GET_ORDER_BOOK_TOOL,
@@ -49,8 +47,6 @@ it("exposes the §14.3 mission tools, the §14.2 read tools, and the §14.4 watc
       TRADING_GET_OPEN_ORDERS_TOOL,
       TRADING_REGISTER_WATCH_TOOL,
       TRADING_EXECUTE_TOOL,
-      TRADING_REQUEST_ENTRY_TOOL,
-      TRADING_SCHEDULE_REASSESSMENT_TOOL,
       TRADING_LIST_WATCHES_TOOL,
       TRADING_CANCEL_WATCH_TOOL,
     ].sort(),
@@ -81,39 +77,34 @@ it("exports provider-compatible object schemas the harness can fill in", () => {
   }
 });
 
-// The profit-target methodology lives entirely in these two descriptions until
-// `trading_estimate_costs` and publish-time validation ship, so the guidance is
-// load-bearing rather than decorative — a silent edit that drops the cost floor
-// or the second timeframe is what produced a $1.70 target on $2,000 of notional.
-it("carries the profit-target methodology in the publish and measure descriptions", () => {
-  const publish = TradingToolkit.tools[TRADING_PUBLISH_MOMENTUM_STRATEGY_TOOL].description ?? "";
+// The publish description states the publish contract (versioning, what a
+// publish touches and does not, the checked basis), not the target-derivation
+// methodology that now lives in the playbook. The doctrine prose used to live
+// here; what remains is the contract the runtime actually enforces.
+it("publish description states the publish contract, not the methodology", () => {
+  const publish = TradingToolkit.tools[TRADING_PUBLISH_PLAN_TOOL].description ?? "";
 
-  // Two timeframes: a 1m window alone tops out at a 20-minute view.
-  expect(publish).toContain("MEASURE TWO TIMEFRAMES");
-  expect(publish).toContain("15m or 1h");
-  // The measured excursion starts from a flat bar close; a momentum entry does not.
-  expect(publish).toContain("DISCOUNT FOR ENTRY LOCATION");
-  // The cost floor, now computable — the description has to name the tool that
-  // computes it, and the field on its result that IS the floor.
-  expect(publish).toContain("trading_estimate_costs");
-  expect(publish).toContain("minimumViableTargetUsd");
+  // Optimistic concurrency on expectedVersion.
+  expect(publish).toContain("expectedVersion");
+  // A publish supersedes the prior version's watches.
+  expect(publish).toContain("supersede");
   // The basis is checked at publish, so the description must say what the check
   // actually is rather than only asking for the field.
+  expect(publish).toContain("targetProfitBasis");
   expect(publish).toContain("(measuredMoveUsd / referencePrice) x positionNotionalUsd");
-  // The target is armed gross, so it has to clear the round trip on its own.
-  expect(publish).toContain("GROSS");
-  // One number can be armed; the other rungs live in the rationale.
-  expect(publish).toContain("targetProfitRationale");
-
   // A target wake is a decision, not a close order.
   expect(publish).toContain("DECISION POINT");
-  expect(publish).not.toContain("the default action is to close");
+  // The one allowed cross-reference: the target must clear its round-trip cost.
+  expect(publish).toContain("trading_estimate_costs");
+  // How the harness records that no viable target exists.
+  expect(publish).toContain("insufficientVolatility");
+  // The doctrine is gone — the two-timeframe measurement procedure is not.
+  expect(publish).not.toContain("MEASURE TWO TIMEFRAMES");
+});
 
-  // The entry-location discount is now a number the harness can read rather
-  // than one it has to eyeball, so the description has to name where from.
-  expect(publish).toContain("trading_get_momentum_context");
-  expect(publish).toContain("lastImpulse.sizeUsd");
-
+// The volatility tool still carries its own methodology, which the publish
+// description no longer duplicates.
+it("keeps the measure-volatility description pointing at the round-trip cost", () => {
   const measure = TradingToolkit.tools[TRADING_MEASURE_VOLATILITY_TOOL].description ?? "";
   expect(measure).toContain("higherTimeframeVolatility");
   // Every figure this tool reports is gross, so it has to hand the reader on to
@@ -137,7 +128,7 @@ it("points the cost tool at the floor it exists to compute", () => {
 // actually went. A description that does not name the fields carrying those
 // answers leaves the tool as decorative as the data was before it.
 it("points the research reads at the fields that carry the answer", () => {
-  const momentum = TradingToolkit.tools[TRADING_GET_MOMENTUM_CONTEXT_TOOL].description ?? "";
+  const momentum = TradingToolkit.tools[TRADING_GET_MARKET_STRUCTURE_TOOL].description ?? "";
   expect(momentum).toContain("directionScore");
   expect(momentum).toContain("atrExpansionRatio");
   // The entry-location discount, which nothing else measures.
@@ -150,30 +141,6 @@ it("points the research reads at the fields that carry the answer", () => {
   expect(history).toContain("netPnlUsd");
   // Each order scored against the target it was actually published under.
   expect(history).toContain("targetProfitUsd");
-});
-
-// Phase 3 renamed the execution tool and kept the old name working. The alias
-// has to stay a pointer, not a second copy of the methodology — two long
-// descriptions of the same call is the prompt paying twice for one tool.
-it("keeps trading_request_entry as a short alias pointing at trading_execute", () => {
-  const execute = TradingToolkit.tools[TRADING_EXECUTE_TOOL];
-  const alias = TradingToolkit.tools[TRADING_REQUEST_ENTRY_TOOL];
-
-  // Identical call, so identical parameters.
-  expect(Tool.getJsonSchema(alias)).toEqual(Tool.getJsonSchema(execute));
-
-  const aliasText = alias.description ?? "";
-  expect(aliasText).toContain("DEPRECATED ALIAS");
-  expect(aliasText).toContain("trading_execute");
-  expect(aliasText.length).toBeLessThan((execute.description ?? "").length / 2);
-
-  // The methodology lives on the new name, and the old name is not still
-  // being quoted as the tool to reach for.
-  const executeText = execute.description ?? "";
-  expect(executeText).toContain("marketable_ioc");
-  expect(executeText).toContain("no_conflicting_execution_pending");
-  const publish = TradingToolkit.tools[TRADING_PUBLISH_MOMENTUM_STRATEGY_TOOL].description ?? "";
-  expect(publish).not.toContain("trading_request_entry");
 });
 
 // The two learning reads: what the mission believed before, and whether any of
@@ -216,10 +183,31 @@ it("marks reading as safe and publishing as non-idempotent", () => {
     destructive: false,
     openWorld: false,
   });
-  expect(annotations(TradingToolkit.tools[TRADING_PUBLISH_MOMENTUM_STRATEGY_TOOL])).toEqual({
+  expect(annotations(TradingToolkit.tools[TRADING_PUBLISH_PLAN_TOOL])).toEqual({
     readonly: false,
     idempotent: false,
     destructive: false,
     openWorld: false,
   });
+});
+
+// A description says what the tool returns and what each field means — not when
+// to call it, what to conclude, or another tool's contract. Keep the whole
+// toolkit on a budget so a verbose description cannot quietly creep back in:
+// no single description over 1,300 chars, the total under 10,000, and the tool
+// count pinned at 18 (T1 deleted two tools; this guards against a regression).
+it("keeps every description on a budget", () => {
+  const tools = Object.values(TradingToolkit.tools);
+
+  expect(tools.length, "expected exactly 18 trading tools").toBe(18);
+
+  const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
+  expect(total, "total description chars must stay under 10,000").toBeLessThan(10_000);
+
+  for (const tool of tools) {
+    const len = (tool.description ?? "").length;
+    expect(len, `${tool.name} description is ${len} chars, must be <= 1,300`).toBeLessThanOrEqual(
+      1_300,
+    );
+  }
 });

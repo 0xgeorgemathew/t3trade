@@ -26,7 +26,7 @@ import type { OrchestrationTradingMission } from "@t3tools/contracts";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import {
-  MomentumStrategyState,
+  TradingPlanState,
   PersistedWatch,
   TradingAuthority,
   TradingHarnessBinding,
@@ -69,7 +69,7 @@ const decodeWatchesJson = Schema.decodeUnknownSync(WatchesJson);
 const decodeAuthorityJson = Schema.decodeUnknownSync(Schema.fromJsonString(TradingAuthority));
 const decodeControlJson = Schema.decodeUnknownSync(Schema.fromJsonString(TradingMissionControl));
 const decodeHarnessJson = Schema.decodeUnknownSync(Schema.fromJsonString(TradingHarnessBinding));
-const decodeStrategyJson = Schema.decodeUnknownSync(Schema.fromJsonString(MomentumStrategyState));
+const decodeStrategyJson = Schema.decodeUnknownSync(Schema.fromJsonString(TradingPlanState));
 const decodeMarketWatchJson = Schema.decodeUnknownSync(
   Schema.fromJsonString(PersistedWatch.fields.watch),
 );
@@ -79,7 +79,7 @@ const decodeWatchStatus = Schema.decodeUnknownSync(PersistedWatch.fields.status)
 
 /**
  * Decode one mission's persisted strategy, degrading to "no strategy" when the
- * stored JSON no longer satisfies `MomentumStrategyState`.
+ * stored JSON no longer satisfies `TradingPlanState`.
  *
  * A strategy published before a field became required (`protection.targetProfitUsd`
  * is the first such field) used to throw a defect straight out of `list()`, which
@@ -97,7 +97,7 @@ const readStrategy = (row: {
   readonly mission_id: string;
   readonly strategy_json: string | null;
   readonly strategy_version: number;
-}): Effect.Effect<MomentumStrategyState | null> => {
+}): Effect.Effect<TradingPlanState | null> => {
   const strategyJson = row.strategy_json;
   if (strategyJson === null) {
     return Effect.succeed(null);
@@ -240,7 +240,7 @@ const EMPTY_SURFACES: ExecutionSurfaces = {
 const toMission = (
   row: ProjectionRow,
   exec: ExecutionSurfaces,
-  strategy: MomentumStrategyState | null,
+  strategy: TradingPlanState | null,
 ): OrchestrationTradingMission =>
   ({
     id: TradingMissionId.make(row.mission_id),

@@ -271,7 +271,7 @@ describe("coerceToolArguments", () => {
     });
 
     it("coerces through a $ref'd condition and leaves a prose condition a string", () => {
-      const coerced = coerceToolArguments(schemaFor("trading_publish_momentum_strategy"), {
+      const coerced = coerceToolArguments(schemaFor("trading_publish_plan"), {
         expectedVersion: "0",
         strategy: {
           protection: { stopMethod: "fixed", stopPrice: "1800", targetProfitUsd: "25" },

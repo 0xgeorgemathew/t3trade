@@ -2,12 +2,12 @@
  * Mission and strategy tool contracts - spec §14.3.
  *
  * Tools accept intent-level inputs. Publishing is a versioned, side-effecting
- * operation: `trading_publish_momentum_strategy` requires an expected current
+ * operation: `trading_publish_plan` requires an expected current
  * version, and a stale expected-version publish is rejected rather than
  * silently overwriting current state.
  *
- * §14.3 publishes `TradingPublishMomentumStrategyInput` and
- * `TradingPublishMomentumStrategyResult` in full; both are mirrored here
+ * §14.3 publishes `TradingPublishPlanInput` and
+ * `TradingPublishPlanResult` in full; both are mirrored here
  * field-for-field.
  *
  * Scope note: §14.1/§14.2/§14.4-§14.7 name their tools but publish no input or
@@ -28,22 +28,18 @@ import {
   ResolvedMarket,
 } from "./market.ts";
 import type { TradingCostEstimate } from "./costs.ts";
-import type { MomentumContext } from "./momentum.ts";
+import type { MarketStructure } from "./momentum.ts";
 import type { TradingTradeHistory } from "./history.ts";
 import type { TargetCalibration } from "./calibration.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./mission.ts";
 import { TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
 import { TradingOrderIntent } from "./execution.ts";
-import {
-  momentumStrategyAuthoredFields,
-  MomentumStrategyState,
-  ProfitTargetBasis,
-} from "./strategy.ts";
+import { tradingPlanAuthoredFields, TradingPlanState, ProfitTargetBasis } from "./strategy.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
 
 export const TRADING_GET_MISSION_TOOL = "trading_get_mission";
-export const TRADING_PUBLISH_MOMENTUM_STRATEGY_TOOL = "trading_publish_momentum_strategy";
+export const TRADING_PUBLISH_PLAN_TOOL = "trading_publish_plan";
 
 // -- §14.2 read-tool names (Phase 2) -----------------------------------------
 
@@ -53,7 +49,7 @@ export const TRADING_GET_MARKET_HISTORY_TOOL = "trading_get_market_history";
 export const TRADING_GET_ORDER_BOOK_TOOL = "trading_get_order_book";
 export const TRADING_MEASURE_VOLATILITY_TOOL = "trading_measure_volatility";
 export const TRADING_ESTIMATE_COSTS_TOOL = "trading_estimate_costs";
-export const TRADING_GET_MOMENTUM_CONTEXT_TOOL = "trading_get_momentum_context";
+export const TRADING_GET_MARKET_STRUCTURE_TOOL = "trading_get_market_structure";
 export const TRADING_GET_TRADE_HISTORY_TOOL = "trading_get_trade_history";
 export const TRADING_GET_TARGET_CALIBRATION_TOOL = "trading_get_target_calibration";
 export const TRADING_GET_ACCOUNT_STATE_TOOL = "trading_get_account_state";
@@ -80,7 +76,7 @@ export const TRADING_REQUEST_ENTRY_TOOL = "trading_request_entry";
 /**
  * Why a trading tool refused to act at all.
  *
- * These are distinct from `trading_publish_momentum_strategy`'s in-band
+ * These are distinct from `trading_publish_plan`'s in-band
  * `outcome: "rejected"`, which reports a *published* result the harness can
  * retry against. A `TradingToolRejectedError` means the call never reached the
  * mission: the credential did not carry the capability, or the calling thread
@@ -178,7 +174,7 @@ export const TradingBoundMissionResult = Schema.Struct({
   mission: TradingMission,
   authority: TradingAuthority,
   authorityVersion: Schema.Number,
-  strategy: Schema.optional(MomentumStrategyState),
+  strategy: Schema.optional(TradingPlanState),
   strategyVersion: Schema.Number,
   watches: Schema.Array(PersistedWatch),
   control: TradingMissionControl,
@@ -221,7 +217,7 @@ export const TradingGetMissionResult = Schema.Union([
 ]);
 export type TradingGetMissionResult = typeof TradingGetMissionResult.Type;
 
-// -- trading_publish_momentum_strategy ---------------------------------------
+// -- trading_publish_plan ----------------------------------------------------
 
 /**
  * The strategy body the harness publishes.
@@ -230,19 +226,19 @@ export type TradingGetMissionResult = typeof TradingGetMissionResult.Type;
  * harness supplies neither: the accepted version is always
  * `expectedVersion + 1`.
  */
-export const PublishMomentumStrategyBody = Schema.Struct(momentumStrategyAuthoredFields);
-export type PublishMomentumStrategyBody = typeof PublishMomentumStrategyBody.Type;
+export const PublishTradingPlanBody = Schema.Struct(tradingPlanAuthoredFields);
+export type PublishTradingPlanBody = typeof PublishTradingPlanBody.Type;
 
-export const TradingPublishMomentumStrategyInput = Schema.Struct({
+export const TradingPublishPlanInput = Schema.Struct({
   /** Optional — omit to act on the mission this session is bound to. */
   missionId: Schema.optional(TradingId),
   /** The strategy version the harness believes is current. 0 before any publish. */
   expectedVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
-  strategy: PublishMomentumStrategyBody,
+  strategy: PublishTradingPlanBody,
 });
-export type TradingPublishMomentumStrategyInput = typeof TradingPublishMomentumStrategyInput.Type;
+export type TradingPublishPlanInput = typeof TradingPublishPlanInput.Type;
 
-export const PublishMomentumStrategyRejection = Schema.Literals([
+export const PublishTradingPlanRejection = Schema.Literals([
   "stale_strategy_version",
   "mission_not_active",
   /**
@@ -252,12 +248,12 @@ export const PublishMomentumStrategyRejection = Schema.Literals([
    */
   "target_not_justified",
 ]);
-export type PublishMomentumStrategyRejection = typeof PublishMomentumStrategyRejection.Type;
+export type PublishTradingPlanRejection = typeof PublishTradingPlanRejection.Type;
 
-export const TradingPublishMomentumStrategyResult = Schema.Union([
+export const TradingPublishPlanResult = Schema.Union([
   Schema.Struct({
     outcome: Schema.Literal("accepted"),
-    strategy: MomentumStrategyState,
+    strategy: TradingPlanState,
     strategyVersion: Schema.Number,
     /** Watches bound to the prior version, marked superseded by this publish. */
     supersededWatchIds: Schema.Array(TradingId),
@@ -274,14 +270,14 @@ export const TradingPublishMomentumStrategyResult = Schema.Union([
   }),
   Schema.Struct({
     outcome: Schema.Literal("rejected"),
-    reason: PublishMomentumStrategyRejection,
+    reason: PublishTradingPlanRejection,
     /** The version the server actually holds, so the harness can retry. */
     currentVersion: Schema.Number,
     /** What specifically was wrong, when the reason alone does not say. */
     detail: Schema.optional(Schema.String),
   }),
 ]);
-export type TradingPublishMomentumStrategyResult = typeof TradingPublishMomentumStrategyResult.Type;
+export type TradingPublishPlanResult = typeof TradingPublishPlanResult.Type;
 
 // -- §14.2 read-only market-data tools (Phase 2) -----------------------------
 //
@@ -468,7 +464,7 @@ export type TradingEstimateCostsResult = TradingCostEstimate;
  * is allowed and defeats the point, since the answer worth having is whether
  * they agree.
  */
-export const TradingGetMomentumContextInput = Schema.Struct({
+export const TradingGetMarketStructureInput = Schema.Struct({
   ...missionBound,
   market: TradingMarket,
   /** Intervals to measure. Defaults to 1m, 5m, 15m, and 1h. */
@@ -476,9 +472,9 @@ export const TradingGetMomentumContextInput = Schema.Struct({
   /** Bars per interval. Defaults to `MOMENTUM_LOOKBACK_BARS`, capped at the §13 500. */
   lookbackBars: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
 });
-export type TradingGetMomentumContextInput = typeof TradingGetMomentumContextInput.Type;
+export type TradingGetMarketStructureInput = typeof TradingGetMarketStructureInput.Type;
 
-export type TradingGetMomentumContextResult = MomentumContext;
+export type TradingGetMarketStructureResult = MarketStructure;
 
 /**
  * Read this mission's own completed orders and what they were worth.

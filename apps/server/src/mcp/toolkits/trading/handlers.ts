@@ -425,7 +425,7 @@ const handlers = {
       return yield* readMission(call.mission);
     }),
 
-  trading_publish_momentum_strategy: (input) =>
+  trading_publish_plan: (input) =>
     Effect.gen(function* () {
       const { threadId, mission } = yield* resolveBoundCall(input.missionId);
       // The strategy service keys off `input.missionId`; resolve it to the bound
@@ -461,8 +461,6 @@ const handlers = {
 
       return published;
     }),
-
-  trading_request_entry: (input) => executeIntent(input),
 
   trading_execute: (input) => executeIntent(input),
 
@@ -554,7 +552,7 @@ const handlers = {
       });
     }),
 
-  trading_get_momentum_context: (input) =>
+  trading_get_market_structure: (input) =>
     Effect.gen(function* () {
       // Market data, not mission state: an unbound thread reads it too.
       yield* resolveReadCall(input.missionId);
@@ -681,36 +679,6 @@ const handlers = {
         });
       }
       return registered;
-    }),
-
-  trading_schedule_reassessment: (input) =>
-    Effect.gen(function* () {
-      const { threadId, mission } = yield* resolveBoundCall(input.missionId);
-      const watches = yield* TradingWatchService;
-      // A scheduled reassessment is a watch of type `scheduled_reassessment`;
-      // it rides the same register/announce path as any other watch.
-      const { watch } = yield* watches
-        .registerWatch({
-          missionId: mission.id,
-          watch: { type: "scheduled_reassessment", runAt: input.runAt },
-        })
-        .pipe(
-          Effect.catchTags({
-            TradingMissionNotFoundError: () =>
-              new TradingToolRejectedError({
-                reason: "mission_not_found",
-                threadId,
-                missionId: mission.id,
-              }),
-            PersistenceSqlError: (error) => Effect.die(error),
-          }),
-        );
-      yield* announceWatchRegistered({
-        threadId,
-        missionId: mission.id,
-        watch,
-      });
-      return watch;
     }),
 
   trading_list_watches: (input) =>
