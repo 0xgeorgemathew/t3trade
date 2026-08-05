@@ -33,7 +33,9 @@ import type { ReactNode } from "react";
 import { MissionFeedErrorBanner, MissionStalenessBanner } from "./MissionStalenessBanner";
 import { MissionStripBar } from "./MissionStripBar";
 import {
+  deriveEffectiveLeverage,
   deriveFillSlippagePercent,
+  formatLeverage,
   formatPrice,
   formatSize,
   formatSignedPercent,
@@ -60,7 +62,8 @@ function Card({
   children,
 }: {
   title: ReactNode;
-  badge?: string | undefined;
+  /** Rendered as-is, so a card can carry a tinted chip instead of plain text. */
+  badge?: ReactNode;
   meta?: string | undefined;
   accentClassName?: string | undefined;
   children: ReactNode;
@@ -69,11 +72,7 @@ function Card({
     <div className={`rounded-lg border bg-card/40 ${accentClassName ?? "border-border"}`}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border/60 px-3 py-2">
         <span className="text-xs font-medium text-foreground">{title}</span>
-        {badge === undefined ? null : (
-          <span className="rounded-full border border-border px-2 py-px text-[11px] text-muted-foreground">
-            {badge}
-          </span>
-        )}
+        {badge}
         {meta === undefined ? null : (
           <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">{meta}</span>
         )}
@@ -117,12 +116,71 @@ function Field({ label, value, tone }: { label: string; value: string; tone?: To
 
 const sideLabel = (side: "buy" | "sell"): string => (side === "buy" ? "Buy" : "Sell");
 
+/** The neutral chip: a card header's plain, untinted label. */
+function Chip({ children }: { children: ReactNode }) {
+  return (
+    <span className="rounded-full border border-border px-2 py-px text-[11px] text-muted-foreground">
+      {children}
+    </span>
+  );
+}
+
+/**
+ * A direction chip, tinted the way the exchange tints its own positions table:
+ * green for the side that gains when the market rises, red for the other.
+ *
+ * The colour is never the only signal. Every chip also spells its direction out,
+ * because a red/green distinction is the one an operator is most likely to be
+ * unable to see — and on a trading surface that is the expensive kind of guess.
+ */
+function DirectionChip({
+  direction,
+  market,
+  detail,
+  leverage,
+}: {
+  direction: "long" | "short";
+  market: string;
+  /** What the chip is about: the exposure held, or the size that filled. */
+  detail: string;
+  /** The leverage the position runs at, exchange-style. Omitted for fills. */
+  leverage?: number | undefined;
+}) {
+  const tone =
+    direction === "long"
+      ? "border-profit/40 bg-profit/10 text-profit"
+      : "border-loss/40 bg-loss/10 text-loss";
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-px text-[11px] font-medium ${tone}`}
+    >
+      <span>{market}</span>
+      {leverage === undefined ? null : (
+        <span className="rounded-sm bg-current/15 px-1 tabular-nums">
+          {formatLeverage(leverage)}
+        </span>
+      )}
+      <span className="font-normal opacity-80">{detail}</span>
+    </span>
+  );
+}
+
 /** The order-intent card while an execution record is in flight (§10). */
 function OrderIntentCard({ exec }: { exec: TradingExecutionView }) {
   return (
     <Card
       title="Order intent"
-      badge={`${humanizeLiteral(exec.actionType)} · ${sideLabel(exec.side)} ${exec.market}`}
+      badge={
+        <>
+          <DirectionChip
+            direction={exec.side === "buy" ? "long" : "short"}
+            market={exec.market}
+            detail={`${sideLabel(exec.side)} ${formatSize(exec.size)}`}
+          />
+          <Chip>{humanizeLiteral(exec.actionType)}</Chip>
+        </>
+      }
       meta={humanizeLiteral(exec.status)}
       accentClassName="border-armed/40 bg-armed/5"
     >
@@ -150,7 +208,13 @@ function FillReceipt({
   return (
     <Card
       title="Filled"
-      badge={`${sideLabel(fill.side)} ${formatSize(fill.filledSize)} ${fill.market}`}
+      badge={
+        <DirectionChip
+          direction={fill.side === "buy" ? "long" : "short"}
+          market={fill.market}
+          detail={`${sideLabel(fill.side)} ${formatSize(fill.filledSize)}`}
+        />
+      }
       meta={`${new Date(fill.tradedAt).toLocaleTimeString()} · #${fill.orderId}`}
     >
       <StatLine>
@@ -170,9 +234,6 @@ function FillReceipt({
           value={formatSignedUsd(fill.closedPnl)}
           tone={pnlTone(fill.closedPnl)}
         />
-        {fill.cloid === undefined ? null : (
-          <Stat label="Client order" value={`${fill.cloid.slice(0, 10)}…`} />
-        )}
       </StatLine>
     </Card>
   );
@@ -195,7 +256,8 @@ function PositionCard({
   /** The live mark, preferred over the snapshot's own as it is newer. */
   markPrice: number | null;
 }) {
-  const direction = position.size > 0 ? "Long" : "Short";
+  const direction = position.size > 0 ? "long" : "short";
+  const leverage = deriveEffectiveLeverage(position);
   // §16.1: a stop that covers less than the position is the difference between
   // a bounded loss and an open-ended one, so it is a figure, not a checkmark.
   const protection =
@@ -208,8 +270,18 @@ function PositionCard({
 
   return (
     <Card
-      title={position.market}
-      badge={`${direction} · open`}
+      title="Position"
+      badge={
+        <>
+          <DirectionChip
+            direction={direction}
+            market={position.market}
+            detail={direction === "long" ? "Long" : "Short"}
+            {...(leverage === null ? {} : { leverage })}
+          />
+          <Chip>Open</Chip>
+        </>
+      }
       meta={`Margin $${position.marginUsed.toFixed(2)}`}
     >
       <div className="grid grid-cols-3 gap-x-4 gap-y-3 px-3 py-3">

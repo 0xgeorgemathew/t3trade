@@ -17,10 +17,12 @@ import {
   formatUsd,
   humanizeLiteral,
   isMissionComplete,
+  deriveEffectiveLeverage,
   deriveFillSlippagePercent,
   deriveMissionPhases,
   derivePausedExposure,
   describeStaleness,
+  formatLeverage,
   formatSignedPercent,
   hyperliquidTradeUrl,
   isPositionDataStale,
@@ -408,6 +410,38 @@ describe("deriveFillSlippagePercent", () => {
     expect(formatSignedPercent(0.1)).toBe("+0.10%");
     expect(formatSignedPercent(-0.25)).toBe("-0.25%");
     expect(formatSignedPercent(0)).toBe("0.00%");
+  });
+});
+
+describe("deriveEffectiveLeverage", () => {
+  it("reads leverage back as notional over margin", () => {
+    expect(deriveEffectiveLeverage({ size: 1.077, markPrice: 1_857, marginUsed: 100 })).toBeCloseTo(
+      20,
+      1,
+    );
+  });
+
+  it("values a short by magnitude, not sign", () => {
+    expect(
+      deriveEffectiveLeverage({ size: -1.077, markPrice: 1_857, marginUsed: 100 }),
+    ).toBeCloseTo(20, 1);
+  });
+
+  it("falls back to the entry price when no mark has landed", () => {
+    expect(deriveEffectiveLeverage({ size: 2, entryPrice: 1_000, marginUsed: 500 })).toBe(4);
+  });
+
+  // A leverage figure nothing backs would read as a deliberate setting.
+  it("reports nothing when there is no price, no margin, or no position", () => {
+    expect(deriveEffectiveLeverage({ size: 1, marginUsed: 100 })).toBeNull();
+    expect(deriveEffectiveLeverage({ size: 1, markPrice: 1_857, marginUsed: 0 })).toBeNull();
+    expect(deriveEffectiveLeverage({ size: 0, markPrice: 1_857, marginUsed: 100 })).toBeNull();
+  });
+
+  it("formats whole leverage whole and the rest to one decimal", () => {
+    expect(formatLeverage(20)).toBe("20x");
+    expect(formatLeverage(19.98)).toBe("20x");
+    expect(formatLeverage(3.46)).toBe("3.5x");
   });
 });
 

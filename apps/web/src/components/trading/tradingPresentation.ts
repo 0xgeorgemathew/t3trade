@@ -392,6 +392,43 @@ export function deriveFillSlippagePercent(
   return (delta / intent.limitPrice) * 100;
 }
 
+/**
+ * The leverage a position is actually running at: notional over margin.
+ *
+ * Derived rather than read back, because the projection carries no leverage
+ * field — the exchange's own position row does, but nothing decodes it. Notional
+ * ÷ margin is the figure the exchange itself charges margin on, so it matches
+ * what Hyperliquid shows next to the market for an isolated position.
+ *
+ * Null when there is nothing to divide: a flat position, or a snapshot that
+ * arrived with no margin or no price to value the size at. A fabricated "1x"
+ * would read as a real, deliberately conservative setting.
+ */
+export function deriveEffectiveLeverage(position: {
+  readonly size: number;
+  readonly entryPrice?: number | undefined;
+  readonly markPrice?: number | undefined;
+  readonly marginUsed: number;
+}): number | null {
+  const price = position.markPrice ?? position.entryPrice ?? null;
+  if (price === null || !(price > 0)) return null;
+  if (!(position.marginUsed > 0)) return null;
+  if (position.size === 0) return null;
+
+  return (Math.abs(position.size) * price) / position.marginUsed;
+}
+
+/**
+ * "20x" / "3.5x".
+ *
+ * Whole numbers stay whole — leverage is usually set as one — and anything else
+ * keeps a single decimal, which is as fine as the figure is meaningful.
+ */
+export function formatLeverage(value: number): string {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? `${rounded}x` : `${rounded.toFixed(1)}x`;
+}
+
 /** "+0.12%" / "-0.04%". Two decimals: basis points are the scale that matters. */
 export function formatSignedPercent(value: number): string {
   const magnitude = Math.abs(value).toFixed(2);
