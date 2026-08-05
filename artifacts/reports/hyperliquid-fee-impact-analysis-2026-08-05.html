@@ -1,0 +1,1413 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hyperliquid Fee Impact on t3trade — $2000 / $100 Margin Reference</title>
+    <style>
+      :root {
+        --ivory: #faf9f5;
+        --slate: #141413;
+        --clay: #d97757;
+        --oat: #e3dacc;
+        --olive: #788c5d;
+        --rust: #b04a3f;
+        --ink: #1f3a5f;
+        --gray-100: #f0eee6;
+        --gray-300: #d1cfc5;
+        --gray-500: #87867f;
+        --gray-700: #3d3d3a;
+        --white: #ffffff;
+
+        --serif: ui-serif, Georgia, serif;
+        --sans: system-ui, -apple-system, sans-serif;
+        --mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+        --radius-panel: 12px;
+        --radius-row: 8px;
+        --border: 1.5px solid var(--gray-300);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 56px 24px 120px;
+        background: var(--ivory);
+        color: var(--slate);
+        font-family: var(--sans);
+        font-size: 15px;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .page {
+        max-width: 920px;
+        margin: 0 auto;
+      }
+
+      /* ---------- Header ---------- */
+      header {
+        margin-bottom: 40px;
+      }
+      .header-top {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+      h1 {
+        font-family: var(--serif);
+        font-weight: 500;
+        font-size: 36px;
+        letter-spacing: -0.01em;
+        margin: 0;
+      }
+      .auto-pill {
+        font-family: var(--mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--gray-500);
+        background: var(--gray-100);
+        border: var(--border);
+        border-radius: 999px;
+        padding: 5px 11px;
+        white-space: nowrap;
+      }
+      .date-range {
+        color: var(--gray-500);
+        font-size: 14px;
+      }
+      .date-range .repo {
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--gray-700);
+      }
+
+      /* ---------- Sections ---------- */
+      section {
+        margin-bottom: 48px;
+      }
+      h2 {
+        font-family: var(--serif);
+        font-weight: 500;
+        font-size: 24px;
+        letter-spacing: -0.01em;
+        margin: 0 0 6px;
+      }
+      h3 {
+        font-family: var(--sans);
+        font-weight: 600;
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--gray-500);
+        margin: 0 0 10px;
+      }
+      hr.rule {
+        border: none;
+        border-top: 1px solid var(--gray-300);
+        margin: 0 0 22px;
+      }
+      p {
+        margin: 0 0 12px;
+        color: var(--gray-700);
+      }
+      p strong {
+        color: var(--slate);
+        font-weight: 600;
+      }
+      .lede {
+        font-size: 16px;
+        color: var(--slate);
+      }
+
+      code {
+        font-family: var(--mono);
+        font-size: 0.88em;
+        background: var(--gray-100);
+        padding: 2px 5px;
+        border-radius: 3px;
+        color: var(--slate);
+      }
+
+      /* ---------- Callouts ---------- */
+      .callout {
+        border-radius: var(--radius-panel);
+        padding: 18px 22px;
+        margin-bottom: 22px;
+        font-size: 14px;
+      }
+      .callout.clay {
+        background: #fbeee6;
+        border-left: 4px solid var(--clay);
+      }
+      .callout.olive {
+        background: #eef2e6;
+        border-left: 4px solid var(--olive);
+      }
+      .callout.ink {
+        background: #e8eef5;
+        border-left: 4px solid var(--ink);
+      }
+      .callout strong {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--slate);
+      }
+      .callout p:last-child {
+        margin-bottom: 0;
+      }
+
+      /* ---------- Summary band ---------- */
+      .summary-band {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+      }
+      @media (max-width: 720px) {
+        .summary-band {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+      .stat-card {
+        background: var(--white);
+        border: var(--border);
+        border-radius: var(--radius-panel);
+        padding: 20px 22px 18px;
+      }
+      .stat-card.warn {
+        border-left: 4px solid var(--clay);
+        padding-left: 19px;
+      }
+      .stat-card.good {
+        border-left: 4px solid var(--olive);
+        padding-left: 19px;
+      }
+      .stat-num {
+        font-family: var(--serif);
+        font-size: 38px;
+        font-weight: 500;
+        line-height: 1;
+        color: var(--slate);
+        margin-bottom: 8px;
+      }
+      .stat-label {
+        font-family: var(--sans);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--gray-500);
+      }
+      .stat-sub {
+        font-family: var(--mono);
+        font-size: 11px;
+        margin-top: 6px;
+        color: var(--gray-700);
+      }
+
+      /* ---------- Tables ---------- */
+      table.shipped,
+      table.data {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        background: var(--white);
+        border: var(--border);
+        border-radius: var(--radius-panel);
+        overflow: hidden;
+        font-size: 14px;
+      }
+      table.shipped thead th,
+      table.data thead th {
+        text-align: left;
+        font-family: var(--sans);
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--gray-500);
+        background: var(--gray-100);
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--gray-300);
+      }
+      table.shipped tbody td,
+      table.data tbody td {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--gray-100);
+        font-size: 14px;
+        vertical-align: middle;
+      }
+      table.shipped tbody tr:last-child td,
+      table.data tbody tr:last-child td {
+        border-bottom: none;
+      }
+      table.shipped tbody tr:hover,
+      table.data tbody tr:hover {
+        background: var(--ivory);
+      }
+      .num {
+        font-family: var(--mono);
+        text-align: right;
+      }
+      .neg {
+        color: var(--rust);
+        font-weight: 600;
+      }
+      .pos {
+        color: var(--olive);
+        font-weight: 600;
+      }
+      .tier-0 {
+        background: #fef9f5 !important;
+      }
+      tr.total td {
+        font-weight: 600;
+        background: var(--gray-100);
+        border-top: 2px solid var(--gray-300);
+      }
+      tr.total td.num {
+        font-family: var(--mono);
+      }
+
+      /* ---------- Scenario cards ---------- */
+      .scenario-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 18px;
+      }
+      @media (max-width: 760px) {
+        .scenario-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .scenario {
+        background: var(--white);
+        border: var(--border);
+        border-radius: var(--radius-panel);
+        padding: 22px 24px;
+      }
+      .scenario h3 {
+        color: var(--slate);
+        font-family: var(--serif);
+        font-size: 18px;
+        font-weight: 500;
+        text-transform: none;
+        letter-spacing: 0;
+        margin-bottom: 4px;
+      }
+      .scenario .meta {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--gray-500);
+        margin-bottom: 16px;
+      }
+      .scenario .flow {
+        list-style: none;
+        padding: 0;
+        margin: 0 0 16px;
+      }
+      .scenario .flow li {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        padding: 6px 0;
+        font-size: 13px;
+        border-bottom: 1px dashed var(--gray-100);
+      }
+      .scenario .flow li:last-child {
+        border-bottom: none;
+      }
+      .scenario .flow .label {
+        color: var(--gray-700);
+      }
+      .scenario .flow .val {
+        font-family: var(--mono);
+      }
+      .scenario .flow .val.fee {
+        color: var(--rust);
+      }
+      .scenario .result {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        padding-top: 12px;
+        border-top: 1.5px solid var(--gray-300);
+      }
+      .scenario .result .lab {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--gray-500);
+      }
+      .scenario .result .num-big {
+        font-family: var(--serif);
+        font-size: 28px;
+        font-weight: 500;
+      }
+
+      /* ---------- Bar chart ---------- */
+      .chart-panel {
+        background: var(--white);
+        border: var(--border);
+        border-radius: var(--radius-panel);
+        padding: 24px 28px 18px;
+      }
+      .chart-panel svg {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+      .chart-caption {
+        font-size: 12px;
+        color: var(--gray-500);
+        margin-top: 12px;
+      }
+
+      /* ---------- Citations ---------- */
+      .citations {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        font-size: 12px;
+        color: var(--gray-700);
+      }
+      .citations li {
+        padding: 6px 0;
+        border-bottom: 1px solid var(--gray-100);
+        word-break: break-all;
+      }
+      .citations li:last-child {
+        border-bottom: none;
+      }
+      .citations a {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--clay);
+        text-decoration: none;
+      }
+      .citations a:hover {
+        text-decoration: underline;
+      }
+
+      /* ---------- Footer ---------- */
+      footer {
+        margin-top: 64px;
+        padding-top: 20px;
+        border-top: 1px solid var(--gray-300);
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--gray-500);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header>
+        <div class="header-top">
+          <h1>Hyperliquid Fee Impact on t3trade</h1>
+          <span class="auto-pill">fee-impact analysis</span>
+        </div>
+        <div class="date-range">
+          $2,000 notional &middot; $100 margin &middot; 20&times; reference &nbsp;&middot;&nbsp;
+          <span class="repo">official HL docs &times; t3trade execution paths</span>
+        </div>
+      </header>
+
+      <!-- Correction callout -->
+      <div class="callout clay">
+        <strong>One correction to the premise first.</strong>
+        <p>
+          Your system's <em>live</em> mandate caps gross notional at
+          <strong>8&times; allocated capital</strong>, not 20&times; (see
+          <code>testnetAuthorityDefaults</code> in <code>apps/server/src/trading/...</code>). On
+          $100 capital the harness actually places ≤ $800 per position; the "$100 margin &times;
+          20&times; = $2,000" figure is the arithmetic illustration in your own tools prompt, not a
+          realizable position. <strong>I've kept your $2,000 / $100 reference throughout</strong> so
+          the per-trade math is comparable, but see the <em>Real Mandate</em> scenario for the
+          number that actually governs the bot.
+        </p>
+      </div>
+
+      <!-- Summary band -->
+      <section>
+        <div class="summary-band">
+          <div class="stat-card warn">
+            <div class="stat-num">$1.80</div>
+            <div class="stat-label">Round-trip fee (taker)</div>
+            <div class="stat-sub">1.80% of $100 margin</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-num">$0.60</div>
+            <div class="stat-label">Round-trip fee (maker)</div>
+            <div class="stat-sub">0.60% of margin &middot; 3&times; cheaper</div>
+          </div>
+          <div class="stat-card warn">
+            <div class="stat-num">$0.90</div>
+            <div class="stat-label">Per stop-trigger event</div>
+            <div class="stat-sub">taker &middot; on $2,000 notional</div>
+          </div>
+          <div class="stat-card good">
+            <div class="stat-num">$0</div>
+            <div class="stat-label">Liquidation clearance</div>
+            <div class="stat-sub">no CEX-style clearance fee on HL</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 1: How Hyperliquid charges -->
+      <section>
+        <h2>How Hyperliquid Charges Fees</h2>
+        <hr class="rule" />
+
+        <p class="lede">
+          Hyperliquid is a USDC-margined perps DEX on its own L1. Trading is
+          <strong>gasless</strong>; the only protocol-level charges are the maker/taker fee,
+          funding, and a $1 withdrawal fee. Every number below is quoted from the official docs
+          (citations at the bottom).
+        </p>
+
+        <div class="callout ink">
+          <strong>Three cost surfaces, not one.</strong>
+          <p style="margin-bottom: 8px">
+            <strong>1. Trading fee</strong> — maker or taker, charged on <em>notional</em> at both
+            entry and exit. Tier-based, with staking and maker-volume modifiers.
+          </p>
+          <p style="margin-bottom: 8px">
+            <strong>2. Funding</strong> — peer-to-peer between longs and shorts, paid hourly,
+            separate from fees. Sign depends on premium vs. oracle.
+          </p>
+          <p style="margin-bottom: 0">
+            <strong>3. Liquidation</strong> — <em>no clearance fee on HL</em> (unlike CEXs). The
+            only loss is the position's PnL down to maintenance margin.
+          </p>
+        </div>
+
+        <h3>Base Fee Tiers (no staking, no referral)</h3>
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Tier</th>
+              <th>14-day weighted volume</th>
+              <th class="num">Taker</th>
+              <th class="num">Maker</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="tier-0">
+              <td><strong>0</strong></td>
+              <td>— (default)</td>
+              <td class="num">0.045%</td>
+              <td class="num">0.015%</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>&gt; $5M</td>
+              <td class="num">0.040%</td>
+              <td class="num">0.012%</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>&gt; $25M</td>
+              <td class="num">0.035%</td>
+              <td class="num">0.008%</td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>&gt; $100M</td>
+              <td class="num">0.030%</td>
+              <td class="num">0.004%</td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td>&gt; $500M</td>
+              <td class="num">0.028%</td>
+              <td class="num">0.000%</td>
+            </tr>
+            <tr>
+              <td>5</td>
+              <td>&gt; $2B</td>
+              <td class="num">0.026%</td>
+              <td class="num">0.000%</td>
+            </tr>
+            <tr>
+              <td>6</td>
+              <td>&gt; $7B</td>
+              <td class="num">0.024%</td>
+              <td class="num">0.000%</td>
+            </tr>
+          </tbody>
+        </table>
+        <p style="font-size: 12px; color: var(--gray-500); margin-top: 8px">
+          Weighted volume = perps volume + 2 &times; spot volume. Assessed daily in UTC. The bot is
+          on <strong>Tier&nbsp;0</strong> — any realistic mission volume stays well under $5M / 14d.
+        </p>
+
+        <h3>Staking discount (multiplicative, stacks with tier)</h3>
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Staking tier</th>
+              <th>HYPE staked</th>
+              <th class="num">Discount</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Wood</td>
+              <td>&gt; 10</td>
+              <td class="num">5%</td>
+            </tr>
+            <tr>
+              <td>Bronze</td>
+              <td>&gt; 100</td>
+              <td class="num">10%</td>
+            </tr>
+            <tr>
+              <td>Silver</td>
+              <td>&gt; 1,000</td>
+              <td class="num">15%</td>
+            </tr>
+            <tr>
+              <td>Gold</td>
+              <td>&gt; 10,000</td>
+              <td class="num">20%</td>
+            </tr>
+            <tr>
+              <td>Platinum</td>
+              <td>&gt; 100,000</td>
+              <td class="num">30%</td>
+            </tr>
+            <tr>
+              <td>Diamond</td>
+              <td>&gt; 500,000</td>
+              <td class="num">40%</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Maker-volume rebate (for liquidity providers)</h3>
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Maker tier</th>
+              <th>14d maker-volume share</th>
+              <th class="num">Maker fee</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>&gt; 0.5%</td>
+              <td class="num pos">−0.001% (rebate)</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>&gt; 1.5%</td>
+              <td class="num pos">−0.002% (rebate)</td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>&gt; 3.0%</td>
+              <td class="num pos">−0.003% (rebate)</td>
+            </tr>
+          </tbody>
+        </table>
+        <p style="font-size: 12px; color: var(--gray-500); margin-top: 8px">
+          <strong>Not reachable by this bot.</strong> 0.5% of 14d global maker volume is
+          institutional scale. Treat maker rebates as out of scope for any single mission.
+        </p>
+
+        <h3>Funding (separate from fees, paid hourly)</h3>
+        <p>
+          Computed as <code>(8h rate) / 8</code>, paid every hour. Positive funding → longs pay
+          shorts. Capped at 4% / hour. The interest-rate floor in the formula is 0.01% / 8h. For a
+          scalp held 3–60 min, funding is usually <strong>zero or one tick</strong>; it only bites
+          if the bot holds across the hourly boundary in a skewed market.
+        </p>
+
+        <div class="callout olive">
+          <strong>Gasless trading.</strong>
+          <p style="margin-bottom: 0">
+            There is <strong>no gas cost</strong> for placing, modifying, or cancelling orders on
+            HyperCore (the L1 perps venue). Only withdrawals cost anything on-chain: a flat
+            <strong>$1</strong> fee to cover the Arbitrum bridge. Order churn is free.
+          </p>
+        </div>
+      </section>
+
+      <!-- Section 2: How the bot's trades map to fees -->
+      <section>
+        <h2>How t3trade's Trades Map to Fee Events</h2>
+        <hr class="rule" />
+        <p class="lede">
+          The bot has <strong>no fee model of its own</strong>. It reads exchange fees and tracks
+          them, but never marks a position for fees. So every fee below is realized in USDC on the
+          exchange and <em>silently</em> reduces realized PnL — the bot's internal accounting
+          doesn't see it.
+        </p>
+
+        <h3>The six trade actions and their fee character</h3>
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Action</th>
+              <th>What it does</th>
+              <th>Order type</th>
+              <th>Fee posture</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>open</code></td>
+              <td>Start a new position (must carry a stop)</td>
+              <td>IOC crossing <em>or</em> GTC resting</td>
+              <td><strong>Mostly taker</strong>; could earn maker only if GTC rests and fills</td>
+            </tr>
+            <tr>
+              <td><code>scale_in</code></td>
+              <td>Add to an existing position</td>
+              <td>IOC or GTC</td>
+              <td>Same as open — taker-dominant</td>
+            </tr>
+            <tr>
+              <td><code>reduce</code></td>
+              <td>Partial exit / bank profit</td>
+              <td><strong>Forced IOC</strong></td>
+              <td>
+                <strong>100% taker</strong> (hard-coded in <code>TradingExecutionGuard</code>)
+              </td>
+            </tr>
+            <tr>
+              <td><code>close</code></td>
+              <td>Flatten the whole position</td>
+              <td><strong>Forced IOC</strong></td>
+              <td><strong>100% taker</strong></td>
+            </tr>
+            <tr>
+              <td><code>cancel</code></td>
+              <td>Withdraw a resting order</td>
+              <td>—</td>
+              <td><strong>No fee</strong> (cancels are free)</td>
+            </tr>
+            <tr>
+              <td><code>modify_stop</code></td>
+              <td>Move the reduce-only stop</td>
+              <td>cancel-and-replace</td>
+              <td><strong>No fee</strong> while resting; taker if it triggers</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="callout clay">
+          <strong>Every exit is a taker fill, by construction.</strong>
+          <p style="margin-bottom: 0">
+            The execution guard forces <code>orderPreference: "marketable_ioc"</code> on every
+            <code>reduce</code> and <code>close</code> regardless of what the strategy asked for.
+            There is no post-only / ALO support anywhere in the wire layer.
+            <strong>Model exits at the taker rate, always.</strong> Entries are taker-dominant too;
+            the only path to a maker fill is a GTC resting order that doesn't cross — and the
+            codebase doesn't track maker rebates, so the cost model prices everything at taker.
+          </p>
+        </div>
+
+        <h3>Protective stop = a hidden taker event</h3>
+        <p>
+          Every <code>open</code> and <code>scale_in</code> <em>must</em> attach a stop. The stop
+          rests on-exchange as a reduce-only trigger with <code>isMarket: true</code>. While resting
+          it costs nothing.
+          <strong>If it triggers, it crosses as a taker fill on the full position notional</strong>
+          — one extra fee event per losing trade. The stop fires at most once per position (it's
+          reduce-only and flattens).
+        </p>
+
+        <h3>Holding period &amp; funding exposure</h3>
+        <p>
+          The volatility horizons are 3–60 bars on a 1-minute timeframe, so the expected hold is
+          <strong>3–60 minutes</strong>. Funding is paid hourly, so most positions pay
+          <strong>zero funding</strong>. The exception is a position open across the top of the hour
+          in a skewed market — typically one hourly accrual, which on a $2,000 notional at the
+          0.01%/8h floor is ~$0.0025. Funding is not a meaningful cost surface for this strategy;
+          <strong>trading fees are</strong>.
+        </p>
+      </section>
+
+      <!-- Section 3: Scenario comparison -->
+      <section>
+        <h2>Scenario Comparison &mdash; $2,000 Notional / $100 Margin</h2>
+        <hr class="rule" />
+        <p>
+          Each scenario uses <strong>$2,000 notional, Tier&nbsp;0 (no staking)</strong>, taker =
+          0.045%, maker = 0.015%. Fees apply to <em>notional</em>, not margin — that's why the
+          percentages of margin look large.
+        </p>
+
+        <div class="scenario-grid">
+          <!-- Scenario A -->
+          <div class="scenario">
+            <h3>A. Clean win &mdash; target hit, close</h3>
+            <div class="meta">open (taker) &rarr; pnl_above wake &rarr; close (taker)</div>
+            <ul class="flow">
+              <li>
+                <span class="label">Open &mdash; taker 0.045% &times; $2,000</span
+                ><span class="val fee">&minus;$0.90</span>
+              </li>
+              <li>
+                <span class="label">Close &mdash; taker 0.045% &times; $2,000</span
+                ><span class="val fee">&minus;$0.90</span>
+              </li>
+              <li>
+                <span class="label">Funding (held 15 min, no boundary)</span
+                ><span class="val">$0.00</span>
+              </li>
+            </ul>
+            <div class="result">
+              <span class="lab">Total fees</span>
+              <span class="num-big neg">&minus;$1.80</span>
+            </div>
+            <div class="stat-sub" style="margin-top: 8px">
+              1.80% of $100 margin &middot; 2 taker events
+            </div>
+          </div>
+
+          <!-- Scenario B -->
+          <div class="scenario">
+            <h3>B. Stopped out &mdash; loss taken</h3>
+            <div class="meta">open (taker) &rarr; stop triggers (taker)</div>
+            <ul class="flow">
+              <li>
+                <span class="label">Open &mdash; taker 0.045% &times; $2,000</span
+                ><span class="val fee">&minus;$0.90</span>
+              </li>
+              <li>
+                <span class="label">Stop trigger &mdash; taker 0.045% &times; $2,000</span
+                ><span class="val fee">&minus;$0.90</span>
+              </li>
+              <li><span class="label">Funding</span><span class="val">$0.00</span></li>
+            </ul>
+            <div class="result">
+              <span class="lab">Total fees</span>
+              <span class="num-big neg">&minus;$1.80</span>
+            </div>
+            <div class="stat-sub" style="margin-top: 8px">
+              Same cost as a win &middot; fees are path-independent
+            </div>
+          </div>
+
+          <!-- Scenario C -->
+          <div class="scenario">
+            <h3>C. Scale-in, partial out, then close</h3>
+            <div class="meta">open &rarr; scale_in &rarr; reduce 50% &rarr; close rest</div>
+            <ul class="flow">
+              <li>
+                <span class="label">Open &mdash; taker &times; $2,000</span
+                ><span class="val fee">&minus;$0.90</span>
+              </li>
+              <li>
+                <span class="label">Scale-in &mdash; taker &times; $2,000 (doubled size)</span
+                ><span class="val fee">&minus;$0.90</span>
+              </li>
+              <li>
+                <span class="label">Reduce 50% of $4,000 &mdash; taker &times; $2,000</span
+                ><span class="val fee">&minus;$0.90</span>
+              </li>
+              <li>
+                <span class="label">Close rest &mdash; taker &times; $2,000</span
+                ><span class="val fee">&minus;$0.90</span>
+              </li>
+            </ul>
+            <div class="result">
+              <span class="lab">Total fees</span>
+              <span class="num-big neg">&minus;$3.60</span>
+            </div>
+            <div class="stat-sub" style="margin-top: 8px">
+              3.60% of margin &middot; 4 taker events &middot; fees scale with churn
+            </div>
+          </div>
+
+          <!-- Scenario D -->
+          <div class="scenario">
+            <h3>D. Maker entry, taker exit (best case)</h3>
+            <div class="meta">open GTC rests &amp; fills &rarr; close IOC</div>
+            <ul class="flow">
+              <li>
+                <span class="label">Open &mdash; maker 0.015% &times; $2,000</span
+                ><span class="val fee">&minus;$0.30</span>
+              </li>
+              <li>
+                <span class="label">Close &mdash; taker 0.045% &times; $2,000</span
+                ><span class="val fee">&minus;$0.90</span>
+              </li>
+              <li><span class="label">Funding</span><span class="val">$0.00</span></li>
+            </ul>
+            <div class="result">
+              <span class="lab">Total fees</span>
+              <span class="num-big">&minus;$1.20</span>
+            </div>
+            <div class="stat-sub" style="margin-top: 8px">
+              1.20% of margin &middot; saves $0.60 vs. all-taker
+            </div>
+          </div>
+
+          <!-- Scenario E -->
+          <div class="scenario">
+            <h3>E. Liquidation (full position force-closed)</h3>
+            <div class="meta">open &rarr; equity drops to maintenance margin</div>
+            <ul class="flow">
+              <li>
+                <span class="label">Open &mdash; taker &times; $2,000</span
+                ><span class="val fee">&minus;$0.90</span>
+              </li>
+              <li>
+                <span class="label">Liquidation clearance fee</span
+                ><span class="val pos">$0.00</span>
+              </li>
+              <li>
+                <span class="label">Position loss to maintenance (~1.25% on ETH)</span
+                ><span class="val fee">&minus;$25.00</span>
+              </li>
+              <li><span class="label">Residual PnL stream</span><span class="val">to HLP</span></li>
+            </ul>
+            <div class="result">
+              <span class="lab">Fee + position loss</span>
+              <span class="num-big neg">&minus;$25.90</span>
+            </div>
+            <div class="stat-sub" style="margin-top: 8px">
+              No clearance fee, but position loss dominates
+            </div>
+          </div>
+
+          <!-- Scenario F -->
+          <div class="scenario">
+            <h3>F. Real mandate &mdash; $100 capital, 8&times; cap</h3>
+            <div class="meta">what the bot actually places: $800 notional</div>
+            <ul class="flow">
+              <li>
+                <span class="label">Open &mdash; taker 0.045% &times; $800</span
+                ><span class="val fee">&minus;$0.36</span>
+              </li>
+              <li>
+                <span class="label">Close &mdash; taker 0.045% &times; $800</span
+                ><span class="val fee">&minus;$0.36</span>
+              </li>
+              <li><span class="label">Funding</span><span class="val">$0.00</span></li>
+            </ul>
+            <div class="result">
+              <span class="lab">Total fees</span>
+              <span class="num-big neg">&minus;$0.72</span>
+            </div>
+            <div class="stat-sub" style="margin-top: 8px">
+              0.72% of $100 margin &middot; the realistic per-trade cost
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 4: Cost-per-mission chart -->
+      <section>
+        <h2>Fee Drag Across a Mission</h2>
+        <hr class="rule" />
+        <p>
+          A 1–2 hour session with the default 1-minute timeframe will typically execute
+          <strong>2–6 flat-to-flat round trips</strong>, bounded by the harness's "3 losses → 30 min
+          pause" rule and the session-end flat mandate. Below: cumulative fee drag at the realistic
+          $800 notional (Tier&nbsp;0, all-taker), with the hypothetical $2,000 notional for
+          comparison.
+        </p>
+
+        <div class="chart-panel">
+          <svg viewBox="0 0 640 220" role="img" aria-label="Cumulative fees vs round-trips">
+            <!-- gridlines -->
+            <line x1="56" y1="20" x2="620" y2="20" stroke="#F0EEE6" />
+            <line x1="56" y1="70" x2="620" y2="70" stroke="#F0EEE6" />
+            <line x1="56" y1="120" x2="620" y2="120" stroke="#F0EEE6" />
+            <line x1="56" y1="170" x2="620" y2="170" stroke="#D1CFC5" stroke-width="1.5" />
+
+            <!-- y labels -->
+            <text
+              x="48"
+              y="174"
+              text-anchor="end"
+              font-family="system-ui"
+              font-size="11"
+              fill="#87867F"
+            >
+              $0
+            </text>
+            <text
+              x="48"
+              y="124"
+              text-anchor="end"
+              font-family="system-ui"
+              font-size="11"
+              fill="#87867F"
+            >
+              $3
+            </text>
+            <text
+              x="48"
+              y="74"
+              text-anchor="end"
+              font-family="system-ui"
+              font-size="11"
+              fill="#87867F"
+            >
+              $6
+            </text>
+            <text
+              x="48"
+              y="24"
+              text-anchor="end"
+              font-family="system-ui"
+              font-size="11"
+              fill="#87867F"
+            >
+              $9
+            </text>
+
+            <!-- $800 mandate (real): $0.72 per round trip
+               baseline 170, 1 unit = 50px / $3, so 0.72 * 50/3 = 12px per trip -->
+            <!-- 1 trip -->
+            <rect x="80" y="158" width="48" height="12" rx="4" fill="#788C5D" />
+            <text
+              x="104"
+              y="154"
+              text-anchor="middle"
+              font-family="system-ui"
+              font-size="10"
+              fill="#87867F"
+            >
+              0.72
+            </text>
+            <!-- 2 trips: 1.44 -->
+            <rect x="180" y="146" width="48" height="24" rx="4" fill="#788C5D" />
+            <text
+              x="204"
+              y="142"
+              text-anchor="middle"
+              font-family="system-ui"
+              font-size="10"
+              fill="#87867F"
+            >
+              1.44
+            </text>
+            <!-- 3 trips: 2.16 -->
+            <rect x="280" y="134" width="48" height="36" rx="4" fill="#788C5D" />
+            <text
+              x="304"
+              y="130"
+              text-anchor="middle"
+              font-family="system-ui"
+              font-size="10"
+              fill="#87867F"
+            >
+              2.16
+            </text>
+            <!-- 4 trips: 2.88 -->
+            <rect x="380" y="122" width="48" height="48" rx="4" fill="#788C5D" />
+            <text
+              x="404"
+              y="118"
+              text-anchor="middle"
+              font-family="system-ui"
+              font-size="10"
+              fill="#87867F"
+            >
+              2.88
+            </text>
+            <!-- 5 trips: 3.60 -->
+            <rect x="480" y="110" width="48" height="60" rx="4" fill="#788C5D" />
+            <text
+              x="504"
+              y="106"
+              text-anchor="middle"
+              font-family="system-ui"
+              font-size="10"
+              fill="#87867F"
+            >
+              3.60
+            </text>
+            <!-- 6 trips: 4.32 -->
+            <rect x="580" y="98" width="48" height="72" rx="4" fill="#788C5D" />
+            <text
+              x="604"
+              y="94"
+              text-anchor="middle"
+              font-family="system-ui"
+              font-size="10"
+              fill="#87867F"
+            >
+              4.32
+            </text>
+
+            <!-- $2000 hypothetical (reference): $1.80 per round trip
+               1.80 * 50/3 = 30px per trip -->
+            <rect
+              x="80"
+              y="140"
+              width="48"
+              height="30"
+              rx="4"
+              fill="none"
+              stroke="#D97757"
+              stroke-width="2"
+            />
+            <rect
+              x="180"
+              y="110"
+              width="48"
+              height="60"
+              rx="4"
+              fill="none"
+              stroke="#D97757"
+              stroke-width="2"
+            />
+            <rect
+              x="280"
+              y="80"
+              width="48"
+              height="90"
+              rx="4"
+              fill="none"
+              stroke="#D97757"
+              stroke-width="2"
+            />
+            <rect
+              x="380"
+              y="50"
+              width="48"
+              height="120"
+              rx="4"
+              fill="none"
+              stroke="#D97757"
+              stroke-width="2"
+            />
+            <rect
+              x="480"
+              y="20"
+              width="48"
+              height="150"
+              rx="4"
+              fill="none"
+              stroke="#D97757"
+              stroke-width="2"
+            />
+
+            <!-- x labels -->
+            <text
+              x="104"
+              y="190"
+              text-anchor="middle"
+              font-family="system-ui"
+              font-size="11"
+              fill="#87867F"
+            >
+              1
+            </text>
+            <text
+              x="204"
+              y="190"
+              text-anchor="middle"
+              font-family="system-ui"
+              font-size="11"
+              fill="#87867F"
+            >
+              2
+            </text>
+            <text
+              x="304"
+              y="190"
+              text-anchor="middle"
+              font-family="system-ui"
+              font-size="11"
+              fill="#87867F"
+            >
+              3
+            </text>
+            <text
+              x="404"
+              y="190"
+              text-anchor="middle"
+              font-family="system-ui"
+              font-size="11"
+              fill="#87867F"
+            >
+              4
+            </text>
+            <text
+              x="504"
+              y="190"
+              text-anchor="middle"
+              font-family="system-ui"
+              font-size="11"
+              fill="#87867F"
+            >
+              5
+            </text>
+            <text
+              x="604"
+              y="190"
+              text-anchor="middle"
+              font-family="system-ui"
+              font-size="11"
+              fill="#87867F"
+            >
+              6
+            </text>
+            <text
+              x="340"
+              y="210"
+              text-anchor="middle"
+              font-family="system-ui"
+              font-size="11"
+              fill="#87867F"
+            >
+              round trips per session
+            </text>
+
+            <!-- legend -->
+            <rect x="430" y="3" width="14" height="10" fill="#788C5D" />
+            <text x="448" y="12" font-family="system-ui" font-size="11" fill="#3D3D3A">
+              $800 real mandate
+            </text>
+            <rect
+              x="555"
+              y="3"
+              width="14"
+              height="10"
+              fill="none"
+              stroke="#D97757"
+              stroke-width="2"
+            />
+            <text x="573" y="12" font-family="system-ui" font-size="11" fill="#3D3D3A">
+              $2,000 hypothetical
+            </text>
+          </svg>
+          <div class="chart-caption">
+            Each filled bar = realistic per-session fees on the bot's actual 8&times; mandate.
+            Outlined clay bars = the $2,000 reference from the prompt. At 6 round trips, fees are
+            $4.32 real / $10.80 hypothetical —
+            <strong>4.3% vs 10.8% of margin eaten by fees alone</strong>.
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 5: What this means -->
+      <section>
+        <h2>What This Means for the System</h2>
+        <hr class="rule" />
+
+        <div class="callout clay">
+          <strong>The bot's win-rate bar is silently higher than its accounting thinks.</strong>
+          <p style="margin-bottom: 0">
+            Because the system has no fee model, every PnL figure the harness computes is
+            <em>before</em> exchange fees. On the realistic $800 mandate, a round-trip win must
+            clear <strong>$0.72 in fees</strong> just to break even against the bot's own books —
+            that's <strong>0.72% of margin per round trip</strong> of invisible drag. On the $2,000
+            reference it's $1.80 / 1.80%.
+          </p>
+        </div>
+
+        <h3>Three concrete takeaways</h3>
+        <ul class="highlights" style="list-style: none; padding: 0">
+          <li
+            style="
+              position: relative;
+              padding: 0 0 14px 26px;
+              font-size: 15px;
+              color: var(--gray-700);
+            "
+          >
+            <span
+              style="
+                position: absolute;
+                left: 6px;
+                top: 8px;
+                width: 7px;
+                height: 7px;
+                border-radius: 2px;
+                background: var(--clay);
+              "
+            ></span>
+            <strong style="color: var(--slate); font-weight: 600"
+              >Exits are 100% taker and cannot be optimized away.</strong
+            >
+            The execution guard forces IOC on every <code>reduce</code> and <code>close</code>. Fee
+            reduction is only possible on the entry leg, and only if the strategy switches to
+            resting GTC orders that actually fill without crossing.
+          </li>
+          <li
+            style="
+              position: relative;
+              padding: 0 0 14px 26px;
+              font-size: 15px;
+              color: var(--gray-700);
+            "
+          >
+            <span
+              style="
+                position: absolute;
+                left: 6px;
+                top: 8px;
+                width: 7px;
+                height: 7px;
+                border-radius: 2px;
+                background: var(--clay);
+              "
+            ></span>
+            <strong style="color: var(--slate); font-weight: 600"
+              >Stop triggers are an unbudgeted fee event.</strong
+            >
+            Every losing trade that hits its stop pays a second taker fee on the full notional. The
+            bot doesn't model this; a backtest without it will understate losing-trade cost by
+            ~$0.90 on $2,000 notional (or $0.36 on the real $800).
+          </li>
+          <li
+            style="position: relative; padding: 0 0 0 26px; font-size: 15px; color: var(--gray-700)"
+          >
+            <span
+              style="
+                position: absolute;
+                left: 6px;
+                top: 8px;
+                width: 7px;
+                height: 7px;
+                border-radius: 2px;
+                background: var(--clay);
+              "
+            ></span>
+            <strong style="color: var(--slate); font-weight: 600"
+              >Fees scale with churn, not position size.</strong
+            >
+            A scale-in / partial-out / close flow (Scenario C) doubles the fee count. The most
+            fee-efficient shape is a single entry &rarr; single exit; the ladder / scale-out path
+            costs proportionally more.
+          </li>
+        </ul>
+
+        <h3>What is NOT a cost surface here</h3>
+        <div class="callout olive">
+          <strong>Don't over-model these — they're negligible for this strategy.</strong>
+          <p style="margin-bottom: 8px">
+            <strong>Gas:</strong> zero on HyperCore. Order churn, cancels, stop modifications are
+            all free.
+          </p>
+          <p style="margin-bottom: 8px">
+            <strong>Funding:</strong> near-zero at 3–60 min holds. Only matters if the bot starts
+            holding across hourly boundaries in skewed markets.
+          </p>
+          <p style="margin-bottom: 0">
+            <strong>Liquidation clearance:</strong> $0 on HL. If a position liquidates, the dominant
+            loss is the position PnL down to maintenance margin (~1.25% of notional on ETH), not a
+            fee.
+          </p>
+        </div>
+
+        <h3>Quick reference: fee per trade action (Tier 0, taker)</h3>
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Action</th>
+              <th class="num">Fee @ $800 (real)</th>
+              <th class="num">Fee @ $2,000 (ref)</th>
+              <th class="num">% of $100 margin</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>open / scale_in (entry)</td>
+              <td class="num neg">&minus;$0.36</td>
+              <td class="num neg">&minus;$0.90</td>
+              <td class="num">0.36% / 0.90%</td>
+            </tr>
+            <tr>
+              <td>reduce / close (exit)</td>
+              <td class="num neg">&minus;$0.36</td>
+              <td class="num neg">&minus;$0.90</td>
+              <td class="num">0.36% / 0.90%</td>
+            </tr>
+            <tr>
+              <td>stop trigger (losing exit)</td>
+              <td class="num neg">&minus;$0.36</td>
+              <td class="num neg">&minus;$0.90</td>
+              <td class="num">0.36% / 0.90%</td>
+            </tr>
+            <tr>
+              <td>cancel / modify_stop (resting)</td>
+              <td class="num pos">$0.00</td>
+              <td class="num pos">$0.00</td>
+              <td class="num">0.00%</td>
+            </tr>
+            <tr class="total">
+              <td>Round trip (entry + exit)</td>
+              <td class="num neg">&minus;$0.72</td>
+              <td class="num neg">&minus;$1.80</td>
+              <td class="num">0.72% / 1.80%</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- Citations -->
+      <section>
+        <h2>Sources</h2>
+        <hr class="rule" />
+        <ul class="citations">
+          <li>
+            Fees, tiers, staking discounts, maker rebates, modifiers:
+            <a href="https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees"
+              >hyperliquid.gitbook.io/hyperliquid-docs/trading/fees</a
+            >
+          </li>
+          <li>
+            Funding mechanics (hourly, formula, caps, sign):
+            <a href="https://hyperliquid.gitbook.io/hyperliquid-docs/trading/funding"
+              >hyperliquid.gitbook.io/hyperliquid-docs/trading/funding</a
+            >
+          </li>
+          <li>
+            Liquidations (no clearance fee, MM%, partials):
+            <a href="https://hyperliquid.gitbook.io/hyperliquid-docs/trading/liquidations"
+              >hyperliquid.gitbook.io/hyperliquid-docs/trading/liquidations</a
+            >
+          </li>
+          <li>
+            Referrals (4% / 10% / $25M / $1B):
+            <a href="https://hyperliquid.gitbook.io/hyperliquid-docs/referrals"
+              >hyperliquid.gitbook.io/hyperliquid-docs/referrals</a
+            >
+          </li>
+          <li>
+            Order book (price-time priority, CLOB):
+            <a href="https://hyperliquid.gitbook.io/hyperliquid-docs/hypercore/order-book"
+              >hyperliquid.gitbook.io/hyperliquid-docs/hypercore/order-book</a
+            >
+          </li>
+          <li>
+            Gasless trading, $1 withdrawal fee, USDC margining:
+            <a href="https://hyperliquid.gitbook.io/hyperliquid-docs/llms-full.txt"
+              >hyperliquid.gitbook.io/hyperliquid-docs/llms-full.txt</a
+            >
+          </li>
+          <li style="color: var(--gray-500); margin-top: 8px">
+            Execution-path evidence: <code>testnetAuthorityDefaults</code>,
+            <code>TradingExecutionGuard</code>, <code>OrderMapper</code>,
+            <code>IocSlippageConfig</code>, <code>costs.ts</code>, <code>history.ts</code> in the
+            t3trade repo (analysis only; not used as a fee source).
+          </li>
+        </ul>
+      </section>
+
+      <footer>
+        Fee numbers are quoted verbatim from official Hyperliquid documentation. Scenario math is
+        computed from those rates &times; the t3trade execution paths. Holding periods and
+        round-trip counts are typical, not guaranteed &mdash; the bot is wake-and-decide.
+      </footer>
+    </div>
+  </body>
+</html>
