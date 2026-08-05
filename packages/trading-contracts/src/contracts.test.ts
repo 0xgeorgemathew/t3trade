@@ -192,6 +192,18 @@ describe("trading contracts decode published shapes", () => {
     expect(decodeStrategy(strategy).timeframes).toEqual(["5m", "15m"]);
   });
 
+  it("decodes a range_reversion strategy as itself, not as a continuation mode", () => {
+    const rangeScalp = decodeStrategy({
+      ...strategy,
+      name: "ETH 1m range reversion",
+      mode: "range_reversion",
+      direction: "both",
+      belief: { ...strategy.belief, regime: "ranging" },
+    });
+    expect(rangeScalp.mode).toBe("range_reversion");
+    expect(rangeScalp.direction).toBe("both");
+  });
+
   it("decodes every MarketWatch variant", () => {
     const decode = decodeWatch;
     expect(

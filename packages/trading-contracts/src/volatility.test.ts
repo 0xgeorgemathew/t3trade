@@ -56,6 +56,48 @@ describe("measureVolatility", () => {
     expect(tenBars?.favourableDownUsd.p75).toBeCloseTo(20, 6);
   });
 
+  it("reaches an hour-scale hold on 1m data without being asked to", () => {
+    // The scalp rides a 30-60 minute oscillation, so the default menu has to
+    // reach that far or the measurement cannot see the move being traded.
+    const hourly = measured.horizons.find((horizon) => horizon.holdBars === 60);
+    expect(hourly).toBeDefined();
+    expect(hourly?.holdMinutes).toBe(60);
+    expect(hourly?.samples).toBe(60);
+    expect(hourly?.favourableUpUsd.p75).toBeCloseTo(20, 6);
+  });
+
+  it("publishes where the mark sits in the range instead of leaving it to be re-derived", () => {
+    expect(measured.swingHighUsd).toBeCloseTo(4_010, 6);
+    expect(measured.swingLowUsd).toBeCloseTo(3_990, 6);
+    // The last close is the trough, 3,990, so the mark is sitting on the floor.
+    expect(measured.positionInRangePercent).toBeCloseTo(0, 6);
+    // A symmetric zigzag pays a long and a short the same, so the ratio is 1.
+    expect(measured.excursionSymmetryRatio).toBeCloseTo(1, 6);
+  });
+
+  // The range read on a window that has no range. See `./rangeScalp.test.ts`
+  // for the same fields over a window shaped like one worth scalping.
+  it("calls a window with no height mid-range rather than inventing an edge", () => {
+    const flat = measureVolatility({
+      market: "ETH",
+      interval: "1m",
+      candles: Array.from({ length: 40 }, (_unused, index) => ({
+        openTime: index * 60_000,
+        closeTime: (index + 1) * 60_000,
+        open: 4_000,
+        close: 4_000,
+        high: 4_000,
+        low: 4_000,
+        volume: 1,
+      })),
+      measuredAt: 1_700_000,
+    });
+    // A window with no height has no edges; mid-range is the honest answer.
+    expect(flat.swingRangeUsd).toBe(0);
+    expect(flat.positionInRangePercent).toBe(50);
+    expect(flat.excursionSymmetryRatio).toBe(0);
+  });
+
   it("says when the window is too short to measure from", () => {
     const thin = measureVolatility({
       market: "ETH",

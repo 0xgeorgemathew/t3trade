@@ -268,12 +268,38 @@ function fillIdentities(fills: ReadonlyArray<WireUserFill>): ReadonlyArray<strin
 }
 
 /**
+ * When this mission began. Fills older than this belong to whatever ran on the
+ * wallet before it, not to this mission.
+ *
+ * `userFills` is an ACCOUNT-wide read: it returns the master wallet's whole
+ * recent history, including every fill of every earlier mission. Without this
+ * floor each new mission adopted all of them, so a brand-new thread opened
+ * showing the previous thread's positions and receipts.
+ *
+ * Missing row (a mission still mid-creation) reads as 0 — no floor, same
+ * behaviour as before, rather than silently dropping the mission's own fills.
+ */
+function readMissionStartedAt(
+  missionId: string,
+): Effect.Effect<number, never, SqlClient.SqlClient> {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ readonly created_at: number }>`
+      SELECT created_at FROM trading_missions WHERE mission_id = ${missionId}
+    `;
+    return rows[0]?.created_at ?? 0;
+  }).pipe(Effect.orElseSucceed(() => 0));
+}
+
+/**
  * Read canonical fills via the InfoClient userFills endpoint and map them to
- * `TradingFill` records. Only the mission's market's fills are kept.
+ * `TradingFill` records. Only this mission's market's fills, and only ones
+ * traded since the mission started, are kept.
  */
 function readCanonicalFills(
   input: ReconcileInput,
   observedAt: number,
+  startedAt: number,
 ): Effect.Effect<ReadonlyArray<TradingFill>, TradingReconciliationError, HyperliquidInfoClient> {
   return Effect.gen(function* () {
     const info = yield* HyperliquidInfoClient;
@@ -286,7 +312,7 @@ function readCanonicalFills(
           }),
       ),
     );
-    const marketFills = wireFills.filter((f) => f.coin === input.market);
+    const marketFills = wireFills.filter((f) => f.coin === input.market && f.time >= startedAt);
     const ids = fillIdentities(marketFills);
     return marketFills.map(
       (f, idx) =>
@@ -444,6 +470,25 @@ function persistFills(
         }),
     ),
   );
+}
+
+/**
+ * Delete fills this mission holds that were traded before it started. A no-op
+ * on a clean database; the repair path for rows written before the account-wide
+ * `userFills` read was floored at the mission's start.
+ */
+function dropPreMissionFills(
+  missionId: string,
+  startedAt: number,
+): Effect.Effect<void, never, SqlClient.SqlClient> {
+  if (startedAt <= 0) return Effect.void;
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      DELETE FROM trading_fills
+      WHERE mission_id = ${missionId} AND traded_at < ${startedAt}
+    `;
+  }).pipe(Effect.orElseSucceed(() => undefined));
 }
 
 /**
@@ -893,6 +938,7 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
       // the only baseline an external change can be measured against.
       const previousPosition = yield* readPreviousPosition(input);
       const previousAccountValue = yield* readPreviousAccountValue(input.missionId);
+      const startedAt = yield* readMissionStartedAt(input.missionId);
 
       // Read all canonical state in parallel, then persist. Local state never
       // outranks Hyperliquid — the canonical reads are the source of truth.
@@ -900,7 +946,7 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
         [
           readCanonicalAccount(input, observedAt),
           readCanonicalOpenOrders(input),
-          readCanonicalFills(input, observedAt),
+          readCanonicalFills(input, observedAt, startedAt),
         ],
         { concurrency: "unbounded" },
       );
@@ -931,6 +977,10 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
       // set. Local state never outranks Hyperliquid — both reach the 037 tables
       // here so the projection and loss-budget accounting read reconciled truth.
       yield* persistFills(fills);
+      // Heal rows an earlier build adopted from before this mission existed:
+      // they are another mission's fills and would otherwise sit in this
+      // thread's receipts and realised-result totals forever.
+      yield* dropPreMissionFills(input.missionId, startedAt);
       yield* persistOpenOrders(openOrders, input);
       // Before the release below, so a record settled here has its reservation
       // released in the same pass.

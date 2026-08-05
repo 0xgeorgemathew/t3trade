@@ -66,6 +66,55 @@ export const TradingTradeHistoryEntry = Schema.Struct({
 });
 export type TradingTradeHistoryEntry = typeof TradingTradeHistoryEntry.Type;
 
+/** Round trips the fee-share reading is computed over — the "last 3 scalps". */
+export const FEE_SHARE_SAMPLE = 3;
+
+/**
+ * Fee share of gross, in percent, above which the size is wrong for the range.
+ *
+ * Past this line the trades are working and the fees are taking the result:
+ * the move being captured is too small for the size being traded, and the
+ * answer is a wider target, a cheaper fee tier, or standing down — not another
+ * scalp at the same size.
+ */
+export const FEE_SHARE_ALARM_PERCENT = 50;
+
+/**
+ * One completed round trip — flat to flat.
+ *
+ * Orders are what the mission placed; a round trip is what it *did*. The entry
+ * and exit prices, the hold, and the net result only exist at this granularity,
+ * and they are the figures a scalp is actually judged on. A trip is opened by
+ * the first order that takes the mission off flat and closed by the order that
+ * returns it there; anything in between that adds to or trims the position
+ * belongs to the same trip.
+ */
+export const TradingRoundTrip = Schema.Struct({
+  market: ExchangeMarket,
+  direction: Schema.Literals(["long", "short"]),
+  /** Size the trip opened at, in base units. */
+  sizeEth: Schema.Number,
+  /** Size-weighted average across the orders that built the position. */
+  entryAvgPrice: Price,
+  /** Size-weighted average across the orders that closed it. */
+  exitAvgPrice: Price,
+  /** Realised PnL the exchange attributed to the closing orders, before fees. */
+  grossPnlUsd: Schema.Number,
+  /** Every fee the trip paid — entry side and exit side both. */
+  feesPaidUsd: Schema.Number,
+  /** `grossPnlUsd` less `feesPaidUsd`. The result. */
+  netPnlUsd: Schema.Number,
+  openedAt: UnixMillis,
+  closedAt: UnixMillis,
+  holdMillis: Schema.Number,
+  /** Orders the trip took, entry side and exit side together. */
+  orderCount: Schema.Number,
+  /** The version and target in force when the trip closed. */
+  strategyVersion: Schema.optional(Schema.Number),
+  targetProfitUsd: Schema.optional(Schema.Number),
+});
+export type TradingRoundTrip = typeof TradingRoundTrip.Type;
+
 /** Totals across every fill the mission has ever recorded, not just the page. */
 export const TradingTradeHistorySummary = Schema.Struct({
   realizedPnlUsd: Schema.Number,
@@ -77,6 +126,25 @@ export const TradingTradeHistorySummary = Schema.Struct({
   /** Orders that closed exposure at a gain, and at a loss, net of their fee. */
   winningOrders: Schema.Number,
   losingOrders: Schema.Number,
+  /** Completed flat-to-flat trips. A position still open is not counted. */
+  roundTripCount: Schema.Number,
+  /**
+   * Fees as a percent of the gross the trades produced, across every completed
+   * round trip, using the MAGNITUDE of each trip's gross — a losing trip still
+   * moved price and still paid to do it.
+   *
+   * Zero when nothing has been traded, which reads the same as "no cost
+   * problem" and is the honest answer when there is no evidence either way.
+   */
+  feeShareOfGrossPercent: Schema.Number,
+  /**
+   * The same reading over the last `FEE_SHARE_SAMPLE` trips only.
+   *
+   * This is the one to act on: a mission that scalped well for an hour and is
+   * now donating fees has a lifetime figure that still looks fine. Above
+   * `FEE_SHARE_ALARM_PERCENT` the range is too small for the size being traded.
+   */
+  recentFeeShareOfGrossPercent: Schema.Number,
   firstFillAt: Schema.optional(UnixMillis),
   lastFillAt: Schema.optional(UnixMillis),
 });
@@ -86,9 +154,129 @@ export const TradingTradeHistory = Schema.Struct({
   missionId: TradingId,
   /** Newest first, capped by the request's `limit`. */
   orders: Schema.Array(TradingTradeHistoryEntry),
+  /**
+   * Completed flat-to-flat trips, newest first, over the same orders.
+   *
+   * The orders say what was placed; these say what each trade was worth. A
+   * position that is still open has no trip here — it has no result yet.
+   */
+  roundTrips: Schema.Array(TradingRoundTrip),
   summary: TradingTradeHistorySummary,
 });
 export type TradingTradeHistory = typeof TradingTradeHistory.Type;
+
+const weightedAverage = (
+  parts: ReadonlyArray<{ readonly size: number; readonly price: number }>,
+): number => {
+  const size = parts.reduce((sum, part) => sum + part.size, 0);
+  if (size <= 0) return 0;
+  return parts.reduce((sum, part) => sum + part.size * part.price, 0) / size;
+};
+
+/** An order's signed contribution to the position, in base units. */
+const signedSize = (order: TradingTradeHistoryEntry): number =>
+  order.side === "buy" ? order.filledSize : -order.filledSize;
+
+/**
+ * Pair the mission's orders into the round trips they actually made.
+ *
+ * The exchange never reports a "trade" — it reports fills, and a scalp is two
+ * or more orders apart. Walking the orders oldest-first and tracking the
+ * running net position recovers the trip: it opens when the position leaves
+ * flat, and it closes when the position returns there.
+ *
+ * A trip is therefore cut at flat and nowhere else. One order that reverses
+ * straight THROUGH flat — sell 2 against a 1 long — does not close anything,
+ * because the position never touched zero; that order and the ones that unwind
+ * its residual all belong to the same trip, whose `direction` is the side it
+ * opened on. Splitting such an order would mean apportioning its size, fee, and
+ * realised PnL between two trips on an assumption the exchange never reported,
+ * so the pairing declines to invent one. The execution path closes with a
+ * reduce-only order before it re-enters, so this is the odd case, not the
+ * normal one — but when it happens the trip reads as one longer trade rather
+ * than two clean ones, and its `orderCount` is the tell.
+ *
+ * A trailing group that never returns to flat is the position still open, and
+ * is left out — it has no result to report yet.
+ */
+export function buildRoundTrips(
+  orders: ReadonlyArray<TradingTradeHistoryEntry>,
+): ReadonlyArray<TradingRoundTrip> {
+  const oldestFirst = [...orders].sort((a, b) => a.firstFillAt - b.firstFillAt);
+  const trips: Array<TradingRoundTrip> = [];
+
+  let open: Array<TradingTradeHistoryEntry> = [];
+  let position = 0;
+
+  for (const order of oldestFirst) {
+    open.push(order);
+    position += signedSize(order);
+    // Floating-point fill sizes never land exactly on zero; a residue smaller
+    // than any tradeable size is flat.
+    if (Math.abs(position) > 1e-9) continue;
+
+    const first = open[0];
+    if (first !== undefined) trips.push(toRoundTrip(open, first));
+    open = [];
+    position = 0;
+  }
+
+  // Built oldest-first by the walk; published newest-first like `orders`.
+  return trips.toReversed();
+}
+
+const toRoundTrip = (
+  group: ReadonlyArray<TradingTradeHistoryEntry>,
+  first: TradingTradeHistoryEntry,
+): TradingRoundTrip => {
+  const long = first.side === "buy";
+  const entries = group.filter((order) => (order.side === "buy") === long);
+  const exits = group.filter((order) => (order.side === "buy") !== long);
+  const last = group[group.length - 1] ?? first;
+
+  const entryAvgPrice = weightedAverage(
+    entries.map((order) => ({ size: order.filledSize, price: order.avgFillPrice })),
+  );
+  const exitAvgPrice = weightedAverage(
+    exits.map((order) => ({ size: order.filledSize, price: order.avgFillPrice })),
+  );
+  const grossPnlUsd = group.reduce((sum, order) => sum + order.closedPnlUsd, 0);
+  const feesPaidUsd = group.reduce((sum, order) => sum + order.feeUsd, 0);
+
+  return {
+    market: first.market,
+    direction: long ? "long" : "short",
+    sizeEth: entries.reduce((sum, order) => sum + order.filledSize, 0),
+    // `Price` is strictly positive; a group with no priced side cannot happen
+    // through the pairing above, but the schema is not told that.
+    entryAvgPrice: entryAvgPrice > 0 ? entryAvgPrice : 1,
+    exitAvgPrice: exitAvgPrice > 0 ? exitAvgPrice : 1,
+    grossPnlUsd,
+    feesPaidUsd,
+    netPnlUsd: grossPnlUsd - feesPaidUsd,
+    openedAt: first.firstFillAt,
+    closedAt: last.lastFillAt,
+    holdMillis: last.lastFillAt - first.firstFillAt,
+    orderCount: group.length,
+    // The trip is scored against the thesis it was closed under, which is the
+    // one whose target it was being held for.
+    ...(last.strategyVersion === undefined ? {} : { strategyVersion: last.strategyVersion }),
+    ...(last.targetProfitUsd === undefined ? {} : { targetProfitUsd: last.targetProfitUsd }),
+  };
+};
+
+/**
+ * Fees as a percent of the gross those trips produced.
+ *
+ * Gross is taken as a magnitude: a losing trip still paid to be wrong, and
+ * netting it against a winner would hide exactly the case this number exists to
+ * catch — a string of trades whose results cancel while the fees accumulate.
+ */
+export function feeShareOfGross(trips: ReadonlyArray<TradingRoundTrip>): number {
+  const gross = trips.reduce((sum, trip) => sum + Math.abs(trip.grossPnlUsd), 0);
+  if (gross <= 0) return 0;
+  return (trips.reduce((sum, trip) => sum + trip.feesPaidUsd, 0) / gross) * 100;
+}
 
 // ---------------------------------------------------------------------------
 // The closing-turn self-review

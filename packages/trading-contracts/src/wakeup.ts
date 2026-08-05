@@ -151,6 +151,12 @@ export const TradingHarnessWakeup = Schema.Struct({
    * period. It is measured on every wake rather than left to a tool call the
    * harness may skip.
    *
+   * It is also the regime read. `swingHighUsd`/`swingLowUsd` are the boundaries,
+   * `positionInRangePercent` says where the mark sits between them, and
+   * `excursionSymmetryRatio` says whether the window has been paying longs and
+   * shorts alike (ranging) or one side (trending) — so classifying the market
+   * costs no tool call either.
+   *
    * One timeframe is not enough to set a target from: this is the primary
    * timeframe only. `higherTimeframeVolatility` below carries the second one, so
    * the pair is already here and a `trading_measure_volatility` call is only
@@ -167,8 +173,9 @@ export const TradingHarnessWakeup = Schema.Struct({
    * 1m/3m/5m, 1h above that.
    *
    * The primary-timeframe measurement above is the one a target gets read off,
-   * and on 1m its longest horizon is twenty minutes. That is not long enough to
-   * see the structure a momentum move actually runs into, and asking the harness
+   * and on 1m its longest horizon reaches an hour. That is long enough to see
+   * the oscillation a range scalp rides and still not long enough to see the
+   * structure a momentum move runs into, and asking the harness
    * to remember to call `trading_measure_volatility` on a second timeframe every
    * time is asking it to remember. Absent only when the mission already runs on
    * the highest interval, or when the higher read failed.

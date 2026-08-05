@@ -256,6 +256,94 @@ layer("TradingTradeHistoryService", (it) => {
     }),
   );
 
+  it.effect("returns both scalps as round trips, with net figures from the fills", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      // Two complete scalps: a long that made $6 gross, and a short that made
+      // $4, each paying a fee on the way in and on the way out.
+      const scalp = (order: number, at: number, side: "buy" | "sell", price: number, pnl: number) =>
+        insertFill({
+          fillId: `f${order}`,
+          orderId: order,
+          side,
+          size: 1,
+          price,
+          fee: 0.5,
+          closedPnl: pnl,
+          tradedAt: at,
+        });
+      yield* scalp(100, 1_000, "buy", 3_000, 0);
+      yield* scalp(101, 61_000, "sell", 3_006, 6);
+      yield* scalp(200, 120_000, "sell", 3_010, 0);
+      yield* scalp(201, 180_000, "buy", 3_006, 4);
+
+      const history = yield* TradingTradeHistoryService;
+      const read = yield* history.read({ missionId: MISSION });
+
+      assert.equal(read.roundTrips.length, 2);
+      // Newest first: the short, then the long.
+      const [short, long] = read.roundTrips;
+      assert.equal(short?.direction, "short");
+      assert.equal(short?.entryAvgPrice, 3_010);
+      assert.equal(short?.exitAvgPrice, 3_006);
+      assert.equal(short?.grossPnlUsd, 4);
+      assert.equal(short?.feesPaidUsd, 1);
+      assert.equal(short?.netPnlUsd, 3);
+      assert.equal(short?.holdMillis, 60_000);
+
+      assert.equal(long?.direction, "long");
+      assert.equal(long?.entryAvgPrice, 3_000);
+      assert.equal(long?.exitAvgPrice, 3_006);
+      assert.equal(long?.netPnlUsd, 5);
+
+      assert.equal(read.summary.roundTripCount, 2);
+      // $2 of fees against $10 of gross.
+      assert.closeTo(read.summary.feeShareOfGrossPercent, 20, 1e-9);
+      assert.closeTo(read.summary.recentFeeShareOfGrossPercent, 20, 1e-9);
+    }),
+  );
+
+  it.effect("flags the size as wrong for the range when the fees take the gross", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      // Three scalps that each win $1 gross and pay $0.80 to do it — exactly
+      // the pattern the instruction's 50% rule is meant to catch.
+      for (let i = 0; i < 3; i++) {
+        yield* insertFill({
+          fillId: `f${i}a`,
+          orderId: 100 + i * 2,
+          side: "buy",
+          size: 1,
+          price: 3_000,
+          fee: 0.4,
+          closedPnl: 0,
+          tradedAt: 1_000 + i * 1_000,
+        });
+        yield* insertFill({
+          fillId: `f${i}b`,
+          orderId: 101 + i * 2,
+          side: "sell",
+          size: 1,
+          price: 3_001,
+          fee: 0.4,
+          closedPnl: 1,
+          tradedAt: 1_500 + i * 1_000,
+        });
+      }
+
+      const history = yield* TradingTradeHistoryService;
+      const read = yield* history.read({ missionId: MISSION });
+
+      assert.equal(read.summary.roundTripCount, 3);
+      assert.closeTo(read.summary.recentFeeShareOfGrossPercent, 80, 1e-9);
+      // Three winning trades and $0.60 to show for them: the costs took the
+      // rest. Nothing in the win/loss counts says this, which is why the fee
+      // share is the number the instruction reads.
+      assert.closeTo(read.summary.netPnlUsd, 0.6, 1e-9);
+      assert.equal(read.summary.winningOrders, 3);
+    }),
+  );
+
   it.effect("answers a mission that has never traded with zeroes, not an error", () =>
     Effect.gen(function* () {
       yield* migrated;
@@ -263,7 +351,10 @@ layer("TradingTradeHistoryService", (it) => {
       const read = yield* history.read({ missionId: MISSION });
 
       assert.deepEqual([...read.orders], []);
+      assert.deepEqual([...read.roundTrips], []);
       assert.equal(read.summary.orderCount, 0);
+      assert.equal(read.summary.roundTripCount, 0);
+      assert.equal(read.summary.recentFeeShareOfGrossPercent, 0);
       assert.equal(read.summary.netPnlUsd, 0);
       assert.equal(read.summary.firstFillAt, undefined);
     }),

@@ -472,7 +472,7 @@ const makeTradingMissionProjection = Effect.gen(function* () {
           MAX(traded_at) AS traded_at
         FROM trading_fills WHERE mission_id = ${missionId}
         GROUP BY order_id, market, side
-        ORDER BY traded_at DESC LIMIT 3
+        ORDER BY MAX(traded_at) DESC LIMIT 3
       `.pipe(Effect.mapError(sqlFail("fills")));
 
       // The realised result across EVERY fill, for the completion summary.

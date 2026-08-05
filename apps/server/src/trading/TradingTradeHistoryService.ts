@@ -20,8 +20,11 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
+  FEE_SHARE_SAMPLE,
   TRADE_HISTORY_DEFAULT_LIMIT,
   TRADE_HISTORY_MAX_LIMIT,
+  buildRoundTrips,
+  feeShareOfGross,
   type TradingTradeHistory,
   type TradingTradeHistoryEntry,
 } from "@t3tools/trading-contracts/history";
@@ -141,10 +144,15 @@ const make = Effect.gen(function* () {
       // reports `closedPnl` 0 and would otherwise count as a loss the size of
       // its own fee.
       const scored = orders.filter((order) => order.closedPnlUsd !== 0);
+      // Trips are paired over EVERY order for the same reason the summary is
+      // totalled over every order: a page boundary is not a trade boundary, and
+      // a trip cut in half by one would report an entry with no exit.
+      const roundTrips = buildRoundTrips(orders);
 
       return {
         missionId: input.missionId,
         orders: orders.slice(0, limit),
+        roundTrips: roundTrips.slice(0, limit),
         summary: {
           realizedPnlUsd: orders.reduce((sum, order) => sum + order.closedPnlUsd, 0),
           feesPaidUsd: orders.reduce((sum, order) => sum + order.feeUsd, 0),
@@ -153,6 +161,10 @@ const make = Effect.gen(function* () {
           fillCount: orders.reduce((sum, order) => sum + order.fillCount, 0),
           winningOrders: scored.filter((order) => order.netPnlUsd > 0).length,
           losingOrders: scored.filter((order) => order.netPnlUsd < 0).length,
+          roundTripCount: roundTrips.length,
+          feeShareOfGrossPercent: feeShareOfGross(roundTrips),
+          // `roundTrips` is newest first, so the head is the recent window.
+          recentFeeShareOfGrossPercent: feeShareOfGross(roundTrips.slice(0, FEE_SHARE_SAMPLE)),
           ...(orders.length === 0
             ? {}
             : {

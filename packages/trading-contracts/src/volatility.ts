@@ -19,6 +19,12 @@
  * historical windows of that length — an attainability claim with a number
  * behind it rather than an adjective.
  *
+ * Alongside them sit the range-awareness numbers — `swingHighUsd`,
+ * `swingLowUsd`, `positionInRangePercent`, and `excursionSymmetryRatio`. They
+ * are the same arithmetic over the same bars, published rather than left for
+ * the harness to re-derive on every wake, so a rule like "enter only near the
+ * edge" can be checked against a number.
+ *
  * @module TradingVolatility
  */
 import { Schema } from "effect";
@@ -40,8 +46,17 @@ export const ATR_PERIOD = 14;
  */
 export const MIN_VOLATILITY_BARS = 30;
 
-/** Holding periods, in bars of the measured interval, reported by default. */
-export const DEFAULT_HOLD_HORIZONS: ReadonlyArray<number> = [3, 5, 10, 20];
+/**
+ * Holding periods, in bars of the measured interval, reported by default.
+ *
+ * The long tail matters as much as the short one: on 1m the first four horizons
+ * top out at a twenty-minute view, which cannot see the half-hour to hour-long
+ * oscillation a range scalp actually rides. 30 and 60 bars put that swing in
+ * the same measurement. At the default 120-bar lookback the 60-bar horizon
+ * still has 60 forward windows behind it, well clear of `MIN_HORIZON_SAMPLES`;
+ * a shorter window simply drops the horizons it cannot sample.
+ */
+export const DEFAULT_HOLD_HORIZONS: ReadonlyArray<number> = [3, 5, 10, 20, 30, 60];
 
 /** Fewest forward windows a horizon needs before its quantiles are published. */
 const MIN_HORIZON_SAMPLES = 10;
@@ -104,6 +119,28 @@ export const ObservedVolatility = Schema.Struct({
   /** Highest high less lowest low across the whole window. */
   swingRangeUsd: Schema.Number,
   swingRangePercent: Schema.Number,
+  /** Highest high in the window — the range ceiling a scalp sells into. */
+  swingHighUsd: Schema.Number,
+  /** Lowest low in the window — the range floor a scalp buys at. */
+  swingLowUsd: Schema.Number,
+  /**
+   * Where the reference price sits between the window's low and high, as a
+   * percent: 0 is on the floor, 100 is on the ceiling, 50 is mid-range.
+   *
+   * This is what makes "enter only near the edge" a checkable rule rather than
+   * a judgement call — the harness reads the number instead of re-deriving it
+   * from the candles every wake. A window with no height reports 50.
+   */
+  positionInRangePercent: Schema.Number,
+  /**
+   * Median favourable up move divided by median favourable down move at the
+   * longest published horizon.
+   *
+   * Near 1 the window paid longs and shorts alike, which is what ranging looks
+   * like; far from 1 one side has been paying and the window is trending. Zero
+   * when there is no horizon to read or the downside median is zero.
+   */
+  excursionSymmetryRatio: Schema.Number,
   horizons: Schema.Array(VolatilityHorizon),
 });
 export type ObservedVolatility = typeof ObservedVolatility.Type;
@@ -219,11 +256,24 @@ export function measureVolatility(input: {
   const atrUsd = averageTrueRange(candles);
   const highs = candles.map((bar) => bar.high);
   const lows = candles.map((bar) => bar.low);
-  const swingRangeUsd = candles.length === 0 ? 0 : Math.max(...highs) - Math.min(...lows);
+  const swingHighUsd = candles.length === 0 ? 0 : Math.max(...highs);
+  const swingLowUsd = candles.length === 0 ? 0 : Math.min(...lows);
+  const swingRangeUsd = swingHighUsd - swingLowUsd;
+  const positionInRangePercent =
+    swingRangeUsd > 0 ? ((referencePrice - swingLowUsd) / swingRangeUsd) * 100 : 50;
 
   const horizons = (input.holdHorizons ?? DEFAULT_HOLD_HORIZONS)
     .map((holdBars) => measureHorizon(candles, interval, holdBars))
     .filter((horizon): horizon is VolatilityHorizon => horizon !== null);
+
+  const longest = horizons.reduce<VolatilityHorizon | null>(
+    (longestSoFar, horizon) =>
+      longestSoFar === null || horizon.holdBars > longestSoFar.holdBars ? horizon : longestSoFar,
+    null,
+  );
+  const downsideMedian = longest?.favourableDownUsd.p50 ?? 0;
+  const excursionSymmetryRatio =
+    longest !== null && downsideMedian > 0 ? longest.favourableUpUsd.p50 / downsideMedian : 0;
 
   return {
     market: input.market,
@@ -240,6 +290,10 @@ export function measureVolatility(input: {
     realizedVolatilityPercentPerBar: realizedVolatilityPercent(candles),
     swingRangeUsd,
     swingRangePercent: percentOf(swingRangeUsd),
+    swingHighUsd,
+    swingLowUsd,
+    positionInRangePercent,
+    excursionSymmetryRatio,
     horizons,
   };
 }

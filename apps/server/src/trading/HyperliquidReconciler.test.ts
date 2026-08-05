@@ -63,6 +63,7 @@ const migrated = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_event_inbox`;
   yield* sql`DELETE FROM trading_account_observations`;
   yield* sql`DELETE FROM trading_closed_trades`;
+  yield* sql`DELETE FROM trading_missions`;
 });
 
 // ---------------------------------------------------------------------------
@@ -270,6 +271,22 @@ const readOrderTotals = (orderId: number) =>
       WHERE mission_id = ${MISSION} AND order_id = ${orderId}
     `;
     return rows[0]!;
+  });
+
+/** Insert the mission row whose `created_at` floors the fill read. */
+const seedMission = (createdAt: number) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO trading_missions (
+        mission_id, user_id, trading_account_id, instruction, market,
+        strategy_family, harness_json, status, control_json, authority_version,
+        strategy_version, version, created_at, updated_at
+      ) VALUES (
+        ${MISSION}, 'user', 'account', 'trade', 'ETH', 'momentum', '{}',
+        'active', '{}', 1, 1, 1, ${createdAt}, ${createdAt}
+      )
+    `;
   });
 
 const order = (
@@ -1154,6 +1171,68 @@ layer("HyperliquidReconciler", (it) => {
 
       assert.equal(after.externalChanges.length, 1);
       assert.equal(after.externalChanges[0]?.kind, "external_transfer");
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // The account-wide userFills read must not hand a new mission the previous
+  // mission's history: a fresh thread opened showing the old thread's fills.
+  // -------------------------------------------------------------------------
+  it.effect("keeps only fills traded since the mission started", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      yield* seedMission(10_000);
+      yield* setState({
+        fills: [
+          // A previous mission's fill, still inside the userFills window.
+          fillAt(9_000, "0ldm1s".padEnd(32, "0"), "1", 100, "0xold"),
+          fillAt(11_000, "c0ffee".padEnd(32, "0"), "1", 101, "0xnew"),
+        ],
+      });
+      const reconciler = yield* HyperliquidReconciler;
+
+      const state = yield* reconciler.reconcile(input, "after_fill");
+
+      assert.deepEqual(
+        state.fills.map((f) => f.tradedAt),
+        [11_000],
+      );
+      const rows = yield* sql<{ readonly traded_at: number }>`
+        SELECT traded_at FROM trading_fills WHERE mission_id = ${MISSION}
+      `;
+      assert.deepEqual(
+        rows.map((r) => r.traded_at),
+        [11_000],
+      );
+    }),
+  );
+
+  it.effect("deletes pre-mission fills an earlier build already adopted", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      yield* seedMission(10_000);
+      yield* sql`
+        INSERT INTO trading_fills (
+          fill_id, mission_id, cloid, order_id, market, side, filled_size,
+          avg_fill_price, fee_usd, fee_token, closed_pnl, traded_at, observed_at
+        ) VALUES (
+          'stale', ${MISSION}, NULL, 42, 'ETH', 'sell', 1, 1800, 0.5, 'USDC', -1, 9_000, 9_000
+        )
+      `;
+      yield* setState({ fills: [fillAt(11_000, "c0ffee".padEnd(32, "0"), "1", 101, "0xnew")] });
+      const reconciler = yield* HyperliquidReconciler;
+
+      yield* reconciler.reconcile(input, "after_fill");
+
+      const rows = yield* sql<{ readonly fill_id: string }>`
+        SELECT fill_id FROM trading_fills WHERE mission_id = ${MISSION}
+      `;
+      assert.deepEqual(
+        rows.map((r) => r.fill_id),
+        ["0xnew-101-11000-3000-1-0"],
+      );
     }),
   );
 });

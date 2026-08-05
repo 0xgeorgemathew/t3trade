@@ -180,6 +180,10 @@ describe("TradingHarnessWakeup", () => {
       realizedVolatilityPercentPerBar: 0.05,
       swingRangeUsd: 60,
       swingRangePercent: 1.5,
+      swingHighUsd: 4_030,
+      swingLowUsd: 3_970,
+      positionInRangePercent: 50,
+      excursionSymmetryRatio: 1,
       horizons: [
         {
           holdBars: 10,

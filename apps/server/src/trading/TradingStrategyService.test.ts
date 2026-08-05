@@ -360,6 +360,37 @@ layer("trading_publish_momentum_strategy (§14.3)", (it) => {
     return { ...base, protection: { ...base.protection, ...protection } };
   };
 
+  // A range scalp is published through the same tool under the same checks —
+  // the target validation is mode-agnostic on purpose. What has to survive the
+  // trip is the pair that says what kind of trade it is: `range_reversion` with
+  // a boundary on each side, which is direction `both`.
+  it.effect("round-trips a range_reversion strategy without degrading it", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const strategies = yield* TradingStrategyService;
+      const base = body("ETH 1m range reversion");
+
+      const result = yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedVersion: 0,
+        strategy: {
+          ...base,
+          mode: "range_reversion",
+          direction: "both",
+          timeframes: ["1m"],
+          belief: { ...base.belief, regime: "ranging", summary: "Range holding, $7.30 tall." },
+        },
+      });
+
+      assert.equal(result.outcome, "accepted");
+      const current = yield* strategies.getCurrentStrategy("mission_1");
+      assert.ok(Option.isSome(current));
+      const strategy = Option.getOrThrow(current);
+      assert.equal(strategy.mode, "range_reversion");
+      assert.equal(strategy.direction, "both");
+    }),
+  );
+
   it.effect("rejects a target published with no basis at all", () =>
     Effect.gen(function* () {
       yield* setup;
