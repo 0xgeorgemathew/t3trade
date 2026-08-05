@@ -4,6 +4,7 @@ import {
   TRADING_ESTIMATE_COSTS_TOOL,
   TRADING_EXECUTE_TOOL,
   TRADING_GET_MARKET_STRUCTURE_TOOL,
+  TRADING_GET_PLAYBOOK_TOOL,
   TRADING_GET_TARGET_CALIBRATION_TOOL,
   TRADING_GET_TRADE_HISTORY_TOOL,
   TRADING_GET_ACCOUNT_STATE_TOOL,
@@ -45,6 +46,7 @@ it("exposes the §14.3 mission tools, the §14.2 read tools, and the §14.4 watc
       TRADING_GET_ACCOUNT_STATE_TOOL,
       TRADING_GET_POSITION_TOOL,
       TRADING_GET_OPEN_ORDERS_TOOL,
+      TRADING_GET_PLAYBOOK_TOOL,
       TRADING_REGISTER_WATCH_TOOL,
       TRADING_EXECUTE_TOOL,
       TRADING_LIST_WATCHES_TOOL,
@@ -195,11 +197,12 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 // to call it, what to conclude, or another tool's contract. Keep the whole
 // toolkit on a budget so a verbose description cannot quietly creep back in:
 // no single description over 1,300 chars, the total under 10,000, and the tool
-// count pinned at 18 (T1 deleted two tools; this guards against a regression).
+// count pinned at 19 (T6 added the playbook read; this guards against a
+// regression).
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 
-  expect(tools.length, "expected exactly 18 trading tools").toBe(18);
+  expect(tools.length, "expected exactly 19 trading tools").toBe(19);
 
   const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
   expect(total, "total description chars must stay under 10,000").toBeLessThan(10_000);

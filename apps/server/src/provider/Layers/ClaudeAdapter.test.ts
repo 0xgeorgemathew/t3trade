@@ -36,8 +36,13 @@ import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
+import * as SessionProfile from "../SessionProfile.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
-import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
+import {
+  makeClaudeAdapter,
+  TRADING_SYSTEM_PROMPT,
+  type ClaudeAdapterLiveOptions,
+} from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* ClaudeAdapter`.
@@ -266,6 +271,7 @@ async function readFirstPromptMessage(
 
 const THREAD_ID = ThreadId.make("thread-claude-1");
 const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
+const TRADING_THREAD_ID = ThreadId.make("thread-claude-trading");
 
 describe("ClaudeAdapterLive", () => {
   it.effect("returns validation error for non-claude provider on startSession", () => {
@@ -390,6 +396,38 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(createInput?.options.permissionMode, undefined);
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, undefined);
     }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("locks a trading thread to the t3-trade tools", () => {
+    const harness = makeHarness();
+    SessionProfile.setSessionProfile({ threadId: TRADING_THREAD_ID, kind: "trading" });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: TRADING_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      const options = createInput?.options;
+      // `tools: []` removes every built-in tool; `allowedTools` auto-approves
+      // the only things left (the MCP tools). Both must be exactly these.
+      assert.deepEqual(options?.tools, []);
+      assert.deepEqual(options?.allowedTools, ["mcp__t3-trade__*"]);
+      // No filesystem setting sources, no preset system prompt, no cwd, no
+      // additional directories, and strict MCP config so a misconfigured
+      // server fails closed.
+      assert.deepEqual(options?.settingSources, []);
+      assert.strictEqual(options?.systemPrompt, TRADING_SYSTEM_PROMPT);
+      assert.equal(options?.cwd, undefined);
+      assert.equal(options?.additionalDirectories, undefined);
+      assert.equal(options?.strictMcpConfig, true);
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => SessionProfile.clearSessionProfile(TRADING_THREAD_ID))),
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );

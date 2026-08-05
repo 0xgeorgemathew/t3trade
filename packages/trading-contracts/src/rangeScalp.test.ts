@@ -1,6 +1,7 @@
 /**
  * The range-scalp procedure, run end to end over the pure functions it is made
- * of — the acceptance the instruction in `./strategy.ts` is written against.
+ * of — the acceptance the `range_reversion` playbook in `./playbook.ts` is
+ * written against (the doctrine moved out of `POC_DEFAULT_INSTRUCTION`).
  *
  * Every gate the prose states is arithmetic somewhere in this package:
  * `measureVolatility` publishes the range and where the mark sits in it,
@@ -34,8 +35,9 @@ const CYCLE_BARS = 46;
 
 /**
  * Range height a scalp requires over the break-even move before it is worth
- * trading, from POC_DEFAULT_INSTRUCTION. A range that only clears its costs
- * once over is a fee donation with a chart attached.
+ * trading, from the `range_reversion` playbook's `gates[]` in `./playbook.ts`
+ * (moved out of the old `POC_DEFAULT_INSTRUCTION`). A range that only clears
+ * its costs once over is a fee donation with a chart attached.
  */
 const RANGE_COST_MULTIPLE = 2.2;
 
@@ -161,7 +163,7 @@ describe("the cost gate", () => {
     expect(estimate.roundTripUsd).toBeCloseTo(3.505, 3);
     expect(estimate.breakEvenPriceMoveUsd).toBeCloseTo(3.505, 3);
     // $7.30 of range over a $3.51 break-even is 2.08x — under the 2.2x the
-    // instruction requires, so this range does not pay at this fee rate.
+    // range_reversion playbook requires, so this range does not pay at this fee rate.
     const multiple = RANGE_HEIGHT / estimate.breakEvenPriceMoveUsd;
     expect(multiple).toBeCloseTo(2.08, 2);
     expect(multiple).toBeLessThan(RANGE_COST_MULTIPLE);

@@ -249,4 +249,121 @@ describe("TradingHarnessWakeup", () => {
     expect(() => decode(withoutKind)).toThrow();
     expect(() => decode({ ...base, kind: "something-else" })).toThrow();
   });
+
+  // The authority, instruction, and default timeframe are now optional: the
+  // composer no longer embeds them on every wake. A payload that omits all
+  // three must still decode, since the rendered text points the run at
+  // `trading_get_mission` for them instead.
+  it("decodes a payload that omits the now-optional mandate fields", () => {
+    const { authority: _a, instruction: _i, defaultTimeframe: _d, ...slim } = base;
+    const decoded = decode(slim);
+    expect(decoded.authority).toBeUndefined();
+    expect(decoded.instruction).toBeUndefined();
+    expect(decoded.defaultTimeframe).toBeUndefined();
+    // The decision-relevant snapshot is still intact.
+    expect(decoded.missionId).toBe("mission_1");
+    expect(decoded.observedVolatility.atrUsd).toBe(4);
+  });
+
+  // The wakeup renders into the resumed turn's context budget. This mirrors the
+  // composer's compact renderer (rounded floats, sectioned key/value lines) to
+  // assert the fixture's rendered length stays well under the ceiling — a guard
+  // against a future field that bloats the payload past the budget.
+  const roundFloat = (value: number): number =>
+    !Number.isFinite(value) || Number.isInteger(value) ? value : Number(value.toPrecision(4));
+
+  const roundFloats = (value: unknown): unknown => {
+    if (typeof value === "number") return roundFloat(value);
+    if (Array.isArray(value)) return value.map(roundFloats);
+    if (value !== null && typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>))
+        out[k] = roundFloats(v);
+      return out;
+    }
+    return value;
+  };
+
+  const SKIP_KEYS = new Set([
+    "freshness",
+    "staleAfterMillis",
+    "source",
+    "feeRateSource",
+    "observedAt",
+  ]);
+
+  // Mirrors the composer's compact renderer: flat records (only primitive
+  // values) fold onto one line, so the cost estimate and strategy belief do not
+  // dominate the payload. Kept in sync with `renderWakeup` in
+  // TradingWakeupComposer so this length assertion reflects the real output.
+  const isFlatRecord = (value: unknown): boolean =>
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.entries(value as Record<string, unknown>).every(
+      ([k, v]) => !SKIP_KEYS.has(k) && (v === null || v === undefined || typeof v !== "object"),
+    );
+
+  const renderFlat = (value: Record<string, unknown>): string =>
+    Object.entries(value)
+      .filter(([k, v]) => !SKIP_KEYS.has(k) && v !== null && v !== undefined)
+      .map(([k, v]) => `${k}=${String(v)}`)
+      .join(" ");
+
+  const renderCompact = (value: unknown, indent: number): string[] => {
+    const pad = "  ".repeat(indent);
+    if (value === null || value === undefined) return [];
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      return [`${pad}${String(value)}`];
+    }
+    if (Array.isArray(value)) {
+      if (value.length === 0) return [`${pad}-`];
+      const isLeaf = value.every((v) => v === null || typeof v !== "object");
+      if (isLeaf) return [`${pad}${value.map(String).join(" ")}`];
+      const lines: string[] = [];
+      value.forEach((entry, index) => {
+        if (isFlatRecord(entry)) {
+          lines.push(`${pad}[${index}] ${renderFlat(entry as Record<string, unknown>)}`);
+        } else {
+          lines.push(`${pad}[${index}]`);
+          lines.push(...renderCompact(entry, indent + 1));
+        }
+      });
+      return lines;
+    }
+    if (typeof value === "object") {
+      if (isFlatRecord(value)) return [`${pad}${renderFlat(value as Record<string, unknown>)}`];
+      const lines: string[] = [];
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        if (SKIP_KEYS.has(k) || v === null || v === undefined) continue;
+        if (typeof v === "object") {
+          lines.push(`${pad}${k}:`);
+          lines.push(...renderCompact(v, indent + 1));
+        } else {
+          lines.push(`${pad}${k}=${String(v)}`);
+        }
+      }
+      return lines;
+    }
+    return [];
+  };
+
+  const MAX_WAKEUP_CHARS = 5_000;
+
+  it("renders the fixture under MAX_WAKEUP_CHARS", () => {
+    const decoded = decode(base);
+    const rounded = roundFloats(decoded);
+    const lines = ["trading-harness-wakeup"];
+    for (const [key, value] of Object.entries(rounded as Record<string, unknown>)) {
+      if (value === undefined || value === null) continue;
+      lines.push(`${key}:`);
+      lines.push(...renderCompact(value, 1));
+    }
+    lines.push("mandate-and-authority: call trading_get_mission");
+    const text = lines.join("\n");
+    expect(text.length).toBeLessThan(MAX_WAKEUP_CHARS);
+    // The rendered text still names the wakeup and the mission it is for.
+    expect(text).toContain("missionId");
+    expect(text).toContain("trading-harness-wakeup");
+  });
 });

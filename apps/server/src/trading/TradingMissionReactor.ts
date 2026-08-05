@@ -42,6 +42,7 @@ import * as Stream from "effect/Stream";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { setSessionProfile, clearSessionProfile } from "../provider/SessionProfile.ts";
 import type { PersistedWatch, TradingHarnessRunCause } from "./Schemas.ts";
 import { executionRefusedKey, executionSettledKey } from "./ExecutionRefusal.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
@@ -287,6 +288,13 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       status: updated.status,
     });
+    // A terminal transition releases the thread from its mission. Drop the
+    // trading profile so the adapter stops locking the next session on this
+    // thread to the trading tools. `blocked` still holds the thread, so it is
+    // deliberately not terminal here.
+    if (updated.status === "revoked" || updated.status === "completed") {
+      yield* Effect.sync(() => clearSessionProfile(input.threadId));
+    }
     return true;
   });
 
@@ -377,6 +385,11 @@ const make = Effect.gen(function* () {
       allocatedCapitalUsd: capital.allocatedCapitalUsd,
       harness,
     });
+    // Bind the trading profile to the thread so the provider adapter (the
+    // Claude path) locks subsequent sessions to the `mcp__t3-trade__*` tools
+    // only. Set here, at mission creation, is what marks this thread as a
+    // trading thread for every session it opens while the mission is live.
+    yield* Effect.sync(() => setSessionProfile({ threadId, kind: "trading" }));
 
     // The first line of a mission's story. The mandate scales from this number,
     // so where the number came from belongs next to it.

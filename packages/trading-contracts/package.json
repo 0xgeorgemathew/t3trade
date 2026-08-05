@@ -72,6 +72,10 @@
       "types": "./src/calibration.ts",
       "import": "./src/calibration.ts"
     },
+    "./playbook": {
+      "types": "./src/playbook.ts",
+      "import": "./src/playbook.ts"
+    },
     "./history": {
       "types": "./src/history.ts",
       "import": "./src/history.ts"

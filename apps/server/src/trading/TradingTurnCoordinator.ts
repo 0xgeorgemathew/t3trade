@@ -61,7 +61,6 @@ import {
   type PersistedWatch,
   TradingDomainEventSummary,
   TradingHarnessRunCause,
-  TradingHarnessWakeup,
 } from "./Schemas.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
@@ -111,13 +110,6 @@ export class TradingTurnCoordinator extends Context.Service<
 >()("t3/trading/TradingTurnCoordinator") {}
 
 const sqlFail = (operation: string) => toPersistenceSqlError(`TradingTurnCoordinator.${operation}`);
-
-/**
- * Parse the JSON-serialized wakeup back from the message text. A round-trip
- * check catches a serialization bug early rather than letting the harness
- * receive malformed JSON.
- */
-const decodeWakeupText = Schema.decodeUnknownSync(Schema.fromJsonString(TradingHarnessWakeup));
 
 /**
  * The `mission_created` bootstrap message: the resumed turn's first job is to
@@ -518,8 +510,9 @@ const make = Effect.gen(function* () {
         pendingEvents: input.pendingEvents,
         activeStrategy: activeStrategy.value,
       });
-      // Round-trip check: the serialized text must decode back to a wakeup.
-      decodeWakeupText(composed.text);
+      // The composer validates the struct against the schema before rendering
+      // and returns it; the rendered text is a compact form, not JSON, so the
+      // round-trip here is the struct the composer already decoded.
       text = composed.text;
     } else {
       // mission_created bootstrap: no strategy yet. The resumed turn's first

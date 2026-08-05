@@ -30,7 +30,6 @@ import type { ObservedVolatility } from "@t3tools/trading-contracts/volatility";
 
 import { TradingCostEstimator } from "./TradingCostEstimator.ts";
 
-import type { TradingAuthority } from "./Schemas.ts";
 import type { TradingPlanState } from "./Schemas.ts";
 import type { PersistedWatch } from "./Schemas.ts";
 import type { TradingMission } from "./Schemas.ts";
@@ -45,7 +44,25 @@ import { TradingStrategyService } from "./TradingStrategyService.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
 
 /** §12.2 bounds the candles a wakeup carries directly. */
-const WAKEUP_RECENT_CANDLES = 20;
+const WAKEUP_RECENT_CANDLES = 8;
+
+/**
+ * The holding-period horizons the wakeup carries, rather than the default six.
+ *
+ * A target is checked against a near and a far window; the four middle points
+ * the default distribution adds are noise the resumed turn does not read. The
+ * `trading_measure_volatility` tool still uses the full default — this trims
+ * only what the wakeup embeds.
+ */
+const WAKEUP_HOLD_HORIZONS: ReadonlyArray<number> = [3, 20] as const;
+
+/**
+ * Hard ceiling on the rendered wakeup text. The wakeup is the resumed turn's
+ * `message.text`; an unbounded blob would crowd the provider context. If the
+ * rendered text exceeds this, the composer is producing more than a snapshot
+ * and that is a defect to fix at the source.
+ */
+export const MAX_WAKEUP_CHARS = 5_000;
 
 /**
  * The second timeframe every wakeup measures, given the mission's first.
@@ -64,9 +81,147 @@ const HIGHER_TIMEFRAME: Readonly<Record<TradingTimeframe, TradingTimeframe | nul
   "1h": null,
 };
 
-/** The wakeup serialized as the resumed turn's `message.text`. */
-const WakeupJson = Schema.fromJsonString(TradingHarnessWakeup);
-const encodeWakeupJson = Schema.encodeUnknownSync(WakeupJson);
+/**
+ * The schema is the source of truth for shape: the wakeup struct is decoded
+ * through `TradingHarnessWakeup` before rendering, so a malformed snapshot
+ * fails compose rather than reaching the resumed turn. The rendered text is a
+ * flat key/value form rather than JSON — JSON's quoting and bracing overhead is
+ * roughly a third of the payload and the harness reads this as prose, so a
+ * compact form pulls the whole message under the context budget without losing
+ * a field.
+ */
+const decodeWakeup = Schema.decodeUnknownSync(TradingHarnessWakeup);
+
+/**
+ * Round a number for rendering. Whole numbers stay exact; fractions round to
+ * four significant decimals — enough resolution for a ratio or a funding rate,
+ * and tighter than the noise floor of the USD figures beside them.
+ */
+const roundFloat = (value: number): number => {
+  if (!Number.isFinite(value) || Number.isInteger(value)) return value;
+  return Number(value.toPrecision(4));
+};
+
+/**
+ * Walk the wakeup and round every float in place.
+ *
+ * The wakeup is rendered into the resumed turn's context budget, and the
+ * exchange feeds carry more decimals than the harness reads. Rounding at compose
+ * time is a compactness win only — the schema still validates the rounded value,
+ * and nothing downstream treats these numbers as accounting.
+ */
+const roundWakeupFloats = (value: unknown): unknown => {
+  if (typeof value === "number") return roundFloat(value);
+  if (Array.isArray(value)) return value.map(roundWakeupFloats);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = roundWakeupFloats(v);
+    }
+    return out;
+  }
+  return value;
+};
+
+/**
+ * Fields that are staleness/observability metadata, not decision inputs. The
+ * harness reads "what is the mark" from the snapshot; "when did we last ask" is
+ * plumbing, and repeating it eight times adds lines without adding signal.
+ */
+const RENDER_SKIP_KEYS: ReadonlySet<string> = new Set([
+  "freshness",
+  "staleAfterMillis",
+  "source",
+  "feeRateSource",
+  "observedAt",
+]);
+
+/**
+ * Render the (already-rounded) wakeup as sectioned key=value lines.
+ *
+ * Each top-level field is a section header; nested values flatten under it as
+ * `key=value` pairs. Flat records (objects whose values are all primitives)
+ * fold onto one line to keep the cost estimate and the strategy belief from
+ * dominating the payload. The form is readable as prose and parses back to the
+ * same shape, so the schema round-trip stays meaningful.
+ */
+const isFlatRecord = (value: unknown): boolean =>
+  value !== null &&
+  typeof value === "object" &&
+  !Array.isArray(value) &&
+  Object.entries(value as Record<string, unknown>).every(
+    ([k, v]) =>
+      !RENDER_SKIP_KEYS.has(k) && (v === null || v === undefined || typeof v !== "object"),
+  );
+
+const renderFlatRecord = (value: Record<string, unknown>, indent: number): string => {
+  const pad = "  ".repeat(indent);
+  const pairs = Object.entries(value)
+    .filter(([k, v]) => !RENDER_SKIP_KEYS.has(k) && v !== null && v !== undefined)
+    .map(([k, v]) => `${k}=${String(v)}`);
+  return `${pad}${pairs.join(" ")}`;
+};
+
+const renderValue = (value: unknown, indent: number): string[] => {
+  const pad = "  ".repeat(indent);
+  if (value === null || value === undefined) return [];
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return [`${pad}${String(value)}`];
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return [`${pad}-`];
+    const isLeaf = value.every((v) => v === null || typeof v !== "object");
+    if (isLeaf) return [`${pad}${value.map(String).join(" ")}`];
+    const lines: string[] = [];
+    value.forEach((entry, index) => {
+      if (isFlatRecord(entry)) {
+        lines.push(
+          `${pad}[${index}] ${renderFlatRecord(entry as Record<string, unknown>, 0).trimStart()}`,
+        );
+      } else {
+        lines.push(`${pad}[${index}]`);
+        lines.push(...renderValue(entry, indent + 1));
+      }
+    });
+    return lines;
+  }
+  if (typeof value === "object") {
+    if (isFlatRecord(value)) return [renderFlatRecord(value as Record<string, unknown>, indent)];
+    const lines: string[] = [];
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (RENDER_SKIP_KEYS.has(k) || v === null || v === undefined) continue;
+      if (typeof v === "object") {
+        lines.push(`${pad}${k}:`);
+        lines.push(...renderValue(v, indent + 1));
+      } else {
+        lines.push(`${pad}${k}=${String(v)}`);
+      }
+    }
+    return lines;
+  }
+  return [];
+};
+
+/**
+ * Render a validated wakeup struct as the resumed turn's wakeup text.
+ *
+ * Exported so the contract test can assert the rendered length stays under the
+ * context budget without re-implementing the renderer.
+ */
+export const renderWakeup = (wakeup: TradingHarnessWakeup): string => {
+  const rounded = roundWakeupFloats(wakeup);
+  const lines: string[] = ["trading-harness-wakeup"];
+  const top = rounded as Record<string, unknown>;
+  for (const [key, value] of Object.entries(top)) {
+    if (value === undefined || value === null) continue;
+    lines.push(`${key}:`);
+    lines.push(...renderValue(value, 1));
+  }
+  // The mandate and authority are no longer embedded on every wake — point the
+  // run at the one tool that returns them, so it does not have to discover it.
+  lines.push("mandate-and-authority: call trading_get_mission");
+  return lines.join("\n");
+};
 
 /**
  * Failure surface for the compose step. A gateway failure (snapshot read) or a
@@ -159,6 +314,9 @@ const make = Effect.gen(function* () {
             interval: higher,
             candles: history.candles,
             measuredAt: history.freshness.observedAt,
+            // Two horizons cover the structure check a target needs; the default
+            // six-point distribution is more than a wakeup needs to carry.
+            holdHorizons: WAKEUP_HOLD_HORIZONS,
           }),
         ),
         Effect.orElseSucceed(() => null),
@@ -249,6 +407,9 @@ const make = Effect.gen(function* () {
         interval: primaryTimeframe,
         candles: history.candles,
         measuredAt: history.freshness.observedAt,
+        // Two horizons cover the structure check a target needs; the default
+        // six-point distribution is more than a wakeup needs to carry.
+        holdHorizons: WAKEUP_HOLD_HORIZONS,
       });
 
       // What the position was worth at its best, and how far it has come off
@@ -296,8 +457,6 @@ const make = Effect.gen(function* () {
         .filter((persisted) => persisted.status === "active")
         .map((persisted) => describeArmedWatch(persisted, marketSnapshot.markPrice));
 
-      const authority: TradingAuthority = mission.authority;
-
       const wakeup: TradingHarnessWakeup = {
         kind: "trading-harness-wakeup",
         missionId: mission.id,
@@ -319,14 +478,26 @@ const make = Effect.gen(function* () {
         activeStrategy,
         strategyAgeMillis: Math.max(0, occurredAt - activeStrategy.updatedAt),
         armedWatches,
-        authority,
         pendingEvents: [...pendingEvents],
-        instruction: mission.instruction,
-        defaultTimeframe: POC_DEFAULT_TIMEFRAME,
       };
 
-      const text = encodeWakeupJson(wakeup);
-      return { wakeup, text };
+      // The mandate, instruction, and default timeframe are stable for a
+      // mission's life and no longer duplicated onto every wake — the rendered
+      // text points the run at `trading_get_mission` for them instead.
+      const validated = decodeWakeup(wakeup);
+      const text = renderWakeup(validated);
+      if (text.length > MAX_WAKEUP_CHARS) {
+        // A wakeup that blows the budget is a composer defect, not a load to
+        // push onto the provider: surface it here rather than letting a
+        // truncated blob reach the resumed turn.
+        yield* Effect.fail(
+          fail(
+            "wakeup_too_large",
+            `rendered ${text.length} > MAX_WAKEUP_CHARS ${MAX_WAKEUP_CHARS}`,
+          ),
+        );
+      }
+      return { wakeup: validated, text };
     });
 
   return { compose } satisfies TradingWakeupComposerShape;

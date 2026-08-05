@@ -71,6 +71,7 @@ import * as Stream from "effect/Stream";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import * as SessionProfile from "../SessionProfile.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
@@ -902,6 +903,28 @@ const CLAUDE_SETTING_SOURCES = [
   "project",
   "local",
 ] as const satisfies ReadonlyArray<SettingSource>;
+
+/**
+ * System prompt for a locked trading thread.
+ *
+ * This is the ONLY context a trading thread starts with: the tools it has, the
+ * loop it runs, and the fact that it has nothing else (no shell, no filesystem,
+ * no subagents — those built-ins are removed via `tools: []`, and this prompt
+ * says so plainly so the model does not waste a turn reaching for them). The
+ * strategy itself is NOT here; it lives in `trading_get_playbook`, which keeps
+ * one source of truth and lets the mandate change without a code release.
+ */
+export const TRADING_SYSTEM_PROMPT = `You are a trading agent on the t3-trade harness. Your only tools are the mcp__t3-trade__* tools.
+
+The loop you run is wake-decide-arm-execute:
+1. On each wakeup, read what woke you (a fired watch, a fill, an order update, or a scheduled reassessment) via the trading inbox and market tools.
+2. Decide: publish a plan with trading_publish_plan, or stand down with trading_stand_down.
+3. Arm the watches that should wake you next via trading_register_watch.
+4. Act on the exchange only through trading_execute (entries, reduces, closes, cancels, stop moves).
+
+You have no shell, no filesystem, no Read/Edit/Write, no web access, and no subagents. Everything you can possibly do is one of the mcp__t3-trade__* tools; if a task seems to need anything else, it is out of scope — say so rather than reach for a tool you do not have.
+
+Your trading strategy, entry rules, and risk parameters are NOT given here. Read them with trading_get_playbook and follow the procedure it returns.`;
 
 function buildPromptText(
   input: ProviderSendTurnInput,
@@ -3537,12 +3560,26 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(ultracode ? { ultracode: true } : {}),
       };
       const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+      // A trading thread is locked to the t3-trade MCP tools. The lock is two
+      // SDK options acting together: `tools: []` REMOVES every built-in tool
+      // (Bash, Read, Edit, the Task/subagent tool, …), and `allowedTools`
+      // auto-approves the only thing left — the `mcp__t3-trade__*` set —
+      // without prompting. `allowedTools` alone would not restrict what the
+      // agent can call; only `tools` does that. A trading thread additionally
+      // drops the preset system prompt (replaced by `TRADING_SYSTEM_PROMPT`),
+      // the filesystem setting sources, and the cwd/additionalDirectories
+      // spreads, so no CLAUDE.md, no project settings, and no working
+      // directory reach the agent. The `mcpServers` block is kept for both
+      // branches — it is the only thing a trading thread has.
+      const tradingProfile = SessionProfile.isTradingThread(input.threadId);
       const queryOptions: ClaudeQueryOptions = {
-        ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...(tradingProfile ? {} : input.cwd ? { cwd: input.cwd } : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
-        systemPrompt: { type: "preset", preset: "claude_code" },
-        settingSources: [...CLAUDE_SETTING_SOURCES],
+        ...(tradingProfile
+          ? { systemPrompt: TRADING_SYSTEM_PROMPT }
+          : { systemPrompt: { type: "preset", preset: "claude_code" } }),
+        settingSources: tradingProfile ? [] : [...CLAUDE_SETTING_SOURCES],
         // `ultracode` is a Claude Code setting, not an API effort level. It is
         // normalized to `xhigh` above and paired with `settings.ultracode`.
         ...(effectiveEffort
@@ -3560,8 +3597,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         includePartialMessages: true,
         canUseTool,
         env: claudeEnvironment,
-        ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
+        ...(tradingProfile ? {} : input.cwd ? { additionalDirectories: [input.cwd] } : {}),
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
+        // Trading lock: remove every built-in tool, then auto-approve the only
+        // tools that remain (the MCP ones). `strictMcpConfig` makes the SDK
+        // fail closed if the t3-trade server misconfigures rather than
+        // silently dropping tools the lock depends on.
+        ...(tradingProfile
+          ? {
+              tools: [] as string[],
+              allowedTools: ["mcp__t3-trade__*"],
+              strictMcpConfig: true,
+            }
+          : {}),
         ...(mcpSession
           ? {
               mcpServers: {

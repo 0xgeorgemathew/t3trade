@@ -37,6 +37,7 @@ import { TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
 import { TradingOrderIntent } from "./execution.ts";
 import { tradingPlanAuthoredFields, TradingPlanState, ProfitTargetBasis } from "./strategy.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
+import { Playbook, TradingPlaybookName } from "./playbook.ts";
 
 export const TRADING_GET_MISSION_TOOL = "trading_get_mission";
 export const TRADING_PUBLISH_PLAN_TOOL = "trading_publish_plan";
@@ -55,6 +56,7 @@ export const TRADING_GET_TARGET_CALIBRATION_TOOL = "trading_get_target_calibrati
 export const TRADING_GET_ACCOUNT_STATE_TOOL = "trading_get_account_state";
 export const TRADING_GET_POSITION_TOOL = "trading_get_position";
 export const TRADING_GET_OPEN_ORDERS_TOOL = "trading_get_open_orders";
+export const TRADING_GET_PLAYBOOK_TOOL = "trading_get_playbook";
 /**
  * The whole position lifecycle, not just entries.
  *
@@ -518,6 +520,22 @@ export type TradingGetPositionInput = typeof TradingGetPositionInput.Type;
 
 export const TradingGetOpenOrdersInput = Schema.Struct({ ...missionBound });
 export type TradingGetOpenOrdersInput = typeof TradingGetOpenOrdersInput.Type;
+
+/**
+ * Read one named playbook.
+ *
+ * The doctrine the harness used to carry inside `POC_DEFAULT_INSTRUCTION`, split
+ * into five modes and reachable by name. The result is the procedure the harness
+ * reads in the turn it decides what to do — it never reaches a database and is
+ * the same for every mission.
+ */
+export const TradingGetPlaybookInput = Schema.Struct({
+  ...missionBound,
+  name: TradingPlaybookName,
+});
+export type TradingGetPlaybookInput = typeof TradingGetPlaybookInput.Type;
+
+export type TradingGetPlaybookResult = Playbook;
 
 // Result types are the §10.6 read contracts verbatim — no wrapper.
 export type TradingResolveMarketResult = ResolvedMarket;

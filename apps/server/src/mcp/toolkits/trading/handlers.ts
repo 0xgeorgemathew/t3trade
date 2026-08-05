@@ -35,6 +35,7 @@ import {
   MOMENTUM_LOOKBACK_BARS,
   MOMENTUM_TIMEFRAMES,
 } from "@t3tools/trading-contracts/momentum";
+import { PLAYBOOKS } from "@t3tools/trading-contracts/playbook";
 import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
 import { TradingCalibrationService } from "../../../trading/TradingCalibrationService.ts";
 import { TradingTradeHistoryService } from "../../../trading/TradingTradeHistoryService.ts";
@@ -640,6 +641,24 @@ const handlers = {
         .pipe(Effect.orDie);
       const gateway = yield* HyperliquidGateway;
       return yield* gateway.getOpenOrders(address).pipe(Effect.orDie);
+    }),
+
+  trading_get_playbook: (input) =>
+    Effect.gen(function* () {
+      // Static contract data, not mission state: an unbound thread reads it
+      // too. The capability is still required; only the binding is optional.
+      yield* resolveReadCall(input.missionId);
+      // `TradingPlaybookName` is a literal union, so an unknown name is
+      // rejected at the schema boundary before this handler runs and this find
+      // is exhaustive. The guard is defensive: if the union ever widens without
+      // PLAYBOOKS keeping up, a die here is more honest than a silent undefined.
+      const entry = PLAYBOOKS.find((playbook) => playbook.name === input.name);
+      if (entry === undefined) {
+        return yield* Effect.die(
+          new Error(`trading_get_playbook: no playbook named ${input.name}`),
+        );
+      }
+      return entry;
     }),
 
   // -- §14.4 watch tools ------------------------------------------------------

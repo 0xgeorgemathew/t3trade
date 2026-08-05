@@ -133,12 +133,12 @@ export const TradingHarnessWakeup = Schema.Struct({
    */
   position: AgentNetPosition,
   /**
-   * The last 20 bars of the primary timeframe
+   * The last 8 bars of the primary timeframe
    * (`activeStrategy.timeframes[0]`, falling back to `defaultTimeframe`).
    *
    * A bounded slice of recent price action so the run can answer "what did
    * price just do?" without a `trading_get_market_history` round-trip. Deeper
-   * history stays behind that tool; this never exceeds 20 bars.
+   * history stays behind that tool; this never exceeds 8 bars.
    */
   recentCandles: MarketHistory,
   /**
@@ -211,17 +211,25 @@ export const TradingHarnessWakeup = Schema.Struct({
    * from the account value when the mission was created and deliberately not
    * re-scaled since, so a balance that moves changes what the harness can
    * afford, never what it is allowed.
+   *
+   * Optional on the wakeup: the composer no longer embeds the full mandate
+   * (large, mostly fixed for the mission's life). A resumed run reads it via
+   * `trading_get_mission` when it needs the rails.
    */
-  authority: TradingAuthority,
+  authority: Schema.optional(TradingAuthority),
   pendingEvents: Schema.Array(TradingDomainEventSummary),
-  instruction: TradingText,
+  instruction: Schema.optional(TradingText),
   /**
    * The timeframe to work on unless the instruction names another. Published on
    * every wakeup rather than only the first, so a resumed run that has lost the
    * bootstrap turn from its context still knows which candle the mission runs
    * on. See `POC_DEFAULT_TIMEFRAME`.
+   *
+   * Optional on the wakeup: the composer points the run at
+   * `trading_get_mission` for the mandate and authority instead of duplicating
+   * them on every wake.
    */
-  defaultTimeframe: TradingTimeframe,
+  defaultTimeframe: Schema.optional(TradingTimeframe),
 });
 export type TradingHarnessWakeup = typeof TradingHarnessWakeup.Type;
 

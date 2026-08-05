@@ -280,14 +280,14 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
-  it.effect("carries the net position and a bounded 20-bar slice of the primary timeframe", () =>
+  it.effect("carries the net position and a bounded 8-bar slice of the primary timeframe", () =>
     Effect.gen(function* () {
       const wakeup = yield* compose();
       // Flat is a real position, not a missing one.
       assert.equal(wakeup.position.size, 0);
-      // The primary timeframe is strategy.timeframes[0] ("1m"); the slice is capped at 20.
+      // The primary timeframe is strategy.timeframes[0] ("1m"); the slice is capped at 8.
       assert.equal(wakeup.recentCandles.interval, "1m");
-      assert.equal(wakeup.recentCandles.candles.length, 20);
+      assert.equal(wakeup.recentCandles.candles.length, 8);
     }),
   );
 
@@ -296,13 +296,15 @@ layer("TradingWakeupComposer", (it) => {
       const wakeup = yield* compose();
       const measured = wakeup.observedVolatility;
 
-      // Measured over the full read, not the 20 bars the wakeup shows.
+      // Measured over the full read, not the 8 bars the wakeup shows.
       assert.equal(measured.barsObserved, VOLATILITY_LOOKBACK_BARS);
       assert.equal(measured.interval, "1m");
       assert.equal(measured.sufficientData, true);
       // Every bar spans MARK ± 5, so the true range is 10 on each of them.
       assert.closeTo(measured.atrUsd, 10, 1e-6);
-      assert.ok(measured.horizons.length > 0);
+      // Two horizons only: the wakeup trims the default six-point distribution
+      // to the near/far pair a target check needs.
+      assert.equal(measured.horizons.length, 2);
     }),
   );
   it.effect("pairs the primary timeframe with the one above it", () =>
@@ -315,6 +317,8 @@ layer("TradingWakeupComposer", (it) => {
       assert.deepEqual([...requestedIntervals].sort(), ["15m", "1m"]);
       assert.equal(wakeup.higherTimeframeVolatility?.interval, "15m");
       assert.equal(wakeup.higherTimeframeVolatility?.barsObserved, VOLATILITY_LOOKBACK_BARS);
+      // The higher timeframe is trimmed to the same two horizons as the primary.
+      assert.equal(wakeup.higherTimeframeVolatility?.horizons.length, 2);
     }),
   );
 
