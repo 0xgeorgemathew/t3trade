@@ -32,6 +32,9 @@ import type {
   TradingPositionSnapshot,
 } from "@t3tools/trading-contracts/execution";
 
+import { describeClosedTrade, type ClosedTradeReview } from "@t3tools/trading-contracts/history";
+
+import { buildClosedTradeReview, type PreviousPositionRow } from "./TradingClosedTradeReview.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 
 /** The reconciler failed at a named stage. */
@@ -92,6 +95,12 @@ export interface ReconciledState {
    * caller wakes the harness for them — the reconciler only names them.
    */
   readonly externalChanges: ReadonlyArray<ExternalChange>;
+  /**
+   * Set on the one pass that first observes a held position gone, with how the
+   * trade actually went. The caller wakes the harness for it; the review itself
+   * is already in the inbox by the time this returns.
+   */
+  readonly closedTrade: ClosedTradeReview | null;
 }
 
 /**
@@ -311,6 +320,11 @@ function readCanonicalFills(
  * Only positive peaks are recorded. A position that has never been in profit
  * has no high-water mark worth giving back from, and treating its worst loss as
  * a "peak" would arm a give-back on a trade that is simply losing.
+ *
+ * `trough_unrealised_pnl` is the mirror, ratcheting only downwards, and
+ * `opened_at` is stamped once and then held. Neither is a live number the
+ * harness reads mid-trade — they exist so the closing self-review can say how
+ * far offside the trade went and how long it took, which its fills cannot.
  */
 function persistPosition(
   position: TradingPositionSnapshot | null,
@@ -320,27 +334,31 @@ function persistPosition(
     const sql = yield* SqlClient.SqlClient;
     const ts = yield* now();
     if (position === null) {
-      // Flat — clear the snapshot row, high-water mark included.
+      // Flat — clear the snapshot row, excursions and open time included, so the
+      // next position measures only itself.
       yield* sql`
         UPDATE trading_position_snapshots
         SET size = 0, entry_price = NULL, unrealised_pnl = 0, margin_used = 0,
             protected_size = 0, liquidation_price = NULL, mark_px = NULL,
-            peak_unrealised_pnl = NULL, observed_at = ${ts}
+            peak_unrealised_pnl = NULL, trough_unrealised_pnl = NULL,
+            opened_at = NULL, observed_at = ${ts}
         WHERE mission_id = ${input.missionId} AND market = ${input.market}
       `;
       return;
     }
     const peak = Math.max(0, position.unrealisedPnl);
+    const trough = Math.min(0, position.unrealisedPnl);
     yield* sql`
       INSERT INTO trading_position_snapshots (
         mission_id, market, size, entry_price, unrealised_pnl, margin_used,
-        protected_size, liquidation_price, mark_px, peak_unrealised_pnl, observed_at
+        protected_size, liquidation_price, mark_px, peak_unrealised_pnl,
+        trough_unrealised_pnl, opened_at, observed_at
       ) VALUES (
         ${position.missionId}, ${position.market}, ${position.size},
         ${position.entryPrice ?? null}, ${position.unrealisedPnl},
         ${position.marginUsed}, ${position.protectedSize},
         ${position.liquidationPrice ?? null}, ${position.markPx ?? null},
-        ${peak}, ${position.observedAt}
+        ${peak}, ${trough}, ${position.observedAt}, ${position.observedAt}
       )
       ON CONFLICT(mission_id, market) DO UPDATE SET
         size = ${position.size}, entry_price = ${position.entryPrice ?? null},
@@ -349,6 +367,8 @@ function persistPosition(
         liquidation_price = ${position.liquidationPrice ?? null},
         mark_px = ${position.markPx ?? null},
         peak_unrealised_pnl = MAX(COALESCE(trading_position_snapshots.peak_unrealised_pnl, 0), ${peak}),
+        trough_unrealised_pnl = MIN(COALESCE(trading_position_snapshots.trough_unrealised_pnl, 0), ${trough}),
+        opened_at = COALESCE(trading_position_snapshots.opened_at, ${position.observedAt}),
         observed_at = ${position.observedAt}
     `;
   }).pipe(
@@ -673,16 +693,70 @@ const TRANSFER_TOLERANCE_USD = 1;
 export const makeHyperliquidReconciler = Effect.gen(function* () {
   const inbox = yield* TradingEventInbox;
 
-  /** The position size and observation time the previous pass left behind. */
+  /**
+   * The snapshot row the previous pass left behind.
+   *
+   * Read before anything overwrites it, because two different things depend on
+   * it: the external-change diff needs the old size, and the closing
+   * self-review needs the excursion columns this pass is about to clear.
+   */
   const readPreviousPosition = (input: ReconcileInput) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      const rows = yield* sql<{ readonly size: number; readonly observed_at: number }>`
-        SELECT size, observed_at FROM trading_position_snapshots
+      const rows = yield* sql<PreviousPositionRow>`
+        SELECT size, observed_at, entry_price, peak_unrealised_pnl,
+               trough_unrealised_pnl, opened_at
+        FROM trading_position_snapshots
         WHERE mission_id = ${input.missionId} AND market = ${input.market}
       `;
       return rows[0] ?? null;
     }).pipe(Effect.orElseSucceed(() => null));
+
+  /**
+   * Write the closing self-review where the harness reads it.
+   *
+   * The review rides the inbox rather than a new channel because the inbox is
+   * already what a wakeup carries as `pendingEvents`, and a summary the harness
+   * reads on its next turn is exactly what the closing turn needs. The
+   * deduplication key is the close time, so a re-run of the same pass cannot
+   * queue the same review twice.
+   */
+  const recordClosedTrade = (
+    input: ReconcileInput,
+    previous: PreviousPositionRow | null,
+    newSize: number,
+    observedAt: number,
+  ): Effect.Effect<ClosedTradeReview | null, never, SqlClient.SqlClient> =>
+    Effect.gen(function* () {
+      if (previous === null || previous.size === 0 || newSize !== 0) return null;
+      const review = yield* buildClosedTradeReview({
+        missionId: input.missionId,
+        market: input.market,
+        previous,
+        closedAt: observedAt,
+      });
+      if (review === null) return null;
+
+      const summary = describeClosedTrade(review);
+      yield* inbox
+        .persist({
+          missionId: input.missionId,
+          category: "exchange",
+          deduplicationKey: `trade_closed:${observedAt}`,
+          payload: review,
+          occurredAt: observedAt,
+          summary,
+        })
+        .pipe(Effect.ignore);
+      yield* Effect.logInfo("trading closed a position", {
+        missionId: input.missionId,
+        netPnlUsd: review.netPnlUsd,
+        peakUnrealisedPnlUsd: review.peakUnrealisedPnlUsd,
+        worstUnrealisedPnlUsd: review.worstUnrealisedPnlUsd,
+        holdMillis: review.holdMillis,
+      });
+      return review;
+    });
 
   const readPreviousAccountValue = (missionId: string) =>
     Effect.gen(function* () {
@@ -885,6 +959,15 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
       );
       yield* persistAccountValue(input.missionId, account.accountValue, observedAt);
 
+      // Also after the fills, and only ever on the pass that first sees the
+      // position gone: the totals it reads are this trade's closing fills.
+      const closedTrade = yield* recordClosedTrade(
+        input,
+        previousPosition,
+        position?.size ?? 0,
+        observedAt,
+      );
+
       // The periodic backstop runs every five seconds for as long as a position
       // is open, and says the same thing every time. That belongs at debug: the
       // seven event-driven triggers each happen once for a reason worth
@@ -896,6 +979,7 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
         positionSize: position?.size ?? 0,
         openOrders: openOrders.length,
         externalChanges: externalChanges.length,
+        closedTrade: closedTrade !== null,
       };
       yield* trigger === "periodic_while_position_open" && externalChanges.length === 0
         ? Effect.logDebug("trading reconciled", summary)
@@ -907,6 +991,7 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
         fills,
         observedAt,
         externalChanges,
+        closedTrade,
       } as ReconciledState;
     });
 

@@ -29,7 +29,13 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import type { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
+import {
+  analyseMomentum,
+  MOMENTUM_LOOKBACK_BARS,
+  MOMENTUM_TIMEFRAMES,
+} from "@t3tools/trading-contracts/momentum";
 import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
+import { TradingTradeHistoryService } from "../../../trading/TradingTradeHistoryService.ts";
 import { TradingToolkit } from "./tools.ts";
 
 interface BoundCall {
@@ -529,6 +535,46 @@ const handlers = {
         notionalUsd: input.notionalUsd,
         fallbackTakerFeeBpsPerSide: mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
       });
+    }),
+
+  trading_get_momentum_context: (input) =>
+    Effect.gen(function* () {
+      // Market data, not mission state: an unbound thread reads it too.
+      yield* resolveReadCall(input.missionId);
+      const gateway = yield* HyperliquidGateway;
+      const intervals = input.intervals ?? MOMENTUM_TIMEFRAMES;
+      const maxBars = input.lookbackBars ?? MOMENTUM_LOOKBACK_BARS;
+
+      // One read per timeframe, concurrently — the point of the tool is the
+      // comparison, so serialising them would put seconds between the fastest
+      // and the slowest view of the same moment.
+      const histories = yield* Effect.all(
+        intervals.map((interval) =>
+          gateway
+            .getMarketHistory({ market: input.market, interval, maxBars })
+            .pipe(Effect.map((history) => ({ interval, history }))),
+        ),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.orDie);
+
+      return analyseMomentum({
+        market: input.market,
+        // The candles carry their own observation time, so the reading is
+        // stamped with when the data was read rather than when this returned.
+        measuredAt: histories[0]?.history.freshness.observedAt ?? 0,
+        frames: histories.map(({ interval, history }) => ({
+          interval,
+          candles: history.candles,
+        })),
+      });
+    }),
+
+  trading_get_trade_history: (input) =>
+    Effect.gen(function* () {
+      // A mission's own trades are mission state, so this one needs the binding.
+      const { mission } = yield* resolveBoundCall(input.missionId);
+      const history = yield* TradingTradeHistoryService;
+      return yield* history.read({ missionId: mission.id, limit: input.limit }).pipe(Effect.orDie);
     }),
 
   trading_get_order_book: (input) =>

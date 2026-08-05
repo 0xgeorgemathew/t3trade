@@ -54,7 +54,7 @@ const input: ReconcileInput = {
 /** Migrate the shared in-memory db, then truncate the 038 tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 45 });
+  yield* runMigrations({ toMigrationInclusive: 46 });
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM trading_orders`;
@@ -569,6 +569,118 @@ layer("HyperliquidReconciler", (it) => {
   );
 
   // -------------------------------------------------------------------------
+  // The closing self-review. A mission that closes a trade otherwise goes
+  // quiet: the snapshot is blanked and the next turn starts from an empty
+  // account with no memory of what the last one did. The excursions the review
+  // reports cannot be reconstructed from the fills afterwards, which is why the
+  // review is assembled on the pass that clears them.
+  // -------------------------------------------------------------------------
+  const readInboxSummaries = () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      return yield* sql<{ readonly summary: string; readonly payload_json: string }>`
+        SELECT summary, payload_json FROM trading_event_inbox
+        WHERE mission_id = ${MISSION} AND deduplication_key LIKE 'trade_closed:%'
+      `;
+    });
+
+  /** A closing sell, priced and dated by the caller. */
+  const sellFill = (time: number, closedPnl: string, fee: string) => ({
+    coin: "ETH",
+    side: "A" as const,
+    px: "3020",
+    sz: "2",
+    time,
+    fee,
+    oid: 900,
+    cloid: "c105e".padEnd(32, "0"),
+    feeToken: "USDC",
+    closedPnl,
+  });
+
+  it.effect("queues a review of the trade when a held position goes flat", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const reconciler = yield* HyperliquidReconciler;
+      const openedAt = yield* Clock.currentTimeMillis;
+
+      // Open at +20, run up to +35, then close — the exchange reports 25
+      // realised, so 10 of the peak was given back.
+      yield* setState({
+        account: snapshotFromClearinghouse(clearinghouseWithPnl("20")),
+        fills: [],
+      });
+      yield* reconciler.reconcile(input, "after_position_update");
+      yield* setState({ account: snapshotFromClearinghouse(clearinghouseWithPnl("35")) });
+      yield* reconciler.reconcile(input, "after_position_update");
+
+      yield* setState({
+        account: snapshotFromClearinghouse(flatClearinghouse),
+        fills: [sellFill(openedAt + 1_000, "25", "1")],
+      });
+      const state = yield* reconciler.reconcile(input, "after_fill");
+
+      const review = state.closedTrade;
+      assert.equal(review?.direction, "long");
+      assert.equal(review?.realizedPnlUsd, 25);
+      assert.equal(review?.feesPaidUsd, 1);
+      assert.equal(review?.netPnlUsd, 24);
+      // The high-water mark survived the pass that cleared it.
+      assert.equal(review?.peakUnrealisedPnlUsd, 35);
+      assert.equal(review?.givebackFromPeakUsd, 10);
+      assert.equal(review?.exitPrice, 3_020);
+
+      // And it is in the inbox, which is where the wakeup reads it from.
+      const queued = yield* readInboxSummaries();
+      assert.equal(queued.length, 1);
+      assert.match(queued[0]?.summary ?? "", /trade_closed: long 2 ETH/);
+      assert.match(queued[0]?.summary ?? "", /NET \$24\.00/);
+    }),
+  );
+
+  it.effect("records how far offside the trade went before it came back", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const reconciler = yield* HyperliquidReconciler;
+      const openedAt = yield* Clock.currentTimeMillis;
+
+      // Down 30 before it recovered to close at a small win. Afterwards the
+      // fills alone cannot tell this apart from a trade that went straight up.
+      yield* setState({
+        account: snapshotFromClearinghouse(clearinghouseWithPnl("-30")),
+        fills: [],
+      });
+      yield* reconciler.reconcile(input, "after_position_update");
+      yield* setState({ account: snapshotFromClearinghouse(clearinghouseWithPnl("5")) });
+      yield* reconciler.reconcile(input, "after_position_update");
+
+      yield* setState({
+        account: snapshotFromClearinghouse(flatClearinghouse),
+        fills: [sellFill(openedAt + 1_000, "5", "1")],
+      });
+      const state = yield* reconciler.reconcile(input, "after_fill");
+
+      assert.equal(state.closedTrade?.worstUnrealisedPnlUsd, -30);
+      assert.equal(state.closedTrade?.peakUnrealisedPnlUsd, 5);
+    }),
+  );
+
+  it.effect("reviews nothing on a pass that finds the mission already flat", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const reconciler = yield* HyperliquidReconciler;
+
+      yield* setState({ account: snapshotFromClearinghouse(flatClearinghouse), fills: [] });
+      const first = yield* reconciler.reconcile(input, "after_position_update");
+      const second = yield* reconciler.reconcile(input, "after_position_update");
+
+      assert.equal(first.closedTrade, null);
+      assert.equal(second.closedTrade, null);
+      assert.equal((yield* readInboxSummaries()).length, 0);
+    }),
+  );
+
+  // -------------------------------------------------------------------------
   // 3. Reservation release: a reserved reservation tied to a filled
   //    execution record flips to 'released' after reconcile.
   // -------------------------------------------------------------------------
@@ -935,7 +1047,8 @@ layer("HyperliquidReconciler", (it) => {
       assert.equal(closed.externalChanges[0]?.kind, "external_close");
 
       const events = yield* sql<{ readonly summary: string; readonly category: string }>`
-        SELECT summary, category FROM trading_event_inbox WHERE mission_id = ${MISSION}
+        SELECT summary, category FROM trading_event_inbox
+        WHERE mission_id = ${MISSION} AND deduplication_key LIKE 'external_%'
       `;
       assert.equal(events.length, 1);
       assert.equal(events[0]?.category, "exchange");

@@ -41,6 +41,7 @@ const emptyState: ReconciledState = {
   fills: [],
   observedAt: 0,
   externalChanges: [],
+  closedTrade: null,
 };
 
 /** What the reconciler reports next; a test sets this to fake an external act. */

@@ -64,6 +64,14 @@
       "types": "./src/costs.ts",
       "import": "./src/costs.ts"
     },
+    "./momentum": {
+      "types": "./src/momentum.ts",
+      "import": "./src/momentum.ts"
+    },
+    "./history": {
+      "types": "./src/history.ts",
+      "import": "./src/history.ts"
+    },
     "./volatility": {
       "types": "./src/volatility.ts",
       "import": "./src/volatility.ts"

@@ -2,6 +2,8 @@ import { expect, it } from "@effect/vitest";
 import {
   TRADING_CANCEL_WATCH_TOOL,
   TRADING_ESTIMATE_COSTS_TOOL,
+  TRADING_GET_MOMENTUM_CONTEXT_TOOL,
+  TRADING_GET_TRADE_HISTORY_TOOL,
   TRADING_GET_ACCOUNT_STATE_TOOL,
   TRADING_GET_MARKET_HISTORY_TOOL,
   TRADING_MEASURE_VOLATILITY_TOOL,
@@ -36,6 +38,8 @@ it("exposes the §14.3 mission tools, the §14.2 read tools, and the §14.4 watc
       TRADING_GET_MARKET_HISTORY_TOOL,
       TRADING_MEASURE_VOLATILITY_TOOL,
       TRADING_ESTIMATE_COSTS_TOOL,
+      TRADING_GET_MOMENTUM_CONTEXT_TOOL,
+      TRADING_GET_TRADE_HISTORY_TOOL,
       TRADING_GET_ORDER_BOOK_TOOL,
       TRADING_GET_ACCOUNT_STATE_TOOL,
       TRADING_GET_POSITION_TOOL,
@@ -101,8 +105,13 @@ it("carries the profit-target methodology in the publish and measure description
   expect(publish).toContain("DECISION POINT");
   expect(publish).not.toContain("the default action is to close");
 
+  // The entry-location discount is now a number the harness can read rather
+  // than one it has to eyeball, so the description has to name where from.
+  expect(publish).toContain("trading_get_momentum_context");
+  expect(publish).toContain("lastImpulse.sizeUsd");
+
   const measure = TradingToolkit.tools[TRADING_MEASURE_VOLATILITY_TOOL].description ?? "";
-  expect(measure).toContain("HIGHER timeframe");
+  expect(measure).toContain("higherTimeframeVolatility");
   // Every figure this tool reports is gross, so it has to hand the reader on to
   // the one place the round trip is actually priced.
   expect(measure).toContain("GROSS");
@@ -117,6 +126,26 @@ it("points the cost tool at the floor it exists to compute", () => {
   expect(costs).toContain("minimumViableTargetUsd");
   expect(costs).toContain("GROSS");
   expect(costs).toContain("degraded");
+});
+
+// The two Phase 2 reads exist to answer questions the harness was previously
+// left to guess at: which way the timeframes point, and how its own last trades
+// actually went. A description that does not name the fields carrying those
+// answers leaves the tool as decorative as the data was before it.
+it("points the research reads at the fields that carry the answer", () => {
+  const momentum = TradingToolkit.tools[TRADING_GET_MOMENTUM_CONTEXT_TOOL].description ?? "";
+  expect(momentum).toContain("directionScore");
+  expect(momentum).toContain("atrExpansionRatio");
+  // The entry-location discount, which nothing else measures.
+  expect(momentum).toContain("lastImpulse");
+  expect(momentum).toContain("alignment");
+
+  const history = TradingToolkit.tools[TRADING_GET_TRADE_HISTORY_TOOL].description ?? "";
+  // Orders, not the partials the exchange reports them as.
+  expect(history).toContain("ORDERS");
+  expect(history).toContain("netPnlUsd");
+  // Each order scored against the target it was actually published under.
+  expect(history).toContain("targetProfitUsd");
 });
 
 it("marks reading as safe and publishing as non-idempotent", () => {

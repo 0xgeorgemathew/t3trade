@@ -42,6 +42,7 @@ import { TradingProtectionServiceLive } from "./TradingProtectionService.ts";
 import { TradingEmergencyCloseServiceLive } from "./TradingEmergencyCloseService.ts";
 import { TradingControlServiceLive } from "./TradingControlService.ts";
 import { TradingCostEstimatorLive } from "./TradingCostEstimator.ts";
+import { TradingTradeHistoryServiceLive } from "./TradingTradeHistoryService.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
@@ -72,8 +73,15 @@ export const TradingCoreLayerLive = Layer.mergeAll(
   TradingStrategyServiceLive,
 );
 
+const costEstimatorWithGateway = TradingCostEstimatorLive.pipe(
+  Layer.provide(HyperliquidReadLayerLive),
+);
+
 const composerWithDeps = TradingWakeupComposerLive.pipe(
   Layer.provide(HyperliquidReadLayerLive),
+  // The wakeup carries the round trip on the size actually held, so the
+  // composer prices it through the same estimator the tool uses.
+  Layer.provide(costEstimatorWithGateway),
   Layer.provideMerge(TradingMissionServiceLive),
   Layer.provideMerge(TradingWatchServiceLive),
   // The wakeup publishes the full armed-watch list, which `listWatches` owns.
@@ -145,7 +153,10 @@ export const TradingLayerLive = Layer.mergeAll(
   TradingEventInboxLive,
   // `trading_estimate_costs` reads the book, the mark, and the fee rate — all
   // through the gateway the read layer already builds.
-  TradingCostEstimatorLive.pipe(Layer.provide(HyperliquidReadLayerLive)),
+  costEstimatorWithGateway,
+  // `trading_get_trade_history` is a pure read-join over the mission's own
+  // fills and strategy versions.
+  TradingTradeHistoryServiceLive,
   coordinatorWithDeps,
   TradingExecutionLayerLive,
   HyperliquidWsLayerLive,

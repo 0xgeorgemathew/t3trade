@@ -155,6 +155,13 @@ const withMcpServer = <A, E>(
       watchId: string,
       strategyVersion: number,
     ) => Effect.Effect<void, never, never>;
+    /** Record one reconciled fill, as the reconciler would. */
+    readonly seedFill: (input: {
+      readonly fillId: string;
+      readonly orderId: number;
+      readonly closedPnl: number;
+      readonly feeUsd: number;
+    }) => Effect.Effect<void, never, never>;
   }) => Effect.Effect<A, E, HttpServer.HttpServer>,
 ) =>
   Effect.scoped(
@@ -177,9 +184,25 @@ const withMcpServer = <A, E>(
             'active', 1, 1, 1
           )
         `.pipe(Effect.asVoid, Effect.orDie);
+      const seedFill = (input: {
+        readonly fillId: string;
+        readonly orderId: number;
+        readonly closedPnl: number;
+        readonly feeUsd: number;
+      }) =>
+        sql`
+          INSERT INTO trading_fills (
+            fill_id, mission_id, execution_id, cloid, order_id, market, side,
+            filled_size, avg_fill_price, fee_usd, fee_token, closed_pnl,
+            traded_at, observed_at
+          ) VALUES (
+            ${input.fillId}, ${MISSION_ID}, NULL, NULL, ${input.orderId}, 'ETH', 'sell',
+            1, 3000, ${input.feeUsd}, 'USDC', ${input.closedPnl}, 1, 1
+          )
+        `.pipe(Effect.asVoid, Effect.orDie);
       const httpClient = yield* HttpClient.HttpClient;
 
-      yield* runMigrations({ toMigrationInclusive: 45 }).pipe(Effect.provide(built), Effect.orDie);
+      yield* runMigrations({ toMigrationInclusive: 46 }).pipe(Effect.provide(built), Effect.orDie);
       yield* missions
         .createMission({
           missionId: MISSION_ID,
@@ -230,7 +253,7 @@ const withMcpServer = <A, E>(
           return parseJsonRpc(yield* response.text);
         }).pipe(Effect.orDie);
 
-      return yield* body({ callTool, missions, seedActiveWatch });
+      return yield* body({ callTool, missions, seedActiveWatch, seedFill });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest));
 
@@ -453,6 +476,26 @@ it.effect("registers a watch before the first strategy publish with strategyVers
         dispatchedCommands.map((command) => command.type),
         ["trading.mission.watch-registered"],
       );
+    }),
+  ),
+);
+
+it.effect("serves the mission its own completed trades over MCP", () =>
+  withMcpServer(({ callTool, seedFill }) =>
+    Effect.gen(function* () {
+      yield* seedFill({ fillId: "f1", orderId: 100, closedPnl: 12, feeUsd: 1 });
+      yield* seedFill({ fillId: "f2", orderId: 200, closedPnl: -4, feeUsd: 1 });
+
+      const read = yield* callTool(BOUND_THREAD, "trading_get_trade_history", {});
+      assert.equal(read.result.isError, false);
+      const history = read.result.structuredContent;
+
+      assert.equal(history.orders.length, 2);
+      assert.equal(history.summary.realizedPnlUsd, 8);
+      assert.equal(history.summary.feesPaidUsd, 2);
+      assert.equal(history.summary.netPnlUsd, 6);
+      assert.equal(history.summary.winningOrders, 1);
+      assert.equal(history.summary.losingOrders, 1);
     }),
   ),
 );

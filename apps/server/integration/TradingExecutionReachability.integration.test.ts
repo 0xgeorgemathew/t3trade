@@ -353,6 +353,7 @@ import {
   type TradingPreview,
 } from "../src/trading/TradingPreviewService.ts";
 import { TradingTurnCoordinatorLive } from "../src/trading/TradingTurnCoordinator.ts";
+import { TradingCostEstimatorLive } from "../src/trading/TradingCostEstimator.ts";
 import { TradingWakeupComposerLive } from "../src/trading/TradingWakeupComposer.ts";
 import { IocSlippageConfigLive } from "../src/trading/IocSlippageConfig.ts";
 import { InterimSignerConfigLive } from "../src/trading/InterimSignerConfig.ts";
@@ -400,7 +401,12 @@ const tradingWithPreview = Layer.mergeAll(
   TradingEventInboxLive,
 ).pipe(Layer.provideMerge(tradingFoundationWithFakes));
 
-const composerWithDeps = TradingWakeupComposerLive.pipe(Layer.provideMerge(tradingWithPreview));
+// The wakeup prices the round trip on any position it finds open, through the
+// same estimator `trading_estimate_costs` uses.
+const composerWithDeps = TradingWakeupComposerLive.pipe(
+  Layer.provide(TradingCostEstimatorLive),
+  Layer.provideMerge(tradingWithPreview),
+);
 
 const coordinatorWithDeps = TradingTurnCoordinatorLive.pipe(
   Layer.provideMerge(tradingWithPreview),

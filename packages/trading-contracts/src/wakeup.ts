@@ -12,6 +12,7 @@
 import { Schema } from "effect";
 import { AgentAccountSnapshot, AgentNetPosition } from "./account-snapshot.ts";
 import { TradingAuthority } from "./authority.ts";
+import { TradingCostEstimate } from "./costs.ts";
 import { AgentMarketSnapshot, MarketHistory } from "./market.ts";
 import { TradingHarnessRunCause } from "./mission.ts";
 import { TradingId, TradingText, UnixMillis } from "./primitives.ts";
@@ -151,8 +152,9 @@ export const TradingHarnessWakeup = Schema.Struct({
    * harness may skip.
    *
    * One timeframe is not enough to set a target from: this is the primary
-   * timeframe only, so pair it with a `trading_measure_volatility` call on a
-   * higher one (15m or 1h) before publishing. Nothing here is netted of fees —
+   * timeframe only. `higherTimeframeVolatility` below carries the second one, so
+   * the pair is already here and a `trading_measure_volatility` call is only
+   * needed for a third. Nothing here is netted of fees —
    * call `trading_estimate_costs` for what the round trip actually costs at
    * your size, and hold the target against the `minimumViableTargetUsd` it
    * reports. A target published without a matching
@@ -160,6 +162,29 @@ export const TradingHarnessWakeup = Schema.Struct({
    * rejected at publish.
    */
   observedVolatility: ObservedVolatility,
+  /**
+   * The same measurement on one higher timeframe — 15m for a mission running on
+   * 1m/3m/5m, 1h above that.
+   *
+   * The primary-timeframe measurement above is the one a target gets read off,
+   * and on 1m its longest horizon is twenty minutes. That is not long enough to
+   * see the structure a momentum move actually runs into, and asking the harness
+   * to remember to call `trading_measure_volatility` on a second timeframe every
+   * time is asking it to remember. Absent only when the mission already runs on
+   * the highest interval, or when the higher read failed.
+   */
+  higherTimeframeVolatility: Schema.optional(ObservedVolatility),
+  /**
+   * What the round trip on the CURRENT position costs, at the size actually
+   * held, from the live fee rate and book.
+   *
+   * Present only while a position is open — flat, there is no size to cost, and
+   * `trading_estimate_costs` is there for a hypothetical one. On a profit-target
+   * wake this is the number the bank-or-extend decision turns on: the unrealised
+   * PnL beside it is gross, and `roundTripUsd` is what closing will take out of
+   * it. Absent when the cost read failed; `degraded` marks a partial one.
+   */
+  positionCosts: Schema.optional(TradingCostEstimate),
   activeStrategy: MomentumStrategyState,
   /**
    * How long ago the active strategy was published, in milliseconds.

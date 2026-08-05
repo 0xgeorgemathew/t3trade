@@ -119,11 +119,17 @@ const make = Effect.gen(function* () {
        * wakeup's `pendingEvents`, which is where the harness reads what
        * happened. A blocked or queued run is fine — the event stays pending and
        * the next run claims it.
+       *
+       * A position closing is the other wake worth spending a turn on, however
+       * it closed. That turn is the mission's only chance to score the thesis
+       * against the outcome while the numbers are still in front of it, and the
+       * review the reconciler queued is what it reads — so the same
+       * `position_updated` cause carries it.
        */
       const reconcileAndWake = (trigger: Parameters<typeof reconciler.reconcile>[1]) =>
         reconciler.reconcile(input, trigger).pipe(
           Effect.flatMap((state) =>
-            state.externalChanges.length === 0
+            state.externalChanges.length === 0 && state.closedTrade === null
               ? Effect.void
               : coordinator
                   .requestRun({ missionId: input.missionId, cause: "position_updated" })

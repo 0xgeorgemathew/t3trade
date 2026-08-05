@@ -23,8 +23,12 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
-import { POC_DEFAULT_TIMEFRAME } from "@t3tools/trading-contracts/strategy";
+import type { TradingCostEstimate } from "@t3tools/trading-contracts/costs";
+import { POC_DEFAULT_TIMEFRAME, type TradingTimeframe } from "@t3tools/trading-contracts/strategy";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
+import type { ObservedVolatility } from "@t3tools/trading-contracts/volatility";
+
+import { TradingCostEstimator } from "./TradingCostEstimator.ts";
 
 import type { TradingAuthority } from "./Schemas.ts";
 import type { MomentumStrategyState } from "./Schemas.ts";
@@ -42,6 +46,23 @@ import { TradingWatchService } from "./TradingWatchService.ts";
 
 /** §12.2 bounds the candles a wakeup carries directly. */
 const WAKEUP_RECENT_CANDLES = 20;
+
+/**
+ * The second timeframe every wakeup measures, given the mission's first.
+ *
+ * A target has to be checked against a structure longer than the one it was
+ * read off, and on 1m the longest horizon the measurement offers is twenty
+ * minutes. Rather than instruct the harness to remember a second
+ * `trading_measure_volatility` call it is free to skip, the wakeup carries the
+ * pair. A mission already running on 1h has nothing higher to pair with.
+ */
+const HIGHER_TIMEFRAME: Readonly<Record<TradingTimeframe, TradingTimeframe | null>> = {
+  "1m": "15m",
+  "3m": "15m",
+  "5m": "1h",
+  "15m": "1h",
+  "1h": null,
+};
 
 /** The wakeup serialized as the resumed turn's `message.text`. */
 const WakeupJson = Schema.fromJsonString(TradingHarnessWakeup);
@@ -114,6 +135,63 @@ const make = Effect.gen(function* () {
   const missions = yield* TradingMissionService;
   const watches = yield* TradingWatchService;
   const strategies = yield* TradingStrategyService;
+  const costs = yield* TradingCostEstimator;
+
+  /**
+   * Measure the higher timeframe, or return nothing.
+   *
+   * Enrichment, not a fact the wakeup is defined by: a mission whose second
+   * history read fails still needs to wake, so the failure costs the field and
+   * nothing else.
+   */
+  const measureHigherTimeframe = (
+    market: TradingMission["market"],
+    primary: TradingTimeframe,
+  ): Effect.Effect<ObservedVolatility | null> => {
+    const higher = HIGHER_TIMEFRAME[primary];
+    if (higher === null) return Effect.succeed(null);
+    return gateway
+      .getMarketHistory({ market, interval: higher, maxBars: VOLATILITY_LOOKBACK_BARS })
+      .pipe(
+        Effect.map((history) =>
+          measureVolatility({
+            market,
+            interval: higher,
+            candles: history.candles,
+            measuredAt: history.freshness.observedAt,
+          }),
+        ),
+        Effect.orElseSucceed(() => null),
+      );
+  };
+
+  /**
+   * Cost the round trip on the size actually held.
+   *
+   * Flat there is nothing to cost, and the hypothetical belongs to
+   * `trading_estimate_costs`. On a profit-target wake this is the number that
+   * decides whether the unrealised PnL beside it is worth banking, so it is
+   * measured at the real size rather than at a round one.
+   */
+  const costOpenPosition = (
+    market: string,
+    size: number,
+    masterAddress: string,
+    fallbackTakerFeeBpsPerSide: number,
+  ): Effect.Effect<TradingCostEstimate | null> => {
+    if (size === 0) return Effect.succeed(null);
+    return costs
+      .estimate({
+        market,
+        masterAddress: masterAddress as `0x${string}`,
+        sizeEth: Math.abs(size),
+        fallbackTakerFeeBpsPerSide,
+      })
+      .pipe(
+        Effect.provideService(HyperliquidGateway, gateway),
+        Effect.catchCause(() => Effect.succeed(null)),
+      );
+  };
 
   const resolveTriggeringWatch = (
     watchId: string | undefined,
@@ -188,6 +266,23 @@ const make = Effect.gen(function* () {
               drawdownFromPeakUsd: Math.max(0, peak - position.unrealisedPnl),
             };
 
+      // Both enrichments, concurrently, and both optional. Neither can fail the
+      // compose: a wakeup that arrives without its second timeframe is worse
+      // than one that arrives with it, and far better than one that never
+      // arrives at all.
+      const [higherTimeframeVolatility, positionCosts] = yield* Effect.all(
+        [
+          measureHigherTimeframe(mission.market, primaryTimeframe),
+          costOpenPosition(
+            mission.market,
+            position.size,
+            address,
+            mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+
       const triggeringWatch = yield* resolveTriggeringWatch(input.triggeringWatchId);
 
       // What is still armed, and how far the market has to travel to fire each
@@ -219,6 +314,8 @@ const make = Effect.gen(function* () {
         position: positionWithPeak,
         recentCandles,
         observedVolatility,
+        ...(higherTimeframeVolatility === null ? {} : { higherTimeframeVolatility }),
+        ...(positionCosts === null ? {} : { positionCosts }),
         activeStrategy,
         strategyAgeMillis: Math.max(0, occurredAt - activeStrategy.updatedAt),
         armedWatches,

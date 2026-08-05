@@ -14,3 +14,5 @@ export * from "./protection.ts";
 export * from "./wakeup.ts";
 export * from "./volatility.ts";
 export * from "./costs.ts";
+export * from "./momentum.ts";
+export * from "./history.ts";

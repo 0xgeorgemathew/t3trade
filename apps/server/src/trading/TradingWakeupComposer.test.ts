@@ -17,7 +17,10 @@ import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { pocAuthorityDefaults } from "@t3tools/trading-contracts/authority";
 import { VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 
+import { estimateTradingCosts } from "@t3tools/trading-contracts/costs";
+
 import type { MomentumStrategyState, PersistedWatch, TradingMission } from "./Schemas.ts";
+import { TradingCostEstimator } from "./TradingCostEstimator.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
 import { TradingWakeupComposer, TradingWakeupComposerLive } from "./TradingWakeupComposer.ts";
@@ -109,6 +112,15 @@ const armed: ReadonlyArray<PersistedWatch> = [
 
 const freshness = { observedAt: NOW, source: "websocket", staleAfterMillis: 2_000 };
 
+/** The size the exchange reports as held. Mutated by the enrichment tests. */
+let positionSize = 0;
+
+/** Intervals the composer asked for candles on, in call order. */
+let requestedIntervals: Array<string> = [];
+
+/** The size the cost estimator was asked to price, or null when it was not called. */
+let costedSize: number | null = null;
+
 const stubGateway = Layer.succeed(HyperliquidGateway)({
   getMarketSnapshot: () =>
     Effect.succeed({
@@ -135,30 +147,58 @@ const stubGateway = Layer.succeed(HyperliquidGateway)({
   getPosition: () =>
     Effect.succeed({
       market: "ETH",
-      size: 0,
+      size: positionSize,
       unrealisedPnl: 0,
       cumulativeFunding: 0,
       marginUsed: 0,
       freshness,
     } as never),
   getMarketHistory: (request: { market: string; interval: string; maxBars?: number }) =>
-    Effect.succeed({
-      market: request.market,
-      interval: request.interval,
-      // Echo the cap the composer asked for, as a window that actually moves:
-      // a flat series would let a broken volatility measurement pass.
-      candles: Array.from({ length: request.maxBars ?? 0 }, (_, i) => ({
-        openTime: i,
-        closeTime: i,
-        open: MARK,
-        close: i % 2 === 0 ? MARK + 5 : MARK - 5,
-        high: MARK + 5,
-        low: MARK - 5,
-        volume: 1,
-      })),
-      freshness,
-    } as never),
+    Effect.sync(() => {
+      requestedIntervals.push(request.interval);
+      return {
+        market: request.market,
+        interval: request.interval,
+        // Echo the cap the composer asked for, as a window that actually moves:
+        // a flat series would let a broken volatility measurement pass.
+        candles: Array.from({ length: request.maxBars ?? 0 }, (_, i) => ({
+          openTime: i,
+          closeTime: i,
+          open: MARK,
+          close: i % 2 === 0 ? MARK + 5 : MARK - 5,
+          high: MARK + 5,
+          low: MARK - 5,
+          volume: 1,
+        })),
+        freshness,
+      } as never;
+    }),
 } as unknown as HyperliquidGateway["Service"]);
+
+/**
+ * A cost estimate that only has to be recognisable. The arithmetic is proven in
+ * `costs.test.ts`; what these tests pin is that the composer prices the size it
+ * actually holds, and does not price anything while flat.
+ */
+const stubCosts = Layer.succeed(TradingCostEstimator)({
+  estimate: (input: { readonly sizeEth?: number | undefined }) =>
+    Effect.sync(() => {
+      costedSize = input.sizeEth ?? null;
+      // The real arithmetic on a one-level book: the wakeup is encoded through
+      // the contract schema, so a partial estimate would not survive the trip.
+      return estimateTradingCosts({
+        market: "ETH",
+        sizeEth: input.sizeEth ?? 0,
+        referencePrice: MARK,
+        takerFeeBpsPerSide: 5,
+        feeRateSource: "hyperliquid_user_fees",
+        bids: [{ price: 3_999, size: 100 }],
+        asks: [{ price: 4_001, size: 100 }],
+        measuredAt: NOW,
+        freshness: freshness as never,
+      });
+    }),
+} as unknown as TradingCostEstimator["Service"]);
 
 const stubMissions = Layer.succeed(TradingMissionService)({
   getMasterWalletAddress: () => Effect.succeed("0x00000000000000000000000000000000000000ff"),
@@ -178,6 +218,7 @@ const stubStrategies = Layer.succeed(TradingStrategyService)({
 const layer = it.layer(
   TradingWakeupComposerLive.pipe(
     Layer.provideMerge(stubGateway),
+    Layer.provideMerge(stubCosts),
     Layer.provideMerge(stubMissions),
     Layer.provideMerge(stubWatches),
     Layer.provideMerge(stubStrategies),
@@ -262,6 +303,47 @@ layer("TradingWakeupComposer", (it) => {
       // Every bar spans MARK ± 5, so the true range is 10 on each of them.
       assert.closeTo(measured.atrUsd, 10, 1e-6);
       assert.ok(measured.horizons.length > 0);
+    }),
+  );
+  it.effect("pairs the primary timeframe with the one above it", () =>
+    Effect.gen(function* () {
+      requestedIntervals = [];
+      const wakeup = yield* compose();
+
+      // A 1m mission gets 15m as its second read — the pair a target needs,
+      // without the harness having to remember to ask for it.
+      assert.deepEqual([...requestedIntervals].sort(), ["15m", "1m"]);
+      assert.equal(wakeup.higherTimeframeVolatility?.interval, "15m");
+      assert.equal(wakeup.higherTimeframeVolatility?.barsObserved, VOLATILITY_LOOKBACK_BARS);
+    }),
+  );
+
+  it.effect("prices no round trip while the mission is flat", () =>
+    Effect.gen(function* () {
+      positionSize = 0;
+      costedSize = null;
+      const wakeup = yield* compose();
+
+      assert.equal(wakeup.positionCosts, undefined);
+      // Not merely absent from the wakeup — never asked for. There is no size to
+      // cost, and `trading_estimate_costs` owns the hypothetical.
+      assert.equal(costedSize, null);
+    }),
+  );
+
+  it.effect("prices the round trip on the size actually held", () =>
+    Effect.gen(function* () {
+      positionSize = -1.25;
+      costedSize = null;
+      const wakeup = yield* compose();
+      positionSize = 0;
+
+      // Two taker fills at 5 bps on 1.25 x 4,000 of notional, plus the spread
+      // crossed twice: 5.00 + 2.50.
+      assert.closeTo(wakeup.positionCosts?.roundTripUsd ?? 0, 7.5, 1e-9);
+      // A short is costed at its absolute size: the round trip does not care
+      // which way round the two fills go.
+      assert.equal(costedSize, 1.25);
     }),
   );
 });

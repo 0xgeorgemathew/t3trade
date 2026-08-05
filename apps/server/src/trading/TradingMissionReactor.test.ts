@@ -785,6 +785,7 @@ it.live("reconciles before resuming a paused mission", () =>
             fills: [],
             observedAt: 0,
             externalChanges: [],
+            closedTrade: null,
           };
         }),
     });

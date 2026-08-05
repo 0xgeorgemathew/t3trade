@@ -20,9 +20,11 @@ import {
   TradingGetAccountStateInput,
   TradingGetMarketHistoryInput,
   TradingGetMarketSnapshotInput,
+  TradingGetMomentumContextInput,
   TradingGetOpenOrdersInput,
   TradingGetOrderBookInput,
   TradingGetPositionInput,
+  TradingGetTradeHistoryInput,
   TradingListWatchesInput,
   TradingListWatchesResult,
   TradingMeasureVolatilityInput,
@@ -49,6 +51,8 @@ import {
   ResolvedMarket,
 } from "@t3tools/trading-contracts/market";
 import { TradingCostEstimate } from "@t3tools/trading-contracts/costs";
+import { MomentumContext } from "@t3tools/trading-contracts/momentum";
+import { TradingTradeHistory } from "@t3tools/trading-contracts/history";
 import { ObservedVolatility } from "@t3tools/trading-contracts/volatility";
 import { Schema } from "effect";
 import * as Crypto from "effect/Crypto";
@@ -57,6 +61,7 @@ import { Tool, Toolkit } from "effect/unstable/ai";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
+import { TradingTradeHistoryService } from "../../../trading/TradingTradeHistoryService.ts";
 import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
@@ -77,6 +82,8 @@ const dependencies = [
   HyperliquidGateway,
   // `trading_estimate_costs` prices a round trip from the live fee rate and book.
   TradingCostEstimator,
+  // `trading_get_trade_history` reads the mission's own completed orders.
+  TradingTradeHistoryService,
   // `trading_request_entry` reports what the reactor actually did with the
   // request, not that the request was raised.
   TradingExecutionOutcome,
@@ -109,7 +116,7 @@ export const TradingPublishMomentumStrategyTool = Tool.make("trading_publish_mom
     "`protection.targetProfitUsd` is REQUIRED: the unrealised-PnL level, in USD, at which this position is worth banking or re-justifying — the CONSERVATIVE rung of the ladder you derive below, not your best case. It is shown to the user and the runtime arms a `pnl_above` watch at it while you hold a position. That wake is a DECISION POINT, not a close order: read the book and the momentum, then bank (close, or `reduce` half and keep a runner) if the move is fading, or extend — republish at the next version with the base rung and a fresh basis — if it is not. Treating every target wake as an automatic close turns a deliberately conservative estimate into a cap on every win you will ever take. You may additionally place your own resting take-profit order via trading_request_entry if you judge one right; the target watch still stands. " +
     "Derive that target from the fluctuation this instrument is actually producing, not from a round number or a feeling about the setup. Four steps, in order: " +
     "(1) MEASURE TWO TIMEFRAMES. Read `observedVolatility` from the wakeup for your thesis timeframe and call trading_measure_volatility on ONE HIGHER timeframe (15m or 1h) as well. A 1m window alone maxes out at a 20-minute view and cannot tell you whether the structure supports the move you are about to ask for. Pick the measurement that fits your thesis: `horizons[].favourableUpUsd.p50` for a long, `favourableDownUsd.p50` for a short, is the move price actually delivered over that many bars in half the recent windows; the p75 in a quarter of them. `atr`, `realized_volatility`, and `swing_range` are single-number summaries of the same window. " +
-    "(2) DISCOUNT FOR ENTRY LOCATION. Those quantiles measure the move from a flat bar close. A momentum entry happens AFTER the impulse has begun, so the whole measured move is not still ahead of you — subtract roughly half the impulse already travelled, and cap the target at the distance to the nearest structure (swing high/low) on the higher timeframe. " +
+    "(2) DISCOUNT FOR ENTRY LOCATION. Those quantiles measure the move from a flat bar close. A momentum entry happens AFTER the impulse has begun, so the whole measured move is not still ahead of you. Call trading_get_momentum_context and use its numbers rather than guessing: subtract roughly half of `lastImpulse.sizeUsd` from the measured move, check `ageBars` (a leg that ended twenty bars ago is over, not pulling back), require `atrExpansionRatio` above 1 and an `alignment` that is not `mixed`, and cap the target at `distanceToSwingHighUsd` (long) or `distanceToSwingLowUsd` (short) on the higher timeframe. " +
     "(3) CONVERT. Percentage move off the current mark x position notional (margin x leverage) = USD target. Worked example: 100 USD margin at 20x = 2000 USD notional; a measured 0.35% move over a 10-bar hold = 7.00 USD. " +
     "(4) CHECK IT AGAINST COST — this is the gate that matters. Call trading_estimate_costs at your size: it prices the round trip from the fee rate this wallet actually pays and the live book, and reports `minimumViableTargetUsd` (twice the round trip). `targetProfitUsd` is GROSS (`pnl_above` fires on the exchange's unrealised PnL, which nets neither fees nor funding), so a target under that figure is not a trade — it is a fee donation with variance. As a rough check without the tool: two taker fills at 5 bps per side is 0.10% of notional, about 2.00 USD on 2000 USD, so the floor is roughly 4.00 USD, a 0.20% move. If your measured, entry-discounted move does not clear it, stand down. " +
     "Publish the ladder — conservative / base / extension, each with its USD figure and each net of the round trip — in `protection.targetProfitRationale`, since only one number can be armed as a watch and the wake needs somewhere to extend to. " +
@@ -179,7 +186,8 @@ export const TradingMeasureVolatilityTool = Tool.make("trading_measure_volatilit
     "Measure the fluctuation a market is actually producing over a bounded candle window — the basis every profit target has to be derived from. Returns, all computed from real candles with no model or assumed distribution: `atrUsd`/`atrPercent` (mean true range over the last 14 bars), `realizedVolatilityPercentPerBar` (standard deviation of bar-to-bar log returns), `swingRangeUsd`/`swingRangePercent` (the window's high-to-low), and `horizons[]`. " +
     "`horizons[]` is the one to set a target from: for each holding period in bars it reports, over every window of that length in the lookback, the distribution (p25/p50/p75) of the move price delivered from a bar's close — `favourableUpUsd` for a long, `favourableDownUsd` for a short. A target at the p50 was available in half the recent windows of that length; at the p75, in a quarter. That is what makes a target attainable rather than hopeful. " +
     "`sufficientData` is false when the window is too short to measure from (under 30 bars) — read a longer window before setting a target off it. " +
-    "The same measurement for the mission's primary timeframe is already on every wakeup as `observedVolatility`, so the call you OWE on every target is the second one: a HIGHER timeframe (15m or 1h). On 1m the hold horizons max out at 20 minutes, which says nothing about the structure a momentum move actually runs into. Defaults to 120 bars and hold horizons of 3, 5, 10, and 20 bars. " +
+    "Every wakeup already carries this for the mission's primary timeframe as `observedVolatility` AND for one higher timeframe as `higherTimeframeVolatility`, so the pair a target needs is normally in hand before you call anything. Reach for this tool for a third interval, a longer lookback, or different hold horizons. Defaults to 120 bars and hold horizons of 3, 5, 10, and 20 bars. " +
+    "This measures magnitude only and says nothing about direction: call trading_get_momentum_context for which way the timeframes point, whether the range is expanding, and where the last impulse started. " +
     "Two things this does NOT tell you, and you must supply both yourself. It measures the move from a FLAT BAR CLOSE, so a momentum entry taken after the impulse began has less of that move left — discount by roughly half the impulse already travelled. And every figure here is GROSS: no fee, spread, or funding is netted anywhere in this output. Call trading_estimate_costs for what the round trip actually costs at your size and hold the target against the `minimumViableTargetUsd` it reports.",
   parameters: TradingMeasureVolatilityInput,
   success: ObservedVolatility,
@@ -209,6 +217,41 @@ export const TradingEstimateCostsTool = Tool.make("trading_estimate_costs", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, true);
+
+export const TradingGetMomentumContextTool = Tool.make("trading_get_momentum_context", {
+  description:
+    "Read the directional structure of this market across four timeframes at once (1m, 5m, 15m, 1h by default). trading_measure_volatility says how FAR this thing moves; this says which WAY, whether it is speeding up, where the last leg started, and what it runs into next. Call it before forming a thesis, and again at a profit-target wake before deciding to extend. All deterministic arithmetic over real candles — no indicator model, nothing to tune. " +
+    "Per timeframe: `directionScore` is net travel divided by total travel, in [-1, 1] — 1.0 is a straight line up, 0 is a window that ended where it started however far it went in between, so it separates trend from chop in one number. `direction` applies a threshold to it (0.15). `atrExpansionRatio` is the last 14 bars' ATR over the 14 before them: above 1 the market is covering more ground per bar than it just was, which is the condition a momentum entry actually needs; below 1 the move is running out of range. " +
+    "`lastImpulse` is the last completed leg measured pivot to pivot — its `sizeUsd`, and `ageBars` since it ended. THIS is the number the entry-location discount comes from: subtract roughly half of `sizeUsd` from a measured move before calling the rest yours, and treat a large `ageBars` as the impulse being over rather than as a pullback to buy. `pullbackDepthUsd` and `pullbackPercentOfImpulse` say how much of that leg has already been given back. " +
+    "`distanceToSwingHighUsd`/`distanceToSwingLowUsd` are signed from the last close: positive means the level is still ahead and CAPS a long's target, negative means price already traded through it, which is a breakout rather than a ceiling. " +
+    "`alignment` is the composite: which way a majority of the measured timeframes point, how many agree, and the mean score. `mixed` means the timeframes contradict each other or all of them are chopping — in either case a momentum thesis on the fast one is a thesis about noise. `sufficientData` is false on any timeframe with under 30 bars; do not read structure off one.",
+  parameters: TradingGetMomentumContextInput,
+  success: MomentumContext,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Get momentum context")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
+export const TradingGetTradeHistoryTool = Tool.make("trading_get_trade_history", {
+  description:
+    "Read this mission's OWN completed trades: every order it filled, newest first, with size, size-weighted average price, fee, realised PnL, and — the field that makes this a record of decisions rather than of trades — the strategy version and `targetProfitUsd` that were current when it filled. Call this after a position closes, and before re-entering, so the next thesis is informed by the last one instead of repeating it. " +
+    "Fills are aggregated into ORDERS. Hyperliquid reports one market order as a dozen partials; a history of slices is not a history of decisions. `fillCount` says how many partials an order took, and `firstFillAt`/`lastFillAt` show a slow fill as one. " +
+    "`netPnlUsd` is `closedPnlUsd` less `feeUsd`, per order and in the summary, and it is the only figure that says whether any of this worked. An order that merely opened or added to a position reports `closedPnlUsd` 0 — it has no result yet and is not counted as a win or a loss. `summary` spans EVERY order the mission has placed, not just the page `limit` returns. " +
+    "Read the wins and losses against the targets beside them. A string of orders closed well under their published `targetProfitUsd` means the targets were too far out; a string of small wins next to a large `feesPaidUsd` means they were too close.",
+  parameters: TradingGetTradeHistoryInput,
+  success: TradingTradeHistory,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Get trade history")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
 
 export const TradingGetOrderBookTool = Tool.make("trading_get_order_book", {
   description:
@@ -365,6 +408,8 @@ export const TradingToolkit = Toolkit.make(
   TradingGetMarketHistoryTool,
   TradingMeasureVolatilityTool,
   TradingEstimateCostsTool,
+  TradingGetMomentumContextTool,
+  TradingGetTradeHistoryTool,
   TradingGetOrderBookTool,
   TradingGetAccountStateTool,
   TradingGetPositionTool,

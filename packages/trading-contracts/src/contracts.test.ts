@@ -734,6 +734,8 @@ describe("subpath exports", () => {
         "./wakeup",
         "./volatility",
         "./costs",
+        "./momentum",
+        "./history",
       ].sort(),
     );
 

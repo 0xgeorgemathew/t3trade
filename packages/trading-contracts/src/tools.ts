@@ -28,6 +28,8 @@ import {
   ResolvedMarket,
 } from "./market.ts";
 import type { TradingCostEstimate } from "./costs.ts";
+import type { MomentumContext } from "./momentum.ts";
+import type { TradingTradeHistory } from "./history.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./mission.ts";
 import { TradingId, TradingMarket } from "./primitives.ts";
@@ -46,6 +48,8 @@ export const TRADING_GET_MARKET_HISTORY_TOOL = "trading_get_market_history";
 export const TRADING_GET_ORDER_BOOK_TOOL = "trading_get_order_book";
 export const TRADING_MEASURE_VOLATILITY_TOOL = "trading_measure_volatility";
 export const TRADING_ESTIMATE_COSTS_TOOL = "trading_estimate_costs";
+export const TRADING_GET_MOMENTUM_CONTEXT_TOOL = "trading_get_momentum_context";
+export const TRADING_GET_TRADE_HISTORY_TOOL = "trading_get_trade_history";
 export const TRADING_GET_ACCOUNT_STATE_TOOL = "trading_get_account_state";
 export const TRADING_GET_POSITION_TOOL = "trading_get_position";
 export const TRADING_GET_OPEN_ORDERS_TOOL = "trading_get_open_orders";
@@ -394,6 +398,44 @@ export const TradingEstimateCostsInput = Schema.Struct({
 export type TradingEstimateCostsInput = typeof TradingEstimateCostsInput.Type;
 
 export type TradingEstimateCostsResult = TradingCostEstimate;
+
+/**
+ * Read the directional structure across several timeframes at once.
+ *
+ * Volatility says how far this market moves; this says which way, whether the
+ * range is expanding, where the last leg started, and what structure the next
+ * one runs into. Defaults to `MOMENTUM_TIMEFRAMES` — asking for one timeframe
+ * is allowed and defeats the point, since the answer worth having is whether
+ * they agree.
+ */
+export const TradingGetMomentumContextInput = Schema.Struct({
+  ...missionBound,
+  market: TradingMarket,
+  /** Intervals to measure. Defaults to 1m, 5m, 15m, and 1h. */
+  intervals: Schema.optional(Schema.Array(MarketCandleInterval)),
+  /** Bars per interval. Defaults to `MOMENTUM_LOOKBACK_BARS`, capped at the §13 500. */
+  lookbackBars: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
+});
+export type TradingGetMomentumContextInput = typeof TradingGetMomentumContextInput.Type;
+
+export type TradingGetMomentumContextResult = MomentumContext;
+
+/**
+ * Read this mission's own completed orders and what they were worth.
+ *
+ * The mission's fills were persisted from the start and readable only by the
+ * workspace; the harness could not see the trades it had already made. Without
+ * that it has no way to score a thesis against its outcome, which is the whole
+ * of the cooldown step.
+ */
+export const TradingGetTradeHistoryInput = Schema.Struct({
+  ...missionBound,
+  /** Completed orders to return, newest first. Defaults to 20, capped at 100. */
+  limit: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
+});
+export type TradingGetTradeHistoryInput = typeof TradingGetTradeHistoryInput.Type;
+
+export type TradingGetTradeHistoryResult = TradingTradeHistory;
 
 /** Account-state and position tools take only the missionId; the address is server-resolved. */
 export const TradingGetAccountStateInput = Schema.Struct({ ...missionBound });
