@@ -195,6 +195,21 @@ export interface TradingMissionServiceShape {
   readonly getMasterWalletAddress: (
     tradingAccountId: string,
   ) => Effect.Effect<EvmAddress, PersistenceSqlError | TradingMissionNotFoundError>;
+
+  /**
+   * The highest unrealised PnL this position has reached, from the reconciler's
+   * durable high-water mark.
+   *
+   * `null` when the mission is flat, when the position has never been in
+   * profit, or when it was opened before the mark was being recorded. The
+   * exchange reports what a position is worth now and never what it was worth
+   * at its best, so this is the only place a woken run can learn how much of a
+   * winner it has already given back.
+   */
+  readonly readPeakUnrealisedPnl: (input: {
+    readonly missionId: string;
+    readonly market: string;
+  }) => Effect.Effect<number | null, PersistenceSqlError>;
 }
 
 export class TradingMissionService extends Context.Service<
@@ -352,6 +367,24 @@ const makeTradingMissionService = Effect.gen(function* () {
         status: row.status,
         ageMillis: Math.max(0, now - row.updated_at),
       }));
+    });
+
+  const readPeakUnrealisedPnl: TradingMissionServiceShape["readPeakUnrealisedPnl"] = (input) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{
+        readonly size: number;
+        readonly peak_unrealised_pnl: number | null;
+      }>`
+        SELECT size, peak_unrealised_pnl FROM trading_position_snapshots
+        WHERE mission_id = ${input.missionId} AND market = ${input.market}
+      `.pipe(Effect.mapError(sqlFail("readPeakUnrealisedPnl")));
+
+      const row = rows[0];
+      // A flat row keeps its columns around; a peak from the position before
+      // this one is not this position's high-water mark.
+      if (row === undefined || row.size === 0) return null;
+      const peak = row.peak_unrealised_pnl;
+      return peak === null || peak <= 0 ? null : peak;
     });
 
   const findMissionByThreadId: TradingMissionServiceShape["findMissionByThreadId"] = (threadId) =>
@@ -540,6 +573,7 @@ const makeTradingMissionService = Effect.gen(function* () {
     findLastMissionByThreadId,
     listPendingExecutions,
     getMasterWalletAddress,
+    readPeakUnrealisedPnl,
   } satisfies TradingMissionServiceShape;
 });
 

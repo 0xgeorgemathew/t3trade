@@ -1,6 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import {
   TRADING_CANCEL_WATCH_TOOL,
+  TRADING_ESTIMATE_COSTS_TOOL,
   TRADING_GET_ACCOUNT_STATE_TOOL,
   TRADING_GET_MARKET_HISTORY_TOOL,
   TRADING_MEASURE_VOLATILITY_TOOL,
@@ -34,6 +35,7 @@ it("exposes the §14.3 mission tools, the §14.2 read tools, and the §14.4 watc
       TRADING_GET_MARKET_SNAPSHOT_TOOL,
       TRADING_GET_MARKET_HISTORY_TOOL,
       TRADING_MEASURE_VOLATILITY_TOOL,
+      TRADING_ESTIMATE_COSTS_TOOL,
       TRADING_GET_ORDER_BOOK_TOOL,
       TRADING_GET_ACCOUNT_STATE_TOOL,
       TRADING_GET_POSITION_TOOL,
@@ -83,9 +85,13 @@ it("carries the profit-target methodology in the publish and measure description
   expect(publish).toContain("15m or 1h");
   // The measured excursion starts from a flat bar close; a momentum entry does not.
   expect(publish).toContain("DISCOUNT FOR ENTRY LOCATION");
-  // The cost floor, spelled out until a cost tool can compute it.
-  expect(publish).toContain("5 bps per side");
-  expect(publish).toContain("TWICE the round-trip cost");
+  // The cost floor, now computable — the description has to name the tool that
+  // computes it, and the field on its result that IS the floor.
+  expect(publish).toContain("trading_estimate_costs");
+  expect(publish).toContain("minimumViableTargetUsd");
+  // The basis is checked at publish, so the description must say what the check
+  // actually is rather than only asking for the field.
+  expect(publish).toContain("(measuredMoveUsd / referencePrice) x positionNotionalUsd");
   // The target is armed gross, so it has to clear the round trip on its own.
   expect(publish).toContain("GROSS");
   // One number can be armed; the other rungs live in the rationale.
@@ -97,7 +103,20 @@ it("carries the profit-target methodology in the publish and measure description
 
   const measure = TradingToolkit.tools[TRADING_MEASURE_VOLATILITY_TOOL].description ?? "";
   expect(measure).toContain("HIGHER timeframe");
-  expect(measure).toContain("5 bps per side");
+  // Every figure this tool reports is gross, so it has to hand the reader on to
+  // the one place the round trip is actually priced.
+  expect(measure).toContain("GROSS");
+  expect(measure).toContain("trading_estimate_costs");
+});
+
+// The cost floor is no longer only prose: `trading_estimate_costs` computes it
+// from the live fee rate and book, and the publish path checks the target
+// against a basis. The description is what points the harness at both.
+it("points the cost tool at the floor it exists to compute", () => {
+  const costs = TradingToolkit.tools[TRADING_ESTIMATE_COSTS_TOOL].description ?? "";
+  expect(costs).toContain("minimumViableTargetUsd");
+  expect(costs).toContain("GROSS");
+  expect(costs).toContain("degraded");
 });
 
 it("marks reading as safe and publishing as non-idempotent", () => {

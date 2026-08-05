@@ -153,8 +153,11 @@ export const TradingHarnessWakeup = Schema.Struct({
    * One timeframe is not enough to set a target from: this is the primary
    * timeframe only, so pair it with a `trading_measure_volatility` call on a
    * higher one (15m or 1h) before publishing. Nothing here is netted of fees —
-   * a round trip is two taker fills, 5 bps per side, and the target has to
-   * clear twice that before it is worth taking.
+   * call `trading_estimate_costs` for what the round trip actually costs at
+   * your size, and hold the target against the `minimumViableTargetUsd` it
+   * reports. A target published without a matching
+   * `protection.targetProfitBasis`, or one the basis does not produce, is
+   * rejected at publish.
    */
   observedVolatility: ObservedVolatility,
   activeStrategy: MomentumStrategyState,

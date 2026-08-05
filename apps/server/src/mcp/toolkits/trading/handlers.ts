@@ -27,7 +27,9 @@ import { TradingStrategyService } from "../../../trading/TradingStrategyService.
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
+import type { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
+import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
 import { TradingToolkit } from "./tools.ts";
 
 interface BoundCall {
@@ -180,6 +182,30 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (mission: 
     harness: mission.harness,
     pendingExecutions,
   } satisfies TradingGetMissionResult;
+});
+
+/**
+ * Add the position's high-water mark and how far it has come off it.
+ *
+ * The gateway reads the exchange, and the exchange has no memory of what a
+ * position was worth at its best — so a harness woken after a winner faded
+ * could not tell it from a trade that never worked. The peak is T3's own,
+ * maintained by the reconciler; a position with no recorded peak is returned
+ * untouched rather than reported as having given back nothing.
+ */
+const withPeakPnl = Effect.fn("TradingToolkit.withPeakPnl")(function* (
+  position: AgentNetPosition,
+  missionId: string,
+  market: string,
+) {
+  const missions = yield* TradingMissionService;
+  const peak = yield* missions.readPeakUnrealisedPnl({ missionId, market }).pipe(Effect.orDie);
+  if (peak === null) return position;
+  return {
+    ...position,
+    peakUnrealisedPnl: peak,
+    drawdownFromPeakUsd: Math.max(0, peak - position.unrealisedPnl),
+  };
 });
 
 const announceStrategyPublished = Effect.fn("TradingToolkit.announceStrategyPublished")(
@@ -486,6 +512,25 @@ const handlers = {
       });
     }),
 
+  trading_estimate_costs: (input) =>
+    Effect.gen(function* () {
+      // The fee rate is per-wallet, so this one needs the bound mission: both
+      // to resolve the master address and to read the authority's fallback rate.
+      const { mission } = yield* resolveBoundCall(input.missionId);
+      const missions = yield* TradingMissionService;
+      const masterAddress = yield* missions
+        .getMasterWalletAddress(mission.tradingAccountId)
+        .pipe(Effect.orDie);
+      const estimator = yield* TradingCostEstimator;
+      return yield* estimator.estimate({
+        market: input.market,
+        masterAddress,
+        sizeEth: input.sizeEth,
+        notionalUsd: input.notionalUsd,
+        fallbackTakerFeeBpsPerSide: mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
+      });
+    }),
+
   trading_get_order_book: (input) =>
     Effect.gen(function* () {
       // Market data, not mission state: an unbound thread reads it too.
@@ -513,7 +558,8 @@ const handlers = {
         .getMasterWalletAddress(mission.tradingAccountId)
         .pipe(Effect.orDie);
       const gateway = yield* HyperliquidGateway;
-      return yield* gateway.getPosition(address, input.market).pipe(Effect.orDie);
+      const position = yield* gateway.getPosition(address, input.market).pipe(Effect.orDie);
+      return yield* withPeakPnl(position, mission.id, input.market);
     }),
 
   trading_get_open_orders: (input) =>

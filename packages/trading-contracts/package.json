@@ -60,6 +60,10 @@
       "types": "./src/wakeup.ts",
       "import": "./src/wakeup.ts"
     },
+    "./costs": {
+      "types": "./src/costs.ts",
+      "import": "./src/costs.ts"
+    },
     "./volatility": {
       "types": "./src/volatility.ts",
       "import": "./src/volatility.ts"

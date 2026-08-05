@@ -41,6 +41,7 @@ import { TradingFillReconcilerLive } from "./TradingFillReconciler.ts";
 import { TradingProtectionServiceLive } from "./TradingProtectionService.ts";
 import { TradingEmergencyCloseServiceLive } from "./TradingEmergencyCloseService.ts";
 import { TradingControlServiceLive } from "./TradingControlService.ts";
+import { TradingCostEstimatorLive } from "./TradingCostEstimator.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
@@ -142,6 +143,9 @@ export const TradingLayerLive = Layer.mergeAll(
   TradingStrategyServiceLive,
   TradingWatchServiceLive,
   TradingEventInboxLive,
+  // `trading_estimate_costs` reads the book, the mark, and the fee rate — all
+  // through the gateway the read layer already builds.
+  TradingCostEstimatorLive.pipe(Layer.provide(HyperliquidReadLayerLive)),
   coordinatorWithDeps,
   TradingExecutionLayerLive,
   HyperliquidWsLayerLive,

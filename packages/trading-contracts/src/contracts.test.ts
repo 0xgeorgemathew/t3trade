@@ -289,6 +289,7 @@ describe("§14.3 mission tool contracts", () => {
         strategy,
         strategyVersion: 1,
         supersededWatchIds: ["watch_1"],
+        warnings: [],
       }).outcome,
     ).toBe("accepted");
     expect(
@@ -732,6 +733,7 @@ describe("subpath exports", () => {
         "./protection",
         "./wakeup",
         "./volatility",
+        "./costs",
       ].sort(),
     );
 

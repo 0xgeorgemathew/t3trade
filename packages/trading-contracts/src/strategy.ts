@@ -49,8 +49,9 @@ export const POC_DEFAULT_INSTRUCTION =
   "Derive the profit target from the fluctuation the market is actually producing — read `observedVolatility` in the wakeup (or call trading_measure_volatility) and take the target off a measured move over your expected holding period, never off a round number you like the look of. " +
   "Measure TWO timeframes before you set one: the thesis timeframe you trade and one higher timeframe (15m or 1h). A 1m window alone cannot tell you whether the structure supports the move you are asking for. " +
   "Discount for where you are entering. The excursion quantiles measure the move from a flat bar close; a momentum entry happens after the impulse has already begun, so subtract roughly half the impulse already travelled before calling the rest yours. " +
-  "Then check the target against its cost. A round trip is two taker fills: at 5 bps per side that is 0.10% of notional, so a 2000 USD notional costs about 2.00 USD to open and close before spread and slippage. A target that does not clear TWICE the round-trip cost is not a trade — it is a fee donation with variance. " +
-  "Publish the derivation in `protection.targetProfitBasis`: the measurement, the lookback, the holding period, the resulting percentage price move, and the USD PnL it is worth on the position notional. Put the whole ladder — conservative, base, extension — in `protection.targetProfitRationale`, and set `targetProfitUsd` to the CONSERVATIVE rung, the one you would genuinely bank. " +
+  "Then check the target against its cost. Call trading_estimate_costs at your size — it prices the round trip from the fee rate this wallet pays and the live book — and hold the target against the `minimumViableTargetUsd` it reports. A target that does not clear TWICE the round-trip cost is not a trade; it is a fee donation with variance. " +
+  "Publish the derivation in `protection.targetProfitBasis` — it is required, and the publish checks that the target actually follows from it: the measurement, the lookback, the holding period, the resulting percentage price move, and the USD PnL it is worth on the position notional. Put the whole ladder — conservative, base, extension — in `protection.targetProfitRationale`, and set `targetProfitUsd` to the CONSERVATIVE rung, the one you would genuinely bank. " +
+  "When a profit-target wake decides to extend rather than bank, arm a `pnl_giveback` watch beneath the peak before ending the turn. Extending without one bets the whole open profit on the next leg. " +
   "If the observed fluctuation does not support a target worth taking after costs, say so and stand down rather than inventing one.";
 
 /**
@@ -244,9 +245,14 @@ export const MomentumProtection = Schema.Struct({
   targetProfitUsd: PositiveUsdAmount,
   /**
    * Where `targetProfitUsd` came from — the measurement, the lookback, and the
-   * arithmetic. Expected on any target the harness sets, and read back to it on
-   * the next wake so it can tell whether the move it was waiting for is still
-   * the move the market is producing.
+   * arithmetic. Read back to the harness on the next wake so it can tell
+   * whether the move it was waiting for is still the move the market is
+   * producing.
+   *
+   * Required on publish: `checkProfitTarget` (see `./costs.ts`) rejects a
+   * strategy whose target has no basis, or one the basis does not produce. It
+   * stays optional in the schema so strategies persisted before the check
+   * existed still decode.
    */
   targetProfitBasis: Schema.optional(ProfitTargetBasis),
   /**

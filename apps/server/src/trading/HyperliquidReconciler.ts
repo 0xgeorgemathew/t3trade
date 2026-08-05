@@ -298,7 +298,20 @@ function readCanonicalFills(
   });
 }
 
-/** Upsert the reconciled position snapshot (one row per mission+market). */
+/**
+ * Upsert the reconciled position snapshot (one row per mission+market).
+ *
+ * `peak_unrealised_pnl` is the one column that is not simply overwritten with
+ * what the exchange just said: it only ever ratchets up while a position is
+ * held, and is cleared when the mission goes flat. That makes it the memory
+ * `pnl_giveback` watches read — how far a winner has come off its best — which
+ * the exchange itself does not report and a process-local cache would lose
+ * across exactly the restart that matters.
+ *
+ * Only positive peaks are recorded. A position that has never been in profit
+ * has no high-water mark worth giving back from, and treating its worst loss as
+ * a "peak" would arm a give-back on a trade that is simply losing.
+ */
 function persistPosition(
   position: TradingPositionSnapshot | null,
   input: ReconcileInput,
@@ -307,24 +320,27 @@ function persistPosition(
     const sql = yield* SqlClient.SqlClient;
     const ts = yield* now();
     if (position === null) {
-      // Flat — clear the snapshot row.
+      // Flat — clear the snapshot row, high-water mark included.
       yield* sql`
         UPDATE trading_position_snapshots
         SET size = 0, entry_price = NULL, unrealised_pnl = 0, margin_used = 0,
-            protected_size = 0, liquidation_price = NULL, mark_px = NULL, observed_at = ${ts}
+            protected_size = 0, liquidation_price = NULL, mark_px = NULL,
+            peak_unrealised_pnl = NULL, observed_at = ${ts}
         WHERE mission_id = ${input.missionId} AND market = ${input.market}
       `;
       return;
     }
+    const peak = Math.max(0, position.unrealisedPnl);
     yield* sql`
       INSERT INTO trading_position_snapshots (
         mission_id, market, size, entry_price, unrealised_pnl, margin_used,
-        protected_size, liquidation_price, mark_px, observed_at
+        protected_size, liquidation_price, mark_px, peak_unrealised_pnl, observed_at
       ) VALUES (
         ${position.missionId}, ${position.market}, ${position.size},
         ${position.entryPrice ?? null}, ${position.unrealisedPnl},
         ${position.marginUsed}, ${position.protectedSize},
-        ${position.liquidationPrice ?? null}, ${position.markPx ?? null}, ${position.observedAt}
+        ${position.liquidationPrice ?? null}, ${position.markPx ?? null},
+        ${peak}, ${position.observedAt}
       )
       ON CONFLICT(mission_id, market) DO UPDATE SET
         size = ${position.size}, entry_price = ${position.entryPrice ?? null},
@@ -332,6 +348,7 @@ function persistPosition(
         protected_size = ${position.protectedSize},
         liquidation_price = ${position.liquidationPrice ?? null},
         mark_px = ${position.markPx ?? null},
+        peak_unrealised_pnl = MAX(COALESCE(trading_position_snapshots.peak_unrealised_pnl, 0), ${peak}),
         observed_at = ${position.observedAt}
     `;
   }).pipe(

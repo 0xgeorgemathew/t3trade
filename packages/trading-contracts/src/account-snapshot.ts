@@ -73,6 +73,19 @@ export const AgentNetPosition = Schema.Struct({
    */
   entryPrice: Schema.optional(Price),
   unrealisedPnl: Schema.Number,
+  /**
+   * The highest unrealised PnL this position has reached, from T3's own
+   * reconciled history rather than the exchange.
+   *
+   * The exchange reports what a position is worth now and never what it was
+   * worth at its best, so a harness woken after a move had already given back
+   * could not tell a winner that faded from a trade that never worked. Absent
+   * when the position is flat or was opened before the high-water mark was
+   * being recorded.
+   */
+  peakUnrealisedPnl: Schema.optional(Schema.Number),
+  /** `peakUnrealisedPnl - unrealisedPnl`, never negative. Absent with the peak. */
+  drawdownFromPeakUsd: Schema.optional(Schema.Number),
   cumulativeFunding: Schema.Number,
   marginUsed: UsdAmount,
   freshness: FreshnessMeta,

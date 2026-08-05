@@ -162,6 +162,9 @@ const stubGateway = Layer.succeed(HyperliquidGateway)({
 
 const stubMissions = Layer.succeed(TradingMissionService)({
   getMasterWalletAddress: () => Effect.succeed("0x00000000000000000000000000000000000000ff"),
+  // No high-water mark recorded: the composer publishes the exchange's position
+  // untouched. The enriched case has its own test below.
+  readPeakUnrealisedPnl: () => Effect.succeed(null),
 } as unknown as TradingMissionService["Service"]);
 
 const stubWatches = Layer.succeed(TradingWatchService)({

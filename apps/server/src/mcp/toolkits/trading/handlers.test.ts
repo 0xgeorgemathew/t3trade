@@ -73,13 +73,15 @@ const strategyBody = (name: string): PublishMomentumStrategyBody => ({
       measurement: "excursion_quantile",
       timeframe: "5m",
       lookbackBars: 120,
-      measuredMoveUsd: 40,
+      // (32 / 3,200) x 2,000 of notional = the 20 USD published above.
+      // Publishing checks that arithmetic, so the two cannot drift apart.
+      measuredMoveUsd: 32,
       expectedHoldBars: 10,
       referencePrice: 3_200,
       targetPriceMovePercent: 1,
       positionNotionalUsd: 2_000,
       historicalHitRatePercent: 50,
-      rationale: "Median 10-bar upside excursion over the last 120 5m bars is 40 USD of price.",
+      rationale: "Median 10-bar upside excursion over the last 120 5m bars is 32 USD of price.",
     },
   },
   exitConditions: [{ description: "Momentum stalls for three consecutive candles." }],
@@ -177,7 +179,7 @@ const withMcpServer = <A, E>(
         `.pipe(Effect.asVoid, Effect.orDie);
       const httpClient = yield* HttpClient.HttpClient;
 
-      yield* runMigrations({ toMigrationInclusive: 43 }).pipe(Effect.provide(built), Effect.orDie);
+      yield* runMigrations({ toMigrationInclusive: 45 }).pipe(Effect.provide(built), Effect.orDie);
       yield* missions
         .createMission({
           missionId: MISSION_ID,

@@ -51,10 +51,10 @@ const input: ReconcileInput = {
   market: "ETH",
 };
 
-/** Migrate the shared in-memory db to 040, then truncate the 038 tables. */
+/** Migrate the shared in-memory db, then truncate the 038 tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 44 });
+  yield* runMigrations({ toMigrationInclusive: 45 });
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM trading_orders`;
@@ -485,6 +485,86 @@ layer("HyperliquidReconciler", (it) => {
       assert.ok(flatRow[0] !== undefined);
       assert.equal(flatRow[0].size, 0);
       assert.equal(flatRow[0].entry_price, null);
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // The high-water mark `pnl_giveback` reads. The exchange reports what a
+  // position is worth now and never what it was worth at its best, so this
+  // column is the only memory of the difference — and it has to survive the
+  // reconcile that observes the give-back.
+  // -------------------------------------------------------------------------
+  const readPeak = () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly peak_unrealised_pnl: number | null }>`
+        SELECT peak_unrealised_pnl FROM trading_position_snapshots
+        WHERE mission_id = ${MISSION} AND market = 'ETH'
+      `;
+      return rows[0]?.peak_unrealised_pnl ?? null;
+    });
+
+  const clearinghouseWithPnl = (unrealizedPnl: string): WireClearinghouseStateResponse => ({
+    ...longClearinghouse,
+    assetPositions: [
+      {
+        position: { ...longClearinghouse.assetPositions[0]!.position, unrealizedPnl },
+        type: "oneWay",
+      },
+    ],
+  });
+
+  it.effect("ratchets the peak up and holds it when the position gives profit back", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const reconciler = yield* HyperliquidReconciler;
+
+      yield* setState({ account: snapshotFromClearinghouse(clearinghouseWithPnl("20")) });
+      yield* reconciler.reconcile(input, "after_position_update");
+      assert.equal(yield* readPeak(), 20);
+
+      yield* setState({ account: snapshotFromClearinghouse(clearinghouseWithPnl("35")) });
+      yield* reconciler.reconcile(input, "after_position_update");
+      assert.equal(yield* readPeak(), 35);
+
+      // The give-back: current PnL falls, the peak does not follow it down.
+      yield* setState({ account: snapshotFromClearinghouse(clearinghouseWithPnl("12")) });
+      yield* reconciler.reconcile(input, "after_position_update");
+      assert.equal(yield* readPeak(), 35);
+    }),
+  );
+
+  it.effect("clears the peak when the mission goes flat, so the next position starts its own", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const reconciler = yield* HyperliquidReconciler;
+
+      yield* setState({ account: snapshotFromClearinghouse(clearinghouseWithPnl("35")) });
+      yield* reconciler.reconcile(input, "after_position_update");
+      assert.equal(yield* readPeak(), 35);
+
+      yield* setState({ account: snapshotFromClearinghouse(flatClearinghouse) });
+      yield* reconciler.reconcile(input, "after_position_update");
+      assert.equal(yield* readPeak(), null);
+
+      // A fresh position inherits nothing from the one before it.
+      yield* setState({ account: snapshotFromClearinghouse(clearinghouseWithPnl("4")) });
+      yield* reconciler.reconcile(input, "after_position_update");
+      assert.equal(yield* readPeak(), 4);
+    }),
+  );
+
+  // A position that has never been in profit has no winner to give back, and
+  // recording its worst loss as a "peak" would arm a give-back on a trade that
+  // is simply losing — the stop's job, not this column's.
+  it.effect("records no peak for a position that has only ever lost", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const reconciler = yield* HyperliquidReconciler;
+
+      yield* setState({ account: snapshotFromClearinghouse(clearinghouseWithPnl("-30")) });
+      yield* reconciler.reconcile(input, "after_position_update");
+      assert.equal(yield* readPeak(), 0);
     }),
   );
 

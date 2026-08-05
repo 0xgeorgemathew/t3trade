@@ -430,13 +430,26 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * The live position a PnL watch is measured against, or `null` when the
+   * mission is flat.
+   *
+   * The PnL comes from the gateway position read, resolved via the
+   * master-wallet address — the same identity the composer and §10.6 use. A
+   * flat position fires nothing and leaves the watch active, so a strategy
+   * publish or a later re-entry still supersedes it like any other watch.
+   */
+  const readLivePosition = (tracked: TrackedWatch, market: string) =>
+    Effect.gen(function* () {
+      const mission = yield* missions.getMission(tracked.missionId);
+      const address = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+      const position = yield* gateway.getPosition(address, market);
+      return position.size === 0 ? null : position;
+    }).pipe(Effect.orDie);
+
+  /**
    * Evaluate a `pnl_above` watch against the reconciled unrealised PnL.
    *
-   * The target lives in the strategy the watch was armed against; the live PnL
-   * comes from the gateway position read (resolved via the master-wallet
-   * address, the same identity the composer and §10.6 use). A flat position
-   * (size 0) never fires — it leaves the watch active so a strategy publish or
-   * a later re-entry still supersedes it like any other watch.
+   * The target lives in the strategy the watch was armed against.
    *
    * `pnl_above` is not differential: it fires once when the threshold is first
    * reached, then `markTriggered` flips it terminal so a subsequent sweep
@@ -448,14 +461,8 @@ const make = Effect.gen(function* () {
     const watch = tracked.watch.watch;
     if (watch.type !== "pnl_above") return;
 
-    const mission = yield* missions.getMission(tracked.missionId).pipe(Effect.orDie);
-    const address = yield* missions
-      .getMasterWalletAddress(mission.tradingAccountId)
-      .pipe(Effect.orDie);
-    const position = yield* gateway.getPosition(address, watch.market).pipe(Effect.orDie);
-    // A flat position never fires the watch and leaves it active.
-    if (position.size === 0) return;
-
+    const position = yield* readLivePosition(tracked, watch.market);
+    if (position === null) return;
     if (position.unrealisedPnl < watch.valueUsd) return;
 
     const observedAt = yield* nowMs;
@@ -466,6 +473,82 @@ const make = Effect.gen(function* () {
       {
         unrealisedPnl: position.unrealisedPnl,
         valueUsd: watch.valueUsd,
+        observedAt,
+        watchId: tracked.watch.id,
+      },
+    );
+  });
+
+  /**
+   * Evaluate a `pnl_below` watch against the reconciled unrealised PnL.
+   *
+   * The mirror of `pnl_above`, and signed: the level worth watching on the way
+   * down is usually a loss. A flat position never fires it, for the same reason
+   * — a mission with no position has no PnL to have fallen.
+   */
+  const evaluatePnlBelow = Effect.fn("WatchEvaluator.evaluatePnlBelow")(function* (
+    tracked: TrackedWatch,
+  ) {
+    const watch = tracked.watch.watch;
+    if (watch.type !== "pnl_below") return;
+
+    const position = yield* readLivePosition(tracked, watch.market);
+    if (position === null) return;
+    if (position.unrealisedPnl > watch.valueUsd) return;
+
+    const observedAt = yield* nowMs;
+    yield* enqueueFire(
+      tracked,
+      `pnl_below:${tracked.watch.id}`,
+      `unrealised PnL $${position.unrealisedPnl.toFixed(2)} fell to the $${watch.valueUsd} level`,
+      {
+        unrealisedPnl: position.unrealisedPnl,
+        valueUsd: watch.valueUsd,
+        observedAt,
+        watchId: tracked.watch.id,
+      },
+    );
+  });
+
+  /**
+   * Evaluate a `pnl_giveback` watch: how far this position has come off its own
+   * best.
+   *
+   * The high-water mark is the reconciler's durable `peak_unrealised_pnl`, not
+   * anything the exchange reports and not a process-local maximum — a restart
+   * loses neither the peak nor the give-back that happened while it was down.
+   * A position that has never been in profit has no peak, so nothing fires:
+   * a losing trade is the stop's problem, not this watch's.
+   */
+  const evaluatePnlGiveback = Effect.fn("WatchEvaluator.evaluatePnlGiveback")(function* (
+    tracked: TrackedWatch,
+  ) {
+    const watch = tracked.watch.watch;
+    if (watch.type !== "pnl_giveback") return;
+
+    const position = yield* readLivePosition(tracked, watch.market);
+    if (position === null) return;
+
+    const rows = yield* sql<{ readonly peak_unrealised_pnl: number | null }>`
+      SELECT peak_unrealised_pnl FROM trading_position_snapshots
+      WHERE mission_id = ${tracked.missionId} AND market = ${watch.market}
+    `.pipe(Effect.orDie);
+    const peak = rows[0]?.peak_unrealised_pnl ?? 0;
+    if (peak <= 0) return;
+
+    const drawdown = peak - position.unrealisedPnl;
+    if (drawdown < watch.drawdownUsd) return;
+
+    const observedAt = yield* nowMs;
+    yield* enqueueFire(
+      tracked,
+      `pnl_giveback:${tracked.watch.id}`,
+      `unrealised PnL gave back $${drawdown.toFixed(2)} from its peak of $${peak.toFixed(2)} (now $${position.unrealisedPnl.toFixed(2)})`,
+      {
+        unrealisedPnl: position.unrealisedPnl,
+        peakUnrealisedPnl: peak,
+        drawdownUsd: drawdown,
+        thresholdUsd: watch.drawdownUsd,
         observedAt,
         watchId: tracked.watch.id,
       },
@@ -524,6 +607,12 @@ const make = Effect.gen(function* () {
           break;
         case "pnl_above":
           yield* evaluatePnlAbove(t);
+          break;
+        case "pnl_below":
+          yield* evaluatePnlBelow(t);
+          break;
+        case "pnl_giveback":
+          yield* evaluatePnlGiveback(t);
           break;
         default:
           break;

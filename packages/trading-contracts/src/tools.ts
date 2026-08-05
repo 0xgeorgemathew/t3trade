@@ -27,6 +27,7 @@ import {
   OrderBook,
   ResolvedMarket,
 } from "./market.ts";
+import type { TradingCostEstimate } from "./costs.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./mission.ts";
 import { TradingId, TradingMarket } from "./primitives.ts";
@@ -44,6 +45,7 @@ export const TRADING_GET_MARKET_SNAPSHOT_TOOL = "trading_get_market_snapshot";
 export const TRADING_GET_MARKET_HISTORY_TOOL = "trading_get_market_history";
 export const TRADING_GET_ORDER_BOOK_TOOL = "trading_get_order_book";
 export const TRADING_MEASURE_VOLATILITY_TOOL = "trading_measure_volatility";
+export const TRADING_ESTIMATE_COSTS_TOOL = "trading_estimate_costs";
 export const TRADING_GET_ACCOUNT_STATE_TOOL = "trading_get_account_state";
 export const TRADING_GET_POSITION_TOOL = "trading_get_position";
 export const TRADING_GET_OPEN_ORDERS_TOOL = "trading_get_open_orders";
@@ -186,6 +188,12 @@ export type TradingPublishMomentumStrategyInput = typeof TradingPublishMomentumS
 export const PublishMomentumStrategyRejection = Schema.Literals([
   "stale_strategy_version",
   "mission_not_active",
+  /**
+   * `protection.targetProfitBasis` was absent, or the target does not follow
+   * from the arithmetic the basis publishes. See `checkProfitTarget` in
+   * `./costs.ts`; `detail` carries which and why.
+   */
+  "target_not_justified",
 ]);
 export type PublishMomentumStrategyRejection = typeof PublishMomentumStrategyRejection.Type;
 
@@ -196,12 +204,24 @@ export const TradingPublishMomentumStrategyResult = Schema.Union([
     strategyVersion: Schema.Number,
     /** Watches bound to the prior version, marked superseded by this publish. */
     supersededWatchIds: Schema.Array(TradingId),
+    /**
+     * Things wrong with the published strategy that did not stop the publish —
+     * today, a target that does not clear twice its round-trip cost.
+     *
+     * In-band rather than a rejection because the cost floor is modeled from
+     * the authority's fallback fee rate and cannot see the spread, so it is the
+     * rule most likely to be wrong about a real setup. The harness is told, and
+     * decides.
+     */
+    warnings: Schema.Array(Schema.String),
   }),
   Schema.Struct({
     outcome: Schema.Literal("rejected"),
     reason: PublishMomentumStrategyRejection,
     /** The version the server actually holds, so the harness can retry. */
     currentVersion: Schema.Number,
+    /** What specifically was wrong, when the reason alone does not say. */
+    detail: Schema.optional(Schema.String),
   }),
 ]);
 export type TradingPublishMomentumStrategyResult = typeof TradingPublishMomentumStrategyResult.Type;
@@ -355,6 +375,25 @@ export const TradingMeasureVolatilityInput = Schema.Struct({
 export type TradingMeasureVolatilityInput = typeof TradingMeasureVolatilityInput.Type;
 
 export type TradingMeasureVolatilityResult = ObservedVolatility;
+
+/**
+ * Cost a round trip before committing to a target or a size.
+ *
+ * Exactly one of `sizeEth` / `notionalUsd` names the position to cost; giving
+ * both is accepted and `sizeEth` wins, since the size is what the book is
+ * actually walked for.
+ */
+export const TradingEstimateCostsInput = Schema.Struct({
+  ...missionBound,
+  market: TradingMarket,
+  /** Position size in base units (ETH). */
+  sizeEth: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
+  /** Position size in USD of notional — converted at the current mark. */
+  notionalUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
+});
+export type TradingEstimateCostsInput = typeof TradingEstimateCostsInput.Type;
+
+export type TradingEstimateCostsResult = TradingCostEstimate;
 
 /** Account-state and position tools take only the missionId; the address is server-resolved. */
 export const TradingGetAccountStateInput = Schema.Struct({ ...missionBound });

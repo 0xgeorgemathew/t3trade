@@ -173,6 +173,21 @@ const make = Effect.gen(function* () {
         measuredAt: history.freshness.observedAt,
       });
 
+      // What the position was worth at its best, and how far it has come off
+      // that. A profit-target wake that has to choose between banking and
+      // extending needs both, and the exchange reports neither.
+      const peak = yield* missions
+        .readPeakUnrealisedPnl({ missionId: mission.id, market: mission.market })
+        .pipe(Effect.mapError((error) => fail("peak_pnl_read_failed", error)));
+      const positionWithPeak =
+        peak === null
+          ? position
+          : {
+              ...position,
+              peakUnrealisedPnl: peak,
+              drawdownFromPeakUsd: Math.max(0, peak - position.unrealisedPnl),
+            };
+
       const triggeringWatch = yield* resolveTriggeringWatch(input.triggeringWatchId);
 
       // What is still armed, and how far the market has to travel to fire each
@@ -201,7 +216,7 @@ const make = Effect.gen(function* () {
         userMessage: input.userMessage,
         marketSnapshot,
         accountSnapshot,
-        position,
+        position: positionWithPeak,
         recentCandles,
         observedVolatility,
         activeStrategy,

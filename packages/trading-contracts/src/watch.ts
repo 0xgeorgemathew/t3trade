@@ -49,6 +49,33 @@ export const MarketWatch = Schema.Union([
     market: TradingMarket,
     valueUsd: PositiveUsdAmount,
   }),
+  /**
+   * Fires when unrealised PnL falls to or below `valueUsd`.
+   *
+   * Signed, unlike `pnl_above`: the level worth watching on the way down is
+   * usually a loss (`-6`), and sometimes a give-back floor under a winner
+   * (`+3`). Zero is the break-even line.
+   */
+  Schema.Struct({
+    type: Schema.Literal("pnl_below"),
+    market: TradingMarket,
+    valueUsd: Schema.Number,
+  }),
+  /**
+   * Fires when unrealised PnL has fallen `drawdownUsd` from its own high-water
+   * mark on this position.
+   *
+   * The high-water mark is durable — the reconciler maintains it on the
+   * position snapshot — so this survives a restart and resets when the mission
+   * goes flat. It is the watch that makes holding past a profit target safe:
+   * a target wake that decides to extend can arm a give-back beneath the peak
+   * instead of betting the whole open profit on the next leg.
+   */
+  Schema.Struct({
+    type: Schema.Literal("pnl_giveback"),
+    market: TradingMarket,
+    drawdownUsd: PositiveUsdAmount,
+  }),
 ]);
 export type MarketWatch = typeof MarketWatch.Type;
 

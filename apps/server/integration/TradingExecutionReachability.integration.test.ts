@@ -658,6 +658,20 @@ it.live(
                         stopMethod: "Below the last accepted swing low",
                         stopPrice: 2_950,
                         targetProfitUsd: 25,
+                        // Publishing checks the target against the basis it
+                        // claims to come from: (25 / 3,000) x 3,000 = 25.
+                        targetProfitBasis: {
+                          measurement: "excursion_quantile",
+                          timeframe: "5m",
+                          lookbackBars: 120,
+                          measuredMoveUsd: 25,
+                          expectedHoldBars: 10,
+                          referencePrice: 3_000,
+                          targetPriceMovePercent: 0.833,
+                          positionNotionalUsd: 3_000,
+                          historicalHitRatePercent: 50,
+                          rationale: "Median 10-bar upside excursion over 120 5m bars.",
+                        },
                         maximumPlannedLossUsd: 20,
                       },
                       exitConditions: [

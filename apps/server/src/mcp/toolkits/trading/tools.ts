@@ -14,6 +14,7 @@
 import {
   TradingCancelWatchInput,
   TradingCancelWatchResult,
+  TradingEstimateCostsInput,
   TradingGetMissionInput,
   TradingGetMissionResult,
   TradingGetAccountStateInput,
@@ -47,6 +48,7 @@ import {
   OrderBook,
   ResolvedMarket,
 } from "@t3tools/trading-contracts/market";
+import { TradingCostEstimate } from "@t3tools/trading-contracts/costs";
 import { ObservedVolatility } from "@t3tools/trading-contracts/volatility";
 import { Schema } from "effect";
 import * as Crypto from "effect/Crypto";
@@ -54,6 +56,7 @@ import { Tool, Toolkit } from "effect/unstable/ai";
 
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
 import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
@@ -72,6 +75,8 @@ const dependencies = [
   Crypto.Crypto,
   // Phase 2 read tools reach Hyperliquid through the gateway.
   HyperliquidGateway,
+  // `trading_estimate_costs` prices a round trip from the live fee rate and book.
+  TradingCostEstimator,
   // `trading_request_entry` reports what the reactor actually did with the
   // request, not that the request was raised.
   TradingExecutionOutcome,
@@ -106,9 +111,9 @@ export const TradingPublishMomentumStrategyTool = Tool.make("trading_publish_mom
     "(1) MEASURE TWO TIMEFRAMES. Read `observedVolatility` from the wakeup for your thesis timeframe and call trading_measure_volatility on ONE HIGHER timeframe (15m or 1h) as well. A 1m window alone maxes out at a 20-minute view and cannot tell you whether the structure supports the move you are about to ask for. Pick the measurement that fits your thesis: `horizons[].favourableUpUsd.p50` for a long, `favourableDownUsd.p50` for a short, is the move price actually delivered over that many bars in half the recent windows; the p75 in a quarter of them. `atr`, `realized_volatility`, and `swing_range` are single-number summaries of the same window. " +
     "(2) DISCOUNT FOR ENTRY LOCATION. Those quantiles measure the move from a flat bar close. A momentum entry happens AFTER the impulse has begun, so the whole measured move is not still ahead of you — subtract roughly half the impulse already travelled, and cap the target at the distance to the nearest structure (swing high/low) on the higher timeframe. " +
     "(3) CONVERT. Percentage move off the current mark x position notional (margin x leverage) = USD target. Worked example: 100 USD margin at 20x = 2000 USD notional; a measured 0.35% move over a 10-bar hold = 7.00 USD. " +
-    "(4) CHECK IT AGAINST COST — this is the gate that matters. A round trip is TWO taker fills. At 5 bps per side that is 0.10% of notional: on 2000 USD notional, about 2.00 USD to open and close, before spread and slippage. `targetProfitUsd` is GROSS (`pnl_above` fires on the exchange's unrealised PnL, which nets neither fees nor funding), so a target that does not clear TWICE the round-trip cost — roughly 4.00 USD on 2000 USD of notional, i.e. a 0.20% move — is not a trade. It is a fee donation with variance. If your measured, entry-discounted move does not clear that floor, stand down. " +
+    "(4) CHECK IT AGAINST COST — this is the gate that matters. Call trading_estimate_costs at your size: it prices the round trip from the fee rate this wallet actually pays and the live book, and reports `minimumViableTargetUsd` (twice the round trip). `targetProfitUsd` is GROSS (`pnl_above` fires on the exchange's unrealised PnL, which nets neither fees nor funding), so a target under that figure is not a trade — it is a fee donation with variance. As a rough check without the tool: two taker fills at 5 bps per side is 0.10% of notional, about 2.00 USD on 2000 USD, so the floor is roughly 4.00 USD, a 0.20% move. If your measured, entry-discounted move does not clear it, stand down. " +
     "Publish the ladder — conservative / base / extension, each with its USD figure and each net of the round trip — in `protection.targetProfitRationale`, since only one number can be armed as a watch and the wake needs somewhere to extend to. " +
-    "Record the arithmetic in `protection.targetProfitBasis` — measurement, timeframe, lookbackBars, expectedHoldBars, measuredMoveUsd (USD of PRICE), referencePrice, targetPriceMovePercent, positionNotionalUsd, `historicalHitRatePercent` when the measurement gives one (a p50 is 50), and a `rationale` naming BOTH timeframes measured, the entry-location discount applied, and the round-trip cost the target clears. The basis is read back to you on the next wake, so a target you cannot justify there is one you will not be able to defend to yourself later. " +
+    "`protection.targetProfitBasis` is REQUIRED and is CHECKED: a publish with no basis is rejected, and so is one whose target does not follow from it — `(measuredMoveUsd / referencePrice) x positionNotionalUsd` must come out within 5% of `targetProfitUsd`. Record measurement, timeframe, lookbackBars, expectedHoldBars, measuredMoveUsd (USD of PRICE), referencePrice, targetPriceMovePercent, positionNotionalUsd, `historicalHitRatePercent` when the measurement gives one (a p50 is 50), and a `rationale` naming BOTH timeframes measured, the entry-location discount applied, and the round-trip cost the target clears. An accepted publish returns `warnings[]`; a target under twice its cost is reported there rather than refused, and is still a target you should not be arming. " +
     "If the observed fluctuation does not support a target worth taking after costs, say so: set `insufficientVolatility: true`, explain it in the rationale, and stand down rather than inventing a number to fill the field. " +
     "`missionId` is optional — omit it and the call acts on the mission this session is bound to.",
   parameters: TradingPublishMomentumStrategyInput,
@@ -175,13 +180,31 @@ export const TradingMeasureVolatilityTool = Tool.make("trading_measure_volatilit
     "`horizons[]` is the one to set a target from: for each holding period in bars it reports, over every window of that length in the lookback, the distribution (p25/p50/p75) of the move price delivered from a bar's close — `favourableUpUsd` for a long, `favourableDownUsd` for a short. A target at the p50 was available in half the recent windows of that length; at the p75, in a quarter. That is what makes a target attainable rather than hopeful. " +
     "`sufficientData` is false when the window is too short to measure from (under 30 bars) — read a longer window before setting a target off it. " +
     "The same measurement for the mission's primary timeframe is already on every wakeup as `observedVolatility`, so the call you OWE on every target is the second one: a HIGHER timeframe (15m or 1h). On 1m the hold horizons max out at 20 minutes, which says nothing about the structure a momentum move actually runs into. Defaults to 120 bars and hold horizons of 3, 5, 10, and 20 bars. " +
-    "Two things this does NOT tell you, and you must supply both yourself. It measures the move from a FLAT BAR CLOSE, so a momentum entry taken after the impulse began has less of that move left — discount by roughly half the impulse already travelled. And every figure here is GROSS: no fee, spread, or funding is netted anywhere in this output. A round trip is two taker fills at 5 bps per side, 0.10% of notional, so on 2000 USD of notional a move worth less than about 4.00 USD does not clear twice its own cost and is not worth trading.",
+    "Two things this does NOT tell you, and you must supply both yourself. It measures the move from a FLAT BAR CLOSE, so a momentum entry taken after the impulse began has less of that move left — discount by roughly half the impulse already travelled. And every figure here is GROSS: no fee, spread, or funding is netted anywhere in this output. Call trading_estimate_costs for what the round trip actually costs at your size and hold the target against the `minimumViableTargetUsd` it reports.",
   parameters: TradingMeasureVolatilityInput,
   success: ObservedVolatility,
   failure: TradingToolRejectedError,
   dependencies,
 })
   .annotate(Tool.Title, "Measure volatility")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
+export const TradingEstimateCostsTool = Tool.make("trading_estimate_costs", {
+  description:
+    "Cost a round trip on this market at a given size, from the live fee rate and the live book. Call this BEFORE publishing a profit target and again before deciding whether to bank one — it is the only place the fee rate the account actually pays is visible to you. " +
+    "Name the position either way: `sizeEth` in base units, or `notionalUsd`, which is converted at the current mark. " +
+    "Returns the round trip itemised into three non-overlapping parts, so summing them is not double-counting: `roundTripFeeUsd` (two taker fills at `takerFeeBpsPerSide`), `roundTripSpreadUsd` (crossing the bid/ask twice, from `halfSpreadUsd`), and `roundTripSlippageUsd` (what walking the visible book PAST the touch costs this size, both sides). `roundTripUsd` is the total; `breakEvenPriceMoveUsd` is how far price has to move per unit just to get out flat. " +
+    "`minimumViableTargetUsd` is the number to hold a target against: twice the round trip. `protection.targetProfitUsd` is GROSS — `pnl_above` fires on the exchange's unrealised PnL, which nets neither fees nor funding — so a target under this figure is a fee donation with variance, not a trade. If your measured, entry-discounted move does not clear it, stand down and say so. " +
+    "`degraded` is true when part of the cost could not be read (the fee rate fell back to the authority's default, or the visible book could not absorb your size); `notes` says which, and the total is then a LOWER BOUND. `fundingCostPer8hUsd` is the holding cost on top, positive meaning a long pays it — it is outside the round trip and matters only if you intend to hold across a funding interval.",
+  parameters: TradingEstimateCostsInput,
+  success: TradingCostEstimate,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Estimate trading costs")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
@@ -218,7 +241,8 @@ export const TradingGetAccountStateTool = Tool.make("trading_get_account_state",
 
 export const TradingGetPositionTool = Tool.make("trading_get_position", {
   description:
-    "Read the canonical net position for a market: signed size (positive long, negative short), entry price, unrealised PnL, cumulative funding, and margin used. Returns a flat position with size 0 and no entry price when none is open — that is a valid net-zero state, not an error.",
+    "Read the canonical net position for a market: signed size (positive long, negative short), entry price, unrealised PnL, cumulative funding, and margin used. Returns a flat position with size 0 and no entry price when none is open — that is a valid net-zero state, not an error. " +
+    "`peakUnrealisedPnl` and `drawdownFromPeakUsd` are T3's own, not the exchange's: the highest this position has ever been worth, and how much of that it has since given back. The exchange reports only what a position is worth now, so without these you cannot tell a winner that faded from a trade that never worked. Both are absent while flat and on a position that has never been in profit.",
   parameters: TradingGetPositionInput,
   success: AgentNetPosition,
   failure: TradingToolRejectedError,
@@ -250,10 +274,11 @@ export const TradingRegisterWatchTool = Tool.make("trading_register_watch", {
   description:
     "Register a typed market watch bound to the mission's current strategy version. The watch is created active; it fires when its predicate matches (a candle's final close, a price cross against a fresh mark/mid, an order or position update, the unrealised PnL reaching a target). The evaluator sweeps every 2 seconds, so a fire lands within a couple of seconds of the condition — not on the tick. " +
     "A watch fires EXACTLY ONCE and is then terminal. A level you want to keep standing has to be re-registered after it fires; nothing re-arms it for you. " +
-    "Each type carries its own required fields, and a missing one is rejected outright: `price_cross` takes market, priceSource, direction, price; `candle_close` takes market, INTERVAL (1m/3m/5m/15m/1h — the timeframe whose close is read), direction, price; `order_update` takes cloid; `position_update` takes market; `pnl_above` takes market and valueUsd; `scheduled_reassessment` takes runAt. " +
+    "Each type carries its own required fields, and a missing one is rejected outright: `price_cross` takes market, priceSource, direction, price; `candle_close` takes market, INTERVAL (1m/3m/5m/15m/1h — the timeframe whose close is read), direction, price; `order_update` takes cloid; `position_update` takes market; `pnl_above` takes market and valueUsd; `pnl_below` takes market and valueUsd, SIGNED (a loss floor is negative, e.g. -6); `pnl_giveback` takes market and drawdownUsd; `scheduled_reassessment` takes runAt. " +
     "Watches also do NOT survive a strategy publish — publishing supersedes every watch the previous version armed, so re-arm what you still need after switching. " +
     "`position_update` and `order_update` read T3's reconciled local tables, not the exchange directly: they fire on a change in the size the last reconcile recorded, so they follow fills and cancels rather than quotes. " +
-    "`pnl_above` fires when the reconciled unrealised PnL for `market` is at least `valueUsd`; a flat position never fires it. While you hold a position, the runtime also arms its own `pnl_above` at the strategy's `protection.targetProfitUsd` with `armedReason: \"profit_target\"` — that is the wake-and-decide win target. A wake from it is a decision point, not a close order: bank the profit (close, or `reduce` half and keep a runner) if momentum is fading, or republish at the ladder's next rung with a fresh basis if it is not. " +
+    "`pnl_above` fires when the reconciled unrealised PnL for `market` is at least `valueUsd`; `pnl_below` is its mirror, firing when PnL falls to or below a SIGNED level. A flat position fires neither. While you hold a position, the runtime also arms its own `pnl_above` at the strategy's `protection.targetProfitUsd` with `armedReason: \"profit_target\"` — that is the wake-and-decide win target. A wake from it is a decision point, not a close order: bank the profit (close, or `reduce` half and keep a runner) if momentum is fading, or republish at the ladder's next rung with a fresh basis if it is not. " +
+    "`pnl_giveback` is what makes the second choice survivable. It fires when unrealised PnL has fallen `drawdownUsd` from its own HIGH-WATER MARK on this position — T3 records that mark durably (the exchange never reports it), it survives a restart, and it resets when you go flat. Whenever a target wake decides to extend rather than bank, arm one beneath the peak: extending without it bets the entire open profit on the next leg, which is how a winner round-trips to nothing. It never fires on a position that has only ever lost — that is the stop's job. Read `peakUnrealisedPnl` and `drawdownFromPeakUsd` on trading_get_position or the wakeup to see where the mark currently sits. " +
     'While a position is open, arm levels on BOTH sides of the mark: the two differential types fire on a change in size and will not wake you for a move in your favour. A reassessment is auto-armed a few bars out — 3 bars of your primary timeframe while holding, 10 bars while flat (clamped 2m–30m) — whenever a run ends with nothing else due to wake the mission. That automatic wake carries `armedReason: "staleness_floor"`: it means nothing crossed and nothing fired, so the thing to reconsider is the thesis — re-level, republish at the next version, or stand down. ' +
     "`missionId` is optional — omit it and the call acts on the mission this session is bound to.",
   parameters: TradingRegisterWatchInput,
@@ -339,6 +364,7 @@ export const TradingToolkit = Toolkit.make(
   TradingGetMarketSnapshotTool,
   TradingGetMarketHistoryTool,
   TradingMeasureVolatilityTool,
+  TradingEstimateCostsTool,
   TradingGetOrderBookTool,
   TradingGetAccountStateTool,
   TradingGetPositionTool,

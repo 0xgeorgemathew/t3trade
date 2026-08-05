@@ -102,9 +102,9 @@ const candleCloseWatch: MarketWatch = {
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  // Through 40: `trading_orders` arrives in 038, and the `order_update` watch
-  // reads it.
-  yield* runMigrations({ toMigrationInclusive: 43 });
+  // `trading_orders` arrives in 038 (the `order_update` watch reads it) and
+  // `peak_unrealised_pnl` in 045 (the `pnl_giveback` watch reads it).
+  yield* runMigrations({ toMigrationInclusive: 45 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
@@ -139,6 +139,26 @@ const writePosition = (size: number, entryPrice: number) =>
         mission_id, market, size, entry_price, unrealised_pnl,
         margin_used, protected_size, observed_at
       ) VALUES ('mission_1', 'ETH', ${size}, ${entryPrice}, 0, 10, ${size}, ${PAST_CLOSE})
+    `;
+  });
+
+/** Write the reconciled position row with the high-water mark a give-back reads. */
+const writePositionPeak = (input: {
+  readonly size: number;
+  readonly unrealisedPnl: number;
+  readonly peak: number | null;
+}) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`DELETE FROM trading_position_snapshots WHERE mission_id = 'mission_1'`;
+    yield* sql`
+      INSERT INTO trading_position_snapshots (
+        mission_id, market, size, entry_price, unrealised_pnl,
+        margin_used, protected_size, peak_unrealised_pnl, observed_at
+      ) VALUES (
+        'mission_1', 'ETH', ${input.size}, 3000, ${input.unrealisedPnl},
+        10, ${input.size}, ${input.peak}, ${PAST_CLOSE}
+      )
     `;
   });
 
@@ -183,7 +203,23 @@ const seed = (watch: MarketWatch) =>
           scaleInConditions: [],
           partialReductionAllowed: false,
         },
-        protection: { stopMethod: "fixed", targetProfitUsd: 10 },
+        protection: {
+          stopMethod: "fixed",
+          targetProfitUsd: 10,
+          // Publishing checks the target against the basis it claims to come from:
+          // (10 USD of price / 2,000 mark) x 2,000 of notional = 10 USD of PnL.
+          targetProfitBasis: {
+            measurement: "excursion_quantile",
+            timeframe: "1m",
+            lookbackBars: 120,
+            measuredMoveUsd: 10,
+            expectedHoldBars: 10,
+            referencePrice: 2_000,
+            targetPriceMovePercent: 0.5,
+            positionNotionalUsd: 2_000,
+            rationale: "10-bar p50 excursion over a 120-bar window",
+          },
+        },
         exitConditions: [],
         abandonmentConditions: [],
         reentryConditions: [],
@@ -595,6 +631,129 @@ layer("WatchEvaluator", (it) => {
         freshness,
       };
       yield* seed({ type: "pnl_above", market: "ETH", valueUsd: 25 });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const inbox = yield* TradingEventInbox;
+      assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+      stubPosition = null;
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // `pnl_below` — the mirror of `pnl_above`, and signed, because the level
+  // worth watching on the way down is usually a loss.
+  // -------------------------------------------------------------------------
+
+  it.effect("fires a pnl_below watch when the loss reaches the level", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      stubPosition = {
+        market: "ETH",
+        size: 0.5,
+        entryPrice: 3_000,
+        unrealisedPnl: -8,
+        cumulativeFunding: 0,
+        marginUsed: 50,
+        freshness,
+      };
+      const watch = yield* seed({ type: "pnl_below", market: "ETH", valueUsd: -6 });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const inbox = yield* TradingEventInbox;
+      const claimed = yield* inbox.claimPending("mission_1");
+      assert.equal(claimed.length, 1);
+      assert.equal(claimed[0]?.deduplicationKey, `pnl_below:${watch.id}`);
+      stubPosition = null;
+    }),
+  );
+
+  it.effect("does not fire a pnl_below watch while the position is above it", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      stubPosition = {
+        market: "ETH",
+        size: 0.5,
+        entryPrice: 3_000,
+        unrealisedPnl: -2,
+        cumulativeFunding: 0,
+        marginUsed: 50,
+        freshness,
+      };
+      yield* seed({ type: "pnl_below", market: "ETH", valueUsd: -6 });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const inbox = yield* TradingEventInbox;
+      assert.equal((yield* inbox.claimPending("mission_1")).length, 0);
+      stubPosition = null;
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // `pnl_giveback` — measured against the reconciler's durable high-water mark,
+  // which is the whole reason holding past a profit target can be made safe.
+  // -------------------------------------------------------------------------
+
+  it.effect("fires a pnl_giveback watch on the drawdown from the recorded peak", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* writePositionPeak({ size: 0.5, unrealisedPnl: 12, peak: 20 });
+      stubPosition = {
+        market: "ETH",
+        size: 0.5,
+        entryPrice: 3_000,
+        unrealisedPnl: 12,
+        cumulativeFunding: 0,
+        marginUsed: 50,
+        freshness,
+      };
+      const watch = yield* seed({ type: "pnl_giveback", market: "ETH", drawdownUsd: 8 });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const inbox = yield* TradingEventInbox;
+      const claimed = yield* inbox.claimPending("mission_1");
+      assert.equal(claimed.length, 1);
+      assert.equal(claimed[0]?.deduplicationKey, `pnl_giveback:${watch.id}`);
+      assert.match(claimed[0]?.summary ?? "", /gave back/);
+      stubPosition = null;
+    }),
+  );
+
+  // A trade that never worked has no winner to give back. Firing here would put
+  // the give-back watch in the stop's job, on a position it knows nothing about.
+  it.effect("does not fire a pnl_giveback watch on a position that never profited", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* writePositionPeak({ size: 0.5, unrealisedPnl: -30, peak: null });
+      stubPosition = {
+        market: "ETH",
+        size: 0.5,
+        entryPrice: 3_000,
+        unrealisedPnl: -30,
+        cumulativeFunding: 0,
+        marginUsed: 50,
+        freshness,
+      };
+      yield* seed({ type: "pnl_giveback", market: "ETH", drawdownUsd: 8 });
       yield* TestClock.setTime(NOW);
       const evaluator = yield* WatchEvaluator;
       yield* evaluator.forgetDeliveredCandles;

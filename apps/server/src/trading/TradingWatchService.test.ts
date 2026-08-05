@@ -40,7 +40,7 @@ const candleCloseWatch: MarketWatch = {
 /** Shared in-memory database; each test migrates then truncates the trading tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 43 });
+  yield* runMigrations({ toMigrationInclusive: 45 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
@@ -79,7 +79,23 @@ const seedMission = Effect.gen(function* () {
         scaleInConditions: [],
         partialReductionAllowed: false,
       },
-      protection: { stopMethod: "fixed", targetProfitUsd: 10 },
+      protection: {
+        stopMethod: "fixed",
+        targetProfitUsd: 10,
+        // Publishing checks the target against the basis it claims to come from:
+        // (10 USD of price / 2,000 mark) x 2,000 of notional = 10 USD of PnL.
+        targetProfitBasis: {
+          measurement: "excursion_quantile",
+          timeframe: "1m",
+          lookbackBars: 120,
+          measuredMoveUsd: 10,
+          expectedHoldBars: 10,
+          referencePrice: 2_000,
+          targetPriceMovePercent: 0.5,
+          positionNotionalUsd: 2_000,
+          rationale: "10-bar p50 excursion over a 120-bar window",
+        },
+      },
       exitConditions: [],
       abandonmentConditions: [],
       reentryConditions: [],

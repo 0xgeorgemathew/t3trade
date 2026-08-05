@@ -45,13 +45,15 @@ const body = (name: string): PublishMomentumStrategyBody => ({
       measurement: "excursion_quantile",
       timeframe: "5m",
       lookbackBars: 120,
-      measuredMoveUsd: 50,
+      // (46.25 / 3,700) x 2,000 of notional = the 25 USD published above.
+      // Publishing checks that arithmetic, so the two cannot drift apart.
+      measuredMoveUsd: 46.25,
       expectedHoldBars: 10,
       referencePrice: 3_700,
       targetPriceMovePercent: 1.25,
       positionNotionalUsd: 2_000,
       historicalHitRatePercent: 50,
-      rationale: "Median 10-bar upside excursion over the last 120 5m bars is 50 USD of price.",
+      rationale: "Median 10-bar upside excursion over the last 120 5m bars is 46.25 USD of price.",
     },
   },
   exitConditions: [{ description: "5m close under 3,690" }],
@@ -63,7 +65,7 @@ const body = (name: string): PublishMomentumStrategyBody => ({
 
 const setup = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 43 });
+  yield* runMigrations({ toMigrationInclusive: 45 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM momentum_strategy_versions`;
@@ -341,6 +343,117 @@ layer("trading_publish_momentum_strategy (§14.3)", (it) => {
 
       const current = yield* strategies.getCurrentStrategy("mission_1");
       assert.ok(Option.isNone(current));
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // Target validation. `targetProfitUsd` is the one published number the
+  // runtime acts on unprompted — it arms a `pnl_above` watch at it — so it is
+  // the one worth checking before the publish lands.
+  // -------------------------------------------------------------------------
+
+  const withProtection = (
+    name: string,
+    protection: Partial<PublishMomentumStrategyBody["protection"]>,
+  ): PublishMomentumStrategyBody => {
+    const base = body(name);
+    return { ...base, protection: { ...base.protection, ...protection } };
+  };
+
+  it.effect("rejects a target published with no basis at all", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const strategies = yield* TradingStrategyService;
+
+      const result = yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedVersion: 0,
+        strategy: withProtection("no basis", { targetProfitBasis: undefined }),
+      });
+
+      assert.equal(result.outcome, "rejected");
+      if (result.outcome === "rejected") {
+        assert.equal(result.reason, "target_not_justified");
+        assert.match(result.detail ?? "", /targetProfitBasis/);
+        assert.equal(result.currentVersion, 0);
+      }
+
+      // A rejected publish leaves the mission where it was.
+      assert.ok(Option.isNone(yield* strategies.getCurrentStrategy("mission_1")));
+    }),
+  );
+
+  it.effect("rejects a target the basis next to it does not produce", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const strategies = yield* TradingStrategyService;
+
+      // The basis says (46.25 / 3,700) x 2,000 = 25; the target claims 90.
+      const result = yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedVersion: 0,
+        strategy: withProtection("mismatched", { targetProfitUsd: 90 }),
+      });
+
+      assert.equal(result.outcome, "rejected");
+      if (result.outcome === "rejected") {
+        assert.equal(result.reason, "target_not_justified");
+        assert.match(result.detail ?? "", /does not follow from the basis/);
+      }
+    }),
+  );
+
+  // The $1.70 on ~$2,000 of notional that started all this: derived correctly
+  // and under the ~$2.00 it cost to open and close. The cost floor is modeled
+  // from the fallback fee rate and cannot see the spread, so it reports itself
+  // in-band rather than refusing the publish.
+  it.effect("accepts a below-cost target but says so in the warnings", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const strategies = yield* TradingStrategyService;
+
+      const result = yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedVersion: 0,
+        strategy: withProtection("too small", {
+          targetProfitUsd: 1.7,
+          targetProfitBasis: {
+            measurement: "excursion_quantile",
+            timeframe: "1m",
+            lookbackBars: 120,
+            measuredMoveUsd: 1.7,
+            expectedHoldBars: 10,
+            referencePrice: 2_000,
+            targetPriceMovePercent: 0.085,
+            positionNotionalUsd: 2_000,
+            rationale: "10-bar p75 upside excursion on a quiet 1m window.",
+          },
+        }),
+      });
+
+      assert.equal(result.outcome, "accepted");
+      if (result.outcome === "accepted") {
+        assert.equal(result.warnings.length, 1);
+        assert.match(result.warnings[0] ?? "", /round-trip cost/);
+      }
+    }),
+  );
+
+  it.effect("accepts a justified target with no warnings", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const strategies = yield* TradingStrategyService;
+
+      const result = yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedVersion: 0,
+        strategy: body("justified"),
+      });
+
+      assert.equal(result.outcome, "accepted");
+      if (result.outcome === "accepted") {
+        assert.deepEqual(result.warnings, []);
+      }
     }),
   );
 });
