@@ -43,6 +43,8 @@ import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import {
   type ContextMenuItem,
+  type EnvironmentId,
+  type OrchestrationTradingMission,
   ProjectId,
   type ScopedThreadRef,
   type ResolvedKeybindingsConfig,
@@ -122,6 +124,12 @@ import {
 } from "../threadRoutes";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { formatRelativeTimeLabel } from "../timestampFormat";
+import { useTradingMissions } from "../lib/tradingMissionsState";
+import {
+  deriveMissionStrip,
+  shouldShowMissionStrip,
+  type MissionStripTone,
+} from "./trading/tradingPresentation";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
 import { Kbd } from "./ui/kbd";
 import {
@@ -227,6 +235,20 @@ const PROJECT_GROUPING_MODE_LABELS: Record<SidebarProjectGroupingMode, string> =
 const SIDEBAR_ICON_ACTION_BUTTON_CLASS =
   "inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring";
 
+/**
+ * The mission strip's state dot, matched to how urgent the mission's state is.
+ *
+ * A local copy of the map in {@link MissionStripBar} and MissionHeaderPill:
+ * kept here so a change to one pill's chrome does not have to touch the
+ * other's file.
+ */
+const TONE_DOT: Record<MissionStripTone, string> = {
+  exposed: "bg-long",
+  armed: "bg-armed",
+  paused: "bg-muted-foreground",
+  blocked: "bg-destructive",
+};
+
 function SidebarThreadDetailPrewarmer({ threadRef }: { readonly threadRef: ScopedThreadRef }) {
   useEnvironmentThread(threadRef.environmentId, threadRef.threadId);
   return null;
@@ -304,6 +326,12 @@ function buildThreadJumpLabelMap(input: {
 interface SidebarThreadRowProps {
   thread: SidebarThreadSummary;
   projectCwd: string | null;
+  /**
+   * The trading mission bound to this thread, if any. Only rows whose mission
+   * passes {@link shouldShowMissionStrip} render the mission accent; everything
+   * else stays visually identical to a non-trading row.
+   */
+  readonly mission?: OrchestrationTradingMission | null;
   orderedProjectThreadKeys: readonly string[];
   isActive: boolean;
   jumpLabel: string | null;
@@ -363,6 +391,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
     cancelRename,
     attemptArchiveThread,
     openPrLink,
+    mission,
     thread,
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
@@ -455,6 +484,20 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
   });
   const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
+  // The mission accent is a single second line under the title; the strip's
+  // full detail lives in the header pill and panel. detailSecondary (live P&L
+  // and protection) is preferred while exposed, falling back to detailPrimary
+  // (the armed watch or blocked reason) so a flat mission still reads.
+  const missionStrip =
+    mission !== undefined && mission !== null && shouldShowMissionStrip(mission)
+      ? deriveMissionStrip(mission)
+      : null;
+  const missionSubtitle =
+    missionStrip === null
+      ? null
+      : `${missionStrip.marketLabel} · ${missionStrip.stateLabel} · ${
+          missionStrip.detailSecondary ?? missionStrip.detailPrimary
+        }`;
   const isConfirmingArchive = confirmingArchiveThreadKey === threadKey && !isThreadRunning;
   const threadMetaClassName = isConfirmingArchive
     ? "pointer-events-none opacity-0"
@@ -671,60 +714,82 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
         className={`${resolveThreadRowClassName({
           isActive,
           isSelected,
-        })} relative isolate`}
+        })} relative isolate${missionSubtitle === null ? "" : " h-auto min-h-8 overflow-visible"}`}
         onClick={handleRowClick}
         onDoubleClick={handleRowDoubleClick}
         onKeyDown={handleRowKeyDown}
         onContextMenu={handleRowContextMenu}
       >
-        <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
-          {prStatus && (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    aria-label={prStatus.tooltip}
-                    className={`inline-flex items-center justify-center ${prStatus.colorClass} cursor-pointer rounded-sm outline-hidden focus-visible:ring-1 focus-visible:ring-ring`}
-                    onClick={handlePrClick}
-                  >
-                    <ChangeRequestStatusIcon className="size-3" />
-                  </button>
-                }
+        <div
+          className={`flex min-w-0 flex-1 text-left ${
+            missionSubtitle === null ? "items-center gap-1.5" : "flex-col items-start gap-0.5"
+          }`}
+        >
+          <div
+            className={`flex min-w-0 items-center gap-1.5 ${
+              missionSubtitle === null ? "flex-1" : "w-full"
+            }`}
+          >
+            {prStatus && (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      aria-label={prStatus.tooltip}
+                      className={`inline-flex items-center justify-center ${prStatus.colorClass} cursor-pointer rounded-sm outline-hidden focus-visible:ring-1 focus-visible:ring-ring`}
+                      onClick={handlePrClick}
+                    >
+                      <ChangeRequestStatusIcon className="size-3" />
+                    </button>
+                  }
+                />
+                <TooltipPopup side="top">
+                  <PrStatusTooltipContent status={prStatus} />
+                </TooltipPopup>
+              </Tooltip>
+            )}
+            {threadStatus && <ThreadStatusLabel status={threadStatus} />}
+            {renamingThreadKey === threadKey ? (
+              <input
+                ref={handleRenameInputRef}
+                className="min-w-0 flex-1 truncate rounded border border-ring bg-transparent px-0.5 text-sm outline-none"
+                value={renamingTitle}
+                onChange={handleRenameInputChange}
+                onKeyDown={handleRenameInputKeyDown}
+                onBlur={handleRenameInputBlur}
+                onClick={handleRenameInputClick}
+                onDoubleClick={handleRenameInputClick}
               />
-              <TooltipPopup side="top">
-                <PrStatusTooltipContent status={prStatus} />
-              </TooltipPopup>
-            </Tooltip>
-          )}
-          {threadStatus && <ThreadStatusLabel status={threadStatus} />}
-          {renamingThreadKey === threadKey ? (
-            <input
-              ref={handleRenameInputRef}
-              className="min-w-0 flex-1 truncate rounded border border-ring bg-transparent px-0.5 text-sm outline-none"
-              value={renamingTitle}
-              onChange={handleRenameInputChange}
-              onKeyDown={handleRenameInputKeyDown}
-              onBlur={handleRenameInputBlur}
-              onClick={handleRenameInputClick}
-              onDoubleClick={handleRenameInputClick}
-            />
-          ) : (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <span
-                    className="min-w-0 flex-1 truncate text-sm"
-                    data-testid={`thread-title-${thread.id}`}
-                  >
-                    {thread.title}
-                  </span>
-                }
+            ) : (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span
+                      className="min-w-0 flex-1 truncate text-sm"
+                      data-testid={`thread-title-${thread.id}`}
+                    >
+                      {thread.title}
+                    </span>
+                  }
+                />
+                <TooltipPopup side="top" className="max-w-80 whitespace-normal leading-tight">
+                  {thread.title}
+                </TooltipPopup>
+              </Tooltip>
+            )}
+          </div>
+          {missionSubtitle !== null && missionStrip !== null && (
+            <span
+              data-testid={`thread-mission-accent-${thread.id}`}
+              className="flex min-w-0 w-full items-center gap-1 text-[10px] tabular-nums text-muted-foreground/70"
+            >
+              <span
+                aria-hidden
+                className={`size-1.5 shrink-0 rounded-full ${TONE_DOT[missionStrip.tone]}`}
               />
-              <TooltipPopup side="top" className="max-w-80 whitespace-normal leading-tight">
-                {thread.title}
-              </TooltipPopup>
-            </Tooltip>
+              <span className="min-w-0 flex-1 truncate">{missionSubtitle}</span>
+            </span>
           )}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
@@ -878,6 +943,13 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
 
 interface SidebarProjectThreadListProps {
   projectKey: string;
+  /**
+   * The project group's representative environment. Trading missions are
+   * looked up once against this environment, so rows whose thread lives in a
+   * different (remote) environment simply show no mission accent — an
+   * acceptable prototype limitation that avoids spawning a poll per env.
+   */
+  environmentId: EnvironmentId;
   projectExpanded: boolean;
   hasOverflowingThreads: boolean;
   hiddenThreadStatus: ThreadStatusPill | null;
@@ -929,6 +1001,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
 ) {
   const {
     projectKey,
+    environmentId,
     projectExpanded,
     hasOverflowingThreads,
     hiddenThreadStatus,
@@ -963,6 +1036,20 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
     expandThreadListForProject,
     collapseThreadListForProject,
   } = props;
+  // One mission read per project (the hook shares its atom across rows in the
+  // same environment, so this does not multiply RPCs). Rows whose thread lives
+  // in a different environment are simply absent from the map and render no
+  // accent.
+  const { missions } = useTradingMissions(environmentId);
+  const missionByThreadId = useMemo(() => {
+    const map = new Map<string, OrchestrationTradingMission>();
+    for (const mission of missions) {
+      if (shouldShowMissionStrip(mission)) {
+        map.set(mission.threadId, mission);
+      }
+    }
+    return map;
+  }, [missions]);
   const showMoreButtonRender = useMemo(() => <button type="button" />, []);
   const showLessButtonRender = useMemo(() => <button type="button" />, []);
 
@@ -989,6 +1076,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
               key={threadKey}
               thread={thread}
               projectCwd={projectCwd}
+              mission={missionByThreadId.get(thread.id) ?? null}
               orderedProjectThreadKeys={orderedProjectThreadKeys}
               isActive={activeRouteThreadKey === threadKey}
               jumpLabel={threadJumpLabelByKey.get(threadKey) ?? null}
@@ -2322,6 +2410,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
       <SidebarProjectThreadList
         projectKey={project.projectKey}
+        environmentId={project.environmentId}
         projectExpanded={projectExpanded}
         hasOverflowingThreads={hasOverflowingThreads}
         hiddenThreadStatus={hiddenThreadStatus}

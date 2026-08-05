@@ -165,11 +165,12 @@ import {
   projectScriptIdFromCommand,
 } from "~/projectScripts";
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
-import { useTradingMissionForThread } from "~/lib/tradingMissionsState";
+import { useTradingMissions } from "~/lib/tradingMissionsState";
 import { MissionChartPanel } from "./trading/MissionChartPanel";
 import { MissionComposerControls } from "./trading/MissionComposerControls";
 import { MissionHeaderPill } from "./trading/MissionHeaderPill";
 import { MissionThreadBanners, MissionThreadCards } from "./trading/MissionThreadPanel";
+import { NewMissionForm } from "./trading/NewMissionForm";
 import { isLiveMission } from "./trading/tradingPresentation";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
@@ -1155,9 +1156,25 @@ function ChatViewContent(props: ChatViewProps) {
   const routeThreadKey = useMemo(() => scopedThreadKey(routeThreadRef), [routeThreadRef]);
   // Phase 2: the mission bound to this thread, if any (§10.2). Gates the
   // pinned snapshot card above the timeline. Non-trading threads resolve null.
-  const { mission: boundMission, error: missionFeedError } = useTradingMissionForThread(
-    environmentId,
-    threadId,
+  //
+  // The environment-wide snapshot is read once here (rather than via the
+  // `useTradingMissionForThread` helper) because the dev-gated hero composer
+  // below also needs the full set of live missions to compute
+  // `boundThreadIds`/`hasActiveMission` for `NewMissionForm`. One subscription,
+  // one poll timer — see `tradingMissionsState.ts`.
+  const { missions, error: missionFeedError } = useTradingMissions(environmentId);
+  const boundMission = missions.find((mission) => mission.threadId === threadId) ?? null;
+  // The domain holds one active mission per user (§10.2), so `hasActiveMission`
+  // is environment-wide, not per-thread. `boundThreadIds` carries the same set
+  // so the hero form can refuse to offer a thread that already carries one.
+  const liveMissionThreadIds = useMemo(
+    () =>
+      new Set(missions.filter((mission) => isLiveMission(mission.status)).map((m) => m.threadId)),
+    [missions],
+  );
+  const environmentHasActiveMission = useMemo(
+    () => missions.some((mission) => isLiveMission(mission.status)),
+    [missions],
   );
   const updateProject = useAtomCommand(projectEnvironment.update, { reportFailure: false });
   const upsertKeybinding = useAtomCommand(serverEnvironment.upsertKeybinding, {
@@ -5863,6 +5880,21 @@ function ChatViewContent(props: ChatViewProps) {
                           activeProjectRef={activeProjectRef}
                           activeProjectTitle={activeProject?.title ?? null}
                         />
+                        {/* Dev-only hero composer for empty/unbound draft threads.
+                            Privy owns real account onboarding (PROMPT-06); until it
+                            lands this stays a `DEV`-gated affordance, not a product
+                            surface. Mirrors the dev form in `TradingWorkspacePanel`,
+                            surfaced in the hero so an operator can seed a mission
+                            without leaving the thread. */}
+                        {import.meta.env.DEV && boundMission === null ? (
+                          <div className="mx-auto mt-6 w-full max-w-2xl px-4">
+                            <NewMissionForm
+                              environmentId={environmentId}
+                              boundThreadIds={liveMissionThreadIds}
+                              hasActiveMission={environmentHasActiveMission}
+                            />
+                          </div>
+                        ) : null}
                       </div>
                       <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                     </div>
