@@ -54,7 +54,7 @@ const input: ReconcileInput = {
 /** Migrate the shared in-memory db, then truncate the 038 tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 47 });
+  yield* runMigrations({ toMigrationInclusive: 48 });
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM trading_orders`;
@@ -138,6 +138,7 @@ const longClearinghouse: WireClearinghouseStateResponse = {
         cumulativeFunding: "0",
         marginUsed: "600",
         liquidationPx: "2500",
+        leverage: { type: "isolated", value: 10 },
       },
       type: "oneWay",
     },
@@ -165,6 +166,7 @@ const snapshotFromClearinghouse = (wire: WireClearinghouseStateResponse): AgentA
         ap.position.liquidationPx === null || ap.position.liquidationPx === undefined
           ? undefined
           : Number(ap.position.liquidationPx),
+      leverage: ap.position.leverage?.value,
     })),
     freshness: { observedAt: 1_000, source: "info_api", staleAfterMillis: 5_000 },
   }) as unknown as AgentAccountSnapshot;
@@ -503,6 +505,70 @@ layer("HyperliquidReconciler", (it) => {
       assert.ok(flatRow[0] !== undefined);
       assert.equal(flatRow[0].size, 0);
       assert.equal(flatRow[0].entry_price, null);
+    }),
+  );
+
+  // The exchange's leverage is a SETTING, not a measurement of this position,
+  // so it is the one column the flat-clear leaves standing: the receipts that
+  // quote it are read long after the position they belong to has closed.
+  it.effect("records the exchange's leverage and keeps it once the mission goes flat", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const reconciler = yield* HyperliquidReconciler;
+      const sql = yield* SqlClient.SqlClient;
+      const readLeverage = Effect.gen(function* () {
+        const rows = yield* sql<{ readonly leverage: number | null }>`
+          SELECT leverage FROM trading_position_snapshots
+          WHERE mission_id = ${MISSION} AND market = 'ETH'
+        `;
+        return rows[0]?.leverage ?? null;
+      });
+
+      yield* setState({ account: snapshotFromClearinghouse(longClearinghouse) });
+      yield* reconciler.reconcile(input, "after_position_update");
+      assert.equal(yield* readLeverage, 10);
+
+      yield* setState({ account: snapshotFromClearinghouse(flatClearinghouse) });
+      yield* reconciler.reconcile(input, "after_position_update");
+      assert.equal(yield* readLeverage, 10);
+    }),
+  );
+
+  // A sell is an open on a short and a close on a long, and the fill row cannot
+  // tell the two apart. The exchange labels it; this is that label surviving.
+  it.effect("records the exchange's own lifecycle label on each fill", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* setState({
+        fills: [{ ...fillAt(5_000, "1ab3".padEnd(32, "0"), "1", 700), dir: "Close Long" }],
+      });
+
+      const reconciler = yield* HyperliquidReconciler;
+      yield* reconciler.reconcile(input, "after_fill");
+
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly direction: string | null }>`
+        SELECT direction FROM trading_fills WHERE mission_id = ${MISSION} AND order_id = 700
+      `;
+      assert.equal(rows[0]?.direction, "Close Long");
+    }),
+  );
+
+  // A fill the exchange sent without one is stored without one, and the card
+  // falls back to naming the order rather than guessing at a direction.
+  it.effect("stores no lifecycle for a fill the exchange did not label", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* setState({ fills: [fillAt(5_000, "2cd4".padEnd(32, "0"), "1", 701)] });
+
+      const reconciler = yield* HyperliquidReconciler;
+      yield* reconciler.reconcile(input, "after_fill");
+
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly direction: string | null }>`
+        SELECT direction FROM trading_fills WHERE mission_id = ${MISSION} AND order_id = 701
+      `;
+      assert.equal(rows[0]?.direction, null);
     }),
   );
 

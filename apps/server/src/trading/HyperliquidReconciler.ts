@@ -178,6 +178,7 @@ function readCanonicalAccount(
         protectedSize: 0,
         liquidationPrice: position.liquidationPx,
         markPx,
+        leverage: position.leverage,
         observedAt,
       } as TradingPositionSnapshot,
     };
@@ -330,6 +331,9 @@ function readCanonicalFills(
           // §16.2 closedPnl: the realised PnL the exchange attributes to this
           // fill. Absent on some fills (e.g. entry increases) — treat as 0.
           closedPnl: f.closedPnl !== undefined ? Number.parseFloat(f.closedPnl) : 0,
+          // §16.2 dir: the exchange's own label for where this fill sat in the
+          // position's life ("Open Long", "Close Short", "Long > Short").
+          direction: f.dir,
           tradedAt: f.time,
           observedAt,
         }) as TradingFill,
@@ -365,7 +369,9 @@ function persistPosition(
     const ts = yield* now();
     if (position === null) {
       // Flat — clear the snapshot row, excursions and open time included, so the
-      // next position measures only itself.
+      // next position measures only itself. `leverage` is left standing: it is
+      // the market's setting rather than this position's measurement, and the
+      // mission's receipts are read long after the position has closed.
       yield* sql`
         UPDATE trading_position_snapshots
         SET size = 0, entry_price = NULL, unrealised_pnl = 0, margin_used = 0,
@@ -381,13 +387,14 @@ function persistPosition(
     yield* sql`
       INSERT INTO trading_position_snapshots (
         mission_id, market, size, entry_price, unrealised_pnl, margin_used,
-        protected_size, liquidation_price, mark_px, peak_unrealised_pnl,
+        protected_size, liquidation_price, mark_px, leverage, peak_unrealised_pnl,
         trough_unrealised_pnl, opened_at, observed_at
       ) VALUES (
         ${position.missionId}, ${position.market}, ${position.size},
         ${position.entryPrice ?? null}, ${position.unrealisedPnl},
         ${position.marginUsed}, ${position.protectedSize},
         ${position.liquidationPrice ?? null}, ${position.markPx ?? null},
+        ${position.leverage ?? null},
         ${peak}, ${trough}, ${position.observedAt}, ${position.observedAt}
       )
       ON CONFLICT(mission_id, market) DO UPDATE SET
@@ -396,6 +403,7 @@ function persistPosition(
         protected_size = ${position.protectedSize},
         liquidation_price = ${position.liquidationPrice ?? null},
         mark_px = ${position.markPx ?? null},
+        leverage = COALESCE(${position.leverage ?? null}, trading_position_snapshots.leverage),
         peak_unrealised_pnl = MAX(COALESCE(trading_position_snapshots.peak_unrealised_pnl, 0), ${peak}),
         trough_unrealised_pnl = MIN(COALESCE(trading_position_snapshots.trough_unrealised_pnl, 0), ${trough}),
         opened_at = COALESCE(trading_position_snapshots.opened_at, ${position.observedAt}),
@@ -433,15 +441,17 @@ function persistFills(
         INSERT INTO trading_fills (
           fill_id, mission_id, execution_id, cloid, order_id, market, side,
           filled_size, avg_fill_price, fee_usd, fee_token, closed_pnl,
-          traded_at, observed_at
+          direction, traded_at, observed_at
         ) VALUES (
           ${f.fillId}, ${f.missionId}, ${f.executionId ?? null}, ${f.cloid ?? null},
           ${f.orderId}, ${f.market}, ${f.side}, ${f.filledSize}, ${f.avgFillPrice},
-          ${f.feeUsd}, ${f.feeToken}, ${f.closedPnl}, ${f.tradedAt}, ${f.observedAt}
+          ${f.feeUsd}, ${f.feeToken}, ${f.closedPnl}, ${f.direction ?? null},
+          ${f.tradedAt}, ${f.observedAt}
         )
         ON CONFLICT(fill_id) DO UPDATE SET
           filled_size = ${f.filledSize}, avg_fill_price = ${f.avgFillPrice},
-          closed_pnl = ${f.closedPnl}, fee_usd = ${f.feeUsd}, observed_at = ${f.observedAt}
+          closed_pnl = ${f.closedPnl}, fee_usd = ${f.feeUsd},
+          direction = ${f.direction ?? null}, observed_at = ${f.observedAt}
       `;
     }
 

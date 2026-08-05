@@ -88,17 +88,20 @@ const seedFill = (fill: {
   readonly fee: number;
   readonly closedPnl: number;
   readonly tradedAt: number;
+  /** The exchange's lifecycle label, when it sent one. */
+  readonly direction?: string;
 }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
       INSERT INTO trading_fills (
         fill_id, mission_id, cloid, order_id, market, side, filled_size,
-        avg_fill_price, fee_usd, fee_token, closed_pnl, traded_at, observed_at
+        avg_fill_price, fee_usd, fee_token, closed_pnl, direction, traded_at,
+        observed_at
       ) VALUES (
         ${fill.fillId}, ${MISSION_ID}, ${`0xcloid${fill.orderId}`}, ${fill.orderId}, 'ETH',
         ${fill.side}, ${fill.size}, ${fill.price}, ${fill.fee}, 'USDC',
-        ${fill.closedPnl}, ${fill.tradedAt}, ${fill.tradedAt}
+        ${fill.closedPnl}, ${fill.direction ?? null}, ${fill.tradedAt}, ${fill.tradedAt}
       )
     `;
   });
@@ -249,6 +252,53 @@ layer("TradingMissionProjection fill receipts", (it) => {
       assert.equal(entry.side, "buy");
       assert.equal(entry.filledSize, 3);
       assert.closeTo(entry.avgFillPrice, 1877.1, 0.01);
+    }),
+  );
+
+  // The receipt has to say which half of the position's life it was, and `side`
+  // does not: this same "sell" is a close here and would be an open on a short.
+  it.effect("carries the exchange's lifecycle label through to the receipt", () =>
+    Effect.gen(function* () {
+      yield* seedMission;
+      yield* seedFill({
+        fillId: "f1",
+        orderId: 30,
+        side: "buy",
+        size: 1,
+        price: 1878,
+        fee: 0.2,
+        closedPnl: 0,
+        tradedAt: 1_000,
+        direction: "Open Long",
+      });
+      yield* seedFill({
+        fillId: "f2",
+        orderId: 31,
+        side: "sell",
+        size: 1,
+        price: 1880,
+        fee: 0.2,
+        closedPnl: 2,
+        tradedAt: 2_000,
+        direction: "Close Long",
+      });
+      // An older fill, from before the label was recorded.
+      yield* seedFill({
+        fillId: "f3",
+        orderId: 29,
+        side: "buy",
+        size: 1,
+        price: 1870,
+        fee: 0.2,
+        closedPnl: 0,
+        tradedAt: 500,
+      });
+
+      const fills = yield* readFills;
+
+      assert.equal(fills[0]?.direction, "Close Long");
+      assert.equal(fills[1]?.direction, "Open Long");
+      assert.equal(fills[2]?.direction, undefined);
     }),
   );
 

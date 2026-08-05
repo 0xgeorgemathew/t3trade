@@ -210,6 +210,7 @@ function toPosition(
     cumulativeFunding: num(p.cumulativeFunding),
     marginUsed: num(p.marginUsed),
     liquidationPx: p.liquidationPx != null ? num(p.liquidationPx) : undefined,
+    leverage: p.leverage?.value,
   };
 }
 

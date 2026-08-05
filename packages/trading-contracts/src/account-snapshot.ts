@@ -50,6 +50,8 @@ export const AccountPosition = Schema.Struct({
   marginUsed: UsdAmount,
   /** Exchange liquidation price, when the exchange reports one. */
   liquidationPx: Schema.optional(Price),
+  /** Leverage the exchange has this position configured at, e.g. 20. */
+  leverage: Schema.optional(Schema.Number),
 });
 export type AccountPosition = typeof AccountPosition.Type;
 

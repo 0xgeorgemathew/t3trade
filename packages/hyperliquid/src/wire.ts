@@ -152,6 +152,19 @@ export const WirePosition = Schema.Struct({
   marginUsed: Schema.String,
   /** Exchange liquidation price; present once leverage creates one. */
   liquidationPx: Schema.optional(Schema.NullOr(Schema.String)),
+  /**
+   * The leverage the position is running at, as the exchange configured it.
+   *
+   * Optional because a shape drift here must not fail a position read: without
+   * it the surfaces fall back to notional over margin, which is the same number
+   * for an isolated position and only differs under cross margin.
+   */
+  leverage: Schema.optional(
+    Schema.Struct({
+      type: Schema.optional(Schema.String),
+      value: Schema.Number,
+    }),
+  ),
 });
 export type WirePosition = typeof WirePosition.Type;
 

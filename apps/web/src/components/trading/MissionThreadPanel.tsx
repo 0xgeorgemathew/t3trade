@@ -30,6 +30,8 @@ import type {
 } from "@t3tools/contracts";
 import type { ReactNode } from "react";
 
+import type { PositionLifecycle } from "./tradingPresentation";
+
 import { MissionFeedErrorBanner, MissionStalenessBanner } from "./MissionStalenessBanner";
 import { MissionStripBar } from "./MissionStripBar";
 import {
@@ -41,6 +43,8 @@ import {
   formatSignedPercent,
   formatSignedUsd,
   humanizeLiteral,
+  readFillLifecycle,
+  readIntentLifecycle,
   shouldShowMissionStrip,
 } from "./tradingPresentation";
 import { useMissionControls } from "./useMissionControls";
@@ -126,69 +130,93 @@ function Chip({ children }: { children: ReactNode }) {
 }
 
 /**
- * A direction chip, tinted the way the exchange tints its own positions table:
- * green for the side that gains when the market rises, red for the other.
+ * What a card is about, in the one line every card carries: the market and its
+ * leverage, the side of the exposure, and which half of the position's life
+ * this is — `ETH 20x Long · Open`.
  *
- * The colour is never the only signal. Every chip also spells its direction out,
- * because a red/green distinction is the one an operator is most likely to be
- * unable to see — and on a trading surface that is the expensive kind of guess.
+ * The tint is the exchange's: green for the side that gains when the market
+ * rises, red for the other. It is never the only signal — the chip spells the
+ * direction out too, because red/green is the distinction an operator is most
+ * likely to be unable to see, and on a trading surface that is the expensive
+ * kind of guess.
+ *
+ * With no lifecycle to show (a fill recorded before the exchange's label was
+ * carried), the chip goes neutral and names the order instead. An untinted
+ * "Sell 0.67" is honest; tinting it red would assert a short the fill may well
+ * have been closing.
  */
-function DirectionChip({
-  direction,
+function LifecycleChips({
   market,
-  detail,
   leverage,
+  lifecycle,
+  fallbackDetail,
 }: {
-  direction: "long" | "short";
   market: string;
-  /** What the chip is about: the exposure held, or the size that filled. */
-  detail: string;
-  /** The leverage the position runs at, exchange-style. Omitted for fills. */
-  leverage?: number | undefined;
+  /** The market's configured leverage, when the exchange has reported one. */
+  leverage: number | null;
+  lifecycle: PositionLifecycle | null;
+  /** What to say instead when the lifecycle is unknown, e.g. "Sell 0.6729". */
+  fallbackDetail: string;
 }) {
+  const leverageTag =
+    leverage === null ? null : (
+      <span className="rounded-sm bg-current/15 px-1 tabular-nums">{formatLeverage(leverage)}</span>
+    );
+
+  if (lifecycle === null) {
+    return (
+      <Chip>
+        {market} {fallbackDetail}
+      </Chip>
+    );
+  }
+
   const tone =
-    direction === "long"
+    lifecycle.direction === "long"
       ? "border-profit/40 bg-profit/10 text-profit"
       : "border-loss/40 bg-loss/10 text-loss";
 
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-px text-[11px] font-medium ${tone}`}
-    >
-      <span>{market}</span>
-      {leverage === undefined ? null : (
-        <span className="rounded-sm bg-current/15 px-1 tabular-nums">
-          {formatLeverage(leverage)}
-        </span>
-      )}
-      <span className="font-normal opacity-80">{detail}</span>
-    </span>
+    <>
+      <span
+        className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-px text-[11px] font-medium ${tone}`}
+      >
+        <span>{market}</span>
+        {leverageTag}
+        <span>{lifecycle.direction === "long" ? "Long" : "Short"}</span>
+      </span>
+      <Chip>{lifecycle.actionLabel}</Chip>
+    </>
   );
 }
 
 /** The order-intent card while an execution record is in flight (§10). */
-function OrderIntentCard({ exec }: { exec: TradingExecutionView }) {
+function OrderIntentCard({
+  exec,
+  leverage,
+}: {
+  exec: TradingExecutionView;
+  leverage: number | null;
+}) {
   return (
     <Card
       title="Order intent"
       badge={
-        <>
-          <DirectionChip
-            direction={exec.side === "buy" ? "long" : "short"}
-            market={exec.market}
-            detail={`${sideLabel(exec.side)} ${formatSize(exec.size)}`}
-          />
-          <Chip>{humanizeLiteral(exec.actionType)}</Chip>
-        </>
+        <LifecycleChips
+          market={exec.market}
+          leverage={leverage}
+          lifecycle={readIntentLifecycle(exec)}
+          fallbackDetail={`${sideLabel(exec.side)} ${formatSize(exec.size)}`}
+        />
       }
       meta={humanizeLiteral(exec.status)}
       accentClassName="border-armed/40 bg-armed/5"
     >
       <FieldRows>
-        <Field label="Size" value={formatSize(exec.size)} />
+        <Field label="Order" value={`${sideLabel(exec.side)} ${formatSize(exec.size)}`} />
         <Field label="Limit" value={formatPrice(exec.limitPrice)} />
         <Field label="Time in force" value={exec.timeInForce.toUpperCase()} />
-        <Field label="Reduce only" value={exec.reduceOnly ? "Yes" : "No"} />
+        <Field label="Action" value={humanizeLiteral(exec.actionType)} />
       </FieldRows>
     </Card>
   );
@@ -198,26 +226,35 @@ function OrderIntentCard({ exec }: { exec: TradingExecutionView }) {
 function FillReceipt({
   fill,
   intent,
+  leverage,
 }: {
   fill: TradingFillView;
   /** The execution this fill can be attributed to, for the slippage figure. */
   intent: TradingExecutionView | null;
+  /** The market's configured leverage, for the chip. */
+  leverage: number | null;
 }) {
   const slippagePercent = deriveFillSlippagePercent(fill, intent);
+  const lifecycle = readFillLifecycle(fill.direction);
+  // An entry has no result yet, and "Realized $0.00" on one reads as a trade
+  // that made nothing rather than a trade that has not finished.
+  const showRealized = lifecycle === null || lifecycle.action !== "open" || fill.closedPnl !== 0;
 
   return (
     <Card
       title="Filled"
       badge={
-        <DirectionChip
-          direction={fill.side === "buy" ? "long" : "short"}
+        <LifecycleChips
           market={fill.market}
-          detail={`${sideLabel(fill.side)} ${formatSize(fill.filledSize)}`}
+          leverage={leverage}
+          lifecycle={lifecycle}
+          fallbackDetail={`${sideLabel(fill.side)} ${formatSize(fill.filledSize)}`}
         />
       }
       meta={`${new Date(fill.tradedAt).toLocaleTimeString()} · #${fill.orderId}`}
     >
       <StatLine>
+        <Stat label="Size" value={formatSize(fill.filledSize)} />
         <Stat label="Average fill" value={formatPrice(fill.avgFillPrice)} />
         {slippagePercent === null ? null : (
           // Positive means the fill spent some of the slippage bound the server
@@ -229,11 +266,13 @@ function FillReceipt({
           />
         )}
         <Stat label="Fee" value={formatSignedUsd(-fill.feeUsd)} />
-        <Stat
-          label="Realized"
-          value={formatSignedUsd(fill.closedPnl)}
-          tone={pnlTone(fill.closedPnl)}
-        />
+        {showRealized && (
+          <Stat
+            label="Realized"
+            value={formatSignedUsd(fill.closedPnl)}
+            tone={pnlTone(fill.closedPnl)}
+          />
+        )}
       </StatLine>
     </Card>
   );
@@ -251,13 +290,15 @@ function FillReceipt({
 function PositionCard({
   position,
   markPrice,
+  leverage,
 }: {
   position: TradingPositionView;
   /** The live mark, preferred over the snapshot's own as it is newer. */
   markPrice: number | null;
+  /** The market's configured leverage, for the chip. */
+  leverage: number | null;
 }) {
   const direction = position.size > 0 ? "long" : "short";
-  const leverage = deriveEffectiveLeverage(position);
   // §16.1: a stop that covers less than the position is the difference between
   // a bounded loss and an open-ended one, so it is a figure, not a checkmark.
   const protection =
@@ -272,15 +313,14 @@ function PositionCard({
     <Card
       title="Position"
       badge={
-        <>
-          <DirectionChip
-            direction={direction}
-            market={position.market}
-            detail={direction === "long" ? "Long" : "Short"}
-            {...(leverage === null ? {} : { leverage })}
-          />
-          <Chip>Open</Chip>
-        </>
+        <LifecycleChips
+          market={position.market}
+          leverage={leverage}
+          // The position IS the open half of the cycle — that is what a card
+          // rendering only while exposure is held means.
+          lifecycle={{ direction, action: "open", actionLabel: "Open" }}
+          fallbackDetail=""
+        />
       }
       meta={`Margin $${position.marginUsed.toFixed(2)}`}
     >
@@ -363,17 +403,33 @@ export function MissionThreadCards({ mission }: { readonly mission: Orchestratio
 
   if (!hasCards) return null;
 
+  // One leverage for the whole thread: it is the market's setting, so it is the
+  // same for the order about to go on and the receipt from an hour ago. The
+  // exchange's own figure when the reconciler has read one, and notional over
+  // margin when it has not.
+  const leverage =
+    mission.leverage ??
+    (openPosition === null ? null : deriveEffectiveLeverage(openPosition)) ??
+    null;
+
   return (
     <div className="flex flex-col gap-2 pt-2">
-      {mission.inFlightExecution && <OrderIntentCard exec={mission.inFlightExecution} />}
+      {mission.inFlightExecution && (
+        <OrderIntentCard exec={mission.inFlightExecution} leverage={leverage} />
+      )}
       {openPosition && (
-        <PositionCard position={openPosition} markPrice={mission.marketPrice ?? null} />
+        <PositionCard
+          position={openPosition}
+          markPrice={mission.marketPrice ?? null}
+          leverage={leverage}
+        />
       )}
       {mission.recentFills.slice(0, 3).map((fill) => (
         <FillReceipt
           key={`${fill.orderId}-${fill.tradedAt}`}
           fill={fill}
           intent={mission.inFlightExecution}
+          leverage={leverage}
         />
       ))}
     </div>

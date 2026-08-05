@@ -177,6 +177,7 @@ interface FillRow {
   readonly avg_fill_price: number;
   readonly fee_usd: number;
   readonly closed_pnl: number;
+  readonly direction: string | null;
   readonly traded_at: number;
 }
 
@@ -205,6 +206,7 @@ interface PositionSnapshotRow {
   readonly protected_size: number;
   readonly liquidation_price: number | null;
   readonly mark_px: number | null;
+  readonly leverage: number | null;
   readonly observed_at: number;
 }
 
@@ -284,6 +286,7 @@ const toMission = (
       avgFillPrice: f.avg_fill_price,
       feeUsd: f.fee_usd,
       closedPnl: f.closed_pnl,
+      direction: f.direction ?? undefined,
       tradedAt: toIso(f.traded_at),
     })),
     result: {
@@ -307,6 +310,11 @@ const toMission = (
             markPrice: exec.position.mark_px ?? undefined,
             observedAt: toIso(exec.position.observed_at),
           },
+    // The market's configured leverage, read off the position snapshot because
+    // that is where the exchange reports it. Mission-level rather than
+    // position-level: it outlives the position, and the mission's receipts are
+    // read after it has closed.
+    leverage: exec.position?.leverage ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }) satisfies OrchestrationTradingMission;
@@ -469,6 +477,7 @@ const makeTradingMissionProjection = Effect.gen(function* () {
           SUM(filled_size * avg_fill_price) / SUM(filled_size) AS avg_fill_price,
           SUM(fee_usd) AS fee_usd,
           SUM(closed_pnl) AS closed_pnl,
+          MIN(direction) AS direction,
           MAX(traded_at) AS traded_at
         FROM trading_fills WHERE mission_id = ${missionId}
         GROUP BY order_id, market, side
@@ -490,7 +499,7 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       // The latest position snapshot. Null when the mission has never had one.
       const positionRows = yield* sql<PositionSnapshotRow>`
         SELECT market, size, entry_price, unrealised_pnl, margin_used, protected_size,
-               liquidation_price, mark_px, observed_at
+               liquidation_price, mark_px, leverage, observed_at
         FROM trading_position_snapshots WHERE mission_id = ${missionId}
         ORDER BY observed_at DESC LIMIT 1
       `.pipe(Effect.mapError(sqlFail("position")));

@@ -76,6 +76,16 @@ export const TradingFillView = Schema.Struct({
   feeUsd: Schema.Number,
   /** Realised PnL the exchange attributed to this fill (§16.2 closedPnl). */
   closedPnl: Schema.Number,
+  /**
+   * Where the fill sat in the position's life, as the exchange labelled it:
+   * "Open Long", "Close Long", "Open Short", "Close Short", or a reversal like
+   * "Long > Short". Absent on fills recorded before this was carried.
+   *
+   * The receipt needs it because `side` alone does not say what happened — a
+   * sell opens a short and closes a long — and the receipt list is capped at
+   * three orders, so the UI cannot recover it by walking the position itself.
+   */
+  direction: Schema.optional(Schema.String),
   tradedAt: IsoDateTime,
 });
 export type TradingFillView = typeof TradingFillView.Type;
@@ -163,6 +173,15 @@ export const OrchestrationTradingMission = Schema.Struct({
    * Absent when the exchange read failed; never a stale carry-forward.
    */
   marketPrice: Schema.optional(Schema.Number),
+  /**
+   * The leverage the exchange has this mission's market configured at, e.g. 20.
+   *
+   * Mission-level rather than on the position, because it is a setting and not a
+   * measurement: it is the same for the position that just closed and the one
+   * about to open, and the receipts that quote it are read after the position
+   * they belong to is gone. Absent until the first reconcile has seen one.
+   */
+  leverage: Schema.optional(Schema.Number),
   /** Realised result across every fill, for the completion summary card. */
   result: TradingMissionResultView,
 

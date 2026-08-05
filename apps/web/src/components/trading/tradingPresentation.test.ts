@@ -18,6 +18,8 @@ import {
   humanizeLiteral,
   isMissionComplete,
   deriveEffectiveLeverage,
+  readFillLifecycle,
+  readIntentLifecycle,
   deriveFillSlippagePercent,
   deriveMissionPhases,
   derivePausedExposure,
@@ -442,6 +444,85 @@ describe("deriveEffectiveLeverage", () => {
     expect(formatLeverage(20)).toBe("20x");
     expect(formatLeverage(19.98)).toBe("20x");
     expect(formatLeverage(3.46)).toBe("3.5x");
+  });
+});
+
+describe("position lifecycle", () => {
+  it("reads the exchange's own label for each half of the cycle", () => {
+    expect(readFillLifecycle("Open Long")).toEqual({
+      direction: "long",
+      action: "open",
+      actionLabel: "Open",
+    });
+    expect(readFillLifecycle("Close Long")).toEqual({
+      direction: "long",
+      action: "close",
+      actionLabel: "Close",
+    });
+    expect(readFillLifecycle("Open Short")).toEqual({
+      direction: "short",
+      action: "open",
+      actionLabel: "Open",
+    });
+    expect(readFillLifecycle("Close Short")).toEqual({
+      direction: "short",
+      action: "close",
+      actionLabel: "Close",
+    });
+  });
+
+  // A reversal ends on the far side; that is the exposure now held.
+  it("names a reversal by the side it ended on", () => {
+    expect(readFillLifecycle("Long > Short")).toEqual({
+      direction: "short",
+      action: "reverse",
+      actionLabel: "Reverse",
+    });
+    expect(readFillLifecycle("Short > Long")).toEqual({
+      direction: "long",
+      action: "reverse",
+      actionLabel: "Reverse",
+    });
+  });
+
+  it("calls a liquidation what it was, not just a close", () => {
+    expect(readFillLifecycle("Liquidated Isolated Long")).toEqual({
+      direction: "long",
+      action: "close",
+      actionLabel: "Liquidation",
+    });
+  });
+
+  // Better an untinted receipt than a green one on a fill that closed a short.
+  it("reports nothing rather than guessing", () => {
+    expect(readFillLifecycle(undefined)).toBeNull();
+    expect(readFillLifecycle("Buy")).toBeNull();
+    expect(readFillLifecycle("Settlement")).toBeNull();
+  });
+
+  it("reads an unfilled order from its side and its reduce-only flag", () => {
+    expect(readIntentLifecycle({ side: "buy", reduceOnly: false })).toEqual({
+      direction: "long",
+      action: "open",
+      actionLabel: "Open",
+    });
+    expect(readIntentLifecycle({ side: "sell", reduceOnly: false })).toEqual({
+      direction: "short",
+      action: "open",
+      actionLabel: "Open",
+    });
+    // The one a plain read of `side` gets backwards: a reduce-only sell is not
+    // a short, it is a long being given back.
+    expect(readIntentLifecycle({ side: "sell", reduceOnly: true })).toEqual({
+      direction: "long",
+      action: "close",
+      actionLabel: "Close",
+    });
+    expect(readIntentLifecycle({ side: "buy", reduceOnly: true })).toEqual({
+      direction: "short",
+      action: "close",
+      actionLabel: "Close",
+    });
   });
 });
 

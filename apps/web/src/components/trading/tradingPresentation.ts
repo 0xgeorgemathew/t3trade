@@ -393,12 +393,93 @@ export function deriveFillSlippagePercent(
 }
 
 /**
+ * Where a fill or an order sits in the life of a position.
+ *
+ * The mission's whole activity is this cycle — open, hold, close — and a
+ * receipt that says only "sell 0.67" hides which half of it just happened. The
+ * two facts that matter are the side the exposure was on and whether this took
+ * it on or gave it back, and they are independent: a sell opens a short and
+ * closes a long.
+ */
+export interface PositionLifecycle {
+  /** The side of the exposure, not the side of the order. */
+  readonly direction: "long" | "short";
+  readonly action: "open" | "close" | "reverse";
+  /** The action as a card labels it. */
+  readonly actionLabel: string;
+}
+
+const exposureSide = (text: string): "long" | "short" | null => {
+  if (text.includes("long")) return "long";
+  if (text.includes("short")) return "short";
+  return null;
+};
+
+/**
+ * Read the exchange's own lifecycle label off a fill.
+ *
+ * Hyperliquid sends `dir` as "Open Long", "Close Short", "Long > Short", or
+ * "Liquidated Isolated Long". Matching on words rather than on the exact
+ * strings keeps a label the exchange words slightly differently readable — and
+ * anything that carries neither "long" nor "short" (a spot "Buy", a settlement)
+ * returns null rather than a guess, so the card falls back to naming the order.
+ */
+export function readFillLifecycle(dir: string | undefined): PositionLifecycle | null {
+  if (dir === undefined) return null;
+  const text = dir.toLowerCase();
+
+  // A reversal reads "Long > Short". The side it ended on is the one the
+  // mission now holds, so that is the side the card shows.
+  const arrow = text.indexOf(">");
+  if (arrow >= 0) {
+    const direction = exposureSide(text.slice(arrow + 1));
+    return direction === null ? null : { direction, action: "reverse", actionLabel: "Reverse" };
+  }
+
+  const direction = exposureSide(text);
+  if (direction === null) return null;
+  // A liquidation is a close the mission did not choose, and that is worth its
+  // own word: every other close on the thread was a decision.
+  if (text.includes("liquidat")) return { direction, action: "close", actionLabel: "Liquidation" };
+  if (text.includes("close")) return { direction, action: "close", actionLabel: "Close" };
+  if (text.includes("open")) return { direction, action: "open", actionLabel: "Open" };
+  return null;
+}
+
+/**
+ * The same reading for an order that has not filled yet.
+ *
+ * Nothing has to be inferred here: reduce-only is the flag that says the order
+ * may only give exposure back, so it and the side together name the position
+ * the order is about — a reduce-only sell closes a long, a plain sell opens a
+ * short.
+ */
+export function readIntentLifecycle(intent: {
+  readonly side: "buy" | "sell";
+  readonly reduceOnly: boolean;
+}): PositionLifecycle {
+  if (intent.reduceOnly) {
+    return {
+      direction: intent.side === "sell" ? "long" : "short",
+      action: "close",
+      actionLabel: "Close",
+    };
+  }
+  return {
+    direction: intent.side === "buy" ? "long" : "short",
+    action: "open",
+    actionLabel: "Open",
+  };
+}
+
+/**
  * The leverage a position is actually running at: notional over margin.
  *
- * Derived rather than read back, because the projection carries no leverage
- * field — the exchange's own position row does, but nothing decodes it. Notional
- * ÷ margin is the figure the exchange itself charges margin on, so it matches
- * what Hyperliquid shows next to the market for an isolated position.
+ * The fallback for when the exchange's own `leverage` has not been read yet —
+ * a mission whose last reconcile predates that field, or one that has never
+ * held a position. Notional ÷ margin is the figure the exchange charges margin
+ * on, so it matches what Hyperliquid shows next to the market for an isolated
+ * position.
  *
  * Null when there is nothing to divide: a flat position, or a snapshot that
  * arrived with no margin or no price to value the size at. A fabricated "1x"

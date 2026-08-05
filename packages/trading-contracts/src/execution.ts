@@ -339,6 +339,18 @@ export const TradingFill = Schema.Struct({
   feeToken: Schema.String,
   /** Realised PnL the exchange attributes to this fill (§16.2 closedPnl). */
   closedPnl: Schema.Number,
+  /**
+   * Where this fill sat in the position's life — the exchange's own `dir`,
+   * verbatim: "Open Long", "Close Long", "Open Short", "Close Short", or a
+   * reversal like "Long > Short".
+   *
+   * Recorded rather than derived because it cannot be recovered afterwards. A
+   * sell is an open on a short and a close on a long, and the running position
+   * that would tell the two apart is not in the fill. Optional: rows written
+   * before this was carried, and any fill the exchange sent without it, simply
+   * have no lifecycle to report.
+   */
+  direction: Schema.optional(Schema.String),
   tradedAt: UnixMillis,
   observedAt: UnixMillis,
 });
@@ -376,6 +388,15 @@ export const TradingPositionSnapshot = Schema.Struct({
    * reads it from the asset context directly (see HyperliquidReconciler).
    */
   markPx: Schema.optional(Price),
+  /**
+   * Leverage the exchange has this market configured at, e.g. 20.
+   *
+   * A setting rather than a measurement, so it is the one column that survives
+   * the mission going flat: the leverage its next entry will run at is the same
+   * one its last entry ran at, and its receipts are read long after the position
+   * they belong to has closed.
+   */
+  leverage: Schema.optional(Schema.Number),
   observedAt: UnixMillis,
 });
 export type TradingPositionSnapshot = typeof TradingPositionSnapshot.Type;
