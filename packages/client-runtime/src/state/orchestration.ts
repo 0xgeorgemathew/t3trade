@@ -36,6 +36,10 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:trading-mission-snapshot",
       tag: ORCHESTRATION_WS_METHODS.getTradingMissionSnapshot,
     }),
+    tradingMarketChart: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:trading-market-chart",
+      tag: ORCHESTRATION_WS_METHODS.getTradingMarketChart,
+    }),
 
     // §14.7's deterministic controls. Ordinary environment commands: a
     // workspace button dispatches straight to the server, which is the whole

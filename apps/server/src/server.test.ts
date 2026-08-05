@@ -84,6 +84,7 @@ import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngi
 import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
+import { TradingMarketChart } from "./trading/TradingMarketChart.ts";
 import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
 import { TradingMissionProjectionLive } from "./trading/TradingMissionProjection.ts";
 import { TradingTurnCoordinator } from "./trading/TradingTurnCoordinator.ts";
@@ -355,6 +356,7 @@ const buildAppUnderTest = (options?: {
     checkpointDiffQuery?: Partial<CheckpointDiffQuery.CheckpointDiffQuery["Service"]>;
     tradingTurnCoordinator?: Partial<TradingTurnCoordinator["Service"]>;
     tradingMarketPrice?: Partial<TradingMarketPrice["Service"]>;
+    tradingMarketChart?: Partial<TradingMarketChart["Service"]>;
     browserTraceCollector?: Partial<BrowserTraceCollector.BrowserTraceCollector["Service"]>;
     serverLifecycleEvents?: Partial<ServerLifecycleEvents.ServerLifecycleEvents["Service"]>;
     serverRuntimeStartup?: Partial<ServerRuntimeStartup.ServerRuntimeStartup["Service"]>;
@@ -780,6 +782,16 @@ const buildAppUnderTest = (options?: {
         Layer.mock(TradingMarketPrice)({
           markPrice: () => Effect.succeed(null),
           ...options?.layers?.tradingMarketPrice,
+        }),
+      ),
+      // The chart RPC reads OHLC + snapshot via this service. The default test
+      // state seeds no missions, so the handler's guard refuses the read before
+      // this mock is ever called; the null default keeps the surface honest for
+      // any test that does seed a mission.
+      Layer.provide(
+        Layer.mock(TradingMarketChart)({
+          read: () => Effect.succeed(null),
+          ...options?.layers?.tradingMarketChart,
         }),
       ),
       // The WS turn-start path asks the coordinator whether the thread belongs
@@ -3304,6 +3316,72 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(wsTicketBody.ticket)}`;
       const rpcError = yield* Effect.flip(
         Effect.scoped(withWsRpcClient(wsUrl, (client) => client[WS_METHODS.serverGetConfig]({}))),
+      );
+      assert.equal(rpcError._tag, "EnvironmentAuthorizationError");
+      if (rpcError._tag === "EnvironmentAuthorizationError") {
+        assert.equal(rpcError.requiredScope, "orchestration:read");
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("refuses a trading market chart read for a market with no active mission", () =>
+    Effect.gen(function* () {
+      // The chart RPC must not become a free Hyperliquid proxy: a caller with
+      // orchestration:read but no mission for the requested market is refused
+      // before the exchange is contacted. The default test state seeds no
+      // missions, so the empty projection trips the guard for any market.
+      // We assert the guard's OrchestrationGetSnapshotError, not the auth
+      // error, to prove the refusal happens AFTER auth (the caller is the
+      // authenticated owner) and BEFORE the service read (the mock's read is
+      // never reached). Seeding a happy-path mission requires raw SQL + JSON
+      // encoders (see TradingMissionProjection.test.ts); that path is covered
+      // here by the symmetric assertion that a no-mission market is refused.
+      yield* buildAppUnderTest();
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const rpcError = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.getTradingMarketChart]({
+              market: "ETH",
+              interval: "1m",
+            }),
+          ),
+        ),
+      );
+      assert.equal(rpcError._tag, "OrchestrationGetSnapshotError");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("requires orchestration read scope to read a trading market chart", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const { response: exchangeResponse, body: tokenBody } = yield* exchangeAccessToken(
+        defaultDesktopBootstrapToken,
+        { scope: "access:write" },
+      );
+      assert.equal(exchangeResponse.status, 200);
+      assert.equal(tokenBody.scope, "access:write");
+      assert.isDefined(tokenBody.access_token);
+
+      const wsTicketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: {
+          authorization: `Bearer ${tokenBody.access_token ?? ""}`,
+        },
+      });
+      const wsTicketBody = (yield* wsTicketResponse.json) as { readonly ticket: string };
+      assert.equal(wsTicketResponse.status, 200);
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(wsTicketBody.ticket)}`;
+      const rpcError = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.getTradingMarketChart]({
+              market: "ETH",
+              interval: "1m",
+            }),
+          ),
+        ),
       );
       assert.equal(rpcError._tag, "EnvironmentAuthorizationError");
       if (rpcError._tag === "EnvironmentAuthorizationError") {

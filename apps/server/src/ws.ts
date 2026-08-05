@@ -70,6 +70,7 @@ import {
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { TradingMarketChart } from "./trading/TradingMarketChart.ts";
 import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
 import { TradingTurnCoordinator } from "./trading/TradingTurnCoordinator.ts";
@@ -378,6 +379,7 @@ const makeWsRpcLayer = (
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       const tradingMissionProjection = yield* TradingMissionProjection;
       const tradingMarketPrice = yield* TradingMarketPrice;
+      const tradingMarketChart = yield* TradingMarketChart;
       const tradingTurnCoordinator = yield* TradingTurnCoordinator;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
@@ -1331,6 +1333,52 @@ const makeWsRpcLayer = (
                 (cause) =>
                   new OrchestrationGetSnapshotError({
                     message: "Failed to load the trading mission snapshot",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getTradingMarketChart]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getTradingMarketChart,
+            Effect.gen(function* () {
+              // The chart RPC must not become a free Hyperliquid proxy: only
+              // serve markets the caller has a non-terminal mission on. The
+              // environment is the trust boundary (the snapshot RPC does not
+              // bind to currentSession.subject either), so this checks market +
+              // non-terminal status and nothing more. Terminal missions
+              // (revoked/completed) are history and do not entitle a read.
+              const missions = yield* tradingMissionProjection.list();
+              const hasActiveMission = missions.some(
+                (m) =>
+                  m.market === input.market && m.status !== "revoked" && m.status !== "completed",
+              );
+              if (!hasActiveMission) {
+                return yield* Effect.fail(
+                  new OrchestrationGetSnapshotError({
+                    message: `No active mission for market ${input.market}`,
+                  }),
+                );
+              }
+              const maxBars = 120;
+              const chart = yield* tradingMarketChart.read(input.market, input.interval, maxBars);
+              if (chart === null) {
+                return yield* Effect.fail(
+                  new OrchestrationGetSnapshotError({
+                    message: `Failed to read market chart for ${input.market}`,
+                  }),
+                );
+              }
+              return chart;
+            }).pipe(
+              Effect.tapError((cause) =>
+                Effect.logError("trading market chart load failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to load the trading market chart",
                     cause,
                   }),
               ),

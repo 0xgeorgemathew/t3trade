@@ -109,6 +109,42 @@ export const TradingPositionView = Schema.Struct({
 export type TradingPositionView = typeof TradingPositionView.Type;
 
 /**
+ * One OHLCV bar for the chart. Volume and trade count are dropped on
+ * purpose — the chart draws neither, so carrying them is bandwidth for
+ * nothing on a 15s poll.
+ */
+export const TradingChartCandle = Schema.Struct({
+  /** Epoch millis, start of the bar. */
+  openTime: Schema.Number,
+  open: Schema.Number,
+  high: Schema.Number,
+  low: Schema.Number,
+  close: Schema.Number,
+});
+export type TradingChartCandle = typeof TradingChartCandle.Type;
+
+/**
+ * Candles plus the snapshot figures for one market. The chart needs both a
+ * price series and the current mark/funding/OI/volume/change to render its
+ * header and footer rows, so they travel together. `null` never appears in
+ * this struct: a failed read yields `null` for the whole RPC response (the
+ * service never serves a half-populated chart).
+ */
+export const TradingMarketChartView = Schema.Struct({
+  market: TrimmedNonEmptyString,
+  interval: Schema.Literals(["1m", "3m", "5m", "15m", "1h"]),
+  candles: Schema.Array(TradingChartCandle),
+  markPrice: Schema.Number,
+  change24hPercent: Schema.Number,
+  fundingRate8h: Schema.Number,
+  openInterest: Schema.Number,
+  dayVolumeUsd: Schema.Number,
+  /** When the gateway last confirmed these figures. */
+  observedAt: IsoDateTime,
+});
+export type TradingMarketChartView = typeof TradingMarketChartView.Type;
+
+/**
  * The completion summary card's figures (§14.7 risk chrome).
  *
  * Aggregated across ALL of the mission's fills, not the three the receipt list

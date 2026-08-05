@@ -28,6 +28,7 @@ import { TradingExecutionGuardLive } from "./TradingExecutionGuard.ts";
 import { InterimSignerConfigLive } from "./InterimSignerConfig.ts";
 import { IocSlippageConfigLive } from "./IocSlippageConfig.ts";
 import { AutoMissionConfigLive } from "./AutoMissionConfig.ts";
+import { TradingMarketChartLive } from "./TradingMarketChart.ts";
 import { TradingMarketPriceLive } from "./TradingMarketPrice.ts";
 import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
@@ -70,6 +71,9 @@ export const TradingCoreLayerLive = Layer.mergeAll(
   // The read surfaces quote a live mark even while the mission is flat, which
   // no local table carries — so this sits with the projection it feeds.
   TradingMarketPriceLive.pipe(Layer.provide(gatewayWithRead)),
+  // The chart surface pairs the same live snapshot with candle history; it
+  // shares the read gateway so the two never disagree on freshness.
+  TradingMarketChartLive.pipe(Layer.provide(gatewayWithRead)),
   TradingMissionServiceLive,
   TradingStrategyServiceLive,
 );

@@ -75,6 +75,7 @@ import type {
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
+  OrchestrationGetTradingMarketChartInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationGetTurnDiffResult,
   OrchestrationShellSnapshot,
@@ -82,7 +83,7 @@ import type {
   OrchestrationSubscribeThreadInput,
   OrchestrationThreadStreamItem,
 } from "./orchestration.ts";
-import type { TradingMissionSnapshot } from "./trading.ts";
+import type { TradingMarketChartView, TradingMissionSnapshot } from "./trading.ts";
 import { EnvironmentId } from "./baseSchemas.ts";
 import { AuthAccessTokenResult, AuthSessionState, AuthWebSocketTicketResult } from "./auth.ts";
 import { AdvertisedEndpoint } from "./remoteAccess.ts";
@@ -1213,6 +1214,9 @@ export interface EnvironmentApi {
     ) => Promise<OrchestrationGetFullThreadDiffResult>;
     getArchivedShellSnapshot: () => Promise<OrchestrationShellSnapshot>;
     getTradingMissionSnapshot: () => Promise<TradingMissionSnapshot>;
+    getTradingMarketChart: (
+      input: OrchestrationGetTradingMarketChartInput,
+    ) => Promise<TradingMarketChartView>;
     subscribeShell: (
       callback: (event: OrchestrationShellStreamItem) => void,
       options?: {

@@ -36,6 +36,7 @@ import {
   TradingMissionWatchFiredPayload,
   TradingMissionWatchRegisteredPayload,
   TradingExecutionRequestedPayload,
+  TradingMarketChartView,
 } from "./trading.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
@@ -44,6 +45,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   getTradingMissionSnapshot: "orchestration.getTradingMissionSnapshot",
+  getTradingMarketChart: "orchestration.getTradingMarketChart",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
 } as const;
@@ -522,6 +524,19 @@ export const OrchestrationSubscribeThreadInput = Schema.Struct({
   requestCompletionMarker: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
+
+/**
+ * Input for `getTradingMarketChart`: which market to chart and at which candle
+ * interval. The interval literal is inlined here (not shared from
+ * `@t3tools/trading-contracts`) to keep `@t3tools/contracts` self-contained —
+ * the same trade-off `trading.ts` makes for its own view-style literal unions.
+ */
+export const OrchestrationGetTradingMarketChartInput = Schema.Struct({
+  market: TrimmedNonEmptyString,
+  interval: Schema.Literals(["1m", "3m", "5m", "15m", "1h"]),
+});
+export type OrchestrationGetTradingMarketChartInput =
+  typeof OrchestrationGetTradingMarketChartInput.Type;
 
 export const OrchestrationThreadDetailSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
@@ -1462,6 +1477,10 @@ export const OrchestrationRpcSchemas = {
   getTradingMissionSnapshot: {
     input: Schema.Struct({}),
     output: TradingMissionSnapshot,
+  },
+  getTradingMarketChart: {
+    input: OrchestrationGetTradingMarketChartInput,
+    output: TradingMarketChartView,
   },
   subscribeThread: {
     input: OrchestrationSubscribeThreadInput,
