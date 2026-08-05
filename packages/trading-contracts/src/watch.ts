@@ -126,6 +126,23 @@ export const PersistedWatch = Schema.Struct({
   armedReason: Schema.optional(WatchArmedReason),
   createdAt: UnixMillis,
   updatedAt: UnixMillis,
+  /**
+   * The value the predicate is currently reading (mark/mid price for
+   * `price_cross`, unrealised PnL for `pnl_above`/`pnl_below`, drawdown from
+   * peak for `pnl_giveback`), written back by the evaluator on every sweep it
+   * observed a real value.
+   *
+   * Absent on rows that predate the column or on a sweep where the evaluator
+   * could not read a value (flat position, gateway failure). The web renders
+   * this alongside the threshold so the conditions checklist can show the live
+   * number a watch is measuring against, not just a ticked/empty checkbox.
+   */
+  lastObservedValue: Schema.optional(Schema.Number),
+  /**
+   * When the evaluator last swept this watch and wrote `lastObservedValue`.
+   * Absent in lockstep with `lastObservedValue`.
+   */
+  lastEvaluatedAt: Schema.optional(UnixMillis),
 });
 export type PersistedWatch = typeof PersistedWatch.Type;
 

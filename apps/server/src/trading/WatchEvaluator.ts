@@ -323,11 +323,13 @@ const make = Effect.gen(function* () {
     const snapshot = yield* gateway.getMarketSnapshot(watch.market).pipe(Effect.orDie);
     const reference = watch.priceSource === "mark" ? snapshot.markPrice : snapshot.midPrice;
 
+    const observedAt = yield* nowMs;
+    yield* recordObservation(tracked.watch.id, reference, observedAt);
+
     const matched =
       watch.direction === "above" ? reference >= watch.price : reference <= watch.price;
     if (!matched) return;
 
-    const observedAt = yield* nowMs;
     yield* enqueueFire(
       tracked,
       `price_cross:${tracked.watch.id}`,
@@ -374,6 +376,41 @@ const make = Effect.gen(function* () {
         current: signature,
       });
     });
+
+  /**
+   * How stale a stored `last_evaluated_at` may be before this sweep refreshes
+   * it even when the value is unchanged. The sweep cadence is 2s; 5s keeps a
+   * write from landing on every single tick when the number is static, while
+   * still telling the checklist the watch is live.
+   */
+  const OBSERVATION_REFRESH_MILLIS = 5_000;
+
+  /**
+   * Carry the value a watch predicate is reading onto the watch row so the
+   * workspace's conditions checklist can render the live number next to its
+   * threshold, not just a ticked/empty checkbox.
+   *
+   * Called by the four numeric evaluators (`price_cross`, `pnl_above`,
+   * `pnl_below`, `pnl_giveback`) on every sweep that computed a real observed
+   * value, BEFORE the match-check / early-return — so a watch that has not
+   * crossed still surfaces how close it is.
+   *
+   * Write-guarded: a write only lands when the value moved beyond an epsilon or
+   * the stored timestamp is stale, so a static number does not hit SQLite on
+   * every 2s tick. A sweep that could not read a real value (flat position,
+   * gateway failure) must NOT call this — there is nothing true to record.
+   */
+  const recordObservation = (watchId: string, observedValue: number, observedAt: number) =>
+    sql`
+      UPDATE trading_watches
+      SET last_observed_value = ${observedValue}, last_evaluated_at = ${observedAt}
+      WHERE watch_id = ${watchId}
+        AND (
+          last_observed_value IS NULL
+          OR ABS(last_observed_value - ${observedValue}) > 1e-9
+          OR last_evaluated_at < ${observedAt - OBSERVATION_REFRESH_MILLIS}
+        )
+    `.pipe(Effect.orDie);
 
   /**
    * Evaluate a `position_update` watch against the reconciled position snapshot.
@@ -463,9 +500,11 @@ const make = Effect.gen(function* () {
 
     const position = yield* readLivePosition(tracked, watch.market);
     if (position === null) return;
-    if (position.unrealisedPnl < watch.valueUsd) return;
 
     const observedAt = yield* nowMs;
+    yield* recordObservation(tracked.watch.id, position.unrealisedPnl, observedAt);
+    if (position.unrealisedPnl < watch.valueUsd) return;
+
     yield* enqueueFire(
       tracked,
       `pnl_above:${tracked.watch.id}`,
@@ -494,9 +533,11 @@ const make = Effect.gen(function* () {
 
     const position = yield* readLivePosition(tracked, watch.market);
     if (position === null) return;
-    if (position.unrealisedPnl > watch.valueUsd) return;
 
     const observedAt = yield* nowMs;
+    yield* recordObservation(tracked.watch.id, position.unrealisedPnl, observedAt);
+    if (position.unrealisedPnl > watch.valueUsd) return;
+
     yield* enqueueFire(
       tracked,
       `pnl_below:${tracked.watch.id}`,
@@ -537,9 +578,11 @@ const make = Effect.gen(function* () {
     if (peak <= 0) return;
 
     const drawdown = peak - position.unrealisedPnl;
-    if (drawdown < watch.drawdownUsd) return;
 
     const observedAt = yield* nowMs;
+    yield* recordObservation(tracked.watch.id, drawdown, observedAt);
+    if (drawdown < watch.drawdownUsd) return;
+
     yield* enqueueFire(
       tracked,
       `pnl_giveback:${tracked.watch.id}`,

@@ -166,8 +166,10 @@ import {
 } from "~/projectScripts";
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { useTradingMissionForThread } from "~/lib/tradingMissionsState";
+import { MissionChartPanel } from "./trading/MissionChartPanel";
 import { MissionComposerControls } from "./trading/MissionComposerControls";
-import { MissionThreadCards, MissionThreadStrip } from "./trading/MissionThreadPanel";
+import { MissionHeaderPill } from "./trading/MissionHeaderPill";
+import { MissionThreadBanners, MissionThreadCards } from "./trading/MissionThreadPanel";
 import { isLiveMission } from "./trading/tradingPresentation";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
@@ -5720,6 +5722,13 @@ function ChatViewContent(props: ChatViewProps) {
             activeThreadEnvironmentId={activeThread.environmentId}
             activeThreadId={activeThread.id}
             {...(routeKind === "draft" && draftId ? { draftId } : {})}
+            {...(boundMission
+              ? {
+                  missionSlot: (
+                    <MissionHeaderPill mission={boundMission} environmentId={environmentId} />
+                  ),
+                }
+              : {})}
             activeThreadTitle={activeThread.title}
             activeProjectName={activeProject?.title}
             activeProjectCwd={activeProject?.workspaceRoot ?? null}
@@ -5745,11 +5754,10 @@ function ChatViewContent(props: ChatViewProps) {
           onDismiss={() => setThreadError(activeThread.id, null)}
         />
         {boundMission && (
-          <MissionThreadStrip
-            mission={boundMission}
-            environmentId={environmentId}
-            feedError={missionFeedError}
-          />
+          <>
+            <MissionThreadBanners mission={boundMission} feedError={missionFeedError} />
+            <MissionChartPanel mission={boundMission} environmentId={environmentId} />
+          </>
         )}
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">

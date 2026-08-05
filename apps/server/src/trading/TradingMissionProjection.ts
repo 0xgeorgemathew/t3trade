@@ -372,8 +372,11 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         readonly status: string;
         readonly created_at: number;
         readonly updated_at: number;
+        readonly last_observed_value: number | null;
+        readonly last_evaluated_at: number | null;
       }>`
-        SELECT watch_id, mission_id, strategy_version, watch_json, status, created_at, updated_at
+        SELECT watch_id, mission_id, strategy_version, watch_json, status, created_at, updated_at,
+               last_observed_value, last_evaluated_at
         FROM trading_watches
         WHERE mission_id = ${input.missionId}
         ORDER BY created_at DESC, watch_id DESC
@@ -398,6 +401,12 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         status: decodeWatchStatus(row.status),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        ...(row.last_observed_value === null
+          ? {}
+          : {
+              lastObservedValue: row.last_observed_value,
+              lastEvaluatedAt: row.last_evaluated_at,
+            }),
       }));
 
       yield* sql`

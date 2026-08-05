@@ -1,4 +1,9 @@
-import type { MarketWatch, PersistedWatch, TradingMissionStatus } from "@t3tools/trading-contracts";
+import type {
+  MarketWatch,
+  PersistedWatch,
+  PersistedWatchStatus,
+  TradingMissionStatus,
+} from "@t3tools/trading-contracts";
 
 /** The ten §11.1 statuses, as the workspace names them. */
 export const MISSION_STATUS_LABELS: Record<TradingMissionStatus, string> = {
@@ -759,6 +764,16 @@ export interface CompletionSummary {
   readonly fillCount: number;
   /** Traded duration in millis, first fill to last. Null with fewer than two. */
   readonly tradedDurationMillis: number | null;
+  /**
+   * The first fill's timestamp, carried so a review chart can window to the
+   * trade's actual span. Null when there were no fills.
+   */
+  readonly firstFillAt: string | null;
+  /**
+   * The last fill's timestamp, carried so a review chart can window to the
+   * trade's actual span. Null when there were no fills.
+   */
+  readonly lastFillAt: string | null;
   /** The loss the strategy planned to risk, when one was published. */
   readonly plannedLossUsd: number | null;
   /**
@@ -823,10 +838,344 @@ export function deriveCompletionSummary(mission: {
     netResultUsd,
     fillCount: result.fillCount,
     tradedDurationMillis,
+    firstFillAt: result.firstFillAt,
+    lastFillAt: result.lastFillAt,
     plannedLossUsd,
     // Positive means the mission did better than the loss it planned to risk.
     deviationFromPlanUsd: plannedLossUsd === null ? null : netResultUsd + plannedLossUsd,
   };
+}
+
+/**
+ * The profit-target basis, flattened to the four lines the plan card shows.
+ *
+ * `targetProfitBasis` is the harness showing its work — measurement over a
+ * lookback, expected hold, and the historical hit rate the median came from —
+ * and is the most interesting thing on the card. Each slot maps one basis field
+ * to a short string; null when the basis itself is absent or a field is unset.
+ */
+export interface StrategyPlanBasis {
+  /** Which measurement produced the move, humanized (`excursion_quantile` → …). */
+  readonly measurement: string | null;
+  /** The interval and lookback the measurement was taken on, e.g. "5m · 60b". */
+  readonly lookback: string | null;
+  /** How long the position is expected to be held, in bars, e.g. "10b". */
+  readonly hold: string | null;
+  /** Share of historical windows the move was available in, e.g. "50%". */
+  readonly hitRate: string | null;
+}
+
+/**
+ * The published trading plan, rendered as a display-only timeline card.
+ *
+ * Mirrors {@link deriveCompletionSummary}'s shape: a flat, render-ready object
+ * derived purely from the mission projection, so the React component holds no
+ * logic of its own. Null when no strategy has been published yet.
+ */
+export interface StrategyPlan {
+  /** `mission.strategyVersion` — the version the harness published. */
+  readonly version: number;
+  /** The free-text mode label, humanized for display. */
+  readonly modeLabel: string;
+  readonly thesis: string | null;
+  readonly regime: string | null;
+  /** Each entry condition's prose description; empty when none were published. */
+  readonly entryTriggers: ReadonlyArray<string>;
+  /** The order preference, humanized (`marketable_ioc` → …). */
+  readonly orderType: string | null;
+  readonly initialSizeUsd: number | null;
+  /** "{method} · {price}" when a price was set, else just the method. */
+  readonly stopSummary: string | null;
+  /**
+   * The conservative rung of the target ladder. Required positive on the
+   * contract — never null.
+   */
+  readonly targetUsd: number;
+  /** The full target ladder in prose; null when the harness published none. */
+  readonly targetRationale: string | null;
+  readonly basis: StrategyPlanBasis | null;
+  readonly maxLossUsd: number | null;
+  readonly scaleInAllowed: boolean;
+  readonly partialReductionAllowed: boolean;
+  /** Each abandonment condition's prose description; empty when none. */
+  readonly invalidation: ReadonlyArray<string>;
+  /** The strategy's timeframes, for an optional header chip. */
+  readonly timeframes: ReadonlyArray<string>;
+}
+
+/**
+ * Read the prose description off a condition the harness published.
+ *
+ * `AgentConditionInput` is a union of the full object and a bare string; after
+ * decode the persisted form is always `{ description }`, but the TS type is the
+ * union, so a structural guard is what reaches `.description` safely. Anything
+ * the guard rejects returns null rather than a guess.
+ */
+function readConditionDescription(condition: unknown): string | null {
+  if (typeof condition !== "object" || condition === null) return null;
+  if (!("description" in condition)) return null;
+  const description = (condition as { description?: unknown }).description;
+  return typeof description === "string" ? description : null;
+}
+
+/**
+ * The published plan as a render-ready card shape, or null before publish.
+ *
+ * Reads the strategy structurally via `mission.strategy?.<field>`: the contract
+ * type is accessed only through the projection, never imported by name, so a
+ * future field the schema gains still renders rather than failing the build.
+ */
+export function deriveStrategyPlan(mission: {
+  readonly strategyVersion: number;
+  readonly strategy: {
+    readonly mode: string;
+    readonly timeframes: ReadonlyArray<string>;
+    readonly belief: {
+      readonly summary: string;
+      readonly regime: string;
+    };
+    readonly entryPlan: {
+      readonly conditions: ReadonlyArray<unknown>;
+      readonly orderPreference: string;
+      readonly initialNotionalUsd?: number | undefined;
+    };
+    readonly positionManagement: {
+      readonly scaleInAllowed: boolean;
+      readonly partialReductionAllowed: boolean;
+    };
+    readonly protection: {
+      readonly stopMethod: string;
+      readonly stopPrice?: number | undefined;
+      readonly targetProfitUsd: number;
+      readonly targetProfitRationale?: string | undefined;
+      readonly targetProfitBasis?:
+        | {
+            readonly measurement: string;
+            readonly timeframe: string;
+            readonly lookbackBars: number;
+            readonly expectedHoldBars: number;
+            readonly historicalHitRatePercent?: number | undefined;
+          }
+        | undefined;
+      readonly maximumPlannedLossUsd?: number | undefined;
+    };
+    readonly abandonmentConditions: ReadonlyArray<unknown>;
+  } | null;
+}): StrategyPlan | null {
+  const strategy = mission.strategy;
+  if (strategy === null) return null;
+
+  const entryTriggers = (strategy.entryPlan?.conditions ?? [])
+    .map(readConditionDescription)
+    .filter((value): value is string => value !== null);
+
+  const stopMethod = strategy.protection?.stopMethod ?? null;
+  const stopPrice = strategy.protection?.stopPrice ?? null;
+  const stopSummary =
+    stopMethod === null
+      ? null
+      : stopPrice === undefined || stopPrice === null
+        ? humanizeLiteral(stopMethod)
+        : `${humanizeLiteral(stopMethod)} · ${formatPrice(stopPrice)}`;
+
+  const basisStruct = strategy.protection?.targetProfitBasis;
+  const basis: StrategyPlanBasis | null =
+    basisStruct === undefined
+      ? null
+      : {
+          measurement: humanizeLiteral(basisStruct.measurement),
+          lookback: `${basisStruct.timeframe} · ${basisStruct.lookbackBars}b`,
+          hold: `${basisStruct.expectedHoldBars}b`,
+          hitRate:
+            basisStruct.historicalHitRatePercent === undefined
+              ? null
+              : `${basisStruct.historicalHitRatePercent}%`,
+        };
+
+  return {
+    version: mission.strategyVersion,
+    modeLabel: humanizeLiteral(strategy.mode),
+    thesis: strategy.belief?.summary ?? null,
+    regime: strategy.belief?.regime ?? null,
+    entryTriggers,
+    orderType:
+      strategy.entryPlan?.orderPreference === undefined
+        ? null
+        : humanizeLiteral(strategy.entryPlan.orderPreference),
+    initialSizeUsd: strategy.entryPlan?.initialNotionalUsd ?? null,
+    stopSummary,
+    // Required positive on the contract (PositiveUsdAmount): it is never null.
+    targetUsd: strategy.protection?.targetProfitUsd ?? 0,
+    targetRationale: strategy.protection?.targetProfitRationale ?? null,
+    basis,
+    maxLossUsd: strategy.protection?.maximumPlannedLossUsd ?? null,
+    scaleInAllowed: strategy.positionManagement?.scaleInAllowed ?? false,
+    partialReductionAllowed: strategy.positionManagement?.partialReductionAllowed ?? false,
+    invalidation: (strategy.abandonmentConditions ?? [])
+      .map(readConditionDescription)
+      .filter((value): value is string => value !== null),
+    timeframes: strategy.timeframes,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// armed-conditions checklist (state 04)
+// ---------------------------------------------------------------------------
+//
+// A flat mission holding authority is "armed" while it has active watches:
+// each one is a deterministic predicate the evaluator will wake it for (§11.3),
+// and the prototype's conditions checklist reads them back as a row per
+// condition, showing the live number a watch is measuring against rather than a
+// bare checkbox. The server carries `lastObservedValue` / `lastEvaluatedAt` on
+// each watch, and this derivation flattens those into a render-ready shape.
+//
+// Pure, like {@link deriveStrategyPlan}: the React component holds no logic of
+// its own. The predicate is never re-evaluated client-side — `met` comes from
+// `status === "triggered"`, which the server already tracks.
+
+/** One row of the armed-conditions checklist. */
+export interface WatchConditionRow {
+  /** The watch's id, for React keys. */
+  readonly id: string;
+  /** One line describing what the predicate is waiting for. */
+  readonly description: string;
+  /** The watch's lifecycle status, for the ✓/○ glyph. */
+  readonly status: PersistedWatchStatus;
+  /**
+   * The value the evaluator last read for this predicate (mark/mid price for
+   * `price_cross`, unrealised PnL for `pnl_above`/`pnl_below`, drawdown for
+   * `pnl_giveback`). Null when the watch has never been swept.
+   */
+  readonly observedValue: number | null;
+  /**
+   * The threshold the predicate is measuring against (`price` for `price_cross`,
+   * `valueUsd`/`drawdownUsd` for the PnL watches). Null for `scheduled_reassessment`,
+   * which carries no numeric level.
+   */
+  readonly thresholdValue: number | null;
+  /** True when the predicate has fired (`status === "triggered"`). */
+  readonly met: boolean;
+  /** When the evaluator last swept this watch, epoch millis. */
+  readonly evaluatedAt: number | null;
+}
+
+/**
+ * The armed-conditions checklist, derived from a mission's watches.
+ *
+ * `rows` carries one row per active numeric or lifecycle watch. `nextReassessmentAt`
+ * is the earliest `runAt` among active `scheduled_reassessment` watches — the
+ * countdown the card shows next to its title. Returns null when no watch is
+ * active, so the card is absent rather than empty.
+ */
+export interface ArmedConditions {
+  readonly rows: ReadonlyArray<WatchConditionRow>;
+  /** Epoch millis of the next scheduled reassessment, or null when none is armed. */
+  readonly nextReassessmentAt: number | null;
+}
+
+/**
+ * Describe a watch predicate as one line, without interpreting it.
+ *
+ * Inlined separately from {@link describeWatch} so the derivation covers the
+ * full `MarketWatch` union (`pnl_below` / `pnl_giveback` included) regardless of
+ * the pre-existing gap in that function.
+ */
+function describeWatchCondition(watch: MarketWatch): string {
+  switch (watch.type) {
+    case "price_cross":
+      return `${watch.market} ${watch.priceSource} crosses ${watch.direction} ${formatPrice(watch.price)}`;
+    case "candle_close":
+      return `${watch.market} ${watch.interval} candle closes ${watch.direction} ${formatPrice(watch.price)}`;
+    case "order_update":
+      return `Order ${watch.cloid} updates`;
+    case "position_update":
+      return `${watch.market} position updates`;
+    case "scheduled_reassessment":
+      return `Scheduled reassessment`;
+    case "pnl_above":
+      return `${watch.market} unrealised PnL reaches ${formatUsd(watch.valueUsd)}`;
+    case "pnl_below":
+      return `${watch.market} unrealised PnL falls to ${formatSignedUsd(watch.valueUsd)}`;
+    case "pnl_giveback":
+      return `${watch.market} PnL gives back ${formatUsd(watch.drawdownUsd)}`;
+  }
+}
+
+/**
+ * Read the threshold value off a watch predicate, where one exists.
+ *
+ * `scheduled_reassessment` and the event watches carry no numeric level, so they
+ * return null.
+ */
+function readWatchThreshold(watch: MarketWatch): number | null {
+  switch (watch.type) {
+    case "price_cross":
+    case "candle_close":
+      return watch.price;
+    case "pnl_above":
+    case "pnl_below":
+      return watch.valueUsd;
+    case "pnl_giveback":
+      return watch.drawdownUsd;
+    case "order_update":
+    case "position_update":
+    case "scheduled_reassessment":
+      return null;
+  }
+}
+
+/**
+ * The armed-conditions checklist, or null when nothing is armed.
+ *
+ * The card is gated on at least one `active` watch (the mission must still hold
+ * something that can wake it). Once it is armed, the row list shows both the
+ * conditions already met (`triggered`, a ticked ✓) and those still waiting
+ * (`active`, an empty ○) — the prototype reads each row back with its glyph, and
+ * a checklist that hid the satisfied ones would read as a mission waiting on
+ * conditions it had already cleared. `consumed` / `cancelled` / `expired` /
+ * `superseded` watches are history and never make a row.
+ *
+ * `scheduled_reassessment` watches are excluded from `rows` (they carry no
+ * numeric level the checklist could show) and instead contribute to
+ * `nextReassessmentAt`, the countdown the card renders in its header. Only
+ * active reassessments count toward that countdown: a triggered one has fired.
+ */
+export function deriveWatchConditions(mission: {
+  readonly watches: ReadonlyArray<PersistedWatch>;
+}): ArmedConditions | null {
+  const active = mission.watches.filter((persisted) => persisted.status === "active");
+  if (active.length === 0) return null;
+
+  let nextReassessmentAt: number | null = null;
+  for (const persisted of active) {
+    const watch = persisted.watch;
+    if (watch.type !== "scheduled_reassessment") continue;
+    if (nextReassessmentAt === null || watch.runAt < nextReassessmentAt) {
+      nextReassessmentAt = watch.runAt;
+    }
+  }
+
+  const rows: WatchConditionRow[] = [];
+  for (const persisted of mission.watches) {
+    // `triggered` is kept (a met row shows ✓); `active` is kept (a waiting row
+    // shows ○). Everything else is terminal and dropped.
+    if (persisted.status !== "active" && persisted.status !== "triggered") continue;
+
+    const watch = persisted.watch;
+    if (watch.type === "scheduled_reassessment") continue;
+
+    rows.push({
+      id: persisted.id,
+      description: describeWatchCondition(watch),
+      status: persisted.status,
+      observedValue: persisted.lastObservedValue ?? null,
+      thresholdValue: readWatchThreshold(watch),
+      met: persisted.status === "triggered",
+      evaluatedAt: persisted.lastEvaluatedAt ?? null,
+    });
+  }
+
+  return { rows, nextReassessmentAt };
 }
 
 /** "2m 30s" from a duration in millis. */

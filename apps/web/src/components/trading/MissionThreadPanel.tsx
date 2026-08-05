@@ -3,9 +3,9 @@
  *
  * Two mounts, deliberately separate (§14.2 / §13 / §10):
  *
- * - {@link MissionThreadStrip} is chrome. One line under the chat header, for
- *   as long as the mission is armed or exposed, so the way out is always on
- *   screen without hunting.
+ * - {@link MissionThreadBanners} is chrome. The exception banners that sit with
+ *   the strip above the thread, for as long as the mission is armed or exposed,
+ *   so a feed or staleness warning stays on screen without hunting.
  * - {@link MissionThreadCards} is content. The execution surfaces — an order
  *   intent while one is in flight, the live position, the recent fill receipts
  *   — render at the end of the message timeline and scroll with it.
@@ -30,24 +30,36 @@ import type {
 } from "@t3tools/contracts";
 import type { ReactNode } from "react";
 
-import type { PositionLifecycle } from "./tradingPresentation";
-
+import { useActiveEnvironmentId } from "../../state/entities";
+import { Button } from "../ui/button";
 import { MissionFeedErrorBanner, MissionStalenessBanner } from "./MissionStalenessBanner";
-import { MissionStripBar } from "./MissionStripBar";
+import { useMissionControls } from "./useMissionControls";
 import {
+  deriveCompletionSummary,
   deriveEffectiveLeverage,
   deriveFillSlippagePercent,
+  deriveRejectedOrder,
+  deriveStrategyPlan,
+  deriveWatchConditions,
+  formatDuration,
   formatLeverage,
   formatPrice,
   formatSize,
   formatSignedPercent,
   formatSignedUsd,
+  formatUsd,
   humanizeLiteral,
+  isMissionComplete,
   readFillLifecycle,
   readIntentLifecycle,
   shouldShowMissionStrip,
+  type ArmedConditions,
+  type CompletionSummary,
+  type PositionLifecycle,
+  type RejectedOrderNotice,
+  type StrategyPlan,
+  type WatchConditionRow,
 } from "./tradingPresentation";
-import { useMissionControls } from "./useMissionControls";
 
 type Tone = "profit" | "loss" | undefined;
 
@@ -355,32 +367,386 @@ function Cell({ label, value, tone }: { label: string; value: string; tone?: Ton
 }
 
 /**
- * The mission strip, as chrome above the thread (§14.7).
+ * The published trading plan, as a display-only timeline card.
  *
- * Renders nothing at all once the mission is settled: a strip with no exposure
- * to unwind and no watch to report is a band of border with nothing in it.
+ * Appears the moment a strategy is published ({@link MissionThreadCards} gates
+ * on `mission.strategy !== null`) and stays for the life of the mission: the
+ * plan is the thing every later surface — order intent, fills, position — is
+ * executing against, so it leads the card stack. It carries no controls: there
+ * is no arm, edit, or reject here, because the plan is already published and the
+ * card's only job is to show what was published.
+ *
+ * The interesting field is the target basis — the harness showing its work — so
+ * it sits behind a disclosure rather than crowding the field rows.
+ */
+function StrategyPlanCard({ plan }: { plan: StrategyPlan }) {
+  return (
+    <Card
+      title="Plan"
+      badge={
+        <>
+          <Chip>v{plan.version}</Chip>
+          <Chip>{plan.modeLabel}</Chip>
+        </>
+      }
+    >
+      <FieldRows>
+        {plan.thesis === null ? null : <Field label="Thesis" value={plan.thesis} />}
+        {plan.regime === null ? null : <Field label="Regime" value={plan.regime} />}
+        {plan.entryTriggers.length === 0 ? null : (
+          <Field label="Entry trigger" value={plan.entryTriggers.join("; ")} />
+        )}
+        {plan.orderType === null ? null : <Field label="Order type" value={plan.orderType} />}
+        {plan.initialSizeUsd === null ? null : (
+          <Field label="Initial size" value={formatUsd(plan.initialSizeUsd)} />
+        )}
+        {plan.stopSummary === null ? null : <Field label="Stop" value={plan.stopSummary} />}
+        <Field label="Target" value={formatUsd(plan.targetUsd)} />
+        {plan.maxLossUsd === null ? null : (
+          <Field label="Max loss" value={formatUsd(plan.maxLossUsd)} />
+        )}
+        <Field
+          label="Scaling"
+          value={`Scale-in ${plan.scaleInAllowed ? "allowed" : "not allowed"} · Partial exit ${
+            plan.partialReductionAllowed ? "allowed" : "not allowed"
+          }`}
+        />
+        {plan.invalidation.length === 0 ? null : (
+          <Field label="Invalidation" value={plan.invalidation.join("; ")} />
+        )}
+      </FieldRows>
+      {plan.targetRationale === null && plan.basis === null ? null : (
+        <details className="border-t border-border/40 px-3 py-2 text-xs">
+          <summary className="cursor-pointer text-muted-foreground select-none">
+            Why this target
+          </summary>
+          <div className="mt-2 space-y-1.5">
+            {plan.targetRationale === null ? null : (
+              <p className="whitespace-pre-wrap text-foreground">{plan.targetRationale}</p>
+            )}
+            {plan.basis === null ? null : (
+              <div className="flex flex-wrap gap-x-6 gap-y-1 text-muted-foreground">
+                {plan.basis.measurement === null ? null : (
+                  <span>
+                    Measurement{" "}
+                    <span className="tabular-nums text-foreground">{plan.basis.measurement}</span>
+                  </span>
+                )}
+                {plan.basis.lookback === null ? null : (
+                  <span>
+                    Lookback{" "}
+                    <span className="tabular-nums text-foreground">{plan.basis.lookback}</span>
+                  </span>
+                )}
+                {plan.basis.hold === null ? null : (
+                  <span>
+                    Hold <span className="tabular-nums text-foreground">{plan.basis.hold}</span>
+                  </span>
+                )}
+                {plan.basis.hitRate === null ? null : (
+                  <span>
+                    Hit rate{" "}
+                    <span className="tabular-nums text-foreground">{plan.basis.hitRate}</span>
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        </details>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * The armed-conditions checklist: the prototype's state 04.
+ *
+ * Renders while a flat mission holds authority and has at least one active
+ * watch — the "armed, pre-entry" window between publishing a plan and the
+ * entry conditions actually firing. Each row reads one watch back as the
+ * predicate, the value the evaluator last observed for it, and its threshold, so
+ * the operator sees the live number a condition is measuring against rather than
+ * a ticked/empty checkbox alone. The header carries the countdown to the next
+ * scheduled reassessment, the wake that is coming on a clock rather than on a
+ * level.
+ *
+ * Reuses {@link Card} so it sits in the same frame as the plan and the
+ * execution cards. Tinted armed-amber, the same accent the order-intent card
+ * uses — both are states where the mission is about to move but has not yet.
+ */
+function ArmedConditionsCard({ conditions }: { conditions: ArmedConditions }) {
+  const meta = formatReassessmentCountdown(conditions.nextReassessmentAt);
+
+  return (
+    <Card title="Armed conditions" accentClassName="border-armed/40 bg-armed/5" meta={meta}>
+      {/*
+        A vertical list of rows reads cleaner than the intent's two-column grid:
+        each condition is a sentence, and wrapping it beside the observed value
+        crowds a description that already carries its market and its level.
+      */}
+      <div className="divide-y divide-border/40">
+        {conditions.rows.map((row) => (
+          <ConditionRow key={row.id} row={row} />
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+/** One row of the checklist: glyph, description, observed vs threshold. */
+function ConditionRow({ row }: { row: WatchConditionRow }) {
+  const glyph = row.met ? (
+    <span className="text-profit" aria-label="condition met">
+      ✓
+    </span>
+  ) : (
+    <span className="text-muted-foreground" aria-label="condition waiting">
+      ○
+    </span>
+  );
+
+  // The observed value's format depends on the predicate it measures against.
+  // A PnL watch reads a signed dollar figure; a price watch reads a market
+  // price. The threshold's formatting follows the same rule, so a row that
+  // compares the two never mixes a dollar value with a raw number.
+  const isPnlRow = row.description.includes("PnL");
+  const observed =
+    row.observedValue === null
+      ? "—"
+      : isPnlRow
+        ? formatSignedUsd(row.observedValue)
+        : formatPrice(row.observedValue);
+  const threshold =
+    row.thresholdValue === null
+      ? null
+      : isPnlRow
+        ? formatSignedUsd(row.thresholdValue)
+        : formatPrice(row.thresholdValue);
+
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-2 text-xs">
+      <span className="w-4 flex-none text-center">{glyph}</span>
+      <span className="text-foreground">{row.description}</span>
+      <span className="ml-auto flex items-baseline gap-2 tabular-nums">
+        <span className={row.met ? "text-profit" : "text-foreground"}>{observed}</span>
+        {threshold === null ? null : <span className="text-muted-foreground">/ {threshold}</span>}
+        {row.met ? null : <span className="text-[11px] text-muted-foreground">← waiting</span>}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The header countdown to the next scheduled reassessment.
+ *
+ * "reassess in 2m" while one is armed and in the future; "reassess due" the
+ * moment it has passed; undefined (the slot disappears) when none is armed.
+ */
+function formatReassessmentCountdown(nextReassessmentAt: number | null): string | undefined {
+  if (nextReassessmentAt === null) return undefined;
+  const remaining = nextReassessmentAt - Date.now();
+  if (remaining <= 0) return "reassess due";
+  return `reassess in ${formatDuration(remaining)}`;
+}
+
+/**
+ * The order-rejected surface, with the affordance to re-arm (§14.7).
+ *
+ * Replaces {@link OrderIntentCard} when the in-flight execution was refused — a
+ * rejected order must never render as a live one. Tinted loss-red because a
+ * rejection is the failure shape the thread carries, and given the re-arm button
+ * the plan calls for: `deriveRejectedOrder` already gates `canReArm` on the
+ * mission not being blocked or revoked.
+ *
+ * Controls are bound here rather than threaded from the workspace panel, because
+ * the timeline mounts wherever the mission's thread does — the workspace list, a
+ * bound chat thread — and either way the active environment is the one that
+ * sourced the mission. When no environment is active (no bound mission yet), the
+ * buttons are absent and the card reads the rejection aloud instead.
+ */
+function OrderRejectedCard({
+  notice,
+  mission,
+}: {
+  notice: RejectedOrderNotice;
+  mission: OrchestrationTradingMission;
+}) {
+  const environmentId = useActiveEnvironmentId();
+
+  return (
+    <Card
+      title="Order rejected"
+      badge={
+        <LifecycleChips
+          market={mission.market}
+          leverage={mission.leverage ?? null}
+          // A rejected order has no clean lifecycle — it never reached the book —
+          // so the chip is neutral and names the order that was refused.
+          lifecycle={null}
+          fallbackDetail={`${humanizeLiteral(notice.actionType)} ${notice.side}`}
+        />
+      }
+      accentClassName="border-loss/40 bg-loss/5"
+    >
+      <p className="px-3 py-2 text-xs text-foreground">
+        The {humanizeLiteral(notice.actionType)} of {formatSize(notice.size)} ({notice.side}) was
+        not accepted.
+      </p>
+      {/*
+        Mounted only when an environment is active, so the controls hook inside
+        is unconditional (rules-of-hooks) and a flat, environment-less render
+        reads the rejection aloud without offering buttons it could not bind.
+      */}
+      {environmentId === null ? null : (
+        <OrderRejectedActions notice={notice} mission={mission} environmentId={environmentId} />
+      )}
+    </Card>
+  );
+}
+
+/** The button row for a rejected order: re-arm and cancel resting entries. */
+function OrderRejectedActions({
+  notice,
+  mission,
+  environmentId,
+}: {
+  notice: RejectedOrderNotice;
+  mission: OrchestrationTradingMission;
+  environmentId: EnvironmentId;
+}) {
+  // Bound per-mission so a press on one mission cannot grey out another's way
+  // out, and so the busy state belongs to the mission it acts on.
+  const controls = useMissionControls(mission, environmentId);
+
+  return (
+    <div className="flex flex-wrap gap-2 px-3 pb-3">
+      {notice.canReArm ? (
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={controls.isBusy}
+          onClick={() => controls.lifecycle("trading.mission.resume")}
+        >
+          Re-arm mission
+        </Button>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          The mission is blocked or revoked; re-arming needs an explicit review first.
+        </p>
+      )}
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={controls.isBusy}
+        onClick={() => controls.risk("cancel_entries")}
+      >
+        Cancel resting entries
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * The completion summary, as the headline card of a finished mission (§14.7).
+ *
+ * A finished mission's result is the thing the thread exists to report, so it
+ * leads the card stack. Tinted by the net result — green for a profit, red for a
+ * loss — the same convention every other P&L figure on the surface uses.
+ *
+ * The plan calls for a review price chart windowed to `firstFillAt → lastFillAt`
+ * with entry/exit markers. The chart's candle feed (`useTradingMarketChart`) is a
+ * LIVE 15s poll gated on an open position; it has no historical-window RPC, and a
+ * completed mission is flat (the feed would be disabled and would in any case
+ * return the current window, not the trade's). Until a windowed candle RPC
+ * exists, the figures carry the summary on their own.
+ */
+// TODO(plan-21 4c): review chart needs a historical-window candle RPC windowed
+// to summary.firstFillAt → summary.lastFillAt with entry/exit markers.
+function CompletionSummaryCard({ mission }: { mission: OrchestrationTradingMission }) {
+  const summary: CompletionSummary = deriveCompletionSummary(mission);
+  const accent =
+    pnlTone(summary.netResultUsd) === "profit"
+      ? "border-profit/40 bg-profit/5"
+      : pnlTone(summary.netResultUsd) === "loss"
+        ? "border-loss/40 bg-loss/5"
+        : undefined;
+
+  return (
+    <Card
+      title="Mission complete"
+      meta={
+        summary.tradedDurationMillis === null
+          ? undefined
+          : formatDuration(summary.tradedDurationMillis)
+      }
+      accentClassName={accent}
+    >
+      <FieldRows>
+        <Field
+          label="Realized P&L"
+          value={formatUsd(summary.realizedPnlUsd)}
+          tone={pnlTone(summary.realizedPnlUsd)}
+        />
+        <Field label="Fees paid" value={formatUsd(summary.feesPaidUsd)} />
+        <Field
+          label="Net result"
+          value={formatSignedUsd(summary.netResultUsd)}
+          tone={pnlTone(summary.netResultUsd)}
+        />
+        <Field label="Fills" value={String(summary.fillCount)} />
+        <Field
+          label="Traded duration"
+          value={
+            summary.tradedDurationMillis === null
+              ? "—"
+              : formatDuration(summary.tradedDurationMillis)
+          }
+        />
+        <Field
+          label="Planned risk"
+          value={summary.plannedLossUsd === null ? "—" : formatUsd(summary.plannedLossUsd)}
+        />
+        <Field
+          label="Versus plan"
+          value={
+            summary.deviationFromPlanUsd === null
+              ? "—"
+              : formatSignedUsd(summary.deviationFromPlanUsd)
+          }
+          tone={
+            summary.deviationFromPlanUsd === null
+              ? undefined
+              : pnlTone(summary.deviationFromPlanUsd)
+          }
+        />
+      </FieldRows>
+    </Card>
+  );
+}
+
+/**
+ * The exception banners that sit above the thread (§14.7).
+ *
+ * Renders nothing at all once the mission is settled: with no exposure to
+ * unwind and no watch to report, there is nothing to flag.
  *
  * The two banners sit with the strip rather than with the cards below, because
  * both say the same kind of thing the strip does — something about this mission
  * needs attention right now — and both must stay on screen when the timeline
  * has scrolled away from the cards.
  */
-export function MissionThreadStrip({
+export function MissionThreadBanners({
   mission,
-  environmentId,
   feedError,
 }: {
   readonly mission: OrchestrationTradingMission;
-  readonly environmentId: EnvironmentId;
   /** The projection poll's failure, when the feed itself has stopped. */
   readonly feedError: string | null;
-}) {
-  const controls = useMissionControls(mission, environmentId);
+}): ReactNode {
   if (!shouldShowMissionStrip(mission)) return null;
 
   return (
     <>
-      <MissionStripBar mission={mission} controls={controls} />
       {feedError === null ? null : <MissionFeedErrorBanner message={feedError} />}
       <MissionStalenessBanner mission={mission} />
     </>
@@ -398,8 +764,30 @@ export function MissionThreadCards({ mission }: { readonly mission: Orchestratio
   // card is gated on exposure rather than on the row existing.
   const openPosition =
     mission.position !== null && mission.position.size !== 0 ? mission.position : null;
+  // The plan card has no execution-state dependency: it shows the moment a
+  // strategy is published, even before any order goes on, so strategy presence
+  // keeps the wrapper mounted on its own.
+  const plan = deriveStrategyPlan(mission);
+  // A rejected order has no position and no fills, so it must hold the wrapper
+  // up on its own — otherwise a flat mission whose only event is a refusal
+  // would render nothing at all.
+  const rejected = deriveRejectedOrder(mission);
+  // The armed-conditions checklist is a pre-entry state: it shows only while no
+  // position is open (a position means the entry conditions already fired) and
+  // the mission is not yet complete. The derivation itself gates on at least one
+  // active watch, so a flat mission with nothing armed renders null here.
+  const armed =
+    openPosition === null && !isMissionComplete(mission.status)
+      ? deriveWatchConditions(mission)
+      : null;
   const hasCards =
-    mission.inFlightExecution !== null || openPosition !== null || mission.recentFills.length > 0;
+    mission.inFlightExecution !== null ||
+    openPosition !== null ||
+    mission.recentFills.length > 0 ||
+    plan !== null ||
+    isMissionComplete(mission.status) ||
+    rejected !== null ||
+    armed !== null;
 
   if (!hasCards) return null;
 
@@ -414,9 +802,30 @@ export function MissionThreadCards({ mission }: { readonly mission: Orchestratio
 
   return (
     <div className="flex flex-col gap-2 pt-2">
-      {mission.inFlightExecution && (
+      {/*
+        A finished mission's result is the headline — it leads the stack so the
+        thing the thread existed to report is the first thing read. The plan
+        follows, then the execution cards (intent/position/fills) that report
+        the trade as it happened.
+      */}
+      {isMissionComplete(mission.status) && <CompletionSummaryCard mission={mission} />}
+      {plan !== null && <StrategyPlanCard plan={plan} />}
+      {/*
+        The armed checklist is a pre-entry state, so it sits after the plan and
+        before the execution cards: the plan is what the conditions are arming,
+        and once an intent or position lands the conditions have already fired.
+      */}
+      {armed !== null && <ArmedConditionsCard conditions={armed} />}
+      {/*
+        A rejected execution never renders as a live intent: branch on it before
+        the intent card so a refusal shows as a refusal, not as an order about
+        to go on.
+      */}
+      {rejected !== null ? (
+        <OrderRejectedCard notice={rejected} mission={mission} />
+      ) : mission.inFlightExecution !== null ? (
         <OrderIntentCard exec={mission.inFlightExecution} leverage={leverage} />
-      )}
+      ) : null}
       {openPosition && (
         <PositionCard
           position={openPosition}

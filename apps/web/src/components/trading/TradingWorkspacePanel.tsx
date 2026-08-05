@@ -13,22 +13,17 @@ import { MissionStripBar } from "./MissionStripBar";
 import { useMissionControls, type MissionControls } from "./useMissionControls";
 import { NewMissionForm } from "./NewMissionForm";
 import {
-  deriveCompletionSummary,
   deriveMissionPhases,
   derivePausedExposure,
-  deriveRejectedOrder,
   describeWatch,
-  formatDuration,
   formatSignedUsd,
   formatUsd as usd,
   humanizeLiteral,
   hyperliquidTradeUrl,
   isLiveMission,
-  isMissionComplete,
   MISSION_STATUS_LABELS,
   shouldShowMissionStrip,
   visibleMissions,
-  type RejectedOrderNotice,
 } from "./tradingPresentation";
 
 /**
@@ -283,47 +278,6 @@ function PhaseBreadcrumb({ status }: { status: OrchestrationTradingMission["stat
   );
 }
 
-/** The order-rejected surface, with the affordance to re-arm. */
-function OrderRejectedCard({
-  notice,
-  controls,
-}: {
-  notice: RejectedOrderNotice;
-  controls: MissionControls;
-}) {
-  return (
-    <SettingsSection title="Order rejected">
-      <p className="px-3 py-2 text-sm text-foreground sm:px-4">
-        The {humanizeLiteral(notice.actionType)} of {notice.size} ({notice.side}) was not accepted.
-      </p>
-      <div className="flex gap-2 px-3 pb-3 sm:px-4">
-        {notice.canReArm ? (
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={controls.isBusy}
-            onClick={() => controls.lifecycle("trading.mission.resume")}
-          >
-            Re-arm mission
-          </Button>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            The mission is blocked or revoked; re-arming needs an explicit review first.
-          </p>
-        )}
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={controls.isBusy}
-          onClick={() => controls.risk("cancel_entries")}
-        >
-          Cancel resting entries
-        </Button>
-      </div>
-    </SettingsSection>
-  );
-}
-
 /** The deterministic risk-control buttons (§14.7). */
 function RiskControls({
   mission,
@@ -413,34 +367,6 @@ function RiskControls({
   );
 }
 
-/** The completion summary card, shown once a mission has finished. */
-function CompletionSummaryCard({ mission }: { mission: OrchestrationTradingMission }) {
-  const summary = deriveCompletionSummary(mission);
-
-  return (
-    <SettingsSection title="Completion summary">
-      <Field label="Realized P&L" value={usd(summary.realizedPnlUsd)} />
-      <Field label="Fees paid" value={usd(summary.feesPaidUsd)} />
-      <Field label="Net result" value={usd(summary.netResultUsd)} />
-      <Field label="Fills" value={String(summary.fillCount)} />
-      <Field
-        label="Traded duration"
-        value={
-          summary.tradedDurationMillis === null ? "—" : formatDuration(summary.tradedDurationMillis)
-        }
-      />
-      <Field
-        label="Planned risk"
-        value={summary.plannedLossUsd === null ? "—" : usd(summary.plannedLossUsd)}
-      />
-      <Field
-        label="Versus plan"
-        value={summary.deviationFromPlanUsd === null ? "—" : usd(summary.deviationFromPlanUsd)}
-      />
-    </SettingsSection>
-  );
-}
-
 function MissionView({
   mission,
   controls,
@@ -448,7 +374,11 @@ function MissionView({
   mission: OrchestrationTradingMission;
   controls: MissionControls;
 }) {
-  const rejected = deriveRejectedOrder(mission);
+  // A revoked or completed mission has no authority left to exercise, so every
+  // control would be rejected as an illegal transition. The completion summary
+  // and the order-rejected surface now live in the thread (MissionThreadCards),
+  // so the panel keeps only the controls gate they used to share.
+  const complete = mission.status === "completed" || mission.status === "revoked";
 
   return (
     <>
@@ -461,14 +391,8 @@ function MissionView({
       ) : null}
       <MissionStalenessBanner mission={mission} />
       {mission.status === "paused" ? <PausedCard mission={mission} /> : null}
-      {rejected === null ? null : <OrderRejectedCard notice={rejected} controls={controls} />}
       <MissionStatus mission={mission} />
-      {/* A revoked or completed mission has no authority left to exercise, so
-          every control would be rejected as an illegal transition. */}
-      {isMissionComplete(mission.status) ? null : (
-        <RiskControls mission={mission} controls={controls} />
-      )}
-      {isMissionComplete(mission.status) ? <CompletionSummaryCard mission={mission} /> : null}
+      {complete ? null : <RiskControls mission={mission} controls={controls} />}
       <Mandate mission={mission} />
       <Strategy mission={mission} />
       <Watches mission={mission} />

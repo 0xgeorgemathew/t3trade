@@ -11,6 +11,7 @@ import {
   describeMandate,
   describeTradingAccount,
   describeWatch,
+  deriveWatchConditions,
   formatDuration,
   formatPrice,
   formatSignedUsd,
@@ -23,6 +24,7 @@ import {
   deriveFillSlippagePercent,
   deriveMissionPhases,
   derivePausedExposure,
+  deriveStrategyPlan,
   describeStaleness,
   formatLeverage,
   formatSignedPercent,
@@ -885,5 +887,334 @@ describe("deriveWakeupCard", () => {
     expect(deriveWakeupCard('{"kind":"something-else","cause":"x"}')).toBeNull();
     expect(deriveWakeupCard('{"kind":"trading-harness-wakeup",')).toBeNull();
     expect(deriveWakeupCard("")).toBeNull();
+  });
+});
+
+describe("deriveStrategyPlan", () => {
+  // A strategy mirroring the contract shape, accessed structurally — the same
+  // way the projection hands it to the derivation.
+  const strategy = {
+    mode: "breakout_continuation",
+    timeframes: ["1m", "5m"],
+    belief: {
+      summary: "Trend up; buy the first pullback.",
+      regime: "Trending",
+      confidence: 0.7,
+      evidence: ["directionScore positive"],
+    },
+    entryPlan: {
+      explanation: "Wait for a pullback to the 1m ema.",
+      orderPreference: "marketable_ioc",
+      initialNotionalUsd: 500,
+      conditions: [
+        { description: "1m candle closes above 1860", timeframe: "1m", priceLevel: 1860 },
+        { description: "mark reclaims the ema" },
+      ],
+    },
+    positionManagement: {
+      scaleInAllowed: true,
+      scaleInConditions: [],
+      partialReductionAllowed: false,
+      trailingMethod: "previous_swing_low",
+    },
+    protection: {
+      stopMethod: "previous_swing_low",
+      stopPrice: 1840,
+      targetProfitUsd: 18.5,
+      targetProfitRationale: "Conservative 1864 · Base 1880 · Extension 1900.",
+      targetProfitBasis: {
+        measurement: "excursion_quantile",
+        timeframe: "5m",
+        lookbackBars: 60,
+        measuredMoveUsd: 12.4,
+        expectedHoldBars: 10,
+        referencePrice: 1860,
+        targetPriceMovePercent: 1.0,
+        positionNotionalUsd: 500,
+        historicalHitRatePercent: 50,
+        rationale: "median 5m excursion over 60 bars",
+      },
+      maximumPlannedLossUsd: 20,
+    },
+    abandonmentConditions: [
+      { description: "1m candle closes back below 1855" },
+      { description: "mark loses the ema and rolls over" },
+    ],
+    // Authoring the brand-only fields the projection carries but the derivation
+    // does not read: their presence confirms the structural read ignores them.
+  } as const;
+
+  const mission = { strategyVersion: 3, strategy };
+
+  it("returns null before a strategy has been published", () => {
+    expect(deriveStrategyPlan({ strategyVersion: 0, strategy: null })).toBeNull();
+  });
+
+  it("reads the version off the mission, not the strategy", () => {
+    // strategyVersion is the mission's mirror of the published version; the
+    // card header shows it as v{n}. Reading it off the strategy would render a
+    // stale figure the moment a new publish landed.
+    expect(deriveStrategyPlan(mission)?.version).toBe(3);
+  });
+
+  it("humanizes the mode label without branching on its value", () => {
+    // mode is free text — render it, never test it.
+    expect(deriveStrategyPlan(mission)?.modeLabel).toBe("breakout continuation");
+  });
+
+  it("flattens entry conditions and abandonment into prose lists", () => {
+    const plan = deriveStrategyPlan(mission)!;
+    expect(plan.entryTriggers).toEqual(["1m candle closes above 1860", "mark reclaims the ema"]);
+    expect(plan.invalidation).toEqual([
+      "1m candle closes back below 1855",
+      "mark loses the ema and rolls over",
+    ]);
+  });
+
+  // The condition union's string branch is an input affordance only; the
+  // persisted/encoded form is always { description }. A bare string here would
+  // be malformed, and the guard returns null rather than rendering it raw.
+  it("ignores a condition element that is not the decoded object shape", () => {
+    const plan = deriveStrategyPlan({
+      strategyVersion: 1,
+      strategy: {
+        ...strategy,
+        abandonmentConditions: [
+          { description: "1m candle closes back below 1855" },
+          "bare prose string",
+          { noDescription: true },
+        ],
+      },
+    })!;
+    expect(plan.invalidation).toEqual(["1m candle closes back below 1855"]);
+  });
+
+  it("combines the stop method and price into one readable line", () => {
+    expect(deriveStrategyPlan(mission)?.stopSummary).toBe("previous swing low · 1,840");
+  });
+
+  it("falls back to the method alone when no stop price is set", () => {
+    const plan = deriveStrategyPlan({
+      strategyVersion: 1,
+      strategy: { ...strategy, protection: { ...strategy.protection, stopPrice: undefined } },
+    })!;
+    expect(plan.stopSummary).toBe("previous swing low");
+  });
+
+  // targetProfitUsd is a PositiveUsdAmount on the contract — required — so it is
+  // never null on the plan. The card formats it as USD without null-guarding.
+  it("carries the required profit target as a number, never null", () => {
+    expect(deriveStrategyPlan(mission)?.targetUsd).toBe(18.5);
+  });
+
+  it("reads the target ladder rationale for the disclosure", () => {
+    expect(deriveStrategyPlan(mission)?.targetRationale).toBe(
+      "Conservative 1864 · Base 1880 · Extension 1900.",
+    );
+  });
+
+  // The basis is the harness showing its work: measurement, lookback, hold, and
+  // the historical hit rate the median came from. It is the interesting field.
+  it("flattens the profit-target basis into the four lines the card shows", () => {
+    expect(deriveStrategyPlan(mission)?.basis).toEqual({
+      measurement: "excursion quantile",
+      lookback: "5m · 60b",
+      hold: "10b",
+      hitRate: "50%",
+    });
+  });
+
+  it("drops the hit rate when the measurement did not report one", () => {
+    const plan = deriveStrategyPlan({
+      strategyVersion: 1,
+      strategy: {
+        ...strategy,
+        protection: {
+          ...strategy.protection,
+          targetProfitBasis: {
+            ...strategy.protection.targetProfitBasis,
+            historicalHitRatePercent: undefined,
+          },
+        },
+      },
+    })!;
+    expect(plan.basis?.hitRate).toBeNull();
+  });
+
+  it("omits the basis entirely when none was published", () => {
+    const plan = deriveStrategyPlan({
+      strategyVersion: 1,
+      strategy: {
+        ...strategy,
+        protection: { ...strategy.protection, targetProfitBasis: undefined },
+      },
+    })!;
+    expect(plan.basis).toBeNull();
+  });
+
+  it("reports the scaling flags as allowed / not allowed", () => {
+    const plan = deriveStrategyPlan(mission)!;
+    expect(plan.scaleInAllowed).toBe(true);
+    expect(plan.partialReductionAllowed).toBe(false);
+  });
+
+  it("formats the initial size and max loss as plain USD figures on the plan", () => {
+    const plan = deriveStrategyPlan(mission)!;
+    expect(plan.initialSizeUsd).toBe(500);
+    expect(plan.maxLossUsd).toBe(20);
+  });
+});
+
+describe("deriveWatchConditions", () => {
+  // A watch carrying the shape the projection now hands the web: the §11.3
+  // predicate plus the evaluator's last observed value/timestamp. The optional
+  // fields are absent by default; each test adds them where the row needs them.
+  const priceCross = {
+    id: "watch-1",
+    missionId: "mission-1",
+    strategyVersion: 1,
+    watch: {
+      type: "price_cross" as const,
+      market: "ETH" as const,
+      priceSource: "mark" as const,
+      direction: "above" as const,
+      price: 1_868.4,
+    },
+    status: "active" as const,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+  };
+
+  it("returns null when no watch is active", () => {
+    // A mission holding only history — triggered, consumed, superseded — has
+    // nothing left that can wake it, and the card is absent rather than empty.
+    expect(deriveWatchConditions({ watches: [] })).toBeNull();
+    expect(
+      deriveWatchConditions({ watches: [{ ...priceCross, status: "triggered" as const }] }),
+    ).toBeNull();
+    expect(
+      deriveWatchConditions({ watches: [{ ...priceCross, status: "consumed" as const }] }),
+    ).toBeNull();
+  });
+
+  it("carries one row per active numeric watch", () => {
+    const armed = deriveWatchConditions({ watches: [priceCross] })!;
+    expect(armed.rows).toHaveLength(1);
+    expect(armed.rows[0]?.description).toBe("ETH mark crosses above 1,868.4");
+    expect(armed.rows[0]?.thresholdValue).toBe(1_868.4);
+  });
+
+  it("carries the evaluator's last observed value and timestamp onto the row", () => {
+    // The whole point of the checklist: show the live number the predicate is
+    // measuring against, not just a ticked/empty checkbox.
+    const armed = deriveWatchConditions({
+      watches: [
+        {
+          ...priceCross,
+          lastObservedValue: 1_871.2,
+          lastEvaluatedAt: 1_700_000_030_000,
+        },
+      ],
+    })!;
+    expect(armed.rows[0]?.observedValue).toBe(1_871.2);
+    expect(armed.rows[0]?.evaluatedAt).toBe(1_700_000_030_000);
+  });
+
+  it("nulls the observed value and timestamp when the watch was never swept", () => {
+    const armed = deriveWatchConditions({ watches: [priceCross] })!;
+    expect(armed.rows[0]?.observedValue).toBeNull();
+    expect(armed.rows[0]?.evaluatedAt).toBeNull();
+  });
+
+  it("reads the threshold off a PnL watch's valueUsd", () => {
+    const pnlWatch = {
+      id: "watch-pnl",
+      missionId: "mission-1",
+      strategyVersion: 1,
+      watch: {
+        type: "pnl_above" as const,
+        market: "ETH" as const,
+        valueUsd: 18,
+      },
+      status: "active" as const,
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_000,
+      lastObservedValue: 12.4,
+      lastEvaluatedAt: 1_700_000_030_000,
+    };
+
+    const armed = deriveWatchConditions({ watches: [pnlWatch] })!;
+    expect(armed.rows[0]?.thresholdValue).toBe(18);
+    expect(armed.rows[0]?.observedValue).toBe(12.4);
+  });
+
+  it("excludes scheduled_reassessment from rows and tracks the next runAt", () => {
+    // A scheduled reassessment carries no numeric level the checklist could
+    // show; it belongs in the countdown, not the row list.
+    const reassessment = {
+      id: "watch-reassess",
+      missionId: "mission-1",
+      strategyVersion: 1,
+      watch: { type: "scheduled_reassessment" as const, runAt: 1_700_000_120_000 },
+      status: "active" as const,
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_000,
+    };
+
+    const armed = deriveWatchConditions({ watches: [priceCross, reassessment] })!;
+    expect(armed.rows).toHaveLength(1);
+    expect(armed.rows[0]?.id).toBe("watch-1");
+    expect(armed.nextReassessmentAt).toBe(1_700_000_120_000);
+  });
+
+  it("picks the earliest runAt when several reassessments are armed", () => {
+    const reassess = (runAt: number) => ({
+      id: `watch-reassess-${runAt}`,
+      missionId: "mission-1",
+      strategyVersion: 1,
+      watch: { type: "scheduled_reassessment" as const, runAt },
+      status: "active" as const,
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_000,
+    });
+
+    const armed = deriveWatchConditions({
+      watches: [priceCross, reassess(1_700_000_180_000), reassess(1_700_000_120_000)],
+    })!;
+    expect(armed.nextReassessmentAt).toBe(1_700_000_120_000);
+  });
+
+  it("marks a triggered watch as met alongside an active one", () => {
+    // The checklist shows both rows: ✓ for the predicate already cleared, ○ for
+    // the one still waiting. `met` is read off the status — the predicate is
+    // never re-evaluated client-side; the server already tracks whether it has
+    // fired.
+    const armed = deriveWatchConditions({
+      watches: [
+        { ...priceCross, status: "triggered" as const, lastObservedValue: 1_871.2 },
+        { ...priceCross, id: "watch-2", watch: { ...priceCross.watch, price: 1_864 } },
+      ],
+    })!;
+    expect(armed.rows).toHaveLength(2);
+    const met = armed.rows.find((row) => row.id === "watch-1");
+    expect(met?.met).toBe(true);
+    const waiting = armed.rows.find((row) => row.id === "watch-2");
+    expect(waiting?.met).toBe(false);
+  });
+
+  it("keeps met=true on an active watch the evaluator confirmed is met", () => {
+    // The realistic armed state: an active watch whose predicate is satisfied
+    // but has not yet been promoted to "triggered" by the evaluator. The
+    // checklist shows it as still waiting — met is read off status, and the
+    // evaluator has not flipped it yet.
+    const armed = deriveWatchConditions({
+      watches: [
+        {
+          ...priceCross,
+          lastObservedValue: 1_871.2,
+        },
+      ],
+    })!;
+    expect(armed.rows[0]?.met).toBe(false);
   });
 });
