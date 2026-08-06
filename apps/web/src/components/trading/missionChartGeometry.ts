@@ -106,6 +106,31 @@ export interface ChartLevel {
   readonly met?: boolean;
 }
 
+/**
+ * The drawn level at a given price, or null when the chart draws none there.
+ *
+ * This is what turns a click on an "Up next" pill into a highlight: the pill
+ * carries the price, the chart carries the levels, and this is the join. The
+ * pill's price and the level's price come from the same projection field but
+ * travel through different arithmetic — a PnL watch is divided back into a
+ * price on both paths — so they are compared with a relative tolerance rather
+ * than for equality.
+ *
+ * Nothing is snapped to a merely *nearest* level: the strip can name a level
+ * the chart's domain does not reach, and lighting up the closest rule instead
+ * would point the operator at the wrong price.
+ */
+export function findLevelAtPrice(
+  levels: ReadonlyArray<ChartLevel>,
+  price: number,
+): ChartLevel | null {
+  const tolerance = Math.max(Math.abs(price), 1) * 1e-6;
+  for (const level of levels) {
+    if (Math.abs(level.price - price) <= tolerance) return level;
+  }
+  return null;
+}
+
 /** One armed price condition the chart draws as a level. */
 export interface ChartCondition {
   readonly price: number;

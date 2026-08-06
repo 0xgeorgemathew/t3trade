@@ -38,6 +38,7 @@ import {
   LABEL_GUTTER_WIDTH,
   PLOT_WIDTH,
   computeChartGeometry,
+  findLevelAtPrice,
   type ChartCondition,
   type ChartLevelKind,
   type ChartPoint,
@@ -88,6 +89,15 @@ interface MissionPriceChartProps {
    * exit that already happened.
    */
   readonly nowMillis?: number;
+  /**
+   * A level to call attention to, set by clicking its pill in the "Up next"
+   * strip. The `nonce` is what makes a second click on the same pill flash
+   * again: the overlay is keyed by it, so React remounts the element and the
+   * CSS animation restarts. A price with no drawn level flashes nothing —
+   * the strip may name a level the chart's domain does not reach, and an
+   * invented rule there would be a lie about where it sits.
+   */
+  readonly flash?: { readonly price: number; readonly nonce: number } | null;
   /** Future moments to stand in the gutter. Ignored without `nowMillis`. */
   readonly timeMarkers?: ReadonlyArray<{
     readonly key: string;
@@ -277,6 +287,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     conditions,
     fills,
     pendingOrder,
+    flash,
     nowMillis,
     timeMarkers,
     className,
@@ -309,11 +320,16 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
   // The gutter overlay is positioned in percentages of the same viewBox the SVG
   // uses, so the two stay in register at any container size.
   const gutterPercent = (LABEL_GUTTER_WIDTH / CHART_VIEWBOX_WIDTH) * 100;
+  const flashedLevel =
+    flash === undefined || flash === null ? null : findLevelAtPrice(geometry.levels, flash.price);
 
   return (
     <div className={cn("relative h-full w-full", className)}>
       {/* The mark's ring animation, declared once for the whole chart. */}
-      <style>{`@keyframes mission-mark-pulse { 0%, 100% { opacity: 0.9; transform: translate(-50%, -50%) scale(1); } 50% { opacity: 0.15; transform: translate(-50%, -50%) scale(1.35); } }`}</style>
+      <style>{`@keyframes mission-mark-pulse { 0%, 100% { opacity: 0.9; transform: translate(-50%, -50%) scale(1); } 50% { opacity: 0.15; transform: translate(-50%, -50%) scale(1.35); } }
+@keyframes mission-level-flash { 0% { opacity: 0; } 15% { opacity: 1; } 100% { opacity: 0; } }
+.mission-level-flash { animation: mission-level-flash 1.4s ease-out 2 forwards; opacity: 0; }
+@media (prefers-reduced-motion: reduce) { .mission-level-flash { animation: none; opacity: 1; } }`}</style>
       <svg
         viewBox={`0 0 ${CHART_VIEWBOX_WIDTH} ${CHART_VIEWBOX_HEIGHT}`}
         preserveAspectRatio="none"
@@ -406,6 +422,24 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             vectorEffect="non-scaling-stroke"
           />
         ))}
+
+        {/* The flashed level: the same rule, drawn once more in its own ink and
+            keyed by the click that asked for it, so the animation restarts on
+            every click rather than only the first. */}
+        {flashedLevel === null ? null : (
+          <line
+            key={`flash-${flash?.nonce ?? 0}`}
+            data-testid="mission-chart-flash"
+            className="mission-level-flash"
+            x1={0}
+            y1={flashedLevel.y}
+            x2={PLOT_WIDTH}
+            y2={flashedLevel.y}
+            stroke={levelInkColor(flashedLevel.kind)}
+            strokeWidth={2}
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
 
         {/* Leader lines: a tag nudged off its own level still points at it. */}
         {geometry.gutterTags

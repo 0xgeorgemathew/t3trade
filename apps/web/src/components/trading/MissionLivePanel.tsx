@@ -117,6 +117,16 @@ const MAX_CONDITION_ROWS = 4;
 const MAX_UP_NEXT_PILLS = 6;
 
 /**
+ * How long a clicked level stays lit.
+ *
+ * Long enough to survive the eye travelling from the pill up to the chart, and
+ * short enough that the highlight is over before the next 3s mission poll — a
+ * rule that outlived the click would read as chart state rather than as an
+ * answer to a question the operator asked.
+ */
+const FLASH_DURATION_MILLIS = 2_800;
+
+/**
  * How many of the fetched bars the live chart draws.
  *
  * The RPC serves 120 (`maxBars` in `ws.ts`), which on a 1m series is two hours
@@ -260,6 +270,20 @@ export function MissionLivePanel({
   // The whole schedule, not just its nearest item. The header's countdown is
   // one reassessment; this is every future event the projection carries.
   const upNext = deriveUpNextItems(mission, nowMillis);
+
+  // Clicking a pill lights up the level it names on the chart. The strip and
+  // the chart are two views of one set of price levels, and without this the
+  // operator has to find "wake @ 1899" among four unlabelled rules by eye. The
+  // nonce is what lets the same pill flash twice: it keys the overlay, so a
+  // second click remounts it and the animation runs again.
+  const [flash, setFlash] = useState<{ readonly price: number; readonly nonce: number } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (flash === null) return;
+    const timer = setTimeout(() => setFlash(null), FLASH_DURATION_MILLIS);
+    return () => clearTimeout(timer);
+  }, [flash]);
   const timeMarkers =
     nextReassessmentAt === null
       ? []
@@ -439,6 +463,7 @@ export function MissionLivePanel({
           conditions={chartConditions}
           fills={fillMarkers}
           pendingOrder={pendingOrder}
+          flash={flash}
           nowMillis={nowMillis}
           timeMarkers={timeMarkers}
         />
@@ -453,7 +478,16 @@ export function MissionLivePanel({
           className="flex flex-wrap items-center justify-center gap-1.5 border-t border-border/40 px-3 py-1.5 sm:px-4"
         >
           {upNext.slice(0, MAX_UP_NEXT_PILLS).map((item) => (
-            <UpNextPill key={item.key} item={item} />
+            <UpNextPill
+              key={item.key}
+              item={item}
+              isFlashed={flash !== null && item.priceLevel === flash.price}
+              onSelect={
+                item.priceLevel === null
+                  ? null
+                  : (price) => setFlash((prev) => ({ price, nonce: (prev?.nonce ?? 0) + 1 }))
+              }
+            />
           ))}
           {upNext.length > MAX_UP_NEXT_PILLS ? (
             <span className="text-[11px] text-muted-foreground">
@@ -516,17 +550,44 @@ export function MissionLivePanel({
  * `warning` pill is the one exception: the plan named a trigger level and
  * nothing is armed there, which is a gap and should look like one.
  */
-function UpNextPill({ item }: { readonly item: UpNextItem }): ReactNode {
+function UpNextPill({
+  item,
+  isFlashed,
+  onSelect,
+}: {
+  readonly item: UpNextItem;
+  /** Whether this pill's level is the one currently lit on the chart. */
+  readonly isFlashed: boolean;
+  /**
+   * Called with the pill's price when it is clicked. Null for the items that
+   * have no y on a price chart — a countdown, a working order with no limit —
+   * and those render as plain spans rather than as buttons that do nothing.
+   */
+  readonly onSelect: ((price: number) => void) | null;
+}): ReactNode {
+  const price = item.priceLevel;
+  const isClickable = onSelect !== null && price !== null;
+  const Tag = isClickable ? "button" : "span";
   return (
-    <span
+    <Tag
       data-testid="mission-up-next-pill"
       data-kind={item.kind}
       data-tone={item.tone}
+      data-flashed={isFlashed ? "true" : undefined}
+      {...(isClickable
+        ? {
+            type: "button" as const,
+            onClick: () => onSelect(price),
+            title: `Show ${formatPrice(price)} on the chart`,
+          }
+        : {})}
       className={cn(
         "inline-flex items-center gap-1 rounded-full border px-2 py-px text-[11px] tabular-nums",
         item.tone === "warning"
           ? "border-armed/40 bg-armed/10 text-armed"
           : "border-border/60 bg-muted/40 text-muted-foreground",
+        isClickable && "cursor-pointer transition-colors hover:bg-muted/70",
+        isFlashed && "ring-1 ring-foreground/30",
       )}
     >
       <span className="text-foreground">{item.label}</span>
@@ -534,7 +595,7 @@ function UpNextPill({ item }: { readonly item: UpNextItem }): ReactNode {
       {item.chip === null ? null : (
         <span className="rounded-full bg-foreground/10 px-1 text-[10px]">{item.chip}</span>
       )}
-    </span>
+    </Tag>
   );
 }
 
@@ -616,6 +677,7 @@ function ChartSlot(props: {
   }>;
   readonly fills: ReadonlyArray<ChartFillMarker>;
   readonly pendingOrder: { readonly price: number; readonly side: "buy" | "sell" } | null;
+  readonly flash: { readonly price: number; readonly nonce: number } | null;
   readonly nowMillis: number;
   readonly timeMarkers: ReadonlyArray<{
     readonly key: string;
@@ -668,6 +730,7 @@ function ChartSlot(props: {
         conditions={props.conditions}
         fills={props.fills}
         pendingOrder={props.pendingOrder}
+        flash={props.flash}
         nowMillis={props.nowMillis}
         timeMarkers={props.timeMarkers}
         className={CHART_HEIGHT_CLASS}

@@ -12,6 +12,7 @@ import {
   deriveEntryFillAtMillis,
   deriveProgressToTarget,
   deriveTargetPrice,
+  findLevelAtPrice,
   layoutGutterLabels,
   selectVisibleCandles,
 } from "./missionChartGeometry";
@@ -1030,5 +1031,36 @@ describe("selectVisibleCandles", () => {
   it("keeps the tail when the fill is newer than every bar", () => {
     const visible = selectVisibleCandles(series, 60, series[119]!.openTime + 600_000);
     expect(visible).toHaveLength(60);
+  });
+});
+
+describe("findLevelAtPrice", () => {
+  /** Three drawn levels, of the kinds a mission actually carries at once. */
+  const levels = [
+    { kind: "entry" as const, price: 1900, y: 80, inFrame: true, offScale: null },
+    { kind: "stop" as const, price: 1908.5, y: 20, inFrame: true, offScale: null },
+    { kind: "target" as const, price: 1885, y: 150, inFrame: true, offScale: null },
+  ];
+
+  it("returns the level a pill's price names", () => {
+    expect(findLevelAtPrice(levels, 1908.5)?.kind).toBe("stop");
+  });
+
+  it("tolerates the float drift of a price derived twice", () => {
+    expect(findLevelAtPrice(levels, 1908.5 + 1e-9)?.kind).toBe("stop");
+  });
+
+  it("returns null for a price the chart draws no level at", () => {
+    expect(findLevelAtPrice(levels, 1899)).toBeNull();
+  });
+
+  it("does not snap a near miss to the closest level", () => {
+    // A cent away is a different price, and lighting up the stop here would
+    // point the operator at a level they did not click.
+    expect(findLevelAtPrice(levels, 1908.51)).toBeNull();
+  });
+
+  it("returns null when nothing is drawn at all", () => {
+    expect(findLevelAtPrice([], 1900)).toBeNull();
   });
 });
