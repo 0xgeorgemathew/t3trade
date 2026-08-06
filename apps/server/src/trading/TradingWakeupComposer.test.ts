@@ -364,6 +364,47 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
+  /** The same plan, waiting to enter, with two named trigger levels. */
+  const waitingStrategy = {
+    ...(strategy as unknown as Record<string, unknown>),
+    currentAction: "waiting",
+    entryPlan: {
+      ...(strategy.entryPlan as unknown as Record<string, unknown>),
+      conditions: [
+        // Armed: `watch_up` sits at 4,040.
+        { description: "reclaim of the prior high", priceLevel: 4_040, timeframe: "1m" },
+        // Named in prose only.
+        { description: "give up on a loss of 3,900", priceLevel: 3_900 },
+      ],
+    },
+  } as unknown as TradingPlanState;
+
+  it.effect("names the entry levels a waiting plan published but never armed", () =>
+    Effect.gen(function* () {
+      positionSize = 0;
+      const wakeup = yield* composeFull({ activeStrategy: waitingStrategy }).pipe(
+        Effect.map((composed) => composed.wakeup),
+      );
+
+      assert.deepEqual(
+        wakeup.unarmedEntryConditions?.map((c) => c.priceLevel),
+        [3_900],
+      );
+    }),
+  );
+
+  it.effect("says nothing about entry levels while a position is open", () =>
+    Effect.gen(function* () {
+      positionSize = 1;
+      const wakeup = yield* composeFull({ activeStrategy: waitingStrategy }).pipe(
+        Effect.map((composed) => composed.wakeup),
+      );
+      positionSize = 0;
+
+      assert.equal(wakeup.unarmedEntryConditions, undefined);
+    }),
+  );
+
   it.effect("renders an ordinary wakeup untouched", () =>
     Effect.gen(function* () {
       const { text } = yield* composeFull();

@@ -36,6 +36,8 @@ import type { PersistedWatch } from "./Schemas.ts";
 import type { TradingMission } from "./Schemas.ts";
 import {
   describeArmedWatch,
+  findUnarmedEntryConditions,
+  isWaitingLikeAction,
   TradingDomainEventSummary,
   TradingHarnessWakeup,
   type TradingHarnessRunCause,
@@ -601,6 +603,17 @@ const make = Effect.gen(function* () {
         .filter((persisted) => persisted.status === "active")
         .map((persisted) => describeArmedWatch(persisted, marketSnapshot.markPrice));
 
+      // Flat and waiting: the entry levels the plan names, that nothing is armed
+      // at. The runtime reports the gap and never closes it — a watch predicate
+      // comes from `MarketWatch`, never from a condition's prose.
+      const unarmedEntryConditions =
+        position.size === 0 && isWaitingLikeAction(activeStrategy.currentAction)
+          ? findUnarmedEntryConditions({
+              conditions: activeStrategy.entryPlan.conditions,
+              watches: armed,
+            })
+          : [];
+
       const wakeup: TradingHarnessWakeup = {
         kind: "trading-harness-wakeup",
         missionId: mission.id,
@@ -622,6 +635,7 @@ const make = Effect.gen(function* () {
         activeStrategy,
         strategyAgeMillis: Math.max(0, occurredAt - activeStrategy.updatedAt),
         armedWatches,
+        ...(unarmedEntryConditions.length === 0 ? {} : { unarmedEntryConditions }),
         pendingEvents: [...pendingEvents],
       };
 

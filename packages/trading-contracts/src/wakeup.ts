@@ -18,7 +18,7 @@ import { TradingHarnessRunCause } from "./mission.ts";
 import { TradingId, TradingText, UnixMillis } from "./primitives.ts";
 import { TradingPlanState, TradingTimeframe } from "./strategy.ts";
 import { ObservedVolatility } from "./volatility.ts";
-import { PersistedWatch, WatchArmedReason } from "./watch.ts";
+import { PersistedWatch, UnarmedEntryCondition, WatchArmedReason } from "./watch.ts";
 
 /**
  * A coalesced inbox event as a resumed run sees it - spec §18.1.
@@ -206,6 +206,19 @@ export const TradingHarnessWakeup = Schema.Struct({
    * current mark for the two types that carry a level.
    */
   armedWatches: Schema.Array(WakeupArmedWatch),
+  /**
+   * Entry conditions the published plan names a price level for, while the
+   * mission is flat, with no watch armed at that level.
+   *
+   * Waiting is a decision with content, and the content has to be armed to mean
+   * anything: a plan that says "come back if price reaches 1899" and arms
+   * nothing there is waiting blind between backstop wakes. The runtime never
+   * arms these itself — predicates come from `MarketWatch`, not from prose — so
+   * this is the gap, handed back to the run that can close it with one
+   * `trading_register_watch`. Absent while a position is open, and empty when
+   * every named level is armed.
+   */
+  unarmedEntryConditions: Schema.optional(Schema.Array(UnarmedEntryCondition)),
   /**
    * The user's mandate: hard rails, fixed for the life of the mission. Sized
    * from the account value when the mission was created and deliberately not

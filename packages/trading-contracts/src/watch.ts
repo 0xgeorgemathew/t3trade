@@ -335,3 +335,70 @@ export function isDeafWhileHoldingPosition(coverage: WatchCoverage): boolean {
   if (coverage.coversByReassessment) return false;
   return !(coverage.coversUpside && coverage.coversDownside);
 }
+
+// ---------------------------------------------------------------------------
+// Entry conditions a waiting mission named but did not arm
+// ---------------------------------------------------------------------------
+
+/**
+ * An entry condition whose published price hint has no watch armed at it.
+ *
+ * A decision to wait is a decision with content: "entry candidate at 1894, come
+ * back if price reaches 1899" is a trigger, and a trigger that lives only in
+ * prose cannot wake anything. This is the mismatch, surfaced — never acted on.
+ * Watch predicates come from `MarketWatch` alone, so nothing here is auto-armed
+ * from a description; it is reported to the next wake and to the UI so the gap
+ * is visible where the plan is read.
+ */
+export const UnarmedEntryCondition = Schema.Struct({
+  description: Schema.String,
+  priceLevel: Price,
+  timeframe: Schema.optional(TradingTimeframe),
+});
+export type UnarmedEntryCondition = typeof UnarmedEntryCondition.Type;
+
+/**
+ * How close an armed level has to be to a published hint to count as armed.
+ *
+ * 10 bps: a hint is the harness's own rounding of a level it also armed, and
+ * "1899" against a watch at 1899.2 is the same decision, not an unarmed one.
+ */
+const ENTRY_HINT_TOLERANCE_BPS = 10;
+
+/**
+ * Find the price hints in a waiting plan's entry conditions that no active
+ * price-level watch covers.
+ *
+ * Conditions with no `priceLevel` are skipped: there is nothing to match a
+ * watch against, and a non-price trigger ("funding flips") has no watch type to
+ * arm today.
+ */
+export function findUnarmedEntryConditions(input: {
+  readonly conditions: ReadonlyArray<{
+    readonly description: string;
+    readonly priceLevel?: number | undefined;
+    readonly timeframe?: TradingTimeframe | undefined;
+  }>;
+  readonly watches: ReadonlyArray<PersistedWatch>;
+}): ReadonlyArray<UnarmedEntryCondition> {
+  const armedLevels = input.watches.flatMap((persisted) => {
+    if (persisted.status !== "active") return [];
+    const watch = persisted.watch;
+    if (watch.type !== "price_cross" && watch.type !== "candle_close") return [];
+    return [watch.price];
+  });
+
+  const unarmed: Array<UnarmedEntryCondition> = [];
+  for (const condition of input.conditions) {
+    const level = condition.priceLevel;
+    if (level === undefined) continue;
+    const tolerance = (Math.abs(level) * ENTRY_HINT_TOLERANCE_BPS) / 10_000;
+    if (armedLevels.some((armed) => Math.abs(armed - level) <= tolerance)) continue;
+    unarmed.push({
+      description: condition.description,
+      priceLevel: level,
+      ...(condition.timeframe === undefined ? {} : { timeframe: condition.timeframe }),
+    });
+  }
+  return unarmed;
+}

@@ -60,6 +60,7 @@ export {
   MomentumProtection,
   MomentumStrategyAction,
   MomentumStrategyDirection,
+  isWaitingLikeAction,
   TradingPlanState,
   ProfitTargetBasis,
   ProfitTargetMeasurement,
@@ -90,9 +91,11 @@ export {
 } from "@t3tools/trading-contracts/tools";
 
 export {
+  findUnarmedEntryConditions,
   MarketWatch,
   PersistedWatch,
   PersistedWatchStatus,
+  UnarmedEntryCondition,
   WatchArmedReason,
 } from "@t3tools/trading-contracts/watch";
 

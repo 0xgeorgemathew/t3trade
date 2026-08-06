@@ -150,6 +150,24 @@ export const MomentumStrategyAction = Schema.Literals([
 ]);
 export type MomentumStrategyAction = typeof MomentumStrategyAction.Type;
 
+/**
+ * The actions that mean "not in the market and not on the way in".
+ *
+ * A plan in one of these states is waiting for something, so the levels its
+ * entry conditions name are triggers it should have armed — see
+ * `findUnarmedEntryConditions`. `entering` is excluded: an order is already
+ * going in and the trigger has already been decided.
+ */
+const WAITING_LIKE_ACTIONS: ReadonlySet<MomentumStrategyAction> = new Set([
+  "analysing",
+  "waiting",
+  "reassessing",
+]);
+
+export function isWaitingLikeAction(action: MomentumStrategyAction): boolean {
+  return WAITING_LIKE_ACTIONS.has(action);
+}
+
 const MomentumBelief = Schema.Struct({
   summary: TradingText,
   regime: TradingText,

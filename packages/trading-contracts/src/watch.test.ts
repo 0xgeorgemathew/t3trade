@@ -10,6 +10,7 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import {
+  findUnarmedEntryConditions,
   isDeafWhileHoldingPosition,
   readWatchCoverage,
   watchCoverageFloorMillis,
@@ -180,6 +181,60 @@ describe("isDeafWhileHoldingPosition", () => {
       armed({ type: "scheduled_reassessment", runAt: NOW + 60_000 }),
     ]);
     assert.isFalse(isDeafWhileHoldingPosition(coverage));
+  });
+});
+
+describe("findUnarmedEntryConditions", () => {
+  const armedAt = (price: number) =>
+    armed({ type: "price_cross", market: "ETH", priceSource: "mark", direction: "below", price });
+
+  it("reports a named level with nothing armed at it", () => {
+    const unarmed = findUnarmedEntryConditions({
+      conditions: [{ description: "enter on a reclaim of 1899", priceLevel: 1_899 }],
+      watches: [],
+    });
+    assert.deepEqual(unarmed, [{ description: "enter on a reclaim of 1899", priceLevel: 1_899 }]);
+  });
+
+  it("treats a watch within 10 bps of the hint as armed", () => {
+    // 1899 against a watch at 1899.1 is the same decision, rounded.
+    const unarmed = findUnarmedEntryConditions({
+      conditions: [{ description: "reclaim", priceLevel: 1_899 }],
+      watches: [armedAt(1_899.1)],
+    });
+    assert.deepEqual(unarmed, []);
+  });
+
+  it("does not accept a watch at an unrelated level", () => {
+    const unarmed = findUnarmedEntryConditions({
+      conditions: [{ description: "reclaim", priceLevel: 1_899 }],
+      watches: [armedAt(1_830)],
+    });
+    assert.equal(unarmed.length, 1);
+  });
+
+  it("ignores conditions with no price hint — there is nothing to arm against", () => {
+    const unarmed = findUnarmedEntryConditions({
+      conditions: [{ description: "wait for funding to flip" }],
+      watches: [],
+    });
+    assert.deepEqual(unarmed, []);
+  });
+
+  it("ignores watches that are no longer active", () => {
+    const unarmed = findUnarmedEntryConditions({
+      conditions: [{ description: "reclaim", priceLevel: 1_899 }],
+      watches: [{ ...armedAt(1_899), status: "triggered" }],
+    });
+    assert.equal(unarmed.length, 1);
+  });
+
+  it("keeps the timeframe hint when the plan published one", () => {
+    const unarmed = findUnarmedEntryConditions({
+      conditions: [{ description: "reclaim", priceLevel: 1_899, timeframe: "5m" }],
+      watches: [],
+    });
+    assert.equal(unarmed[0]?.timeframe, "5m");
   });
 });
 

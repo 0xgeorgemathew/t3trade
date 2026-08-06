@@ -96,9 +96,9 @@ const dependencies = [
 
 export const TradingGetMissionTool = Tool.make("trading_get_mission", {
   description:
-    "Read the current state of the mission this session is bound to: status, mandate (authority + risk policy), published strategy + version, watches, control flags, pending executions. " +
-    "`authority.allocatedCapitalUsd` and derived maximums are ceilings (don't move with account value); what's free is `accountSnapshot.withdrawable` (trading_get_account_state). `pendingExecutions[]` is the lock behind `no_conflicting_execution_pending` (while any entry is listed trading_execute refuses). " +
-    "`strategyHistory[]` is every published version (newest first, each with target + basis); `strategy` is only the current thesis. `bound: false` (with `lastMission`, `activeMissionId`) when the held mission has ended. `missionId` optional.",
+    "Read the mission this session is bound to: status, mandate (authority + risk policy), strategy + version, watches, control flags, pending executions. " +
+    "`authority.allocatedCapitalUsd` and derived maximums are ceilings (don't move with account value); what's free is `accountSnapshot.withdrawable` (trading_get_account_state). `pendingExecutions[]` is the lock behind `no_conflicting_execution_pending` (while any entry is listed trading_execute refuses). It embeds `watches` — no need to call trading_list_watches in the same turn. " +
+    "`strategyHistory[]` is every published version (newest first, with target + basis); `strategy` is the current thesis only. `bound: false` (with `lastMission`, `activeMissionId`) when the held mission has ended. `missionId` optional.",
   parameters: TradingGetMissionInput,
   success: TradingGetMissionResult,
   failure: TradingToolRejectedError,
@@ -115,7 +115,8 @@ export const TradingPublishPlanTool = Tool.make("trading_publish_plan", {
     "Publish the trading plan this mission runs against. " +
     "`expectedVersion` from trading_get_mission (0 before any publish); stale rejected, accepted increments it. Publishing supersedes the PRIOR version's watches but NOT its resting orders — cancel those with trading_execute actionType `cancel`. " +
     "`timeframes[0]` is the primary timeframe (name >=1). `protection.targetProfitUsd` + `protection.targetProfitBasis` REQUIRED, basis CHECKED: `(measuredMoveUsd / referencePrice) x positionNotionalUsd` within 5% of `targetProfitUsd`. Target must clear round-trip cost (trading_estimate_costs). A target-wake (runtime arms `pnl_above` at `targetProfitUsd`) is a DECISION POINT, not a close order. " +
-    "`mode`=free-text label. `missionId` optional. `insufficientVolatility: true` when no viable target exists after costs.",
+    "`mode`=free-text label. `missionId` optional. `insufficientVolatility: true` when no viable target exists after costs. " +
+    "WAITING: give each trigger a `conditions[].priceLevel` AND arm it — prose wakes nothing (wakeups flag `unarmedEntryConditions`).",
   parameters: TradingPublishPlanInput,
   success: TradingPublishPlanResult,
   failure: TradingToolRejectedError,
@@ -177,7 +178,7 @@ export const TradingMeasureVolatilityTool = Tool.make("trading_measure_volatilit
   description:
     "Measure fluctuation over a bounded candle window — the basis every profit target is derived from. Returns (real candles, no model): `atrUsd`/`atrPercent` (mean true range, last 14 bars), `realizedVolatilityPercentPerBar` (stdev of bar-to-bar log returns), `swingRangeUsd`/`swingRangePercent` (window high-to-low), `horizons[]`. " +
     "`horizons[]` sets a target: per holding period reports p25/p50/p75 of the move from a bar's close (`favourableUpUsd` long / `favourableDownUsd` short). Range fields: `swingHighUsd`/`swingLowUsd`, `positionInRangePercent` (0 floor/100 ceiling), `excursionSymmetryRatio` (~1 ranging, far from 1 trending). `sufficientData` false under 30 bars. Defaults 120 bars; horizons 3,5,10,20,30,60; `holdBars` overrides. " +
-    "Every wakeup already carries `observedVolatility` (primary) and `higherTimeframeVolatility` (one higher TF). Magnitude only — direction is trading_get_market_structure. All GROSS; round-trip cost is trading_estimate_costs (hold the target against `minimumViableTargetUsd`).",
+    "Wakeups already carry `observedVolatility` (primary) + `higherTimeframeVolatility`. Magnitude only — direction: trading_get_market_structure. All GROSS; round-trip cost: trading_estimate_costs (hold the target against `minimumViableTargetUsd`).",
   parameters: TradingMeasureVolatilityInput,
   success: ObservedVolatility,
   failure: TradingToolRejectedError,
@@ -223,7 +224,7 @@ export const TradingGetTradeHistoryTool = Tool.make("trading_get_trade_history",
   description:
     "Read this mission's OWN completed trades, newest first: size, size-weighted average price, fee, realised PnL, and the strategy version + `targetProfitUsd` current when each filled. " +
     "Fills aggregate into ORDERS (one market order = many partials; `fillCount`, `firstFillAt`/`lastFillAt`). `netPnlUsd`=`closedPnlUsd`−`feeUsd`; an open/add order reports `closedPnlUsd` 0. `summary` spans EVERY order, not just the page `limit`. " +
-    "`roundTrips[]` pairs trades flat-to-flat (direction, size-weighted entry/exit, hold, gross, fees, net). `summary.recentFeeShareOfGrossPercent` (last 3 trips) and `feeShareOfGrossPercent` (whole life) flag costs eating the result (gross as a magnitude).",
+    "`roundTrips[]` pairs trades flat-to-flat (direction, size-weighted entry/exit, hold, gross, fees, net). `summary.recentFeeShareOfGrossPercent` (last 3 trips) and `feeShareOfGrossPercent` (life) flag costs eating the result.",
   parameters: TradingGetTradeHistoryInput,
   success: TradingTradeHistory,
   failure: TradingToolRejectedError,
@@ -237,8 +238,8 @@ export const TradingGetTradeHistoryTool = Tool.make("trading_get_trade_history",
 
 export const TradingGetTargetCalibrationTool = Tool.make("trading_get_target_calibration", {
   description:
-    "Score published profit targets against what trades actually reached. A target is REACHED when unrealised PnL ever touched it (not when banked); `peakUnrealisedPnlUsd` makes that distinction possible. " +
-    "Each entry is one strategy version: `targetProfitUsd`, `claimedHitRatePercent` (its basis), `observedHitRatePercent` (its trades), `meanPeakUsd`/`meanTroughUsd`. `verdict`=`optimistic`/`conservative`/`as_claimed`/`insufficient_sample` (under 5 trades: count published, rate withheld). `recommendation` is the line to act on — until there's a sample it says so.",
+    "Score published profit targets against what trades actually reached. A target is REACHED when unrealised PnL ever touched it, not when banked — `peakUnrealisedPnlUsd` is what makes that distinction. " +
+    "Each entry is one strategy version: `targetProfitUsd`, `claimedHitRatePercent` (its basis), `observedHitRatePercent` (its trades), `meanPeakUsd`/`meanTroughUsd`. `verdict`=`optimistic`/`conservative`/`as_claimed`/`insufficient_sample` (under 5 trades: count published, rate withheld). `recommendation` is the line to act on.",
   parameters: TradingGetTargetCalibrationInput,
   success: TargetCalibration,
   failure: TradingToolRejectedError,
@@ -266,7 +267,7 @@ export const TradingGetOrderBookTool = Tool.make("trading_get_order_book", {
 
 export const TradingGetAccountStateTool = Tool.make("trading_get_account_state", {
   description:
-    "Read the canonical account state for this mission's trading account: account value, margin used, withdrawable, open positions. Queried with the master-wallet address (execution-wallet is never identity). `withdrawable` is what's free now; ceilings live in the mission's `authority` (sized at creation, doesn't follow the balance).",
+    "Read the canonical account state for this mission's trading account: account value, margin used, withdrawable, open positions. Queried with the master-wallet address (execution-wallet is never identity). `withdrawable` is what's free now; ceilings live in the mission's `authority`. Read this for SIZING; trading_get_position for what you hold.",
   parameters: TradingGetAccountStateInput,
   success: AgentAccountSnapshot,
   failure: TradingToolRejectedError,
@@ -280,7 +281,7 @@ export const TradingGetAccountStateTool = Tool.make("trading_get_account_state",
 
 export const TradingGetPositionTool = Tool.make("trading_get_position", {
   description:
-    "Read the canonical net position for a market: signed size (positive long, negative short), entry price, unrealised PnL, cumulative funding, margin used. Flat returns size 0, no entry price (valid net-zero, not an error). " +
+    "Read the canonical net position for a market: signed size (positive long, negative short), entry price, unrealised PnL, cumulative funding, margin used. Flat returns size 0, no entry price (valid, not an error). " +
     "`peakUnrealisedPnl`/`drawdownFromPeakUsd` are T3's own: the highest this position has been worth, and how much given back. Absent while flat or never in profit.",
   parameters: TradingGetPositionInput,
   success: AgentNetPosition,
@@ -312,10 +313,10 @@ export const TradingGetOpenOrdersTool = Tool.make("trading_get_open_orders", {
 export const TradingRegisterWatchTool = Tool.make("trading_register_watch", {
   description:
     "Register a typed market watch bound to the mission's current strategy version. Active on creation, fires EXACTLY ONCE when its predicate matches, then terminal; re-register to keep a level standing. " +
-    "To MOVE a level pass `replacesWatchId`: cancel and new arm in one transaction. Result `replaced`=cancelled watch; if absent the named watch had fired/been superseded — what was armed is an ADDITION, not a swap. " +
+    "To MOVE a level pass `replacesWatchId`: cancel and arm in one transaction. Result `replaced`=cancelled watch; if absent the named watch had fired/been superseded — what was armed is an ADDITION, not a swap. " +
     "Required fields per type (missing→rejected): `price_cross`(market,priceSource,direction,price); `candle_close`(market,INTERVAL 1m/3m/5m/15m/1h,direction,price); `order_update`(cloid); `position_update`(market); `pnl_above`(market,valueUsd); `pnl_below`(market,valueUsd SIGNED); `pnl_giveback`(market,drawdownUsd); `scheduled_reassessment`(runAt). " +
     "`position_update`/`order_update` fire on a reconciled size change. `pnl_above`/`pnl_below` fire on reconciled unrealised PnL (≥/≤`valueUsd`); flat fires neither. `pnl_giveback` fires when PnL falls `drawdownUsd` from its high-water mark. Runtime auto-arms a target `pnl_above` and a staleness `scheduled_reassessment` while holding. `missionId` optional. " +
-    "PREFER CONDITION WATCHES: arm the price/PnL level that would actually change your decision (invalidation, breakout, entry trigger, loss line, give-back). Reserve `scheduled_reassessment` for known-time events (funding stamp, a session open, a specific candle close you want to see) — pure-time wakes on a market that has not moved spend a turn to conclude 'hold'. When you publish a waiting plan, arm its trigger and invalidation levels in the same turn; the reassessment backstop is for thesis drift, not for the trigger itself.",
+    "PREFER CONDITIONS: arm the price/PnL level that would change your decision; use `scheduled_reassessment` only for known-time events.",
   parameters: TradingRegisterWatchInput,
   success: TradingRegisterWatchResult,
   failure: TradingToolRejectedError,
@@ -359,7 +360,7 @@ export const TradingExecuteTool = Tool.make("trading_execute", {
   description:
     "Submit one execution intent for the bound mission; `intent.actionType` selects the step. " +
     "`open`/`scale_in` start/add — REFUSED without a valid `intent.stop` (stopPrice on the losing side, plus plannedLossAtStopUsd). `reduce` removes part (reduce-only); `close` flattens regardless of size. `cancel` withdraws a resting order by `intent.targetCloid` (a publish supersedes watches but NOT exchange orders). `modify_stop` moves protection to `intent.stop.stopPrice` (replacement confirmed before old stop cancelled; wrong-side-of-mid REFUSED, escalates to §17.5 emergency close). The last four need no stop. " +
-    "For `marketable_ioc` the SERVER prices the crossing limit (BBO + 50 bps default) — `intent.limitPrice` feeds preview only (still required, >0, must cross); result reports placed `limitPrice` and `avgFillPrice`. " +
+    "For `marketable_ioc` the SERVER prices the crossing limit (BBO + 50 bps) — `intent.limitPrice` is preview only (still required, >0, must cross); result reports placed `limitPrice` + `avgFillPrice`. " +
     "Rejection codes: `mission_active`, `strategy_version_current`, `market_is_eth`, `no_conflicting_execution_pending`. Outcomes: `filled`/`cancelled`/`rejected`/`failed` terminal; `accepted` rests on book (`orderResults`); `succeeded`=`cancel`/`modify_stop`; `submitted`=unknown. `reduce`/`close` report `remainingSize`.",
   parameters: TradingRequestEntryInput,
   success: TradingRequestEntryResult,
@@ -374,7 +375,7 @@ export const TradingExecuteTool = Tool.make("trading_execute", {
 
 export const TradingGetPlaybookTool = Tool.make("trading_get_playbook", {
   description:
-    "Read one named playbook: classify (regime read), momentum, range_reversion, opening_range, standing_rules. Each returns whenItApplies (trigger), procedure[] (ordered steps), gates[] (must clear before entry), standDownIf[] (retire a setup). Static contract data — no DB, same for every mission; read it in the turn you decide what to do. Nothing in the runtime branches on the value. `missionId` optional.",
+    "Read one named playbook: classify (regime read), momentum, range_reversion, opening_range, standing_rules. Each returns whenItApplies (trigger), procedure[] (ordered steps), gates[] (must clear before entry), standDownIf[] (retire a setup). Static data, same for every mission; nothing in the runtime branches on it. `missionId` optional.",
   parameters: TradingGetPlaybookInput,
   success: Playbook,
   failure: TradingToolRejectedError,
