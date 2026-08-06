@@ -1672,6 +1672,79 @@ export function deriveNextReassessmentAt(mission: {
   return next;
 }
 
+/** How many future ticks the chart's gutter holds before it says "+N". */
+export const MAX_DRAWN_TIME_MARKERS = 5;
+
+/**
+ * One future moment, ready to hand to the chart's `timeMarkers` input.
+ *
+ * `tone` separates the two kinds of schedule the mission keeps: `auto` is the
+ * runtime's staleness floor — a backstop nobody chose — and `planned` is a time
+ * the harness itself armed because it wants to see that moment. Drawing them
+ * identically reads as "the plan has five appointments" when four of them are
+ * the floor rearming itself.
+ */
+export interface ChartTimeMarkerInput {
+  readonly key: string;
+  /** Empty on every tick but the nearest: five captions in one gutter collide. */
+  readonly label: string;
+  readonly at: number;
+  readonly tone: "auto" | "planned";
+}
+
+/**
+ * Every armed reassessment, as ticks on the axis — not only the nearest.
+ *
+ * The panel drew one marker, from {@link deriveNextReassessmentAt}, which is
+ * the countdown the header already shows. A mission that has republished a few
+ * times can be holding several scheduled reassessments at once, and the shape
+ * of that queue — three minutes apart and all `auto`, versus one at the funding
+ * timestamp — is the difference between a loop idling and a plan waiting.
+ *
+ * Capped at {@link MAX_DRAWN_TIME_MARKERS}: beyond that the last slot becomes a
+ * `+N` tick standing at the furthest moment, so the axis still says how far the
+ * schedule reaches without drawing a picket fence.
+ */
+export function deriveChartTimeMarkers(mission: {
+  readonly watches: ReadonlyArray<PersistedWatch>;
+}): ReadonlyArray<ChartTimeMarkerInput> {
+  const scheduled: ChartTimeMarkerInput[] = [];
+  for (const persisted of mission.watches) {
+    if (persisted.status !== "active") continue;
+    const watch = persisted.watch;
+    if (watch.type !== "scheduled_reassessment") continue;
+    scheduled.push({
+      key: persisted.id,
+      label: "",
+      at: watch.runAt,
+      tone: persisted.armedReason === "staleness_floor" ? "auto" : "planned",
+    });
+  }
+  if (scheduled.length === 0) return [];
+
+  scheduled.sort((a, b) => a.at - b.at);
+
+  const nearest = scheduled[0]!;
+  const labelled: ChartTimeMarkerInput[] = [
+    { ...nearest, label: nearest.tone === "auto" ? "reassess (auto)" : "reassess" },
+    ...scheduled.slice(1),
+  ];
+  if (labelled.length <= MAX_DRAWN_TIME_MARKERS) return labelled;
+
+  const hidden = labelled.length - (MAX_DRAWN_TIME_MARKERS - 1);
+  return [
+    ...labelled.slice(0, MAX_DRAWN_TIME_MARKERS - 1),
+    {
+      key: "reassess-overflow",
+      label: `+${hidden}`,
+      // The furthest moment, so the tick marks how far out the queue runs
+      // rather than piling onto the ones already drawn.
+      at: labelled[labelled.length - 1]!.at,
+      tone: "planned",
+    },
+  ];
+}
+
 /** "2m 30s" from a duration in millis. */
 export function formatDuration(millis: number): string {
   const totalSeconds = Math.max(0, Math.round(millis / 1_000));

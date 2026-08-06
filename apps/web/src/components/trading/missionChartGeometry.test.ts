@@ -826,6 +826,19 @@ describe("computeChartGeometry — time markers", () => {
     expect(geometry.timeMarkers[0]!.x).toBeCloseTo(geometry.nowX, 6);
   });
 
+  it("carries the marker's tone through, defaulting to planned", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      timeMarkers: [
+        { key: "floor", label: "", at: now + 60_000, tone: "auto" as const },
+        { key: "reassess", label: "reassess", at: now + 120_000 },
+      ],
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.timeMarkers.map((marker) => marker.tone)).toEqual(["auto", "planned"]);
+  });
+
   it("ignores markers without a clock to place them against", () => {
     const geometry = computeChartGeometry({
       candles,

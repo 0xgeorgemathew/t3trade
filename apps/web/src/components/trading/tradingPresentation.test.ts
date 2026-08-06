@@ -27,7 +27,9 @@ import {
   deriveChartConditions,
   deriveChartFillMarkers,
   deriveMissionPhases,
+  deriveChartTimeMarkers,
   deriveNextReassessmentAt,
+  MAX_DRAWN_TIME_MARKERS,
   derivePausedExposure,
   deriveStrategyPlan,
   describeDelayedRead,
@@ -1338,6 +1340,71 @@ describe("deriveNextReassessmentAt", () => {
 
   it("returns null when none is armed", () => {
     expect(deriveNextReassessmentAt({ watches: [] })).toBeNull();
+  });
+});
+
+describe("deriveChartTimeMarkers", () => {
+  const reassessment = (
+    id: string,
+    runAt: number,
+    over: {
+      readonly status?: "active" | "consumed";
+      readonly armedReason?: "staleness_floor";
+    } = {},
+  ) => ({
+    id,
+    missionId: "mission-1",
+    strategyVersion: 1,
+    watch: { type: "scheduled_reassessment" as const, runAt },
+    status: over.status ?? ("active" as const),
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+    ...(over.armedReason === undefined ? {} : { armedReason: over.armedReason }),
+  });
+
+  it("returns every armed reassessment, soonest first", () => {
+    const markers = deriveChartTimeMarkers({
+      watches: [reassessment("a", 1_700_000_300_000), reassessment("b", 1_700_000_120_000)],
+    });
+    expect(markers.map((marker) => marker.at)).toEqual([1_700_000_120_000, 1_700_000_300_000]);
+  });
+
+  it("labels only the nearest tick, and marks the staleness floor as auto", () => {
+    const markers = deriveChartTimeMarkers({
+      watches: [
+        reassessment("a", 1_700_000_120_000, { armedReason: "staleness_floor" }),
+        reassessment("b", 1_700_000_300_000),
+      ],
+    });
+    expect(markers[0]).toMatchObject({ label: "reassess (auto)", tone: "auto" });
+    expect(markers[1]).toMatchObject({ label: "", tone: "planned" });
+  });
+
+  it("labels a harness-armed nearest tick without the auto chip", () => {
+    const markers = deriveChartTimeMarkers({ watches: [reassessment("a", 1_700_000_120_000)] });
+    expect(markers[0]).toMatchObject({ label: "reassess", tone: "planned" });
+  });
+
+  it("ignores watches that are no longer armed", () => {
+    expect(
+      deriveChartTimeMarkers({
+        watches: [reassessment("a", 1_700_000_120_000, { status: "consumed" })],
+      }),
+    ).toEqual([]);
+  });
+
+  it("collapses the overflow into a +N tick at the furthest moment", () => {
+    const markers = deriveChartTimeMarkers({
+      watches: [1, 2, 3, 4, 5, 6, 7].map((n) =>
+        reassessment(`w${n}`, 1_700_000_000_000 + n * 60_000),
+      ),
+    });
+    expect(markers).toHaveLength(MAX_DRAWN_TIME_MARKERS);
+    expect(markers[MAX_DRAWN_TIME_MARKERS - 1]).toMatchObject({
+      key: "reassess-overflow",
+      label: "+3",
+      at: 1_700_000_000_000 + 7 * 60_000,
+    });
   });
 });
 

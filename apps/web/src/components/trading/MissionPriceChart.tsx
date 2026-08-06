@@ -103,6 +103,7 @@ interface MissionPriceChartProps {
     readonly key: string;
     readonly label: string;
     readonly at: number;
+    readonly tone?: "auto" | "planned";
   }>;
   readonly className?: string;
 }
@@ -399,10 +400,12 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             y1={0}
             x2={marker.x}
             y2={CHART_VIEWBOX_HEIGHT}
-            stroke="var(--color-armed)"
+            stroke={marker.tone === "auto" ? "var(--color-muted-foreground)" : "var(--color-armed)"}
             strokeWidth={1}
-            strokeDasharray="3 4"
-            opacity={marker.overdue ? 0.9 : 0.45}
+            // A floor rearming itself is a finer, sparser tick than a moment the
+            // plan chose to be woken for.
+            strokeDasharray={marker.tone === "auto" ? "1 5" : "3 4"}
+            opacity={marker.overdue ? 0.9 : marker.tone === "auto" ? 0.3 : 0.45}
             vectorEffect="non-scaling-stroke"
           />
         ))}
@@ -514,16 +517,21 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
       {/* Marker captions. HTML for the same reason the gutter is, and anchored
           by their RIGHT edge to the rule so they grow leftward into the plot
           and can never overflow the frame. */}
-      {geometry.timeMarkers.map((marker) => (
-        <span
-          key={`marker-label-${marker.key}`}
-          className="pointer-events-none absolute top-0.5 whitespace-nowrap pr-1 text-[9px] leading-none text-armed"
-          style={{ right: `${(1 - marker.x / CHART_VIEWBOX_WIDTH) * 100}%` }}
-          aria-hidden="true"
-        >
-          {marker.label}
-        </span>
-      ))}
+      {geometry.timeMarkers.map((marker) =>
+        marker.label === "" ? null : (
+          <span
+            key={`marker-label-${marker.key}`}
+            className={cn(
+              "pointer-events-none absolute top-0.5 whitespace-nowrap pr-1 text-[9px] leading-none",
+              marker.tone === "auto" ? "text-muted-foreground" : "text-armed",
+            )}
+            style={{ right: `${(1 - marker.x / CHART_VIEWBOX_WIDTH) * 100}%` }}
+            aria-hidden="true"
+          >
+            {marker.label}
+          </span>
+        ),
+      )}
 
       {/* The gutter: HTML, so the glyphs are never stretched by the plot's
           aspect ratio and a long caption can ellipsis instead of overflowing. */}

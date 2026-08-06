@@ -62,6 +62,7 @@ import {
 import {
   deriveChartConditions,
   deriveChartFillMarkers,
+  deriveChartTimeMarkers,
   deriveEffectiveLeverage,
   deriveNextReassessmentAt,
   deriveStrategyPlan,
@@ -78,6 +79,7 @@ import {
   hyperliquidTradeUrl,
   isMissionComplete,
   type ChartFillMarker,
+  type ChartTimeMarkerInput,
   type StrategyPlan,
   type UpNextItem,
   type WatchConditionRow,
@@ -284,10 +286,9 @@ export function MissionLivePanel({
     const timer = setTimeout(() => setFlash(null), FLASH_DURATION_MILLIS);
     return () => clearTimeout(timer);
   }, [flash]);
-  const timeMarkers =
-    nextReassessmentAt === null
-      ? []
-      : [{ key: "reassess", label: "reassess", at: nextReassessmentAt }];
+  // Every armed reassessment, not only the nearest: the header's countdown is
+  // one appointment, the axis is the whole queue.
+  const timeMarkers = deriveChartTimeMarkers(mission);
 
   // The checklist is capped because the panel now sits directly above the
   // composer: a mission that has republished a few times can hold a dozen
@@ -679,11 +680,7 @@ function ChartSlot(props: {
   readonly pendingOrder: { readonly price: number; readonly side: "buy" | "sell" } | null;
   readonly flash: { readonly price: number; readonly nonce: number } | null;
   readonly nowMillis: number;
-  readonly timeMarkers: ReadonlyArray<{
-    readonly key: string;
-    readonly label: string;
-    readonly at: number;
-  }>;
+  readonly timeMarkers: ReadonlyArray<ChartTimeMarkerInput>;
 }): ReactNode {
   const { data, isLoading, error } = props;
 

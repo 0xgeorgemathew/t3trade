@@ -236,7 +236,17 @@ export interface ChartTimeMarker {
   readonly x: number;
   /** True when the moment has passed but the event has not fired yet. */
   readonly overdue: boolean;
+  /**
+   * Who put this moment on the axis: the runtime's staleness floor (`auto`) or
+   * the plan itself. Carried through untouched — the geometry has no opinion on
+   * it, the renderer draws the two differently. Defaults to `planned` so a
+   * caller that does not distinguish them gets the pre-existing treatment.
+   */
+  readonly tone: ChartTimeMarkerTone;
 }
+
+/** @see ChartTimeMarker.tone */
+export type ChartTimeMarkerTone = "auto" | "planned";
 
 /** Input shape for {@link computeChartGeometry}. */
 export interface ComputeChartGeometryInput {
@@ -294,6 +304,7 @@ export interface ComputeChartGeometryInput {
     readonly key: string;
     readonly label: string;
     readonly at: number;
+    readonly tone?: ChartTimeMarkerTone;
   }>;
 }
 
@@ -820,6 +831,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
         // rather than drawn off-canvas or silently dropped.
         x: clamp(xForTime(marker.at), nowX, PLOT_WIDTH),
         overdue: marker.at <= timeEnd,
+        tone: marker.tone ?? "planned",
       }))
     : [];
 
