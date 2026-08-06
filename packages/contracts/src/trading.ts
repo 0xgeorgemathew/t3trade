@@ -173,6 +173,32 @@ export const TradingMissionResultView = Schema.Struct({
 });
 export type TradingMissionResultView = typeof TradingMissionResultView.Type;
 
+/**
+ * One thing that already happened to the mission — plan 24 §4.2.
+ *
+ * The rest of the read model is current state: the watches armed now, the
+ * position held now, the stop resting now. None of it can say that the stop
+ * walked up behind a winner in four steps, or that the last five wakes were all
+ * the staleness floor rearming itself. Those facts sit in three different domain
+ * tables, and this is the one array that spares every client the join.
+ *
+ * Bounded server-side: history grows without limit and this rides a 3s poll.
+ */
+export const TradingMissionTimelineEntry = Schema.Struct({
+  at: IsoDateTime,
+  kind: Schema.Literals(["wake", "stop_adjusted", "strategy_published"]),
+  /** Already-composed prose, so the client renders rather than interprets. */
+  label: TrimmedNonEmptyString,
+  /** The price the event happened at, where it had one — a stop step's new stop. */
+  priceLevel: Schema.optional(Schema.Number),
+  /**
+   * A wake's run cause, verbatim, for colour-coding by trigger class. Absent on
+   * every other kind.
+   */
+  cause: Schema.optional(TrimmedNonEmptyString),
+});
+export type TradingMissionTimelineEntry = typeof TradingMissionTimelineEntry.Type;
+
 // -- read model --------------------------------------------------------------
 
 /**
@@ -230,6 +256,12 @@ export const OrchestrationTradingMission = Schema.Struct({
   leverage: Schema.optional(Schema.Number),
   /** Realised result across every fill, for the completion summary card. */
   result: TradingMissionResultView,
+  /**
+   * What has already happened, newest first and bounded — plan 24 §4.2.
+   *
+   * Empty for a mission that has not woken, published, or moved a stop yet.
+   */
+  missionTimeline: Schema.Array(TradingMissionTimelineEntry),
 
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

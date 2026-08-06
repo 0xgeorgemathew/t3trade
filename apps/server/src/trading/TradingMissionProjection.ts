@@ -22,7 +22,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ThreadId, TradingMissionId } from "@t3tools/contracts";
-import type { OrchestrationTradingMission } from "@t3tools/contracts";
+import type { OrchestrationTradingMission, TradingMissionTimelineEntry } from "@t3tools/contracts";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import {
@@ -223,6 +223,95 @@ interface ExecutionSurfaces {
   readonly result: MissionResultRow;
 }
 
+/**
+ * How many history entries the mission view carries — plan 24 §4.2.
+ *
+ * The three sources grow for as long as the mission lives and this rides a 3s
+ * poll, so the cap is the payload guard. Fifty is a few hours of a busy 1m
+ * mission: enough that the chart's past axis and the thread's wake rows are
+ * never short, far below anything that would matter on the wire.
+ */
+export const MISSION_TIMELINE_LIMIT = 50;
+
+/** A harness run, as the timeline reads it. */
+interface HarnessRunRow {
+  readonly run_id: string;
+  readonly cause: string;
+  readonly status: string;
+  readonly started_at: number | null;
+  readonly created_at: number;
+}
+
+/** A confirmed stop move (migration 050). */
+interface StopAdjustmentRow {
+  readonly new_stop_price: number;
+  readonly justification: string;
+  readonly adjusted_at: number;
+}
+
+/** A strategy publish. */
+interface StrategyVersionRow {
+  readonly version: number;
+  readonly created_at: number;
+}
+
+/**
+ * Merge the three history sources into one bounded, newest-first list.
+ *
+ * Pure, and separate from the queries, because the merge is where the rules
+ * actually live: which moment each row is filed under, what it reads as, and
+ * which entries survive the cap. Each source is queried with its own limit, so
+ * a mission that woke two hundred times cannot crowd its four stop steps out of
+ * the array before the sort has run.
+ */
+export function buildMissionTimeline(input: {
+  readonly wakes: ReadonlyArray<HarnessRunRow>;
+  readonly stopAdjustments: ReadonlyArray<StopAdjustmentRow>;
+  readonly publishes: ReadonlyArray<StrategyVersionRow>;
+}): ReadonlyArray<TradingMissionTimelineEntry> {
+  const entries: Array<TradingMissionTimelineEntry & { readonly atMillis: number }> = [];
+
+  for (const wake of input.wakes) {
+    // A queued run that never started is filed under when it was created: the
+    // question the axis answers is when the mission was woken, not when a
+    // provider got round to it.
+    const atMillis = wake.started_at ?? wake.created_at;
+    entries.push({
+      atMillis,
+      at: toIso(atMillis),
+      kind: "wake",
+      // A failed run is the one wake worth reading twice — it is a turn the
+      // mission was owed and did not get.
+      label: wake.status === "failed" ? `${wake.cause} (failed)` : wake.cause,
+      cause: wake.cause,
+    });
+  }
+
+  for (const adjustment of input.stopAdjustments) {
+    entries.push({
+      atMillis: adjustment.adjusted_at,
+      at: toIso(adjustment.adjusted_at),
+      kind: "stop_adjusted",
+      label: adjustment.justification,
+      priceLevel: adjustment.new_stop_price,
+    });
+  }
+
+  for (const publish of input.publishes) {
+    entries.push({
+      atMillis: publish.created_at,
+      at: toIso(publish.created_at),
+      kind: "strategy_published",
+      label: `v${publish.version}`,
+    });
+  }
+
+  return entries
+    .sort((a, b) => b.atMillis - a.atMillis)
+    .slice(0, MISSION_TIMELINE_LIMIT)
+    .map(({ atMillis: _atMillis, ...entry }) => entry);
+}
+
 const EMPTY_RESULT: MissionResultRow = {
   realized_pnl: 0,
   fees_paid: 0,
@@ -242,6 +331,7 @@ const toMission = (
   row: ProjectionRow,
   exec: ExecutionSurfaces,
   strategy: TradingPlanState | null,
+  missionTimeline: ReadonlyArray<TradingMissionTimelineEntry>,
 ): OrchestrationTradingMission =>
   ({
     id: TradingMissionId.make(row.mission_id),
@@ -316,6 +406,7 @@ const toMission = (
     // position-level: it outlives the position, and the mission's receipts are
     // read after it has closed.
     leverage: exec.position?.leverage ?? undefined,
+    missionTimeline,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }) satisfies OrchestrationTradingMission;
@@ -524,6 +615,37 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       return { inFlightExecution, recentFills, position, result } satisfies ExecutionSurfaces;
     });
 
+  /**
+   * The mission's history, joined at read time from the three tables that keep
+   * it — the same shape as `readExecutionSurfaces`, and for the same reason:
+   * the projection row is current state, and rebuilding it must never depend on
+   * history having been copied into it.
+   */
+  const readMissionTimeline = (
+    missionId: string,
+  ): Effect.Effect<ReadonlyArray<TradingMissionTimelineEntry>, PersistenceSqlError> =>
+    Effect.gen(function* () {
+      const wakes = yield* sql<HarnessRunRow>`
+        SELECT run_id, cause, status, started_at, created_at
+        FROM trading_harness_runs WHERE mission_id = ${missionId}
+        ORDER BY created_at DESC LIMIT ${MISSION_TIMELINE_LIMIT}
+      `.pipe(Effect.mapError(sqlFail("timeline:wakes")));
+
+      const stopAdjustments = yield* sql<StopAdjustmentRow>`
+        SELECT new_stop_price, justification, adjusted_at
+        FROM trading_stop_adjustments WHERE mission_id = ${missionId}
+        ORDER BY adjusted_at DESC LIMIT ${MISSION_TIMELINE_LIMIT}
+      `.pipe(Effect.mapError(sqlFail("timeline:stops")));
+
+      const publishes = yield* sql<StrategyVersionRow>`
+        SELECT version, created_at
+        FROM momentum_strategy_versions WHERE mission_id = ${missionId}
+        ORDER BY created_at DESC LIMIT ${MISSION_TIMELINE_LIMIT}
+      `.pipe(Effect.mapError(sqlFail("timeline:publishes")));
+
+      return buildMissionTimeline({ wakes, stopAdjustments, publishes });
+    });
+
   const getByThreadId: TradingMissionProjectionShape["getByThreadId"] = (threadId) =>
     Effect.gen(function* () {
       const rows = yield* sql<ProjectionRow>`
@@ -533,7 +655,8 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       if (row === undefined) return Option.none();
       const exec = yield* readExecutionSurfaces(row.mission_id);
       const strategy = yield* readStrategy(row);
-      return Option.some(toMission(row, exec, strategy));
+      const timeline = yield* readMissionTimeline(row.mission_id);
+      return Option.some(toMission(row, exec, strategy, timeline));
     });
 
   const list: TradingMissionProjectionShape["list"] = () =>
@@ -544,8 +667,12 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       const missions = yield* Effect.all(
         rows.map((row) =>
           Effect.map(
-            Effect.all([readExecutionSurfaces(row.mission_id), readStrategy(row)]),
-            ([exec, strategy]) => toMission(row, exec, strategy),
+            Effect.all([
+              readExecutionSurfaces(row.mission_id),
+              readStrategy(row),
+              readMissionTimeline(row.mission_id),
+            ]),
+            ([exec, strategy, timeline]) => toMission(row, exec, strategy, timeline),
           ),
         ),
         { concurrency: "unbounded" },
