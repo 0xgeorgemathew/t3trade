@@ -2,11 +2,12 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
-import type { PublishTradingPlanBody } from "./Schemas.ts";
+import { PublishTradingPlanBody } from "./Schemas.ts";
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingStrategyService, TradingStrategyServiceLive } from "./TradingStrategyService.ts";
 
@@ -62,6 +63,20 @@ const body = (name: string): PublishTradingPlanBody => ({
   currentAction: "waiting",
   explanation: "Waiting for the retest.",
 });
+
+/**
+ * The same body with both `explanation` keys absent from the wire input — the
+ * shape the model actually sent when `trading_publish_plan` failed with
+ * `Missing key ["strategy"]["explanation"]`. It has to go through the decoder
+ * to prove the schema accepts the omission, not just the publish path.
+ */
+const decodePlanBody = Schema.decodeUnknownSync(PublishTradingPlanBody);
+
+const bodyWithoutExplanations = (name: string): PublishTradingPlanBody => {
+  const { explanation: _top, entryPlan, ...rest } = body(name);
+  const { explanation: _entry, ...entryPlanRest } = entryPlan;
+  return decodePlanBody({ ...rest, entryPlan: entryPlanRest });
+};
 
 const setup = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -484,6 +499,63 @@ layer("trading_publish_plan (§14.3)", (it) => {
       assert.equal(result.outcome, "accepted");
       if (result.outcome === "accepted") {
         assert.deepEqual(result.warnings, []);
+      }
+    }),
+  );
+
+  // The plan rides on every wakeup for the mission's life, so unbounded prose
+  // here is unbounded prose there — which is what made every wake for a
+  // verbose mission fail on size.
+  it.effect("clips long prose to the published bound and says which fields it clipped", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const strategies = yield* TradingStrategyService;
+
+      const verbose = body("verbose");
+      const result = yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedVersion: 0,
+        strategy: {
+          ...verbose,
+          explanation: "e".repeat(5_000),
+          belief: { ...verbose.belief, summary: "s".repeat(5_000) },
+        },
+      });
+
+      assert.equal(result.outcome, "accepted");
+      if (result.outcome === "accepted") {
+        assert.equal(result.strategy.explanation.length, 601);
+        assert.equal(result.strategy.belief.summary.length, 601);
+        // Short fields are untouched.
+        assert.equal(result.strategy.entryPlan.explanation, "Enter on a retest that holds.");
+        assert.deepEqual([...result.warnings].sort(), [
+          "belief.summary truncated to 600 chars",
+          "explanation truncated to 600 chars",
+        ]);
+      }
+    }),
+  );
+
+  // The observed failure: the model omitted `strategy.explanation` and the
+  // toolkit rejected the whole call with `Missing key`, costing the turn.
+  it.effect("accepts a plan that omits its explanation, filling it from the belief", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const strategies = yield* TradingStrategyService;
+
+      const result = yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedVersion: 0,
+        strategy: bodyWithoutExplanations("lenient"),
+      });
+
+      assert.equal(result.outcome, "accepted");
+      if (result.outcome === "accepted") {
+        assert.equal(result.strategy.explanation, "Breakout confirmed on rising relative volume.");
+        assert.equal(
+          result.strategy.entryPlan.explanation,
+          "Breakout confirmed on rising relative volume.",
+        );
       }
     }),
   );

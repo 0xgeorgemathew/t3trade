@@ -1372,8 +1372,13 @@ const makeWsRpcLayer = (
               }
               return chart;
             }).pipe(
+              // A poll tick that could not be served is a warning, not an
+              // error: the chart service now serves its last good view through
+              // a transient exchange failure, so reaching here means either an
+              // unentitled read or a market that has been unreadable for
+              // minutes. The client keeps the previous series either way.
               Effect.tapError((cause) =>
-                Effect.logError("trading market chart load failed", { cause }),
+                Effect.logWarning("trading market chart load failed", { cause }),
               ),
               Effect.mapError(
                 (cause) =>

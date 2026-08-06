@@ -141,6 +141,16 @@ export const TradingMarketChartView = Schema.Struct({
   dayVolumeUsd: Schema.Number,
   /** When the gateway last confirmed these figures. */
   observedAt: IsoDateTime,
+  /**
+   * Set when this view is the last good read rather than a fresh one.
+   *
+   * A single transient exchange failure used to blank the chart and surface as
+   * an ERROR-level log, for one poll tick of one market. A chart a few seconds
+   * behind, labelled as such, is a better answer than no chart — but only up to
+   * a point, so the service stops serving stale past a few minutes and the RPC
+   * fails properly from there.
+   */
+  stale: Schema.optional(Schema.Boolean),
 });
 export type TradingMarketChartView = typeof TradingMarketChartView.Type;
 

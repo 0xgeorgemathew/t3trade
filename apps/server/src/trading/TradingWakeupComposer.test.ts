@@ -23,7 +23,11 @@ import type { TradingPlanState, PersistedWatch, TradingMission } from "./Schemas
 import { TradingCostEstimator } from "./TradingCostEstimator.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
-import { TradingWakeupComposer, TradingWakeupComposerLive } from "./TradingWakeupComposer.ts";
+import {
+  MAX_WAKEUP_CHARS,
+  TradingWakeupComposer,
+  TradingWakeupComposerLive,
+} from "./TradingWakeupComposer.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
 
 const MARK = 4_000;
@@ -225,20 +229,29 @@ const layer = it.layer(
   ),
 );
 
-const compose = (triggeringWatchId?: string) =>
+const composeFull = (input?: {
+  readonly triggeringWatchId?: string;
+  readonly activeStrategy?: TradingPlanState;
+}) =>
   Effect.gen(function* () {
     const composer = yield* TradingWakeupComposer;
-    const { wakeup } = yield* composer.compose({
+    return yield* composer.compose({
       mission,
       harnessRunId: "run_1",
       cause: "scheduled_reassessment",
       occurredAt: NOW,
-      ...(triggeringWatchId === undefined ? {} : { triggeringWatchId }),
+      ...(input?.triggeringWatchId === undefined
+        ? {}
+        : { triggeringWatchId: input.triggeringWatchId }),
       pendingEvents: [],
-      activeStrategy: strategy,
+      activeStrategy: input?.activeStrategy ?? strategy,
     });
-    return wakeup;
   });
+
+const compose = (triggeringWatchId?: string) =>
+  composeFull(triggeringWatchId === undefined ? {} : { triggeringWatchId }).pipe(
+    Effect.map((composed) => composed.wakeup),
+  );
 
 layer("TradingWakeupComposer", (it) => {
   it.effect("publishes the active watches with their distance from the mark", () =>
@@ -348,6 +361,47 @@ layer("TradingWakeupComposer", (it) => {
       // A short is costed at its absolute size: the round trip does not care
       // which way round the two fills go.
       assert.equal(costedSize, 1.25);
+    }),
+  );
+
+  it.effect("renders an ordinary wakeup untouched", () =>
+    Effect.gen(function* () {
+      const { text } = yield* composeFull();
+      assert.isBelow(text.length, MAX_WAKEUP_CHARS);
+      assert.notInclude(text, "…");
+      assert.notInclude(text, "[truncated:");
+      // The plan's own prose survives verbatim when it fits.
+      assert.include(text, "long the reclaim");
+    }),
+  );
+
+  it.effect("composes a verbose plan by trimming it, never by failing", () =>
+    Effect.gen(function* () {
+      // The failure this pins: one plan authored with 10k-char prose used to
+      // make every wake for that mission's life fail with `wakeup_too_large`,
+      // which left the mission deaf while still holding a position.
+      const verbose = {
+        ...strategy,
+        explanation: "e".repeat(10_000),
+        belief: {
+          ...strategy.belief,
+          summary: "s".repeat(10_000),
+          evidence: Array.from({ length: 20 }, (_, i) => `evidence ${i} ${"v".repeat(500)}`),
+        },
+        entryPlan: { ...strategy.entryPlan, explanation: "p".repeat(10_000) },
+        exitConditions: Array.from({ length: 20 }, (_, i) => ({
+          description: `exit ${i} ${"x".repeat(500)}`,
+        })),
+      } as unknown as TradingPlanState;
+
+      const { text } = yield* composeFull({ activeStrategy: verbose });
+
+      assert.isAtMost(text.length, MAX_WAKEUP_CHARS);
+      // The trim marker is what tells the run the plan it sees is a projection.
+      assert.include(text, "…");
+      assert.include(text, "more)");
+      // The facts a run cannot re-derive from a tool call survive the trim.
+      assert.include(text, "marketSnapshot");
     }),
   );
 });

@@ -28,6 +28,7 @@ import { POC_DEFAULT_TIMEFRAME, type TradingTimeframe } from "@t3tools/trading-c
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 import type { ObservedVolatility } from "@t3tools/trading-contracts/volatility";
 
+import { boundStrategyProse } from "./StrategyProse.ts";
 import { TradingCostEstimator } from "./TradingCostEstimator.ts";
 
 import type { TradingPlanState } from "./Schemas.ts";
@@ -58,11 +59,28 @@ const WAKEUP_HOLD_HORIZONS: ReadonlyArray<number> = [3, 20] as const;
 
 /**
  * Hard ceiling on the rendered wakeup text. The wakeup is the resumed turn's
- * `message.text`; an unbounded blob would crowd the provider context. If the
- * rendered text exceeds this, the composer is producing more than a snapshot
- * and that is a defect to fix at the source.
+ * `message.text`; an unbounded blob would crowd the provider context.
+ *
+ * Exceeding it never fails the compose — see `renderBoundedWakeup`. A wakeup
+ * that does not fit is a wakeup that does not happen, and a mission whose every
+ * wake fails is deaf while still holding exposure.
  */
 export const MAX_WAKEUP_CHARS = 5_000;
+
+/** Longest any single prose field survives in the wakeup projection. */
+const WAKEUP_PROSE_CHARS = 280;
+
+/** Longest any published condition/evidence list survives in the projection. */
+const WAKEUP_LIST_ENTRIES = 6;
+
+/** How many inbox events and armed watches the second trim rung keeps. */
+const WAKEUP_PENDING_EVENTS = 6;
+const WAKEUP_ARMED_WATCHES = 12;
+
+/** Bars `recentCandles` falls back to once the cheaper rungs are exhausted. */
+const WAKEUP_TRIMMED_CANDLES = 4;
+
+const HARD_TRUNCATION_MARKER = "\n[truncated: wakeup exceeded budget — call trading_get_mission]";
 
 /**
  * The second timeframe every wakeup measures, given the mission's first.
@@ -221,6 +239,132 @@ export const renderWakeup = (wakeup: TradingHarnessWakeup): string => {
   // run at the one tool that returns them, so it does not have to discover it.
   lines.push("mandate-and-authority: call trading_get_mission");
   return lines.join("\n");
+};
+
+/**
+ * Keep the first `WAKEUP_LIST_ENTRIES` entries, and say how many were dropped.
+ *
+ * The marker entry matters more than it looks: a run that sees five exit
+ * conditions where it published nine would work from a plan it never wrote.
+ * `(+4 more)` tells it the list is a projection and `trading_get_mission`
+ * returns the whole thing.
+ */
+const capList = <A>(
+  entries: ReadonlyArray<A>,
+  marker: (dropped: number) => A,
+): ReadonlyArray<A> => {
+  if (entries.length <= WAKEUP_LIST_ENTRIES) return entries;
+  return [...entries.slice(0, WAKEUP_LIST_ENTRIES), marker(entries.length - WAKEUP_LIST_ENTRIES)];
+};
+
+const conditionMarker = (dropped: number) => ({ description: `(+${dropped} more)` });
+
+/**
+ * The first rung: clip the plan's prose to what a run reads at a glance.
+ *
+ * The publish path already bounds each field at 600 chars; this is the harder
+ * wakeup projection. The persisted strategy is untouched — the full text stays
+ * one `trading_get_mission` call away.
+ */
+const boundWakeupProse = (strategy: TradingPlanState): TradingPlanState => ({
+  ...strategy,
+  ...boundStrategyProse(strategy, WAKEUP_PROSE_CHARS).strategy,
+});
+
+/** The second rung: keep the head of each published list, drop the tail. */
+const boundStrategyLists = (strategy: TradingPlanState): TradingPlanState => ({
+  ...strategy,
+  belief: {
+    ...strategy.belief,
+    evidence: capList(strategy.belief.evidence, (dropped) => `(+${dropped} more)`),
+  },
+  entryPlan: {
+    ...strategy.entryPlan,
+    conditions: capList(strategy.entryPlan.conditions, conditionMarker),
+  },
+  exitConditions: capList(strategy.exitConditions, conditionMarker),
+  abandonmentConditions: capList(strategy.abandonmentConditions, conditionMarker),
+  reentryConditions: capList(strategy.reentryConditions, conditionMarker),
+});
+
+/**
+ * The rungs the renderer climbs, cheapest loss of signal first.
+ *
+ * Order is deliberate: prose the run can re-read on demand goes before the
+ * lists it decides from, and the live market data it cannot re-derive from a
+ * tool call goes last.
+ */
+const TRIM_LADDER: ReadonlyArray<{
+  readonly name: string;
+  readonly apply: (wakeup: TradingHarnessWakeup) => TradingHarnessWakeup;
+}> = [
+  {
+    name: "strategy_prose",
+    apply: (wakeup) => ({ ...wakeup, activeStrategy: boundWakeupProse(wakeup.activeStrategy) }),
+  },
+  {
+    name: "strategy_lists",
+    apply: (wakeup) => ({ ...wakeup, activeStrategy: boundStrategyLists(wakeup.activeStrategy) }),
+  },
+  {
+    name: "events_and_watches",
+    apply: (wakeup) => ({
+      ...wakeup,
+      pendingEvents: wakeup.pendingEvents.slice(-WAKEUP_PENDING_EVENTS),
+      armedWatches: wakeup.armedWatches.slice(0, WAKEUP_ARMED_WATCHES),
+    }),
+  },
+  {
+    name: "recent_candles",
+    apply: (wakeup) => ({
+      ...wakeup,
+      recentCandles: {
+        ...wakeup.recentCandles,
+        candles: wakeup.recentCandles.candles.slice(-WAKEUP_TRIMMED_CANDLES),
+      },
+    }),
+  },
+];
+
+/**
+ * Render the wakeup, shrinking the projection until it fits the budget.
+ *
+ * Compose used to fail when the rendered text blew `MAX_WAKEUP_CHARS`, on the
+ * theory that an oversized wakeup is a composer defect. It is not: the size is
+ * the harness's own prose coming back at it, so one verbose plan made every
+ * subsequent wake for that mission fail identically — the watch was consumed,
+ * the run was marked failed, and the mission went permanently deaf. Trimming is
+ * always the better answer than not waking, and every rung is logged so an
+ * oversized plan stays visible.
+ */
+export const renderBoundedWakeup = (
+  wakeup: TradingHarnessWakeup,
+): {
+  readonly text: string;
+  readonly steps: ReadonlyArray<string>;
+  readonly untrimmedChars: number;
+} => {
+  let current = wakeup;
+  let text = renderWakeup(current);
+  const untrimmedChars = text.length;
+  const steps: string[] = [];
+
+  for (const rung of TRIM_LADDER) {
+    if (text.length <= MAX_WAKEUP_CHARS) return { text, steps, untrimmedChars };
+    current = rung.apply(current);
+    steps.push(rung.name);
+    text = renderWakeup(current);
+  }
+  if (text.length <= MAX_WAKEUP_CHARS) return { text, steps, untrimmedChars };
+
+  // Last resort. The run still gets its market and position facts (they render
+  // first) and is told the rest is one tool call away.
+  steps.push("hard_truncation");
+  return {
+    text: `${text.slice(0, MAX_WAKEUP_CHARS - HARD_TRUNCATION_MARKER.length)}${HARD_TRUNCATION_MARKER}`,
+    steps,
+    untrimmedChars,
+  };
 };
 
 /**
@@ -485,17 +629,16 @@ const make = Effect.gen(function* () {
       // mission's life and no longer duplicated onto every wake — the rendered
       // text points the run at `trading_get_mission` for them instead.
       const validated = decodeWakeup(wakeup);
-      const text = renderWakeup(validated);
-      if (text.length > MAX_WAKEUP_CHARS) {
-        // A wakeup that blows the budget is a composer defect, not a load to
-        // push onto the provider: surface it here rather than letting a
-        // truncated blob reach the resumed turn.
-        return yield* Effect.fail(
-          fail(
-            "wakeup_too_large",
-            `rendered ${text.length} > MAX_WAKEUP_CHARS ${MAX_WAKEUP_CHARS}`,
-          ),
-        );
+      const { text, steps, untrimmedChars } = renderBoundedWakeup(validated);
+      if (steps.length > 0) {
+        yield* Effect.logWarning("TradingWakeupComposer: wakeup trimmed to fit the budget", {
+          missionId: mission.id,
+          harnessRunId,
+          steps,
+          before: untrimmedChars,
+          after: text.length,
+          limit: MAX_WAKEUP_CHARS,
+        });
       }
       return { wakeup: validated, text };
     });

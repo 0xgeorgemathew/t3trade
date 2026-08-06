@@ -22,6 +22,7 @@ import { checkProfitTarget } from "@t3tools/trading-contracts/costs";
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import { TradingMissionNotFoundError } from "./Errors.ts";
 import { isActiveMissionStatus } from "./MissionTransitions.ts";
+import { boundStrategyProse, fillOmittedProse, PUBLISHED_PROSE_CHARS } from "./StrategyProse.ts";
 import { toPersistedWatch } from "./TradingWatchService.ts";
 import {
   TradingPlanState,
@@ -238,11 +239,24 @@ const makeTradingStrategyService = Effect.gen(function* () {
         } as const;
       }
 
+      // What actually gets persisted: the harness's plan with its omitted prose
+      // filled in and its long prose clipped. The plan rides on every wakeup for
+      // the mission's life, so an unbounded field here is an unbounded field
+      // there — see `StrategyProse`.
+      const filled = fillOmittedProse(input.strategy);
+      const { strategy: boundedStrategy, truncatedFields } = boundStrategyProse(
+        filled,
+        PUBLISHED_PROSE_CHARS,
+      );
+      const proseWarnings = truncatedFields.map(
+        (field) => `${field} truncated to ${PUBLISHED_PROSE_CHARS} chars`,
+      );
+
       const version = input.expectedVersion + 1;
       const now = yield* Clock.currentTimeMillis;
       const strategy: TradingPlanState = {
         version,
-        ...input.strategy,
+        ...boundedStrategy,
         updatedAt: now,
       };
 
@@ -294,9 +308,9 @@ const makeTradingStrategyService = Effect.gen(function* () {
         strategy,
         strategyVersion: version,
         supersededWatchIds: superseded.map((row) => row.watch_id),
-        // Everything `checkProfitTarget` found that was not worth refusing the
-        // publish over — today, a target below twice its round-trip cost.
-        warnings: check.messages,
+        // Everything that was not worth refusing the publish over: a target
+        // below twice its round-trip cost, and any prose the server clipped.
+        warnings: [...check.messages, ...proseWarnings],
       } as const;
     });
 

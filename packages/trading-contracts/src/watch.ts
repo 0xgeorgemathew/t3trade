@@ -101,8 +101,13 @@ export type PersistedWatchStatus = typeof PersistedWatchStatus.Type;
  * mission holds a position — a wake from it is a decision point: bank the win
  * (close, or reduce and keep a runner) if momentum is fading, or extend to the
  * ladder's next rung by republishing with a fresh basis if it is not.
+ *
+ * `wake_retry` means this watch is a replacement for one that fired and was
+ * consumed by a wake that then failed to reach the harness. The condition it
+ * carries is the same one the harness armed; the reason records that the
+ * original firing was lost, so a wake from it is not a second crossing.
  */
-export const WatchArmedReason = Schema.Literals(["staleness_floor", "profit_target"]);
+export const WatchArmedReason = Schema.Literals(["staleness_floor", "profit_target", "wake_retry"]);
 export type WatchArmedReason = typeof WatchArmedReason.Type;
 
 /**

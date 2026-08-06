@@ -54,6 +54,18 @@ export const POC_DEFAULT_INSTRUCTION =
   "Trade ETH on testnet using 1m candles. Arm candle-close watches on the 1m interval so each run wakes within a minute. Read the regime before you look for a trade.";
 
 /**
+ * Prose the harness may leave out, decoded as an empty string.
+ *
+ * A required key the harness omits is not a smaller mistake than a wrong value:
+ * the Effect toolkit rejects the whole `trading_publish_plan` call with
+ * `Missing key`, which costs the turn and tells the user nothing useful. Both
+ * fields typed this way are ones the harness has been observed omitting, and
+ * both are prose the publish path can fill from the belief summary. A weaker
+ * constraint needs no migration — every persisted row still decodes.
+ */
+const OmittableProse = TradingText.pipe(Schema.withDecodingDefault(Effect.succeed("")));
+
+/**
  * A condition the harness published in prose, with optional structured hints -
  * spec §10.5.
  *
@@ -146,7 +158,16 @@ const MomentumBelief = Schema.Struct({
 });
 
 const MomentumEntryPlan = Schema.Struct({
-  explanation: TradingText,
+  /**
+   * Optional on input, always present on the decoded value.
+   *
+   * A required key the harness omits is not a smaller mistake than a wrong
+   * value — the Effect toolkit rejects the whole `trading_publish_plan` call
+   * with `Missing key`, which costs the turn and tells the user nothing. This
+   * is one of the two prose keys the harness has actually been observed
+   * omitting; the publish handler fills an empty one from the belief summary.
+   */
+  explanation: OmittableProse,
   initialNotionalUsd: Schema.optional(UsdAmount),
   maximumIntendedNotionalUsd: Schema.optional(UsdAmount),
   orderPreference: MomentumOrderPreference,
@@ -300,7 +321,8 @@ export const tradingPlanAuthoredFields = {
 
   currentAction: MomentumStrategyAction,
 
-  explanation: TradingText,
+  /** See `MomentumEntryPlan.explanation` — optional in, always present out. */
+  explanation: OmittableProse,
 } as const;
 
 export const TradingPlanState = Schema.Struct({

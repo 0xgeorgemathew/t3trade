@@ -16,7 +16,7 @@ import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissi
 import { TradingStrategyService, TradingStrategyServiceLive } from "./TradingStrategyService.ts";
 import { TradingTurnCoordinator, TradingTurnCoordinatorLive } from "./TradingTurnCoordinator.ts";
 import { TradingWakeupComposer } from "./TradingWakeupComposer.ts";
-import { TradingWatchServiceLive } from "./TradingWatchService.ts";
+import { TradingWatchService, TradingWatchServiceLive } from "./TradingWatchService.ts";
 
 /**
  * A no-op `OrchestrationEngineService` for the coordinator's unit tests. These
@@ -40,11 +40,15 @@ const stubEngine = Layer.succeed(OrchestrationEngineService, {
  * what a user-message run has to get right.
  */
 const composed: Array<{ readonly cause: string; readonly userMessage?: string | undefined }> = [];
+/** Flipped by the tests that pin what a failed wake must leave behind. */
+let composeFails = false;
 const stubComposer = Layer.succeed(TradingWakeupComposer, {
   compose: (input) =>
-    Effect.sync(() => {
+    Effect.suspend(() => {
       composed.push({ cause: input.cause, userMessage: input.userMessage });
-      return { wakeup: {} as never, text: "" };
+      return composeFails
+        ? Effect.fail({ _tag: "ComposeWakeupError" as const, reason: "test_forced_failure" })
+        : Effect.succeed({ wakeup: {} as never, text: "" });
     }),
 });
 
@@ -70,12 +74,14 @@ const harness: TradingHarnessBinding = {
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 47 });
+  yield* runMigrations({ toMigrationInclusive: 49 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_harness_runs`;
   yield* sql`DELETE FROM trading_event_inbox`;
+  yield* sql`DELETE FROM trading_watches`;
   yield* sql`DELETE FROM momentum_strategy_versions`;
+  composeFails = false;
 });
 
 /** Create a mission with a published strategy so a run can start against it. */
@@ -317,6 +323,88 @@ layer("TradingTurnCoordinator", (it) => {
     }),
   );
 
+  // The observed failure: a watch fired, the wake failed on size, the run was
+  // marked failed — and nothing re-armed anything. The mission was permanently
+  // deaf while still looking healthy from the outside.
+  it.effect("re-arms the mission after a failed wake instead of leaving it deaf", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission;
+      const sql = yield* SqlClient.SqlClient;
+      const watches = yield* TradingWatchService;
+
+      const { watch } = yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: {
+          type: "candle_close",
+          market: "ETH",
+          interval: "1m",
+          direction: "below",
+          price: 1_907.6,
+        },
+      });
+      // The evaluator flips a watch `triggered` before it asks for a run: the
+      // condition is already spent by the time the wake can fail.
+      yield* sql`UPDATE trading_watches SET status = 'triggered' WHERE watch_id = ${watch.id}`;
+
+      composeFails = true;
+      const coordinator = yield* TradingTurnCoordinator;
+      const outcome = yield* coordinator.requestRun({
+        missionId: "mission_1",
+        cause: "market_watch_triggered",
+        triggeringWatchId: watch.id,
+      });
+      assert.equal(outcome.status, "started");
+
+      const runStatus = sql<{ readonly status: string }>`
+        SELECT status FROM trading_harness_runs WHERE mission_id = 'mission_1'
+      `.pipe(Effect.map((rows) => rows[0]?.status));
+      const activeWatches = sql<{ readonly armed_reason: string | null }>`
+        SELECT armed_reason FROM trading_watches
+        WHERE mission_id = 'mission_1' AND status = 'active'
+      `;
+
+      // The wake is forked; let it run through both repairs.
+      for (let attempt = 0; attempt < 500; attempt++) {
+        if ((yield* activeWatches).length >= 2) break;
+        yield* Effect.yieldNow;
+      }
+
+      assert.equal(yield* runStatus, "failed");
+      const reasons = (yield* activeWatches).map((row) => row.armed_reason).sort();
+      // The spent level is armed again, and the floor's reassessment is there
+      // as the backstop if the level never comes back.
+      assert.deepEqual(reasons, ["staleness_floor", "wake_retry"]);
+    }),
+  );
+
+  // The other half of the same failure: `ws.ts` only falls through to the plain
+  // dispatch when this returns false, so a wake that fails after the fact turns
+  // the operator's message into no turn at all.
+  it.effect("hands a user message back to the ordinary turn path when the wake fails", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission;
+      composeFails = true;
+
+      const coordinator = yield* TradingTurnCoordinator;
+      const routed = yield* coordinator.requestUserMessageRun({
+        threadId: "thread_1",
+        text: "Hi",
+      });
+      assert.isFalse(routed);
+
+      // And the lease is released, so the fallback turn is not queued behind a
+      // run that will never end.
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly c: number }>`
+        SELECT COUNT(*) AS c FROM trading_harness_runs
+        WHERE mission_id = 'mission_1' AND status NOT IN ('completed', 'failed')
+      `;
+      assert.equal(rows[0]?.c, 0);
+    }),
+  );
+
   it.effect("allows a second run after the first completes (lease released)", () =>
     Effect.gen(function* () {
       yield* migrated;
@@ -433,7 +521,7 @@ it.live("releases the lease and consumes claimed inbox events when the turn ends
     );
 
     yield* Effect.gen(function* () {
-      yield* runMigrations({ toMigrationInclusive: 47 });
+      yield* runMigrations({ toMigrationInclusive: 49 });
       const missions = yield* TradingMissionService;
       yield* missions.createMission({
         missionId: "mission_1",

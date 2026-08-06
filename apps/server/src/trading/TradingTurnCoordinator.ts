@@ -70,6 +70,19 @@ import { TradingWakeupComposer } from "./TradingWakeupComposer.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
 import { isActiveMissionStatus, isOperativeMissionStatus } from "./MissionTransitions.ts";
 
+/**
+ * A run request, plus whether the caller is waiting on the wake itself.
+ *
+ * `awaitWake` is runtime plumbing rather than part of the published
+ * `HarnessRunRequest` contract: it says only that this caller needs to know
+ * whether the wake reached the provider before it decides what to do next.
+ * Exactly one caller sets it — the user-message path, which must fall back to
+ * an ordinary turn rather than leave the operator's text undelivered.
+ */
+export interface RequestRunInput extends HarnessRunRequest {
+  readonly awaitWake?: boolean;
+}
+
 export interface TradingTurnCoordinatorShape {
   /**
    * Run the seven §12.3 pre-run checks and, if they pass, acquire the lease,
@@ -81,7 +94,7 @@ export interface TradingTurnCoordinatorShape {
    * when another run already owns it, or `blocked{reason}` when a check failed.
    */
   readonly requestRun: (
-    input: HarnessRunRequest,
+    input: RequestRunInput,
   ) => Effect.Effect<HarnessRunOutcome, PersistenceSqlError>;
 
   /**
@@ -554,6 +567,55 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Put the mission back in a state where something can still wake it, after a
+   * wake failed.
+   *
+   * A failed wake is not a neutral event: the watch that fired was flipped
+   * `triggered` before the run was ever requested (single-fire guard), so the
+   * condition has been spent and nothing re-arms it. Left alone the mission is
+   * deaf — still holding exposure, still looking healthy from the outside —
+   * until the next staleness floor, whose wake fails the same way.
+   *
+   * Two repairs, both bounded. `ensureNotDeaf` is the ordinary end-of-turn arm
+   * and re-registers the reassessment/profit-target coverage. Re-registering
+   * the triggering watch gives back the specific level the harness was waiting
+   * on. Neither retries the wake: the trim ladder makes a repeat size failure
+   * unlikely, and an unbounded retry loop against a genuinely broken provider
+   * is worse than the staleness floor already is.
+   */
+  const recoverFromFailedWake = (input: {
+    readonly missionId: string;
+    readonly triggeringWatchId?: string;
+  }) =>
+    Effect.gen(function* () {
+      yield* ensureNotDeaf(input.missionId);
+      if (input.triggeringWatchId === undefined) return;
+
+      const spent = yield* watches.getWatch(input.triggeringWatchId);
+      // Only a watch the failed wake actually consumed is worth replacing; one
+      // still active (or already superseded by a publish) needs nothing.
+      if (spent === null || spent.status !== "triggered") return;
+
+      const { watch } = yield* watches.registerWatch({
+        missionId: input.missionId,
+        watch: spent.watch,
+        armedReason: "wake_retry",
+      });
+      yield* Effect.logWarning("TradingTurnCoordinator: re-armed a watch a failed wake consumed", {
+        missionId: input.missionId,
+        consumedWatchId: spent.id,
+        watchId: watch.id,
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("TradingTurnCoordinator: could not recover from a failed wake", {
+          missionId: input.missionId,
+          cause: String(cause),
+        }),
+      ),
+    );
+
   const requestRun: TradingTurnCoordinatorShape["requestRun"] = (input) =>
     Effect.gen(function* () {
       // §12.3 check 1: Mission is active.
@@ -612,20 +674,16 @@ const make = Effect.gen(function* () {
         return { status: "blocked", reason: "no_active_strategy" } as const;
       }
 
-      // All checks passed: fork the wake path (watch for the turn ending, build
-      // the wakeup, dispatch `thread.turn.start`).
+      // All checks passed: watch for the turn ending, build the wakeup, and
+      // dispatch `thread.turn.start`.
       //
-      // The wake is a background effect so `requestRun` returns `started` as soon
-      // as the lease is acquired — the caller learns the run started, and the
-      // dispatch/resume proceeds asynchronously (matching how `thread.turn.start`
-      // itself works: dispatch persists events, a reactor drives the provider).
       // The turn-end watcher is forked BEFORE the dispatch so a turn that ends
-      // quickly cannot slip past the hot domain-event stream; the wake fiber
-      // then lives exactly as long as the watcher (one turn) and terminates.
-      // A wake failure marks the run `failed`, releasing the lease and surfacing
-      // the run as terminal in the projection.
-      yield* Effect.gen(function* () {
-        const watcher = yield* Effect.forkChild(
+      // quickly cannot slip past the hot domain-event stream, and detached so
+      // it outlives whichever fiber dispatched — it terminates itself on the
+      // first turn-end (`Stream.take(1)`). A wake failure interrupts it, marks
+      // the run `failed` (releasing the lease), and re-arms the mission.
+      const dispatchWake = Effect.gen(function* () {
+        const watcher = yield* Effect.forkDetach(
           watchTurnEndAndRelease(runId, input.missionId, mission.harness.threadId),
         );
         const woke = yield* Effect.exit(
@@ -641,20 +699,40 @@ const make = Effect.gen(function* () {
             threadId: mission.harness.threadId,
           }),
         );
-        if (Exit.isFailure(woke)) {
-          yield* Fiber.interrupt(watcher);
-          yield* completeRun(runId, "failed").pipe(Effect.catchCause(() => Effect.void));
-          yield* Effect.logError("TradingTurnCoordinator: wake dispatch failed", {
-            runId,
-            cause: String(woke.cause),
-          });
-          return;
-        }
-        yield* Fiber.join(watcher);
-        // `forkDetach` detaches the wake fiber into a root scope so it lives
-        // without requiring the caller to provide a scope. `completeRun`'s
-        // guard makes a late or repeated release a no-op.
-      }).pipe(Effect.forkDetach);
+        if (Exit.isSuccess(woke)) return true;
+
+        yield* Fiber.interrupt(watcher);
+        // `completeRun`'s guard makes a late or repeated release a no-op.
+        yield* completeRun(runId, "failed").pipe(Effect.catchCause(() => Effect.void));
+        yield* Effect.logError("TradingTurnCoordinator: wake dispatch failed", {
+          runId,
+          cause: String(woke.cause),
+        });
+        yield* recoverFromFailedWake({
+          missionId: input.missionId,
+          ...(input.triggeringWatchId !== undefined
+            ? { triggeringWatchId: input.triggeringWatchId }
+            : {}),
+        });
+        return false;
+      });
+
+      // A user's message is the one cause with something waiting on the answer.
+      // `ws.ts` only falls through to the ordinary dispatch when this returns a
+      // non-`started` outcome, so a forked wake that fails afterwards drops the
+      // message entirely — the client keeps saying "Working" for a turn that
+      // never happened. Compose and dispatch inline for that cause, and report
+      // the failure as a blocked run so the plain turn still carries the text.
+      if (input.awaitWake === true) {
+        const dispatched = yield* dispatchWake;
+        if (dispatched) return { status: "started", harnessRunId: runId } as const;
+        return { status: "blocked", reason: "wake_failed" } as const;
+      }
+
+      // Every other cause returns `started` as soon as the lease is acquired —
+      // nothing user-visible is waiting on the dispatch, and it proceeds
+      // asynchronously the way `thread.turn.start` itself does.
+      yield* Effect.forkDetach(dispatchWake);
 
       return { status: "started", harnessRunId: runId } as const;
     });
@@ -673,6 +751,9 @@ const make = Effect.gen(function* () {
         missionId: mission.id,
         cause: "user_message",
         userMessage: input.text,
+        // Wait for the wake: returning `true` before the dispatch composed is
+        // what let a compose failure swallow the operator's message.
+        awaitWake: true,
       });
       if (outcome.status === "started") return true;
 

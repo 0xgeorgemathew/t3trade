@@ -193,6 +193,45 @@ it.effect("yields null and leaves the cache empty when the history read fails", 
   }).pipe(testLayer()),
 );
 
+// Blanking the whole surface for one transient exchange hiccup is worse for an
+// operator reading an exit off the series than a chart a few seconds behind
+// that says it is behind.
+it.effect("serves the last good view, marked stale, through a failed refresh", () =>
+  Effect.gen(function* () {
+    snapshotRead = Effect.succeed(snapshot);
+    historyRead = Effect.succeed(history);
+    const chart = yield* TradingMarketChart;
+
+    const good = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 });
+    assert.notEqual(good, null);
+
+    // Past the TTL, with the exchange now unreachable.
+    yield* TestClock.adjust(Duration.seconds(6));
+    historyRead = Effect.fail("history unreachable");
+    const served = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 });
+
+    assert.equal(served?.stale, true);
+    assert.deepEqual(served?.candles, good?.candles);
+    assert.equal(served?.markPrice, good?.markPrice);
+  }).pipe(testLayer()),
+);
+
+it.effect("stops serving a stale view once it is minutes old", () =>
+  Effect.gen(function* () {
+    snapshotRead = Effect.succeed(snapshot);
+    historyRead = Effect.succeed(history);
+    const chart = yield* TradingMarketChart;
+
+    yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 });
+
+    yield* TestClock.adjust(Duration.minutes(6));
+    historyRead = Effect.fail("history unreachable");
+    const served = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 });
+
+    assert.equal(served, null);
+  }).pipe(testLayer()),
+);
+
 it.effect("maps the gateway pair into the view, dropping closeTime/volume/trades", () =>
   Effect.gen(function* () {
     snapshotRead = Effect.succeed(snapshot);

@@ -14,10 +14,12 @@
  * that window. The TTL stays well under the candle poll so a polling client
  * still sees a fresh series each time, while concurrent clients share one read.
  *
- * A failed read yields `null`, never a stale or invented chart. If either the
- * snapshot or the history call fails, the whole read yields `null` and nothing
- * is written to cache — a chart the exchange did not just confirm is worse than
- * no chart at all on a surface an operator makes exit decisions from.
+ * A failed read never invents a chart. If either the snapshot or the history
+ * call fails, the last good view is served again for a few minutes, marked
+ * `stale`, and nothing new is written to cache; past that window, or with no
+ * cache at all, the read yields `null` and the RPC fails. Blanking the whole
+ * surface for one transient exchange hiccup is worse for an operator making an
+ * exit decision than a chart a few seconds behind that says so.
  *
  * @module TradingMarketChart
  */
@@ -59,6 +61,13 @@ export class TradingMarketChart extends Context.Service<
  * several clients polling at once collapse onto a single pair of reads.
  */
 const CACHE_WINDOW_MS = 5_000;
+
+/**
+ * How far past its TTL a cached view may still be served when the exchange
+ * read fails. Beyond this the series is old enough that showing it would
+ * mislead more than an explicit failure does.
+ */
+const STALE_WINDOW_MS = 5 * 60_000;
 
 interface CachedChart {
   readonly view: TradingMarketChartView;
@@ -103,7 +112,18 @@ export const makeTradingMarketChart = Effect.gen(function* () {
           ),
           Effect.orElseSucceed(() => null),
         );
-      if (snapshot === null || history === null) return null;
+      if (snapshot === null || history === null) {
+        // Serve the last good view rather than blanking the surface. Only the
+        // freshness claim changes — everything drawn is what the exchange last
+        // actually confirmed.
+        if (cached === undefined || now - cached.readAt > STALE_WINDOW_MS) return null;
+        yield* Effect.logDebug("trading chart served stale", {
+          market,
+          interval,
+          ageMillis: now - cached.readAt,
+        });
+        return { ...cached.view, stale: true };
+      }
 
       const view: TradingMarketChartView = {
         market,

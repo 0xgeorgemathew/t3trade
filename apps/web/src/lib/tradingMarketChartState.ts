@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, TradingMarketChartView } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { orchestrationEnvironment } from "../state/orchestration";
@@ -90,6 +90,12 @@ export interface TradingMarketChartState {
   readonly data: TradingMarketChartView | null;
   readonly error: string | null;
   readonly isLoading: boolean;
+  /**
+   * True while `data` is the last good read rather than a fresh one — either
+   * the server served its own cache through an exchange failure, or this poll
+   * tick failed outright and the hook is holding the previous view.
+   */
+  readonly stale: boolean;
   readonly refresh: () => void;
 }
 
@@ -139,7 +145,23 @@ export function useTradingMarketChart(
   }, [enabled, market, environmentId, interval, windowStart, windowEnd]);
 
   const result = useAtomValue(atom);
-  const data = Option.getOrNull(AsyncResult.value(result));
+  const fresh = Option.getOrNull(AsyncResult.value(result));
+
+  // One failed poll tick must not blank the chart. The market did not stop
+  // existing because a request failed, and an operator reading an exit off the
+  // series would rather see it a few seconds behind than see it disappear. The
+  // retained view is dropped whenever the atom identity changes, so a different
+  // market/interval/window never renders the previous one's bars.
+  const lastGood = useRef<TradingMarketChartView | null>(null);
+  const lastAtom = useRef<TradingMarketChartAtom | null>(null);
+  if (lastAtom.current !== atom) {
+    lastAtom.current = atom;
+    lastGood.current = null;
+  }
+  if (fresh !== null) lastGood.current = fresh;
+
+  const data = fresh ?? lastGood.current;
+  const stale = data !== null && (fresh === null || fresh.stale === true);
 
   const refresh = useCallback(() => {
     if (!enabled || market === null) {
@@ -164,8 +186,12 @@ export function useTradingMarketChart(
 
   return {
     data,
-    error: result._tag === "Failure" ? "Failed to load trading market chart." : null,
+    // Only an error the caller can do nothing about: a failure with a retained
+    // view is a staleness condition, and `stale` is how it is shown.
+    error:
+      result._tag === "Failure" && data === null ? "Failed to load trading market chart." : null,
     isLoading: result.waiting,
+    stale,
     refresh,
   };
 }
