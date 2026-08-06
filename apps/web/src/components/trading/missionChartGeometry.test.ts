@@ -150,10 +150,12 @@ describe("computeChartGeometry — y-domain", () => {
 });
 
 describe("computeChartGeometry — pre/post split", () => {
-  it("splits the line around entryTime (2 pre, 3 post for 5 candles)", () => {
+  it("splits the line around entryTime, sharing the boundary point", () => {
     const candles = fiveWalkingCandles();
     // entryTime between candle index 1 (openTime = base + 60_000) and index 2
-    // (openTime = base + 120_000): candles 0,1 are pre; 2,3,4 are post.
+    // (openTime = base + 120_000): candles 0,1 are pre; 2,3,4 are post. Candle
+    // 2 is duplicated into the pre segment so the two-tone line joins up
+    // instead of breaking a bar wide at the entry.
     const splitAt = candles[1]!.openTime + 30_000;
     const geometry = computeChartGeometry({
       candles,
@@ -165,8 +167,9 @@ describe("computeChartGeometry — pre/post split", () => {
       markPrice: null,
     })!;
 
-    expect(geometry.preEntryPoints).toHaveLength(2);
+    expect(geometry.preEntryPoints).toHaveLength(3);
     expect(geometry.postEntryPoints).toHaveLength(3);
+    expect(geometry.preEntryPoints[2]).toEqual(geometry.postEntryPoints[0]);
   });
 
   it("puts every point in postEntryPoints when entryTime is null", () => {

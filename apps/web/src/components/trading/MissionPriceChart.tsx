@@ -36,6 +36,12 @@ interface MissionPriceChartProps {
   readonly markPrice: number | null;
   /** Colours the post-entry segment + fill. Null while flat (no position). */
   readonly pnlSign: "profit" | "loss" | null;
+  /**
+   * Whether the mark dot pulses. `live` is the default — the dot is the one
+   * moving thing on a running chart. `static` is the review chart, where the
+   * dot is the exit marker of a trade that is over and nothing is moving.
+   */
+  readonly markMotion?: "live" | "static";
   readonly className?: string;
 }
 
@@ -91,6 +97,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     entryTime,
     markPrice,
     pnlSign,
+    markMotion = "live",
     className,
   } = props;
 
@@ -194,7 +201,11 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             cy={geometry.markPoint.y}
             r={3}
             fill={segmentColor}
-            style={{ animation: "mission-mark-pulse 1.6s ease-in-out infinite" }}
+            style={
+              markMotion === "live"
+                ? { animation: "mission-mark-pulse 1.6s ease-in-out infinite" }
+                : undefined
+            }
           />
           {markPrice !== null ? (
             <text

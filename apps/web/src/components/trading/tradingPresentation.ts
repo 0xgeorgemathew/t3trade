@@ -80,6 +80,10 @@ export function describeWatch(watch: MarketWatch): string {
       return `Scheduled reassessment at ${new Date(watch.runAt).toISOString()}`;
     case "pnl_above":
       return `${watch.market} unrealised PnL reaches $${watch.valueUsd}`;
+    case "pnl_below":
+      return `${watch.market} unrealised PnL falls to $${watch.valueUsd}`;
+    case "pnl_giveback":
+      return `${watch.market} unrealised PnL gives back $${watch.drawdownUsd} from its peak`;
   }
 }
 
@@ -843,6 +847,46 @@ export function deriveCompletionSummary(mission: {
     plannedLossUsd,
     // Positive means the mission did better than the loss it planned to risk.
     deviationFromPlanUsd: plannedLossUsd === null ? null : netResultUsd + plannedLossUsd,
+  };
+}
+
+/** The two prices a review chart marks: where the trade went on, and off. */
+export interface ReviewMarkers {
+  readonly entryPrice: number | null;
+  readonly exitPrice: number | null;
+}
+
+/**
+ * Read the entry and exit prices off a finished mission's fill receipts.
+ *
+ * `recentFills` is newest-first and capped at three, which is exactly right for
+ * the ordinary shape (one open, one close) and honest about the rest: a mission
+ * that scaled in and out more than that gets its most recent close as the exit
+ * and the oldest fill still on the receipt list as the entry. The chart is a
+ * review of what happened, not an audit trail, so an approximate entry beats no
+ * chart at all.
+ *
+ * `direction` is preferred where the exchange supplied it ("Open Long" /
+ * "Close Long"); fills recorded before that field was carried fall back to
+ * position in the list.
+ */
+export function deriveReviewMarkers(
+  fills: ReadonlyArray<{
+    readonly avgFillPrice: number;
+    readonly direction?: string | undefined;
+  }>,
+): ReviewMarkers {
+  if (fills.length === 0) return { entryPrice: null, exitPrice: null };
+
+  const opening = fills.toReversed().find((fill) => fill.direction?.startsWith("Open") === true);
+  const closing = fills.find((fill) => fill.direction?.startsWith("Close") === true);
+
+  const oldest = fills[fills.length - 1]!;
+  const newest = fills[0]!;
+
+  return {
+    entryPrice: (opening ?? oldest).avgFillPrice,
+    exitPrice: (closing ?? newest).avgFillPrice,
   };
 }
 

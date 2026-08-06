@@ -157,6 +157,11 @@ export function deriveEntryFillAtMillis(
   return newest;
 }
 
+/** Hold a value inside `[min, max]`. */
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
 /** Numeric levels that should anchor the y-domain (candles ∪ entry/stop/target). */
 function collectDomainAnchors(
   candles: ReadonlyArray<{ readonly open?: number; readonly high: number; readonly low: number }>,
@@ -282,6 +287,12 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     if (splitTime !== null && candle.openTime < splitTime) {
       preEntryPoints.push(point);
     } else {
+      // The first post-entry point also closes the pre-entry segment. Without
+      // the shared boundary the two polylines stop and start a whole bar apart
+      // and the line visibly breaks at the entry.
+      if (postEntryPoints.length === 0 && preEntryPoints.length > 0) {
+        preEntryPoints.push(point);
+      }
       postEntryPoints.push(point);
     }
   }
@@ -298,8 +309,16 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
   );
 
   // --- mark point: pinned at the right edge of the plot. -------------------
+  //
+  // The mark is deliberately not a domain anchor (see `collectDomainAnchors`),
+  // and it is polled far more often than the candles are — so a fast move puts
+  // it outside the padded range. Clamp the dot's y into the plot rather than
+  // letting it and its price tag render off-canvas; the tag still reads the
+  // true price, so a pinned dot means "off the top/bottom of this frame".
   const markPoint: ChartPoint | null =
-    markPrice !== null ? { x: PLOT_WIDTH, y: yForPrice(markPrice) } : null;
+    markPrice !== null
+      ? { x: PLOT_WIDTH, y: clamp(yForPrice(markPrice), 0, CHART_VIEWBOX_HEIGHT) }
+      : null;
 
   return {
     viewBoxWidth: CHART_VIEWBOX_WIDTH,

@@ -33,6 +33,7 @@ import type { ReactNode } from "react";
 import { useActiveEnvironmentId } from "../../state/entities";
 import { Button } from "../ui/button";
 import { MissionFeedErrorBanner, MissionStalenessBanner } from "./MissionStalenessBanner";
+import { MissionReviewChart } from "./MissionReviewChart";
 import { useMissionControls } from "./useMissionControls";
 import {
   deriveCompletionSummary,
@@ -653,17 +654,14 @@ function OrderRejectedActions({
  * leads the card stack. Tinted by the net result — green for a profit, red for a
  * loss — the same convention every other P&L figure on the surface uses.
  *
- * The plan calls for a review price chart windowed to `firstFillAt → lastFillAt`
- * with entry/exit markers. The chart's candle feed (`useTradingMarketChart`) is a
- * LIVE 15s poll gated on an open position; it has no historical-window RPC, and a
- * completed mission is flat (the feed would be disabled and would in any case
- * return the current window, not the trade's). Until a windowed candle RPC
- * exists, the figures carry the summary on their own.
+ * Above the figures sits the review chart: the price series over the span the
+ * trade occupied, windowed to `firstFillAt → lastFillAt` with the entry as a
+ * level and the exit as a static dot. It is a one-shot read on a closed window,
+ * not the live panel's 15s poll — see {@link MissionReviewChart}.
  */
-// TODO(plan-21 4c): review chart needs a historical-window candle RPC windowed
-// to summary.firstFillAt → summary.lastFillAt with entry/exit markers.
 function CompletionSummaryCard({ mission }: { mission: OrchestrationTradingMission }) {
   const summary: CompletionSummary = deriveCompletionSummary(mission);
+  const environmentId = useActiveEnvironmentId();
   const accent =
     pnlTone(summary.netResultUsd) === "profit"
       ? "border-profit/40 bg-profit/5"
@@ -681,6 +679,18 @@ function CompletionSummaryCard({ mission }: { mission: OrchestrationTradingMissi
       }
       accentClassName={accent}
     >
+      {environmentId === null ? null : (
+        <div className="px-3 pb-2">
+          <MissionReviewChart
+            environmentId={environmentId}
+            market={mission.market}
+            firstFillAt={summary.firstFillAt}
+            lastFillAt={summary.lastFillAt}
+            recentFills={mission.recentFills}
+            pnlSign={pnlTone(summary.netResultUsd) ?? null}
+          />
+        </div>
+      )}
       <FieldRows>
         <Field
           label="Realized P&L"

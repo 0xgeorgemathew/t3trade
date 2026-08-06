@@ -17,6 +17,7 @@ import { describe, expect, it } from "@effect/vitest";
 
 import { checkProfitTarget, estimateTradingCosts, type CostEstimateInput } from "./costs.ts";
 import type { MarketCandle } from "./market.ts";
+import { PLAYBOOKS } from "./playbook.ts";
 import { measureVolatility } from "./volatility.ts";
 
 /** The audited window's boundaries, and the height a scalp is paid out of. */
@@ -35,11 +36,23 @@ const CYCLE_BARS = 46;
 
 /**
  * Range height a scalp requires over the break-even move before it is worth
- * trading, from the `range_reversion` playbook's `gates[]` in `./playbook.ts`
- * (moved out of the old `POC_DEFAULT_INSTRUCTION`). A range that only clears
- * its costs once over is a fee donation with a chart attached.
+ * trading, READ from the `range_reversion` playbook's `gates[]` rather than
+ * restated here. A range that only clears its costs once over is a fee donation
+ * with a chart attached — and a copy of the multiple in this file would go on
+ * passing after someone changed the gate the harness actually follows.
  */
-const RANGE_COST_MULTIPLE = 2.2;
+const RANGE_COST_MULTIPLE = readRangeCostMultiple();
+
+function readRangeCostMultiple(): number {
+  const playbook = PLAYBOOKS.find((entry) => entry.name === "range_reversion");
+  if (playbook === undefined) throw new Error("range_reversion playbook is missing");
+
+  for (const gate of playbook.gates) {
+    const match = /([\d.]+)x\s+`breakEvenPriceMoveUsd`/.exec(gate);
+    if (match !== null) return Number(match[1]);
+  }
+  throw new Error("range_reversion has no break-even multiple in its gates[]");
+}
 
 /** Share of the range height the scalp actually tries to capture. */
 const CAPTURE_FRACTION = 0.65;

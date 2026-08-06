@@ -763,6 +763,7 @@ describe("subpath exports", () => {
         "./momentum",
         "./history",
         "./calibration",
+        "./playbook",
       ].sort(),
     );
 

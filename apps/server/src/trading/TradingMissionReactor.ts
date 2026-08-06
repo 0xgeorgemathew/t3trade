@@ -164,6 +164,10 @@ const describeWatchPredicate = (watch: PersistedWatch["watch"]): string => {
       return `scheduled reassessment due at ${watch.runAt}`;
     case "pnl_above":
       return `${watch.market} unrealised PnL reaches $${watch.valueUsd}`;
+    case "pnl_below":
+      return `${watch.market} unrealised PnL falls to $${watch.valueUsd}`;
+    case "pnl_giveback":
+      return `${watch.market} unrealised PnL gives back $${watch.drawdownUsd} from its peak`;
   }
 };
 
@@ -503,7 +507,13 @@ const make = Effect.gen(function* () {
       const previous = active.value;
       // The bootstrap thread can be projected twice on a cold start; a mission
       // already bound to this thread is the outcome we wanted, not a conflict.
-      if (previous.harness.threadId === threadId) return;
+      // The profile registry is in-memory, so a cold start has lost the binding
+      // even though the mission row survived — re-establish it here rather than
+      // letting every post-restart wake open with the unrestricted toolset.
+      if (previous.harness.threadId === threadId) {
+        yield* Effect.sync(() => setSessionProfile({ threadId, kind: "trading" }));
+        return;
+      }
 
       // The domain mission carries plain strings; the command surface is
       // branded. Same values, re-tagged at the boundary.

@@ -10,14 +10,30 @@ import { orchestrationEnvironment } from "../state/orchestration";
 /** Candle intervals the `getTradingMarketChart` RPC accepts. */
 export type ChartInterval = "1m" | "3m" | "5m" | "15m" | "1h";
 
+/**
+ * A closed candle window, in epoch millis.
+ *
+ * Passing one turns the read into the post-mortem chart of a finished trade:
+ * the server serves that span instead of the latest bars, and the client stops
+ * polling (a closed window cannot change).
+ */
+export interface ChartWindow {
+  readonly startTime: number;
+  readonly endTime: number;
+}
+
 function tradingMarketChartAtom(
   environmentId: EnvironmentId,
   market: string,
   interval: ChartInterval,
+  window: ChartWindow | null,
 ) {
   return orchestrationEnvironment.tradingMarketChart({
     environmentId,
-    input: { market, interval },
+    input:
+      window === null
+        ? { market, interval }
+        : { market, interval, startTime: window.startTime, endTime: window.endTime },
   });
 }
 
@@ -25,8 +41,9 @@ export function refreshTradingMarketChart(
   environmentId: EnvironmentId,
   market: string,
   interval: ChartInterval,
+  window: ChartWindow | null = null,
 ): void {
-  appAtomRegistry.refresh(tradingMarketChartAtom(environmentId, market, interval));
+  appAtomRegistry.refresh(tradingMarketChartAtom(environmentId, market, interval, window));
 }
 
 /**
@@ -89,23 +106,37 @@ export interface TradingMarketChartState {
  * live family atom, returns an empty state, and starts no interval — a flat
  * mission puts nothing on the wire. The caller is expected to pass `enabled`
  * driven by whether a position is currently open for `market`.
+ *
+ * `options.window` turns it into the one-shot post-mortem read a finished
+ * mission's card makes. The span is closed, so the poll is skipped: re-reading
+ * it would return the same bars for as long as the card is mounted.
  */
 export function useTradingMarketChart(
   environmentId: EnvironmentId,
   market: string | null,
   interval: ChartInterval,
-  options: { readonly enabled: boolean },
+  options: { readonly enabled: boolean; readonly window?: ChartWindow },
 ): TradingMarketChartState {
   const enabled = options.enabled && market !== null;
+  const chartWindow = options.window ?? null;
+  const windowStart = chartWindow?.startTime ?? null;
+  const windowEnd = chartWindow?.endTime ?? null;
 
   // Selecting the atom in `useMemo` keeps `useAtomValue` unconditional
   // (rules-of-hooks) while still routing the disabled path off the RPC.
+  // The window is depended on by its two numbers rather than by object
+  // identity, so a caller rebuilding the literal each render does not thrash
+  // the atom.
   const atom = useMemo(() => {
     if (!enabled || market === null) {
       return DISABLED_CHART_ATOM;
     }
-    return tradingMarketChartAtom(environmentId, market, interval);
-  }, [enabled, market, environmentId, interval]);
+    const bounds =
+      windowStart === null || windowEnd === null
+        ? null
+        : { startTime: windowStart, endTime: windowEnd };
+    return tradingMarketChartAtom(environmentId, market, interval, bounds);
+  }, [enabled, market, environmentId, interval, windowStart, windowEnd]);
 
   const result = useAtomValue(atom);
   const data = Option.getOrNull(AsyncResult.value(result));
@@ -114,16 +145,22 @@ export function useTradingMarketChart(
     if (!enabled || market === null) {
       return;
     }
-    refreshTradingMarketChart(environmentId, market, interval);
-  }, [enabled, market, environmentId, interval]);
+    const bounds =
+      windowStart === null || windowEnd === null
+        ? null
+        : { startTime: windowStart, endTime: windowEnd };
+    refreshTradingMarketChart(environmentId, market, interval, bounds);
+  }, [enabled, market, environmentId, interval, windowStart, windowEnd]);
+
+  const isWindowed = windowStart !== null && windowEnd !== null;
 
   useEffect(() => {
-    if (!enabled) {
+    if (!enabled || isWindowed) {
       return;
     }
     const id = window.setInterval(refresh, CHART_POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [enabled, refresh]);
+  }, [enabled, isWindowed, refresh]);
 
   return {
     data,

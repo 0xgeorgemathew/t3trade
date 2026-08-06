@@ -31,12 +31,19 @@ import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import type { TradingMarketChartView } from "@t3tools/contracts";
 import type { TradingMarket } from "@t3tools/trading-contracts/primitives";
 
+export interface TradingMarketChartReadInput {
+  readonly market: string;
+  readonly interval: "1m" | "3m" | "5m" | "15m" | "1h";
+  readonly maxBars: number;
+  /** Epoch millis bounding the candle window; omitted means the latest bars. */
+  readonly startTime?: number;
+  readonly endTime?: number;
+}
+
 export interface TradingMarketChartShape {
   /** The market's chart view, or null when either exchange read failed. */
   readonly read: (
-    market: string,
-    interval: "1m" | "3m" | "5m" | "15m" | "1h",
-    maxBars: number,
+    input: TradingMarketChartReadInput,
   ) => Effect.Effect<TradingMarketChartView | null>;
 }
 
@@ -62,13 +69,14 @@ export const makeTradingMarketChart = Effect.gen(function* () {
   const gateway = yield* HyperliquidGateway;
   const cache = yield* Ref.make(new Map<string, CachedChart>());
 
-  const read = (
-    market: string,
-    interval: "1m" | "3m" | "5m" | "15m" | "1h",
-    maxBars: number,
-  ): Effect.Effect<TradingMarketChartView | null> =>
+  const read = (input: TradingMarketChartReadInput): Effect.Effect<TradingMarketChartView | null> =>
     Effect.gen(function* () {
-      const key = `${market}:${interval}`;
+      const { market, interval, maxBars, startTime, endTime } = input;
+      // The window is part of the identity of the read: a post-mortem chart of
+      // a closed trade and the live chart of the same market/interval are
+      // different series, and sharing a cache entry would serve one as the
+      // other.
+      const key = `${market}:${interval}:${startTime ?? ""}:${endTime ?? ""}`;
       const now = yield* Clock.currentTimeMillis;
       const cached = (yield* Ref.get(cache)).get(key);
       if (cached !== undefined && now - cached.readAt < CACHE_WINDOW_MS) return cached.view;
@@ -82,7 +90,13 @@ export const makeTradingMarketChart = Effect.gen(function* () {
         Effect.orElseSucceed(() => null),
       );
       const history = yield* gateway
-        .getMarketHistory({ market: market as TradingMarket, interval, maxBars })
+        .getMarketHistory({
+          market: market as TradingMarket,
+          interval,
+          maxBars,
+          ...(startTime !== undefined ? { startTime } : {}),
+          ...(endTime !== undefined ? { endTime } : {}),
+        })
         .pipe(
           Effect.tapError((cause) =>
             Effect.logDebug("trading chart history read failed", { market, interval, cause }),

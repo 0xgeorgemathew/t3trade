@@ -106,13 +106,37 @@ it.effect("serves a cached view to concurrent reads without re-reading the gatew
     historyCalls = 0;
     const chart = yield* TradingMarketChart;
 
-    const first = yield* chart.read("ETH", "1m", 100);
-    const second = yield* chart.read("ETH", "1m", 100);
+    const first = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 });
+    const second = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 });
 
     assert.notEqual(first, null);
     assert.equal(second, first);
     assert.equal(snapshotCalls, 1);
     assert.equal(historyCalls, 1);
+  }).pipe(testLayer()),
+);
+
+// The post-mortem chart of a closed trade and the live chart of the same
+// market/interval are different series. Sharing one cache entry would serve
+// whichever landed first as the other.
+it.effect("does not serve a windowed read from the live read's cache entry", () =>
+  Effect.gen(function* () {
+    snapshotRead = Effect.succeed(snapshot);
+    historyRead = Effect.succeed(history);
+    snapshotCalls = 0;
+    historyCalls = 0;
+    const chart = yield* TradingMarketChart;
+
+    yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 });
+    yield* chart.read({
+      market: "ETH",
+      interval: "1m",
+      maxBars: 100,
+      startTime: 1_000,
+      endTime: 2_000,
+    });
+
+    assert.equal(historyCalls, 2, "the windowed read must reach the gateway on its own");
   }).pipe(testLayer()),
 );
 
@@ -124,10 +148,10 @@ it.effect("re-reads after the cache window elapses", () =>
     historyCalls = 0;
     const chart = yield* TradingMarketChart;
 
-    yield* chart.read("ETH", "1m", 100);
+    yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 });
     // 6s > 5s TTL: the cache window has closed, so the next read hits the gateway.
     yield* TestClock.adjust(Duration.seconds(6));
-    yield* chart.read("ETH", "1m", 100);
+    yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 });
 
     assert.equal(snapshotCalls, 2);
     assert.equal(historyCalls, 2);
@@ -142,11 +166,11 @@ it.effect("yields null and leaves the cache empty when the snapshot read fails",
     historyCalls = 0;
     const chart = yield* TradingMarketChart;
 
-    const first = yield* chart.read("ETH", "1m", 100);
+    const first = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 });
     assert.equal(first, null);
 
     // Nothing was cached: a second call (same tick) hits the gateway again.
-    const second = yield* chart.read("ETH", "1m", 100);
+    const second = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 });
     assert.equal(second, null);
     assert.isAtLeast(snapshotCalls, 2);
   }).pipe(testLayer()),
@@ -160,10 +184,10 @@ it.effect("yields null and leaves the cache empty when the history read fails", 
     historyCalls = 0;
     const chart = yield* TradingMarketChart;
 
-    const first = yield* chart.read("ETH", "1m", 100);
+    const first = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 });
     assert.equal(first, null);
 
-    const second = yield* chart.read("ETH", "1m", 100);
+    const second = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 });
     assert.equal(second, null);
     assert.isAtLeast(historyCalls, 2);
   }).pipe(testLayer()),
@@ -175,7 +199,7 @@ it.effect("maps the gateway pair into the view, dropping closeTime/volume/trades
     historyRead = Effect.succeed(history);
     const chart = yield* TradingMarketChart;
 
-    const view = yield* chart.read("ETH", "1m", 100);
+    const view = yield* chart.read({ market: "ETH", interval: "1m", maxBars: 100 });
     assert.notEqual(view, null);
     if (view === null) return;
 

@@ -71,6 +71,7 @@ import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { TradingMarketChart } from "./trading/TradingMarketChart.ts";
+import { isChartReadEntitled } from "./trading/chartReadEntitlement.ts";
 import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
 import { TradingTurnCoordinator } from "./trading/TradingTurnCoordinator.ts";
@@ -1343,26 +1344,25 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getTradingMarketChart,
             Effect.gen(function* () {
-              // The chart RPC must not become a free Hyperliquid proxy: only
-              // serve markets the caller has a non-terminal mission on. The
-              // environment is the trust boundary (the snapshot RPC does not
-              // bind to currentSession.subject either), so this checks market +
-              // non-terminal status and nothing more. Terminal missions
-              // (revoked/completed) are history and do not entitle a read.
+              // See `chartReadEntitlement`: a live read needs a running mission
+              // on the market, a windowed (post-mortem) read is entitled by any
+              // mission on it.
               const missions = yield* tradingMissionProjection.list();
-              const hasActiveMission = missions.some(
-                (m) =>
-                  m.market === input.market && m.status !== "revoked" && m.status !== "completed",
-              );
-              if (!hasActiveMission) {
+              if (!isChartReadEntitled(input, missions)) {
                 return yield* Effect.fail(
                   new OrchestrationGetSnapshotError({
-                    message: `No active mission for market ${input.market}`,
+                    message: `No mission for market ${input.market}`,
                   }),
                 );
               }
               const maxBars = 120;
-              const chart = yield* tradingMarketChart.read(input.market, input.interval, maxBars);
+              const chart = yield* tradingMarketChart.read({
+                market: input.market,
+                interval: input.interval,
+                maxBars,
+                ...(input.startTime !== undefined ? { startTime: input.startTime } : {}),
+                ...(input.endTime !== undefined ? { endTime: input.endTime } : {}),
+              });
               if (chart === null) {
                 return yield* Effect.fail(
                   new OrchestrationGetSnapshotError({

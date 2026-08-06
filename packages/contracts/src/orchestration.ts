@@ -530,10 +530,18 @@ export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThr
  * interval. The interval literal is inlined here (not shared from
  * `@t3tools/trading-contracts`) to keep `@t3tools/contracts` self-contained —
  * the same trade-off `trading.ts` makes for its own view-style literal unions.
+ *
+ * `startTime`/`endTime` are epoch millis bounding the candle window. Both
+ * omitted is the live chart: the most recent bars up to the server's cap. Both
+ * present is the post-mortem read a finished mission's card makes — the window
+ * its own trade occupied, which is not reachable by asking for "the latest N
+ * bars" once the mission has been closed for a while.
  */
 export const OrchestrationGetTradingMarketChartInput = Schema.Struct({
   market: TrimmedNonEmptyString,
   interval: Schema.Literals(["1m", "3m", "5m", "15m", "1h"]),
+  startTime: Schema.optional(Schema.Number),
+  endTime: Schema.optional(Schema.Number),
 });
 export type OrchestrationGetTradingMarketChartInput =
   typeof OrchestrationGetTradingMarketChartInput.Type;

@@ -31,6 +31,7 @@ import { OrchestrationEventStoreLive } from "../persistence/Layers/Orchestration
 import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers/OrchestrationCommandReceipts.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistryMock.ts";
+import { clearSessionProfile, isTradingThread } from "../provider/SessionProfile.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import type { HarnessRunRequest } from "./Schemas.ts";
 import { TradingMissionProjection } from "./TradingMissionProjection.ts";
@@ -280,6 +281,30 @@ const withAutoMissionArmed = <A, E, R>(body: Effect.Effect<A, E, R>) =>
       }),
   );
 
+/**
+ * A live mission bound to `threadId`, written straight to the domain.
+ *
+ * Stands in for the row a restart inherits: the mission survives in SQLite, but
+ * nothing in memory remembers that its thread is a trading thread.
+ */
+const seedMissionOnThread = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const missions = yield* TradingMissionService;
+    yield* missions.createMission({
+      missionId: MISSION_ID,
+      userId: "local",
+      tradingAccountId: "acct-trading-reactor",
+      instruction: "Trade ETH momentum",
+      allocatedCapitalUsd: 1_000,
+      harness: {
+        provider: "claude",
+        providerInstanceId: "claude",
+        threadId,
+        status: "available",
+      },
+    });
+  });
+
 /** Open a thread in the lab project, creating the project on first use. */
 const openLabThread = (threadId: ThreadId) =>
   Effect.gen(function* () {
@@ -346,6 +371,29 @@ it.layer(TestLayer)("auto-mission shortcut", (it) => {
 
       const projected = yield* projectedMission;
       assert.ok(Option.isNone(projected), "a thread outside the lab must not get a mission");
+    }).pipe(Effect.scoped),
+  );
+
+  // The profile registry is an in-memory Map, so a restart loses every binding
+  // while the mission rows survive. The rebind path returns early on a thread
+  // that already holds the mission — and if it returned without re-binding, the
+  // first wake after a restart would open with the unrestricted toolset.
+  it.effect("re-binds the trading profile when a live mission is seen on a cold start", () =>
+    Effect.gen(function* () {
+      yield* started;
+      yield* settle;
+
+      const labThread = ThreadId.make("thread-trading-reactor-coldstart");
+      yield* seedMissionOnThread(labThread);
+      // The process that bound the profile is gone; only the row survived.
+      clearSessionProfile(labThread);
+
+      yield* withAutoMissionArmed(openLabThread(labThread));
+
+      assert.isTrue(
+        isTradingThread(labThread),
+        "a thread still holding a live mission must be re-bound to the trading profile",
+      );
     }).pipe(Effect.scoped),
   );
 

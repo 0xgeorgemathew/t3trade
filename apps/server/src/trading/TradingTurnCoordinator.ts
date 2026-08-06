@@ -54,6 +54,7 @@ import {
 } from "@t3tools/trading-contracts/watch";
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { setSessionProfile } from "../provider/SessionProfile.ts";
 import {
   HarnessRunOutcome,
   HarnessRunRequest,
@@ -527,6 +528,15 @@ const make = Effect.gen(function* () {
         defaultTimeframe: POC_DEFAULT_TIMEFRAME,
       });
     }
+
+    // Every wake goes through here, so this is the one place that sees a live
+    // mission on every path. The profile registry is in-memory and the reactor
+    // only binds it where a mission is created, so setting it again here is what
+    // keeps a post-restart wake locked to the `mcp__t3-trade__*` toolset. It is
+    // idempotent — re-setting an already-bound thread is a no-op.
+    yield* Effect.sync(() =>
+      setSessionProfile({ threadId: ThreadId.make(input.threadId), kind: "trading" }),
+    );
 
     yield* engine.dispatch({
       type: "thread.turn.start",

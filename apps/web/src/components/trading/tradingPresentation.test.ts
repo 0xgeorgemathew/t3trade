@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   MISSION_STATUS_LABELS,
   deriveCompletionSummary,
+  deriveReviewMarkers,
   deriveMissionStrip,
   deriveRejectedOrder,
   deriveWakeupCard,
@@ -826,6 +827,44 @@ describe("visibleMissions", () => {
 
   it("has nothing to show before the first mission exists", () => {
     expect(visibleMissions([])).toEqual([]);
+  });
+});
+
+describe("deriveReviewMarkers", () => {
+  const fill = (avgFillPrice: number, direction?: string) => ({
+    avgFillPrice,
+    ...(direction === undefined ? {} : { direction }),
+  });
+
+  it("has nothing to mark when the mission never traded", () => {
+    expect(deriveReviewMarkers([])).toEqual({ entryPrice: null, exitPrice: null });
+  });
+
+  // The ordinary shape: one open, one close, newest first.
+  it("reads the open and close off a two-fill round trip", () => {
+    const markers = deriveReviewMarkers([fill(3_100, "Close Long"), fill(3_000, "Open Long")]);
+
+    expect(markers).toEqual({ entryPrice: 3_000, exitPrice: 3_100 });
+  });
+
+  // `direction` is optional on fills recorded before the field was carried, so
+  // position in the (newest-first) list has to stand in for it.
+  it("falls back to oldest/newest when no direction was recorded", () => {
+    const markers = deriveReviewMarkers([fill(3_100), fill(3_050), fill(3_000)]);
+
+    expect(markers).toEqual({ entryPrice: 3_000, exitPrice: 3_100 });
+  });
+
+  // A scale-in has several opens; the FIRST one is the entry, and the receipt
+  // list is newest-first, so it is the last matching entry in the array.
+  it("takes the earliest open and the latest close when a trade was scaled", () => {
+    const markers = deriveReviewMarkers([
+      fill(3_200, "Close Long"),
+      fill(3_050, "Open Long"),
+      fill(3_000, "Open Long"),
+    ]);
+
+    expect(markers).toEqual({ entryPrice: 3_000, exitPrice: 3_200 });
   });
 });
 

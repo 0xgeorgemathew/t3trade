@@ -490,7 +490,7 @@ const make = Effect.gen(function* () {
         // A wakeup that blows the budget is a composer defect, not a load to
         // push onto the provider: surface it here rather than letting a
         // truncated blob reach the resumed turn.
-        yield* Effect.fail(
+        return yield* Effect.fail(
           fail(
             "wakeup_too_large",
             `rendered ${text.length} > MAX_WAKEUP_CHARS ${MAX_WAKEUP_CHARS}`,

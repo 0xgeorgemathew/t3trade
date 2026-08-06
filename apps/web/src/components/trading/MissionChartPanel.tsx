@@ -408,6 +408,11 @@ function CollapsedRow({
  * spacer when the chart feed has no data (the figures would be stale or
  * absent); the `text-[11px] tabular-nums text-muted-foreground` matches the
  * Card meta style from MissionThreadPanel.
+ *
+ * Two of the figures need converting before they match their labels.
+ * `fundingRate8h` is a rate, not a percentage (0.000125 is 0.0125%/8h), and
+ * `openInterest` is in base units of the market, so a dollar figure is the mark
+ * price times the size.
  */
 function FooterRow({ data }: { readonly data: TradingMarketChartView | null }): ReactNode {
   if (data === null) {
@@ -423,10 +428,10 @@ function FooterRow({ data }: { readonly data: TradingMarketChartView | null }): 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-border/40 px-3 py-1 text-[11px] tabular-nums text-muted-foreground sm:px-4">
       <span>
-        Funding <span className="text-foreground">{data.fundingRate8h}%</span>/8h
+        Funding <span className="text-foreground">{(data.fundingRate8h * 100).toFixed(4)}%</span>/8h
       </span>
       <span>
-        OI <span className="text-foreground">{formatUsd(data.openInterest)}</span>
+        OI <span className="text-foreground">{formatUsd(data.openInterest * data.markPrice)}</span>
       </span>
       <span>
         24h vol <span className="text-foreground">{formatUsd(data.dayVolumeUsd)}</span>

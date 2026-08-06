@@ -238,9 +238,9 @@ describe("coerceToolArguments", () => {
       ).toEqual({ market: "ETH", interval: "1m", maxBars: 100 });
     });
 
-    it("coerces the nested numeric intent fields on trading_request_entry", () => {
+    it("coerces the nested numeric intent fields on trading_execute", () => {
       expect(
-        coerceToolArguments(schemaFor("trading_request_entry"), {
+        coerceToolArguments(schemaFor("trading_execute"), {
           expectedAuthorityVersion: "1",
           intent: {
             missionId: "mission_1",

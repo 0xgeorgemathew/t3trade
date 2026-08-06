@@ -314,7 +314,7 @@ export const TradingRegisterWatchTool = Tool.make("trading_register_watch", {
     "Register a typed market watch bound to the mission's current strategy version. Active on creation, fires EXACTLY ONCE when its predicate matches, then terminal; re-register to keep a level standing. " +
     "To MOVE a level pass `replacesWatchId`: cancel and new arm in one transaction. Result `replaced`=cancelled watch; if absent the named watch had fired/been superseded — what was armed is an ADDITION, not a swap. " +
     "Required fields per type (missing→rejected): `price_cross`(market,priceSource,direction,price); `candle_close`(market,INTERVAL 1m/3m/5m/15m/1h,direction,price); `order_update`(cloid); `position_update`(market); `pnl_above`(market,valueUsd); `pnl_below`(market,valueUsd SIGNED); `pnl_giveback`(market,drawdownUsd); `scheduled_reassessment`(runAt). " +
-    "`position_update`/`order_update` fire on a reconciled size change. `pnl_above`/`pnl_below` fire on reconciled unrealised PnL (≥/≤`valueUsd`); flat fires neither. `pnl_giveback` fires when PnL falls `drawdownUsd` from its high-water mark (see `peakUnrealisedPnl`/`drawdownFromPeakUsd` on trading_get_position). Runtime auto-arms a target `pnl_above` and a staleness `scheduled_reassessment` while holding. `missionId` optional.",
+    "`position_update`/`order_update` fire on a reconciled size change. `pnl_above`/`pnl_below` fire on reconciled unrealised PnL (≥/≤`valueUsd`); flat fires neither. `pnl_giveback` fires when PnL falls `drawdownUsd` from its high-water mark. Runtime auto-arms a target `pnl_above` and a staleness `scheduled_reassessment` while holding. `missionId` optional.",
   parameters: TradingRegisterWatchInput,
   success: TradingRegisterWatchResult,
   failure: TradingToolRejectedError,
@@ -359,7 +359,7 @@ export const TradingExecuteTool = Tool.make("trading_execute", {
     "Submit one execution intent for the bound mission; `intent.actionType` selects the step. " +
     "`open`/`scale_in` start/add — REFUSED without a valid `intent.stop` (stopPrice on the losing side, plus plannedLossAtStopUsd). `reduce` removes part (reduce-only); `close` flattens regardless of size. `cancel` withdraws a resting order by `intent.targetCloid` (a publish supersedes watches but NOT exchange orders). `modify_stop` moves protection to `intent.stop.stopPrice` (replacement confirmed before old stop cancelled; wrong-side-of-mid REFUSED, escalates to §17.5 emergency close). The last four need no stop. " +
     "For `marketable_ioc` the SERVER prices the crossing limit (BBO + 50 bps default) — `intent.limitPrice` feeds preview only (still required, >0, must cross); result reports placed `limitPrice` and `avgFillPrice`. " +
-    "Rejection codes: `mission_active`, `strategy_version_current`, `market_is_eth`, `no_conflicting_execution_pending` (see `pendingExecutions[]` on trading_get_mission). Outcomes: `filled`/`cancelled`/`rejected`/`failed` terminal; `accepted` rests on book (`orderResults`); `succeeded`=`cancel`/`modify_stop`; `submitted`=unknown. `reduce`/`close` report `remainingSize`.",
+    "Rejection codes: `mission_active`, `strategy_version_current`, `market_is_eth`, `no_conflicting_execution_pending`. Outcomes: `filled`/`cancelled`/`rejected`/`failed` terminal; `accepted` rests on book (`orderResults`); `succeeded`=`cancel`/`modify_stop`; `submitted`=unknown. `reduce`/`close` report `remainingSize`.",
   parameters: TradingRequestEntryInput,
   success: TradingRequestEntryResult,
   failure: TradingToolRejectedError,
