@@ -90,8 +90,17 @@ export const ChatHeader = memo(function ChatHeader({
     primaryEnvironmentId,
   });
   return (
-    <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
-      <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
+    // Three regions, not two: the mission pill sits in a centre column of its
+    // own so it reads as a peer of the thread title rather than as something
+    // trailing it. The column collapses to nothing when no mission is bound, so
+    // a non-trading thread's layout is unchanged.
+    <div
+      className={cn(
+        "@container/header-actions grid min-w-0 flex-1 items-center gap-2 sm:gap-3",
+        missionSlot ? "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" : "grid-cols-1",
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-2 overflow-hidden sm:gap-3">
         {/* The project always leads the header: knowing which project a
             thread lives in is priority zero, and the thread title alone
             doesn't answer it. */}
@@ -135,8 +144,8 @@ export const ChatHeader = memo(function ChatHeader({
           />
           <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
         </Tooltip>
-        {missionSlot}
       </div>
+      {missionSlot ? <div className="flex min-w-0 justify-self-center">{missionSlot}</div> : null}
       <div
         data-chat-header-actions
         className={cn(

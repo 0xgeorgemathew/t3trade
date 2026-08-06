@@ -166,7 +166,7 @@ import {
 } from "~/projectScripts";
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { useTradingMissions } from "~/lib/tradingMissionsState";
-import { MissionChartPanel } from "./trading/MissionChartPanel";
+import { MissionLivePanel } from "./trading/MissionLivePanel";
 import { MissionComposerControls } from "./trading/MissionComposerControls";
 import { MissionHeaderPill } from "./trading/MissionHeaderPill";
 import { MissionThreadBanners, MissionThreadCards } from "./trading/MissionThreadPanel";
@@ -5762,7 +5762,7 @@ function ChatViewContent(props: ChatViewProps) {
         {boundMission && (
           <>
             <MissionThreadBanners mission={boundMission} feedError={missionFeedError} />
-            <MissionChartPanel mission={boundMission} environmentId={environmentId} />
+            <MissionLivePanel mission={boundMission} environmentId={environmentId} />
           </>
         )}
         {/* Main content area with optional plan sidebar */}

@@ -1219,6 +1219,38 @@ export function deriveWatchConditions(mission: {
   return { rows, nextReassessmentAt };
 }
 
+/**
+ * The armed price levels a chart can draw, nearest-first is the caller's job.
+ *
+ * Only the two watch types that carry a price level appear: a `pnl_above` or a
+ * `scheduled_reassessment` has no y on a price chart, and drawing one at an
+ * invented level would be worse than the text row that already reports it.
+ */
+export function deriveChartConditions(mission: {
+  readonly watches: ReadonlyArray<PersistedWatch>;
+}): ReadonlyArray<{
+  readonly price: number;
+  readonly direction: "above" | "below";
+  readonly met: boolean;
+}> {
+  const drawable: Array<{
+    readonly price: number;
+    readonly direction: "above" | "below";
+    readonly met: boolean;
+  }> = [];
+  for (const persisted of mission.watches) {
+    if (persisted.status !== "active" && persisted.status !== "triggered") continue;
+    const watch = persisted.watch;
+    if (watch.type !== "price_cross" && watch.type !== "candle_close") continue;
+    drawable.push({
+      price: watch.price,
+      direction: watch.direction,
+      met: persisted.status === "triggered",
+    });
+  }
+  return drawable;
+}
+
 /** "2m 30s" from a duration in millis. */
 export function formatDuration(millis: number): string {
   const totalSeconds = Math.max(0, Math.round(millis / 1_000));

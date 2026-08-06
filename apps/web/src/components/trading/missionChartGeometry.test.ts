@@ -3,12 +3,15 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   CHART_VIEWBOX_HEIGHT,
   DOMAIN_PADDING_RATIO,
+  GUTTER_LABEL_MIN_SEPARATION,
+  MAX_DRAWN_CONDITIONS,
   MIN_CANDLES_FOR_SVG,
   PLOT_WIDTH,
   computeChartGeometry,
   deriveEntryFillAtMillis,
   deriveProgressToTarget,
   deriveTargetPrice,
+  layoutGutterLabels,
 } from "./missionChartGeometry";
 
 // ---------------------------------------------------------------------------
@@ -476,5 +479,206 @@ describe("deriveEntryFillAtMillis", () => {
       { direction: "Buy", tradedAt: "2026-08-02T11:00:00.000Z" }, // spot, not an open
     ];
     expect(deriveEntryFillAtMillis(fills)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// layoutGutterLabels
+// ---------------------------------------------------------------------------
+
+describe("layoutGutterLabels", () => {
+  // The reported failure: entry 1,859.43, mark 1,869.25 and a close stop all
+  // landed within a few viewBox units and rendered on top of each other.
+  it("separates labels that would overlap", () => {
+    const laid = layoutGutterLabels([
+      { y: 80, priority: 0 },
+      { y: 82, priority: 2 },
+      { y: 84, priority: 3 },
+    ]);
+
+    for (let i = 1; i < laid.length; i += 1) {
+      expect(laid[i]!.labelY - laid[i - 1]!.labelY).toBeGreaterThanOrEqual(
+        GUTTER_LABEL_MIN_SEPARATION - 1e-9,
+      );
+    }
+  });
+
+  // The tag the operator is reading right now must not be the one that moves.
+  it("keeps the highest-priority label on its own level", () => {
+    const laid = layoutGutterLabels([
+      { y: 80, priority: 0 },
+      { y: 82, priority: 5 },
+    ]);
+    const mark = laid.find((tag) => tag.priority === 0);
+    expect(mark?.labelY).toBe(80);
+  });
+
+  it("preserves top-to-bottom order", () => {
+    const laid = layoutGutterLabels([
+      { y: 20, priority: 3 },
+      { y: 21, priority: 1 },
+      { y: 22, priority: 2 },
+      { y: 23, priority: 5 },
+    ]);
+    const ys = laid.map((tag) => tag.labelY);
+    expect([...ys].sort((a, b) => a - b)).toEqual(ys);
+  });
+
+  it("keeps labels inside the frame", () => {
+    const laid = layoutGutterLabels([
+      { y: 0, priority: 1 },
+      { y: 1, priority: 2 },
+      { y: CHART_VIEWBOX_HEIGHT, priority: 3 },
+      { y: CHART_VIEWBOX_HEIGHT - 1, priority: 4 },
+    ]);
+    for (const tag of laid) {
+      expect(tag.labelY).toBeGreaterThanOrEqual(0);
+      expect(tag.labelY).toBeLessThanOrEqual(CHART_VIEWBOX_HEIGHT);
+    }
+  });
+
+  it("has nothing to lay out for an empty set", () => {
+    expect(layoutGutterLabels([])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// domain clamping and condition levels
+// ---------------------------------------------------------------------------
+
+describe("computeChartGeometry domain sanity", () => {
+  const base = 1_700_000_000_000;
+  /** Ten candles inside a 2-unit band: the price action a far target used to flatten. */
+  const tightCandles = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => ({
+    openTime: base + i * 60_000,
+    open: 100,
+    high: 101,
+    low: 99,
+    close: i % 2 === 0 ? 100.5 : 99.5,
+  }));
+
+  const geometryWith = (overrides: {
+    readonly targetPrice?: number | null;
+    readonly conditions?: ReadonlyArray<{
+      readonly price: number;
+      readonly direction: "above" | "below";
+      readonly met: boolean;
+    }>;
+  }) =>
+    computeChartGeometry({
+      candles: tightCandles,
+      entryPrice: null,
+      stopPrice: null,
+      targetPrice: overrides.targetPrice ?? null,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: 100,
+      ...(overrides.conditions === undefined ? {} : { conditions: overrides.conditions }),
+    });
+
+  it("does not let a far target flatten the candle series", () => {
+    const near = geometryWith({})!;
+    const far = geometryWith({ targetPrice: 140 })!;
+
+    // The domain is unchanged: the target is out of reach, so it is not an
+    // anchor and the price action keeps its resolution.
+    expect(far.domainMin).toBeCloseTo(near.domainMin, 9);
+    expect(far.domainMax).toBeCloseTo(near.domainMax, 9);
+
+    const target = far.levels.find((level) => level.kind === "target");
+    expect(target?.offScale).toBe("above");
+    // Pinned at the top edge, with the true price still on the tag.
+    expect(target?.y).toBe(0);
+    expect(target?.price).toBe(140);
+  });
+
+  it("still anchors a target that is within reach of the candles", () => {
+    const geometry = geometryWith({ targetPrice: 102 })!;
+    const target = geometry.levels.find((level) => level.kind === "target");
+    expect(target?.offScale).toBeNull();
+    expect(geometry.domainMax).toBeGreaterThan(102);
+  });
+
+  it("draws armed conditions as their own levels, with met state", () => {
+    const geometry = geometryWith({
+      conditions: [
+        { price: 100.8, direction: "above", met: false },
+        { price: 99.2, direction: "below", met: true },
+      ],
+    })!;
+
+    const kinds = geometry.levels.map((level) => level.kind);
+    expect(kinds).toContain("condition_above");
+    expect(kinds).toContain("condition_below");
+    expect(geometry.levels.find((level) => level.kind === "condition_below")?.met).toBe(true);
+    expect(geometry.droppedConditions).toBe(0);
+  });
+
+  it("draws only the conditions nearest the mark and counts the rest", () => {
+    const geometry = geometryWith({
+      conditions: [
+        { price: 100.1, direction: "above", met: false },
+        { price: 100.2, direction: "above", met: false },
+        { price: 99.9, direction: "below", met: false },
+        { price: 99.8, direction: "below", met: false },
+        { price: 130, direction: "above", met: false },
+        { price: 70, direction: "below", met: false },
+      ],
+    })!;
+
+    const drawn = geometry.levels.filter((level) => level.kind.startsWith("condition_"));
+    expect(drawn).toHaveLength(MAX_DRAWN_CONDITIONS);
+    expect(geometry.droppedConditions).toBe(2);
+    // The two far ones are the ones dropped.
+    expect(drawn.map((level) => level.price).sort((a, b) => a - b)).toEqual([
+      99.8, 99.9, 100.1, 100.2,
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gutter tags
+// ---------------------------------------------------------------------------
+
+describe("computeChartGeometry gutter tags", () => {
+  const base = 1_700_000_000_000;
+  const candles = [0, 1, 2, 3].map((i) => ({
+    openTime: base + i * 60_000,
+    open: 1_860,
+    high: 1_872,
+    low: 1_856,
+    close: 1_865,
+  }));
+
+  it("folds a near-identical entry into the mark tag rather than nudging it", () => {
+    const geometry = computeChartGeometry({
+      candles,
+      entryPrice: 1_869.2,
+      stopPrice: null,
+      targetPrice: null,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: 1_869.25,
+    })!;
+
+    const tags = geometry.gutterTags;
+    expect(tags.some((tag) => tag.kind === "entry")).toBe(false);
+    const mark = tags.find((tag) => tag.kind === "mark");
+    expect(mark?.mergedPrice).toBe(1_869.2);
+  });
+
+  it("keeps a distinct entry as its own tag", () => {
+    const geometry = computeChartGeometry({
+      candles,
+      entryPrice: 1_857,
+      stopPrice: null,
+      targetPrice: null,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: 1_871,
+    })!;
+
+    expect(geometry.gutterTags.some((tag) => tag.kind === "entry")).toBe(true);
+    expect(geometry.gutterTags.find((tag) => tag.kind === "mark")?.mergedPrice).toBeUndefined();
   });
 });

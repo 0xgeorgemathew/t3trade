@@ -24,23 +24,97 @@ export const DOMAIN_PADDING_RATIO = 0.08;
 /** Fewer candles than this and there is no chart to draw. */
 export const MIN_CANDLES_FOR_SVG = 2;
 
+/**
+ * How far from the candle window's midpoint a level may sit and still anchor
+ * the y-domain, as a multiple of the candle range.
+ *
+ * A 20x target can sit far enough away that including it squashes an hour of
+ * 1m price action into a band a few pixels tall — the chart then "does not
+ * scale", which is exactly the complaint. Beyond this reach the level is
+ * excluded from the domain and pinned at the frame edge with a chevron
+ * instead, the same idiom the clamped mark dot already uses.
+ */
+export const DOMAIN_LEVEL_REACH_RATIO = 1.5;
+
+/** Minimum vertical gap between two gutter tags, in viewBox units. */
+export const GUTTER_LABEL_MIN_SEPARATION = 14;
+
+/**
+ * Below this gap the entry tag is folded into the mark tag rather than nudged
+ * away from it. Two tags 3 units apart reading 1,869.25 and 1,859.43 are two
+ * numbers fighting; `1,869.25 (entry 1,859.43)` is one fact.
+ */
+export const GUTTER_LABEL_MERGE_DISTANCE = 6;
+
+/** How many armed condition levels the chart draws before it says "+N more". */
+export const MAX_DRAWN_CONDITIONS = 4;
+
 /** A point in viewBox space. */
 export interface ChartPoint {
   readonly x: number;
   readonly y: number;
 }
 
-/** Which of the trade's prices a horizontal level represents. */
-export type ChartLevelKind = "entry" | "stop" | "target" | "liquidation";
+/**
+ * Which of the chart's prices a horizontal level represents.
+ *
+ * The two `condition_*` kinds are the armed watches a flat mission is waiting
+ * on — the levels that decide whether it enters at all. They were invisible
+ * before the panel drew a chart pre-position, which made "waiting" look like
+ * "idle".
+ */
+export type ChartLevelKind =
+  | "entry"
+  | "stop"
+  | "target"
+  | "liquidation"
+  | "condition_above"
+  | "condition_below";
 
 /** A horizontal price level drawn across the plot. */
 export interface ChartLevel {
   readonly kind: ChartLevelKind;
   readonly price: number;
-  /** ViewBox y position. */
+  /** ViewBox y position, clamped into the frame when `offScale` is set. */
   readonly y: number;
   /** Whether this price falls inside the padded y-domain. */
   readonly inFrame: boolean;
+  /**
+   * Which edge the level is pinned to when it sits outside the domain.
+   *
+   * A stop or target far enough away to flatten the candle series is excluded
+   * from the domain and drawn at the edge with a chevron, rather than dragged
+   * into the domain and taking the price action's resolution with it.
+   */
+  readonly offScale: "above" | "below" | null;
+  /** Whether an armed condition's predicate is already satisfied. */
+  readonly met?: boolean;
+}
+
+/** One armed price condition the chart draws as a level. */
+export interface ChartCondition {
+  readonly price: number;
+  readonly direction: "above" | "below";
+  readonly met: boolean;
+}
+
+/**
+ * A right-gutter price tag, after collision resolution.
+ *
+ * `y` is where the level actually sits; `labelY` is where its tag is drawn.
+ * When they differ the renderer draws a leader line between them, so a nudged
+ * tag still points at its own level.
+ */
+export interface GutterTag {
+  readonly key: string;
+  readonly kind: ChartLevelKind | "mark";
+  readonly y: number;
+  readonly labelY: number;
+  readonly price: number;
+  readonly offScale: "above" | "below" | null;
+  readonly met?: boolean;
+  /** Set when the entry tag merged into the mark tag; the entry price. */
+  readonly mergedPrice?: number;
 }
 
 /**
@@ -71,6 +145,10 @@ export interface ChartGeometry {
   readonly levels: ReadonlyArray<ChartLevel>;
   /** Pinned at the right edge of the plot area; null when markPrice is null. */
   readonly markPoint: ChartPoint | null;
+  /** Every right-gutter price tag, already resolved against collisions. */
+  readonly gutterTags: ReadonlyArray<GutterTag>;
+  /** Armed conditions the chart did not draw, so the panel can say how many. */
+  readonly droppedConditions: number;
 }
 
 /** Input shape for {@link computeChartGeometry}. */
@@ -91,6 +169,12 @@ export interface ComputeChartGeometryInput {
   /** Epoch millis; splits the line into pre/post segments. */
   readonly entryTime: number | null;
   readonly markPrice: number | null;
+  /**
+   * Armed price conditions, drawn while the mission is flat and waiting. The
+   * four nearest the mark are drawn; the rest are counted in
+   * `droppedConditions` for the panel to report as text.
+   */
+  readonly conditions?: ReadonlyArray<ChartCondition>;
 }
 
 /**
@@ -162,65 +246,259 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-/** Numeric levels that should anchor the y-domain (candles ∪ entry/stop/target). */
-function collectDomainAnchors(
-  candles: ReadonlyArray<{ readonly open?: number; readonly high: number; readonly low: number }>,
-  entryPrice: number | null,
-  stopPrice: number | null,
-  targetPrice: number | null,
-): number[] {
-  const anchors: number[] = [];
+/**
+ * The candle window's own range, before any level is considered.
+ *
+ * Everything else about the y-domain is decided against this: a level within
+ * reach of it joins the domain, a level beyond it is pinned at an edge.
+ */
+function candleBounds(candles: ReadonlyArray<{ readonly high: number; readonly low: number }>): {
+  readonly min: number;
+  readonly max: number;
+} {
+  let min = candles[0]!.low;
+  let max = candles[0]!.high;
   for (const candle of candles) {
-    anchors.push(candle.high, candle.low);
+    if (candle.low < min) min = candle.low;
+    if (candle.high > max) max = candle.high;
   }
-  // Liquidation is deliberately EXCLUDED: at 20x it sits far enough away that
-  // including it flattens the price action into a band. It is drawn only when
-  // it happens to land inside the padded domain (see buildLevels).
-  if (entryPrice !== null) anchors.push(entryPrice);
-  if (stopPrice !== null) anchors.push(stopPrice);
-  if (targetPrice !== null) anchors.push(targetPrice);
+  return { min, max };
+}
+
+/**
+ * The levels near enough to the price action to anchor the domain.
+ *
+ * Liquidation is never an anchor (at 20x it is always far), and neither is the
+ * mark (it is polled far more often than the candles). Everything else joins
+ * only while it sits within `DOMAIN_LEVEL_REACH_RATIO` candle-ranges of the
+ * window's midpoint.
+ */
+function collectDomainAnchors(
+  candles: ReadonlyArray<{ readonly high: number; readonly low: number }>,
+  candidates: ReadonlyArray<number>,
+): number[] {
+  const bounds = candleBounds(candles);
+  const anchors: number[] = [bounds.min, bounds.max];
+  const mid = (bounds.min + bounds.max) / 2;
+  // A dead-flat window has no range to scale by; fall back to a tenth of a
+  // percent of the price so "near" still means something.
+  const range = bounds.max - bounds.min || Math.max(1, Math.abs(mid) * 0.001);
+  const reach = range * DOMAIN_LEVEL_REACH_RATIO;
+  for (const price of candidates) {
+    if (Math.abs(price - mid) <= reach) anchors.push(price);
+  }
   return anchors;
 }
 
-/** Build the level list, skipping liquidation when it is out of frame. */
-function buildLevels(
-  yForPrice: (p: number) => number,
-  domainMin: number,
-  domainMax: number,
-  entryPrice: number | null,
-  stopPrice: number | null,
-  targetPrice: number | null,
-  liquidationPrice: number | null,
-): ChartLevel[] {
+/** Hold a set of gutter tags apart, without letting them leave the frame. */
+export function layoutGutterLabels<T extends { readonly y: number; readonly priority: number }>(
+  labels: ReadonlyArray<T>,
+): ReadonlyArray<T & { readonly labelY: number }> {
+  if (labels.length === 0) return [];
+
+  // Top to bottom, with the more important tag first among ties: the sweep
+  // below preserves this order, so tags never cross their own levels.
+  const placed = labels
+    .map((label) => ({ ...label, labelY: label.y }))
+    .sort((a, b) => a.y - b.y || a.priority - b.priority);
+
+  // Push apart, letting the lower-priority tag of each too-close pair do the
+  // moving. A handful of passes settles any realistic set; the clamping sweeps
+  // below guarantee the invariant regardless.
+  for (let pass = 0; pass < placed.length + 1; pass += 1) {
+    let moved = false;
+    for (let i = 0; i < placed.length - 1; i += 1) {
+      const above = placed[i]!;
+      const below = placed[i + 1]!;
+      const deficit = GUTTER_LABEL_MIN_SEPARATION - (below.labelY - above.labelY);
+      if (deficit <= 0) continue;
+      moved = true;
+      if (above.priority < below.priority) {
+        below.labelY += deficit;
+      } else if (below.priority < above.priority) {
+        above.labelY -= deficit;
+      } else {
+        above.labelY -= deficit / 2;
+        below.labelY += deficit / 2;
+      }
+    }
+    if (!moved) break;
+  }
+
+  // Two sweeps close the loop: forward pushes everything below the top edge
+  // apart, backward pulls everything above the bottom edge back in.
+  for (const tag of placed) {
+    tag.labelY = clamp(tag.labelY, 0, CHART_VIEWBOX_HEIGHT);
+  }
+  for (let i = 1; i < placed.length; i += 1) {
+    const previous = placed[i - 1]!;
+    const current = placed[i]!;
+    current.labelY = Math.max(current.labelY, previous.labelY + GUTTER_LABEL_MIN_SEPARATION);
+  }
+  for (let i = placed.length - 2; i >= 0; i -= 1) {
+    const next = placed[i + 1]!;
+    const current = placed[i]!;
+    current.labelY = Math.min(
+      current.labelY,
+      Math.min(next.labelY - GUTTER_LABEL_MIN_SEPARATION, CHART_VIEWBOX_HEIGHT),
+    );
+  }
+
+  return placed;
+}
+
+/**
+ * Which tag wins when two would overlap. Lower is more important.
+ *
+ * The mark is what the operator is reading right now; the entry is what every
+ * other number is measured from. A condition is the least urgent of the set —
+ * it is a level nothing has reached yet.
+ */
+const GUTTER_PRIORITY: Record<ChartLevelKind | "mark", number> = {
+  mark: 0,
+  entry: 1,
+  stop: 2,
+  target: 3,
+  liquidation: 4,
+  condition_above: 5,
+  condition_below: 5,
+};
+
+/**
+ * Build the gutter tags for a set of levels plus the mark, resolving overlaps.
+ *
+ * The entry/mark merge is handled before the layout runs: two tags a few units
+ * apart reading nearly the same price are one fact, not two, and nudging them
+ * apart only makes the chart look like it has more levels than it has.
+ */
+function buildGutterTags(
+  levels: ReadonlyArray<ChartLevel>,
+  markPoint: ChartPoint | null,
+  markPrice: number | null,
+): GutterTag[] {
+  const entry = levels.find((level) => level.kind === "entry") ?? null;
+  const mergeEntry =
+    entry !== null &&
+    markPoint !== null &&
+    markPrice !== null &&
+    Math.abs(entry.y - markPoint.y) < GUTTER_LABEL_MERGE_DISTANCE;
+
+  const candidates: Array<{
+    readonly key: string;
+    readonly kind: ChartLevelKind | "mark";
+    readonly y: number;
+    readonly price: number;
+    readonly offScale: "above" | "below" | null;
+    readonly met?: boolean;
+    readonly mergedPrice?: number;
+    readonly priority: number;
+  }> = [];
+
+  if (markPoint !== null && markPrice !== null) {
+    candidates.push({
+      key: "mark",
+      kind: "mark",
+      y: markPoint.y,
+      price: markPrice,
+      offScale: null,
+      ...(mergeEntry && entry !== null ? { mergedPrice: entry.price } : {}),
+      priority: GUTTER_PRIORITY.mark,
+    });
+  }
+
+  levels.forEach((level, index) => {
+    if (mergeEntry && level.kind === "entry") return;
+    candidates.push({
+      key: `${level.kind}-${index}`,
+      kind: level.kind,
+      y: level.y,
+      price: level.price,
+      offScale: level.offScale,
+      ...(level.met === undefined ? {} : { met: level.met }),
+      priority: GUTTER_PRIORITY[level.kind],
+    });
+  });
+
+  return layoutGutterLabels(candidates).map(({ priority: _priority, ...tag }) => tag);
+}
+
+/** Build the level list, pinning anything outside the domain to an edge. */
+function buildLevels(input: {
+  readonly yForPrice: (p: number) => number;
+  readonly domainMin: number;
+  readonly domainMax: number;
+  readonly entryPrice: number | null;
+  readonly stopPrice: number | null;
+  readonly targetPrice: number | null;
+  readonly liquidationPrice: number | null;
+  readonly conditions: ReadonlyArray<ChartCondition>;
+}): ChartLevel[] {
   const levels: ChartLevel[] = [];
 
-  const pushLevel = (kind: ChartLevelKind, price: number): void => {
-    const inFrame = price >= domainMin && price <= domainMax;
-    levels.push({ kind, price, y: yForPrice(price), inFrame });
+  const pushLevel = (kind: ChartLevelKind, price: number, met?: boolean): void => {
+    const offScale: "above" | "below" | null =
+      price > input.domainMax ? "above" : price < input.domainMin ? "below" : null;
+    levels.push({
+      kind,
+      price,
+      // Pinned at the edge when off-scale, so the line and its tag stay on
+      // screen and the chevron says which way the real price lies.
+      y:
+        offScale === "above"
+          ? 0
+          : offScale === "below"
+            ? CHART_VIEWBOX_HEIGHT
+            : input.yForPrice(price),
+      inFrame: offScale === null,
+      offScale,
+      ...(met === undefined ? {} : { met }),
+    });
   };
 
-  // Entry/stop/target always participate in the domain (see collectDomainAnchors),
-  // so they are always in frame and always drawn.
-  if (entryPrice !== null) pushLevel("entry", entryPrice);
-  if (stopPrice !== null) pushLevel("stop", stopPrice);
-  if (targetPrice !== null) pushLevel("target", targetPrice);
+  if (input.entryPrice !== null) pushLevel("entry", input.entryPrice);
+  if (input.stopPrice !== null) pushLevel("stop", input.stopPrice);
+  if (input.targetPrice !== null) pushLevel("target", input.targetPrice);
 
-  // Liquidation is the exception: it is NOT in the domain, so only draw it when
-  // it happens to fall inside the padded range. Otherwise skip entirely — a
-  // liquidation 10% away on a 20x book is noise on a price chart.
-  if (liquidationPrice !== null) {
-    const inFrame = liquidationPrice >= domainMin && liquidationPrice <= domainMax;
-    if (inFrame) {
-      levels.push({
-        kind: "liquidation",
-        price: liquidationPrice,
-        y: yForPrice(liquidationPrice),
-        inFrame: true,
-      });
-    }
+  // Liquidation is the exception: it is never a domain anchor, and a
+  // liquidation 10% away on a 20x book is noise rather than a level, so it is
+  // drawn only when it happens to fall inside the frame.
+  if (input.liquidationPrice !== null) {
+    const inFrame =
+      input.liquidationPrice >= input.domainMin && input.liquidationPrice <= input.domainMax;
+    if (inFrame) pushLevel("liquidation", input.liquidationPrice);
+  }
+
+  for (const condition of input.conditions) {
+    pushLevel(
+      condition.direction === "above" ? "condition_above" : "condition_below",
+      condition.price,
+      condition.met,
+    );
   }
 
   return levels;
+}
+
+/**
+ * The armed conditions worth drawing: the four nearest the mark.
+ *
+ * A mission can arm a dozen levels across several republishes. Drawing them
+ * all turns the plot into a ladder and hides the price line inside it, so the
+ * near ones are drawn and the rest are counted.
+ */
+function selectConditions(
+  conditions: ReadonlyArray<ChartCondition>,
+  markPrice: number | null,
+): { readonly drawn: ReadonlyArray<ChartCondition>; readonly dropped: number } {
+  if (conditions.length <= MAX_DRAWN_CONDITIONS) return { drawn: conditions, dropped: 0 };
+  const reference = markPrice ?? conditions[0]!.price;
+  const nearest = [...conditions].sort(
+    (a, b) => Math.abs(a.price - reference) - Math.abs(b.price - reference),
+  );
+  return {
+    drawn: nearest.slice(0, MAX_DRAWN_CONDITIONS),
+    dropped: conditions.length - MAX_DRAWN_CONDITIONS,
+  };
 }
 
 /**
@@ -237,8 +515,18 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
 
   if (candles.length < MIN_CANDLES_FOR_SVG) return null;
 
-  // --- y-domain: candle range ∪ trade levels, padded. ----------------------
-  const anchors = collectDomainAnchors(candles, entryPrice, stopPrice, targetPrice);
+  const { drawn: conditions, dropped: droppedConditions } = selectConditions(
+    input.conditions ?? [],
+    markPrice,
+  );
+
+  // --- y-domain: candle range ∪ the levels near enough to it, padded. ------
+  const anchors = collectDomainAnchors(candles, [
+    ...(entryPrice === null ? [] : [entryPrice]),
+    ...(stopPrice === null ? [] : [stopPrice]),
+    ...(targetPrice === null ? [] : [targetPrice]),
+    ...conditions.map((condition) => condition.price),
+  ]);
   let rawMin = anchors[0]!;
   let rawMax = anchors[0]!;
   for (const value of anchors) {
@@ -298,7 +586,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
   }
 
   // --- levels --------------------------------------------------------------
-  const levels = buildLevels(
+  const levels = buildLevels({
     yForPrice,
     domainMin,
     domainMax,
@@ -306,7 +594,8 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     stopPrice,
     targetPrice,
     liquidationPrice,
-  );
+    conditions,
+  });
 
   // --- mark point: pinned at the right edge of the plot. -------------------
   //
@@ -335,5 +624,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     postEntryPoints,
     levels,
     markPoint,
+    gutterTags: buildGutterTags(levels, markPoint, markPrice),
+    droppedConditions,
   };
 }

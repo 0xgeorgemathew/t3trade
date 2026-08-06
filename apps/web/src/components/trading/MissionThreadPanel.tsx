@@ -40,8 +40,6 @@ import {
   deriveEffectiveLeverage,
   deriveFillSlippagePercent,
   deriveRejectedOrder,
-  deriveStrategyPlan,
-  deriveWatchConditions,
   formatDuration,
   formatLeverage,
   formatPrice,
@@ -54,12 +52,9 @@ import {
   readFillLifecycle,
   readIntentLifecycle,
   shouldShowMissionStrip,
-  type ArmedConditions,
   type CompletionSummary,
   type PositionLifecycle,
   type RejectedOrderNotice,
-  type StrategyPlan,
-  type WatchConditionRow,
 } from "./tradingPresentation";
 
 type Tone = "profit" | "loss" | undefined;
@@ -368,189 +363,6 @@ function Cell({ label, value, tone }: { label: string; value: string; tone?: Ton
 }
 
 /**
- * The published trading plan, as a display-only timeline card.
- *
- * Appears the moment a strategy is published ({@link MissionThreadCards} gates
- * on `mission.strategy !== null`) and stays for the life of the mission: the
- * plan is the thing every later surface — order intent, fills, position — is
- * executing against, so it leads the card stack. It carries no controls: there
- * is no arm, edit, or reject here, because the plan is already published and the
- * card's only job is to show what was published.
- *
- * The interesting field is the target basis — the harness showing its work — so
- * it sits behind a disclosure rather than crowding the field rows.
- */
-function StrategyPlanCard({ plan }: { plan: StrategyPlan }) {
-  return (
-    <Card
-      title="Plan"
-      badge={
-        <>
-          <Chip>v{plan.version}</Chip>
-          <Chip>{plan.modeLabel}</Chip>
-        </>
-      }
-    >
-      <FieldRows>
-        {plan.thesis === null ? null : <Field label="Thesis" value={plan.thesis} />}
-        {plan.regime === null ? null : <Field label="Regime" value={plan.regime} />}
-        {plan.entryTriggers.length === 0 ? null : (
-          <Field label="Entry trigger" value={plan.entryTriggers.join("; ")} />
-        )}
-        {plan.orderType === null ? null : <Field label="Order type" value={plan.orderType} />}
-        {plan.initialSizeUsd === null ? null : (
-          <Field label="Initial size" value={formatUsd(plan.initialSizeUsd)} />
-        )}
-        {plan.stopSummary === null ? null : <Field label="Stop" value={plan.stopSummary} />}
-        <Field label="Target" value={formatUsd(plan.targetUsd)} />
-        {plan.maxLossUsd === null ? null : (
-          <Field label="Max loss" value={formatUsd(plan.maxLossUsd)} />
-        )}
-        <Field
-          label="Scaling"
-          value={`Scale-in ${plan.scaleInAllowed ? "allowed" : "not allowed"} · Partial exit ${
-            plan.partialReductionAllowed ? "allowed" : "not allowed"
-          }`}
-        />
-        {plan.invalidation.length === 0 ? null : (
-          <Field label="Invalidation" value={plan.invalidation.join("; ")} />
-        )}
-      </FieldRows>
-      {plan.targetRationale === null && plan.basis === null ? null : (
-        <details className="border-t border-border/40 px-3 py-2 text-xs">
-          <summary className="cursor-pointer text-muted-foreground select-none">
-            Why this target
-          </summary>
-          <div className="mt-2 space-y-1.5">
-            {plan.targetRationale === null ? null : (
-              <p className="whitespace-pre-wrap text-foreground">{plan.targetRationale}</p>
-            )}
-            {plan.basis === null ? null : (
-              <div className="flex flex-wrap gap-x-6 gap-y-1 text-muted-foreground">
-                {plan.basis.measurement === null ? null : (
-                  <span>
-                    Measurement{" "}
-                    <span className="tabular-nums text-foreground">{plan.basis.measurement}</span>
-                  </span>
-                )}
-                {plan.basis.lookback === null ? null : (
-                  <span>
-                    Lookback{" "}
-                    <span className="tabular-nums text-foreground">{plan.basis.lookback}</span>
-                  </span>
-                )}
-                {plan.basis.hold === null ? null : (
-                  <span>
-                    Hold <span className="tabular-nums text-foreground">{plan.basis.hold}</span>
-                  </span>
-                )}
-                {plan.basis.hitRate === null ? null : (
-                  <span>
-                    Hit rate{" "}
-                    <span className="tabular-nums text-foreground">{plan.basis.hitRate}</span>
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-        </details>
-      )}
-    </Card>
-  );
-}
-
-/**
- * The armed-conditions checklist: the prototype's state 04.
- *
- * Renders while a flat mission holds authority and has at least one active
- * watch — the "armed, pre-entry" window between publishing a plan and the
- * entry conditions actually firing. Each row reads one watch back as the
- * predicate, the value the evaluator last observed for it, and its threshold, so
- * the operator sees the live number a condition is measuring against rather than
- * a ticked/empty checkbox alone. The header carries the countdown to the next
- * scheduled reassessment, the wake that is coming on a clock rather than on a
- * level.
- *
- * Reuses {@link Card} so it sits in the same frame as the plan and the
- * execution cards. Tinted armed-amber, the same accent the order-intent card
- * uses — both are states where the mission is about to move but has not yet.
- */
-function ArmedConditionsCard({ conditions }: { conditions: ArmedConditions }) {
-  const meta = formatReassessmentCountdown(conditions.nextReassessmentAt);
-
-  return (
-    <Card title="Armed conditions" accentClassName="border-armed/40 bg-armed/5" meta={meta}>
-      {/*
-        A vertical list of rows reads cleaner than the intent's two-column grid:
-        each condition is a sentence, and wrapping it beside the observed value
-        crowds a description that already carries its market and its level.
-      */}
-      <div className="divide-y divide-border/40">
-        {conditions.rows.map((row) => (
-          <ConditionRow key={row.id} row={row} />
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-/** One row of the checklist: glyph, description, observed vs threshold. */
-function ConditionRow({ row }: { row: WatchConditionRow }) {
-  const glyph = row.met ? (
-    <span className="text-profit" aria-label="condition met">
-      ✓
-    </span>
-  ) : (
-    <span className="text-muted-foreground" aria-label="condition waiting">
-      ○
-    </span>
-  );
-
-  // The observed value's format depends on the predicate it measures against.
-  // A PnL watch reads a signed dollar figure; a price watch reads a market
-  // price. The threshold's formatting follows the same rule, so a row that
-  // compares the two never mixes a dollar value with a raw number.
-  const isPnlRow = row.description.includes("PnL");
-  const observed =
-    row.observedValue === null
-      ? "—"
-      : isPnlRow
-        ? formatSignedUsd(row.observedValue)
-        : formatPrice(row.observedValue);
-  const threshold =
-    row.thresholdValue === null
-      ? null
-      : isPnlRow
-        ? formatSignedUsd(row.thresholdValue)
-        : formatPrice(row.thresholdValue);
-
-  return (
-    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-2 text-xs">
-      <span className="w-4 flex-none text-center">{glyph}</span>
-      <span className="text-foreground">{row.description}</span>
-      <span className="ml-auto flex items-baseline gap-2 tabular-nums">
-        <span className={row.met ? "text-profit" : "text-foreground"}>{observed}</span>
-        {threshold === null ? null : <span className="text-muted-foreground">/ {threshold}</span>}
-        {row.met ? null : <span className="text-[11px] text-muted-foreground">← waiting</span>}
-      </span>
-    </div>
-  );
-}
-
-/**
- * The header countdown to the next scheduled reassessment.
- *
- * "reassess in 2m" while one is armed and in the future; "reassess due" the
- * moment it has passed; undefined (the slot disappears) when none is armed.
- */
-function formatReassessmentCountdown(nextReassessmentAt: number | null): string | undefined {
-  if (nextReassessmentAt === null) return undefined;
-  const remaining = nextReassessmentAt - Date.now();
-  if (remaining <= 0) return "reassess due";
-  return `reassess in ${formatDuration(remaining)}`;
-}
-
-/**
  * The order-rejected surface, with the affordance to re-arm (§14.7).
  *
  * Replaces {@link OrderIntentCard} when the in-flight execution was refused — a
@@ -774,30 +586,16 @@ export function MissionThreadCards({ mission }: { readonly mission: Orchestratio
   // card is gated on exposure rather than on the row existing.
   const openPosition =
     mission.position !== null && mission.position.size !== 0 ? mission.position : null;
-  // The plan card has no execution-state dependency: it shows the moment a
-  // strategy is published, even before any order goes on, so strategy presence
-  // keeps the wrapper mounted on its own.
-  const plan = deriveStrategyPlan(mission);
   // A rejected order has no position and no fills, so it must hold the wrapper
   // up on its own — otherwise a flat mission whose only event is a refusal
   // would render nothing at all.
   const rejected = deriveRejectedOrder(mission);
-  // The armed-conditions checklist is a pre-entry state: it shows only while no
-  // position is open (a position means the entry conditions already fired) and
-  // the mission is not yet complete. The derivation itself gates on at least one
-  // active watch, so a flat mission with nothing armed renders null here.
-  const armed =
-    openPosition === null && !isMissionComplete(mission.status)
-      ? deriveWatchConditions(mission)
-      : null;
   const hasCards =
     mission.inFlightExecution !== null ||
     openPosition !== null ||
     mission.recentFills.length > 0 ||
-    plan !== null ||
     isMissionComplete(mission.status) ||
-    rejected !== null ||
-    armed !== null;
+    rejected !== null;
 
   if (!hasCards) return null;
 
@@ -814,18 +612,13 @@ export function MissionThreadCards({ mission }: { readonly mission: Orchestratio
     <div className="flex flex-col gap-2 pt-2">
       {/*
         A finished mission's result is the headline — it leads the stack so the
-        thing the thread existed to report is the first thing read. The plan
-        follows, then the execution cards (intent/position/fills) that report
-        the trade as it happened.
+        thing the thread existed to report is the first thing read. The
+        execution cards (intent/position/fills) follow, reporting the trade as
+        it happened. The plan and the armed conditions are not here: they live
+        in the pinned `MissionLivePanel` above the timeline, where one surface
+        carries the whole live picture.
       */}
       {isMissionComplete(mission.status) && <CompletionSummaryCard mission={mission} />}
-      {plan !== null && <StrategyPlanCard plan={plan} />}
-      {/*
-        The armed checklist is a pre-entry state, so it sits after the plan and
-        before the execution cards: the plan is what the conditions are arming,
-        and once an intent or position lands the conditions have already fired.
-      */}
-      {armed !== null && <ArmedConditionsCard conditions={armed} />}
       {/*
         A rejected execution never renders as a live intent: branch on it before
         the intent card so a refusal shows as a refusal, not as an order about

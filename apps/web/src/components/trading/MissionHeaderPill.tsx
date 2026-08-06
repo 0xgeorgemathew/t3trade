@@ -114,7 +114,7 @@ export function MissionHeaderPill({
             aria-label={`${strip.marketLabel} mission: ${strip.stateLabel}`}
             data-testid="mission-header-pill"
             className={cn(
-              "flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-card/60 px-2 py-0.5 text-xs text-foreground outline-none transition-colors hover:bg-card",
+              "flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-card/60 px-2.5 py-1 text-sm text-foreground outline-none transition-colors hover:bg-card",
               "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
             )}
           />
@@ -125,16 +125,17 @@ export function MissionHeaderPill({
             rest. */}
         <span
           className={cn(
-            "size-1.5 rounded-full",
+            "size-2 rounded-full",
             TONE_DOT[strip.tone],
             strip.tone === "exposed" && "animate-pulse",
           )}
           aria-hidden
         />
-        {/* Market is always shown; the state sits next to it from the widest
-            tier down to xl, where the dot alone carries tone. */}
+        {/* Market and state read at the thread title's own size — this is the
+            centre of the header, not a trailing annotation. The state drops
+            first when the centre column runs out of room. */}
         <span className="whitespace-nowrap font-medium">{strip.marketLabel}</span>
-        <span className="hidden whitespace-nowrap text-muted-foreground @xl/header-actions:inline">
+        <span className="hidden whitespace-nowrap text-muted-foreground @lg/header-actions:inline">
           · {strip.stateLabel}
         </span>
 
@@ -142,7 +143,7 @@ export function MissionHeaderPill({
             does not trade the market name for four 6px circles. */}
         {phases.length > 0 ? (
           <span
-            className="hidden items-center gap-0.5 @3xl/header-actions:flex"
+            className="hidden items-center gap-0.5 @2xl/header-actions:flex"
             aria-hidden
             title={phases.map((phase) => `${phase.label}: ${phase.state}`).join(" · ")}
           >
@@ -159,7 +160,7 @@ export function MissionHeaderPill({
             figure read against the entry, not the figure scanned for at a
             glance. */}
         {strip.markLabel === null ? null : (
-          <span className="hidden tabular-nums text-muted-foreground @3xl/header-actions:inline">
+          <span className="hidden text-xs tabular-nums text-muted-foreground @3xl/header-actions:inline">
             {strip.markLabel}
           </span>
         )}
@@ -169,7 +170,7 @@ export function MissionHeaderPill({
         {position === null ? null : (
           <span
             className={cn(
-              "hidden tabular-nums @xl/header-actions:inline",
+              "hidden tabular-nums @lg/header-actions:inline",
               position.unrealisedPnl >= 0 ? "text-profit" : "text-loss",
             )}
           >
@@ -192,7 +193,7 @@ export function MissionHeaderPill({
               event.stopPropagation();
               controls.risk("close_and_revoke");
             }}
-            className="ms-0.5 h-5 rounded-full px-2 text-[11px]"
+            className="ms-0.5 h-6 rounded-full px-2.5 text-xs"
           >
             Close &amp; stop
           </Button>

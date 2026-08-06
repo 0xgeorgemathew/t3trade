@@ -62,7 +62,6 @@ import { TradingBudgetReader } from "./TradingBudgetReader.ts";
 import { TradingFillReconciler } from "./TradingFillReconciler.ts";
 import { InterimSignerConfig } from "./InterimSignerConfig.ts";
 import { IocSlippageConfig } from "./IocSlippageConfig.ts";
-import { AutoMissionConfig } from "./AutoMissionConfig.ts";
 import { resolveMissionCapitalUsd } from "./MissionCapital.ts";
 import { ALL_MISSION_STATUSES, isActiveMissionStatus } from "./MissionTransitions.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
@@ -213,7 +212,6 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry;
   const emergency = yield* TradingEmergencyCloseService;
   const controls = yield* TradingControlService;
-  const autoMission = yield* AutoMissionConfig;
   const iocSlippage = yield* IocSlippageConfig;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));

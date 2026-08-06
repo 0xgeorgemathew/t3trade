@@ -17,6 +17,7 @@ import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopLifecycle from "./DesktopLifecycle.ts";
+import * as DesktopPartitionCache from "./DesktopPartitionCache.ts";
 import * as DesktopObservability from "./DesktopObservability.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
@@ -229,6 +230,9 @@ const startup = Effect.gen(function* () {
   yield* shellEnvironment.installIntoProcess;
   const userDataPath = yield* appIdentity.resolveUserDataPath;
   yield* electronApp.setPath("userData", userDataPath);
+  // Before any window opens: Chromium logs one ERROR per preview partition when
+  // it cannot create its shared-dictionary cache. See `DesktopPartitionCache`.
+  yield* DesktopPartitionCache.ensurePartitionCaches(userDataPath);
   yield* logStartupInfo("runtime logging configured", { logDir: environment.logDir });
   yield* desktopSettings.load;
 
