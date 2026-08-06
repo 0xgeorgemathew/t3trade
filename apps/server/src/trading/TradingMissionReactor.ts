@@ -20,6 +20,10 @@
 import type { OrchestrationEvent, ThreadId } from "@t3tools/contracts";
 import { CommandId, TradingMissionId } from "@t3tools/contracts";
 import type { TradingMissionStatus, TradingProvider } from "@t3tools/trading-contracts";
+import type { TradingMarket } from "@t3tools/trading-contracts/primitives";
+import { stopProximityWatchLevel } from "@t3tools/trading-contracts/stop-adjustment";
+import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
+import { POC_DEFAULT_TIMEFRAME, TradingTimeframe } from "@t3tools/trading-contracts/strategy";
 import { PENDING_EXECUTION_STATUSES } from "@t3tools/trading-contracts/execution";
 import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
 import {
@@ -28,6 +32,7 @@ import {
   PROTECTION_SIZE_EPSILON,
 } from "@t3tools/trading-contracts/protection";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { Schema } from "effect";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -164,6 +169,31 @@ const describeWatchPredicate = (watch: PersistedWatch["watch"]): string => {
       return `${watch.market} unrealised PnL falls to $${watch.valueUsd}`;
     case "pnl_giveback":
       return `${watch.market} unrealised PnL gives back $${watch.drawdownUsd} from its peak`;
+  }
+};
+
+/**
+ * The primary timeframe of the mission's live strategy, read straight off the
+ * stored JSON.
+ *
+ * Reading the row rather than taking a `TradingStrategyService` dependency
+ * keeps the reactor's layer exactly as wide as it was. Anything unreadable —
+ * no strategy yet, a shape this build does not recognise — falls back to the
+ * POC default, which is the same thing the coverage floor does: a mission
+ * between strategies still gets a cadence.
+ */
+const primaryTimeframeFromStrategyJson = (json: string | undefined): TradingTimeframe => {
+  if (json === undefined) return POC_DEFAULT_TIMEFRAME;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    const timeframes =
+      typeof parsed === "object" && parsed !== null
+        ? (parsed as { readonly timeframes?: unknown }).timeframes
+        : undefined;
+    const first = Array.isArray(timeframes) ? timeframes[0] : undefined;
+    return Schema.is(TradingTimeframe)(first) ? first : POC_DEFAULT_TIMEFRAME;
+  } catch {
+    return POC_DEFAULT_TIMEFRAME;
   }
 };
 
@@ -705,6 +735,126 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * Arm — or re-level — the stop-proximity watch (plan 24 §5.4).
+   *
+   * The stop is the point where the exchange takes the decision. This is the
+   * wake one ATR before that, so the decision is still the harness's: tighten
+   * into strength, hold, or exit deliberately. It is armed from the two places
+   * a confirmed stop comes into existence — the entry that placed it and every
+   * replacement that moved it — so the level always follows the stop actually
+   * resting rather than one that was true a move ago.
+   *
+   * Re-arming goes through `replacesWatchId`, so there is never more than one
+   * of these on a mission and the old level is cancelled in the same
+   * transaction that writes the new one.
+   *
+   * Best-effort by design: this runs after the protection it describes is
+   * already confirmed, and a mission with a live stop and no proximity watch is
+   * protected, just less forewarned. It never fails the execution that armed it.
+   */
+  const armStopProximityWatch = Effect.fn("TradingMissionReactor.armStopProximityWatch")(
+    function* (input: {
+      readonly missionId: TradingMissionId;
+      readonly market: TradingMarket;
+      readonly stopPrice: number;
+    }) {
+      const { missionId, market, stopPrice } = input;
+      const sql = yield* SqlClient.SqlClient;
+
+      const positions = yield* sql<{
+        readonly size: number;
+        readonly mark_px: number | null;
+      }>`
+        SELECT size, mark_px FROM trading_position_snapshots
+        WHERE mission_id = ${missionId} AND market = ${market} AND size != 0
+      `;
+      const position = positions[0];
+      if (position === undefined || position.mark_px === null) return;
+
+      // The strategy's primary timeframe drives the ATR, the same one every
+      // other cadence in the mission is measured on.
+      const strategyRows = yield* sql<{ readonly strategy_json: string }>`
+        SELECT s.strategy_json
+        FROM momentum_strategy_versions s
+        JOIN trading_missions m
+          ON m.mission_id = s.mission_id AND m.strategy_version = s.version
+        WHERE s.mission_id = ${missionId}
+      `;
+      const timeframe = primaryTimeframeFromStrategyJson(strategyRows[0]?.strategy_json);
+
+      const history = yield* gateway.getMarketHistory({
+        market,
+        interval: timeframe,
+        maxBars: VOLATILITY_LOOKBACK_BARS,
+      });
+      const volatility = measureVolatility({
+        market,
+        interval: timeframe,
+        candles: history.candles,
+        measuredAt: history.freshness.observedAt,
+      });
+
+      const level = stopProximityWatchLevel({
+        positionSize: position.size,
+        stopPrice,
+        markPrice: position.mark_px,
+        atrUsd: volatility.atrUsd,
+      });
+
+      // No usable ATR, or the level is already through the mark. A watch that
+      // was true before it was written is an immediate wake, not coverage.
+      const existing = yield* sql<{ readonly watch_id: string }>`
+        SELECT watch_id FROM trading_watches
+        WHERE mission_id = ${missionId} AND status = 'active' AND armed_reason = 'stop_proximity'
+        ORDER BY created_at DESC
+      `;
+      const replaces = existing[0]?.watch_id;
+
+      if (level === null) {
+        if (replaces !== undefined) yield* watches.cancelWatch({ missionId, watchId: replaces });
+        return;
+      }
+
+      const { watch } = yield* watches.registerWatch({
+        missionId,
+        watch: {
+          type: "price_cross",
+          market,
+          priceSource: "mark",
+          direction: level.direction,
+          price: level.price,
+        },
+        armedReason: "stop_proximity",
+        replacesWatchId: replaces,
+      });
+      yield* Effect.logInfo("trading armed the stop-proximity watch", {
+        missionId,
+        watchId: watch.id,
+        stopPrice,
+        price: level.price,
+        direction: level.direction,
+        atrUsd: volatility.atrUsd,
+        replaces,
+      });
+    },
+  );
+
+  /** Never let arming a wake break the execution that confirmed the stop. */
+  const armStopProximityWatchQuietly = (input: {
+    readonly missionId: TradingMissionId;
+    readonly market: TradingMarket;
+    readonly stopPrice: number;
+  }) =>
+    armStopProximityWatch(input).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("trading could not arm the stop-proximity watch", {
+          missionId: input.missionId,
+          cause: String(cause),
+        }),
+      ),
+    );
+
+  /**
    * §17.2 steps 6–9 for one acknowledged increase.
    *
    * Reconciles protection against canonical state and, when the bounded window
@@ -741,6 +891,12 @@ const make = Effect.gen(function* () {
         status: outcome.status,
         positionSize: outcome.positionSize,
         protectedSize: outcome.protectedSize,
+      });
+      // The stop that now rests is the one the proximity wake is measured from.
+      yield* armStopProximityWatchQuietly({
+        missionId,
+        market: intent.market,
+        stopPrice: stop.stopPrice,
       });
       return;
     }
@@ -916,6 +1072,12 @@ const make = Effect.gen(function* () {
         stopPrice: stop.stopPrice,
         protectedSize: outcome.protectedSize,
         replacedCloids: outcome.replacedCloids,
+      });
+      // The level follows the stop: every move re-levels the proximity wake.
+      yield* armStopProximityWatchQuietly({
+        missionId,
+        market: intent.market,
+        stopPrice: stop.stopPrice,
       });
       return (
         `stop moved to ${stop.stopPrice}; ${outcome.protectedSize} of the position is ` +
