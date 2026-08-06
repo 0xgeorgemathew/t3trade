@@ -102,12 +102,22 @@ export type PersistedWatchStatus = typeof PersistedWatchStatus.Type;
  * (close, or reduce and keep a runner) if momentum is fading, or extend to the
  * ladder's next rung by republishing with a fresh basis if it is not.
  *
+ * `stop_proximity` means the runtime armed a `price_cross` one ATR ahead of the
+ * resting stop while the mission holds a position. A wake from it is the
+ * designed moment to decide the stop deliberately — tighten, hold, or exit —
+ * before the exchange decides instead.
+ *
  * `wake_retry` means this watch is a replacement for one that fired and was
  * consumed by a wake that then failed to reach the harness. The condition it
  * carries is the same one the harness armed; the reason records that the
  * original firing was lost, so a wake from it is not a second crossing.
  */
-export const WatchArmedReason = Schema.Literals(["staleness_floor", "profit_target", "wake_retry"]);
+export const WatchArmedReason = Schema.Literals([
+  "staleness_floor",
+  "profit_target",
+  "wake_retry",
+  "stop_proximity",
+]);
 export type WatchArmedReason = typeof WatchArmedReason.Type;
 
 /**
@@ -171,6 +181,11 @@ const BAR_MILLIS: Readonly<Record<TradingTimeframe, number>> = {
 };
 
 const MINUTE = 60_000;
+
+/** One bar of a timeframe, in milliseconds. */
+export function timeframeBarMillis(timeframe: TradingTimeframe): number {
+  return BAR_MILLIS[timeframe];
+}
 
 /**
  * The floor for a flat mission on the 1m default timeframe. Kept as a named

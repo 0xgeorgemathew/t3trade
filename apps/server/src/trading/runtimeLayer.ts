@@ -47,6 +47,7 @@ import { TradingControlServiceLive } from "./TradingControlService.ts";
 import { TradingCostEstimatorLive } from "./TradingCostEstimator.ts";
 import { TradingTradeHistoryServiceLive } from "./TradingTradeHistoryService.ts";
 import { TradingCalibrationServiceLive } from "./TradingCalibrationService.ts";
+import { TradingStopAdjustmentServiceLive } from "./TradingStopAdjustmentService.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
@@ -170,6 +171,14 @@ export const TradingLayerLive = Layer.mergeAll(
   // `trading_get_target_calibration` scores those targets against the closed
   // trades the reconciler recorded.
   TradingCalibrationServiceLive,
+  // `trading_adjust_stop` measures the position, the resting stop and the
+  // server's own ATR before it allows a move, so it needs the read gateway and
+  // both mission services at build.
+  TradingStopAdjustmentServiceLive.pipe(
+    Layer.provide(HyperliquidReadLayerLive),
+    Layer.provide(TradingMissionServiceLive),
+    Layer.provide(TradingStrategyServiceLive),
+  ),
   coordinatorWithDeps,
   // A thread's first message is what creates its mission, so the decision sits
   // on the dispatch path in `ws.ts` rather than in the reactor.

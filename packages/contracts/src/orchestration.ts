@@ -35,6 +35,7 @@ import {
   TradingMissionWatchCancelledPayload,
   TradingMissionWatchFiredPayload,
   TradingMissionWatchRegisteredPayload,
+  TradingMissionStopAdjustedPayload,
   TradingExecutionRequestedPayload,
   TradingMarketChartView,
 } from "./trading.ts";
@@ -955,6 +956,7 @@ export const OrchestrationEventType = Schema.Literals([
   "trading.mission-watch-cancelled",
   "trading.mission-watch-fired",
   "trading.mission-run-started",
+  "trading.mission-stop-adjusted",
   "trading.execution-requested",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
@@ -1355,6 +1357,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("trading.mission-run-started"),
     payload: TradingMissionRunStartedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("trading.mission-stop-adjusted"),
+    payload: TradingMissionStopAdjustedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

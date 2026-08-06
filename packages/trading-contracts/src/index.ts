@@ -11,6 +11,7 @@ export * from "./account-snapshot.ts";
 export * from "./execution.ts";
 export * from "./lossAccounting.ts";
 export * from "./protection.ts";
+export * from "./stopAdjustment.ts";
 export * from "./wakeup.ts";
 export * from "./volatility.ts";
 export * from "./costs.ts";

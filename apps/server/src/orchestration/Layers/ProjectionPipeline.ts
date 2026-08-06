@@ -1563,6 +1563,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "trading.mission-watch-cancelled":
         case "trading.mission-watch-fired":
         case "trading.mission-run-started":
+        case "trading.mission-stop-adjusted":
           yield* tradingMissionProjection.refresh({
             missionId: event.payload.missionId,
             occurredAt: event.occurredAt,

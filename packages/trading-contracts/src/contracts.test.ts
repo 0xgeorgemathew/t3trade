@@ -757,6 +757,7 @@ describe("subpath exports", () => {
         "./execution",
         "./loss-accounting",
         "./protection",
+        "./stop-adjustment",
         "./wakeup",
         "./volatility",
         "./costs",

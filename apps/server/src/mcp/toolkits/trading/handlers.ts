@@ -24,6 +24,7 @@ import type { TradingMission } from "../../../trading/Schemas.ts";
 import type { PersistedWatch } from "../../../trading/Schemas.ts";
 import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
+import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -364,6 +365,50 @@ const announceWatchCancelled = Effect.fn("TradingToolkit.announceWatchCancelled"
 );
 
 /**
+ * Put an accepted stop move on the WS push path.
+ *
+ * Only accepted ones: a refusal is agent feedback about a stop that never
+ * moved, and announcing it would draw a step on the chart for something that
+ * did not happen.
+ */
+const announceStopAdjusted = Effect.fn("TradingToolkit.announceStopAdjusted")(function* (input: {
+  readonly threadId: string;
+  readonly missionId: string;
+  readonly market: string;
+  readonly previousStopPrice: number;
+  readonly newStopPrice: number;
+  readonly justification: string;
+}) {
+  const engine = yield* OrchestrationEngineService;
+  const crypto = yield* Crypto.Crypto;
+  const commandId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+  const createdAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+
+  yield* engine
+    .dispatch({
+      type: "trading.mission.stop-adjusted",
+      commandId: CommandId.make(commandId),
+      threadId: ThreadId.make(input.threadId),
+      missionId: TradingMissionId.make(input.missionId),
+      market: input.market,
+      previousStopPrice: input.previousStopPrice,
+      newStopPrice: input.newStopPrice,
+      justification: input.justification,
+      createdAt,
+    })
+    // The stop is already resting on the exchange; failing to announce it costs
+    // the UI a refresh, not the protection.
+    .pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("could not announce a stop adjustment to the orchestration engine", {
+          missionId: input.missionId,
+          cause,
+        }),
+      ),
+    );
+});
+
+/**
  * Submit one execution intent and wait for what actually happened to it.
  *
  * Shared by `trading_execute` and its older alias `trading_request_entry` —
@@ -464,6 +509,104 @@ const handlers = {
     }),
 
   trading_execute: (input) => executeIntent(input),
+
+  /**
+   * The bounded stop move (plan 24 §5).
+   *
+   * Two steps and no third: the policy decides, and an approved decision goes
+   * out as an ordinary `modify_stop` intent. Nothing here re-implements the
+   * replacement — the confirm-before-cancel sequence, the §17.5 escalation and
+   * the execution record are the same ones `trading_execute` produces.
+   */
+  trading_adjust_stop: (input) =>
+    Effect.gen(function* () {
+      const { threadId, mission } = yield* resolveBoundCall(input.missionId);
+      const adjustments = yield* TradingStopAdjustmentService;
+      const decision = yield* adjustments
+        .evaluate({
+          missionId: mission.id,
+          market: input.market,
+          newStopPrice: input.newStopPrice,
+          observedAtrUsd: input.observedAtrUsd,
+          expectedVersion: input.expectedVersion,
+        })
+        .pipe(Effect.orDie);
+
+      if (decision.outcome === "refused") {
+        yield* Effect.logInfo("trading stop adjustment refused", {
+          missionId: mission.id,
+          refusalCode: decision.refusalCode,
+          detail: decision.detail,
+        });
+        return {
+          status: "refused" as const,
+          refusalCode: decision.refusalCode,
+          previousStop: decision.previousStop,
+          newStop: decision.newStop,
+          detail: decision.detail,
+        };
+      }
+
+      const executed = yield* executeIntent({
+        missionId: mission.id,
+        intent: {
+          missionId: mission.id,
+          strategyVersion: input.expectedVersion,
+          executionSequence: input.executionSequence,
+          actionType: "modify_stop",
+          market: input.market,
+          // A stop reduces, so it rests on the side that closes the position.
+          side: decision.positionSize > 0 ? "sell" : "buy",
+          size: Math.abs(decision.positionSize),
+          orderPreference: "resting_limit",
+          limitPrice: input.newStopPrice,
+          stop: {
+            stopPrice: input.newStopPrice,
+            plannedLossAtStopUsd: decision.plannedLossAtStopUsd,
+          },
+          reduceOnly: true,
+        },
+        expectedAuthorityVersion: input.expectedAuthorityVersion,
+        activeHarnessRunId: input.activeHarnessRunId,
+      });
+
+      if (executed.status !== "succeeded") {
+        return {
+          status: "refused" as const,
+          refusalCode: "replacement_failed" as const,
+          previousStop: decision.previousStop,
+          newStop: decision.newStop,
+          detail: executed.detail ?? `the replacement ended ${executed.status}`,
+        };
+      }
+
+      yield* adjustments
+        .record({
+          missionId: mission.id,
+          market: input.market,
+          previousStopPrice: decision.previousStop,
+          newStopPrice: decision.newStop,
+          justification: input.justification,
+        })
+        .pipe(Effect.orDie);
+      yield* announceStopAdjusted({
+        threadId,
+        missionId: mission.id,
+        market: input.market,
+        previousStopPrice: decision.previousStop,
+        newStopPrice: decision.newStop,
+        justification: input.justification,
+      });
+
+      return {
+        status: "adjusted" as const,
+        previousStop: decision.previousStop,
+        newStop: decision.newStop,
+        stopDistanceUsd: decision.stopDistanceUsd,
+        plannedLossAtStopUsd: decision.plannedLossAtStopUsd,
+        remainingAdjustments: decision.remainingAdjustments,
+      };
+    }),
 
   // -- §14.2 read-only market-data tools -------------------------------------
   //

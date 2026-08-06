@@ -760,6 +760,7 @@ export function projectEvent(
     case "trading.mission-watch-cancelled":
     case "trading.mission-watch-fired":
     case "trading.mission-run-started":
+    case "trading.mission-stop-adjusted":
     case "trading.execution-requested":
       return Effect.succeed(nextBase);
 

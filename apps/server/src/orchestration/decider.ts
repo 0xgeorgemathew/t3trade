@@ -1306,6 +1306,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "trading.mission.stop-adjusted": {
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "mission",
+          aggregateId: command.missionId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "trading.mission-stop-adjusted",
+        payload: {
+          missionId: command.missionId,
+          threadId: command.threadId,
+          market: command.market,
+          previousStopPrice: command.previousStopPrice,
+          newStopPrice: command.newStopPrice,
+          justification: command.justification,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
     case "trading.mission.watch-cancelled": {
       return {
         ...(yield* withEventBase({

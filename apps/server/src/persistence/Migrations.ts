@@ -62,6 +62,7 @@ import Migration0046 from "./Migrations/046_TradingPositionExcursion.ts";
 import Migration0047 from "./Migrations/047_TradingClosedTrades.ts";
 import Migration0048 from "./Migrations/048_TradingFillLifecycle.ts";
 import Migration0049 from "./Migrations/049_TradingWatchObservability.ts";
+import Migration0050 from "./Migrations/050_TradingStopAdjustments.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -123,6 +124,7 @@ export const migrationEntries = [
   [47, "TradingClosedTrades", Migration0047],
   [48, "TradingFillLifecycle", Migration0048],
   [49, "TradingWatchObservability", Migration0049],
+  [50, "TradingStopAdjustments", Migration0050],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

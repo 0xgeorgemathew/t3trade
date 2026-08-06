@@ -35,6 +35,8 @@ import {
   TradingRegisterWatchInput,
   TradingRegisterWatchResult,
   TradingResolveMarketInput,
+  TradingAdjustStopInput,
+  TradingAdjustStopResult,
   TradingRequestEntryInput,
   TradingRequestEntryResult,
   TradingToolRejectedError,
@@ -68,6 +70,7 @@ import { TradingTradeHistoryService } from "../../../trading/TradingTradeHistory
 import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
+import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 
@@ -92,6 +95,8 @@ const dependencies = [
   // `trading_request_entry` reports what the reactor actually did with the
   // request, not that the request was raised.
   TradingExecutionOutcome,
+  // `trading_adjust_stop` measures the mission before it moves the stop.
+  TradingStopAdjustmentService,
 ];
 
 export const TradingGetMissionTool = Tool.make("trading_get_mission", {
@@ -387,6 +392,22 @@ export const TradingGetPlaybookTool = Tool.make("trading_get_playbook", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+export const TradingAdjustStopTool = Tool.make("trading_adjust_stop", {
+  description:
+    "Move the stop on an open position, inside the policy — prefer this over trading_execute `modify_stop`, which is unbounded. Same place-and-confirm-before-cancel path. " +
+    "The server measures the position, the RESTING stop, mark, half-spread and its own ATR (primary timeframe), then checks: risk never past the entry's approved stop (`risk_envelope`); step <= min(0.5xATR, 25% of stop distance) (`step_too_large`); your `observedAtrUsd` within 30% of the server's (`atr_mismatch`); stop outside max(2xhalf-spread, 0.35xATR) (`noise_floor`) and no further than halfway from entry to target (`target_encroachment`); a stop past entry never crosses back (`breakeven_ratchet`); 1 per 3 bars, 8 per position (`adjustment_budget`). Plus `wrong_side`, `no_position`, `no_resting_stop`, `stale_strategy_version`, `market_data_unavailable`, `replacement_failed`. " +
+    "Refused leaves the resting stop untouched. Adjusted returns `previousStop`, `newStop`, `stopDistanceUsd`, `plannedLossAtStopUsd`, `remainingAdjustments`. `executionSequence`/`expectedAuthorityVersion`/`activeHarnessRunId` as for trading_execute.",
+  parameters: TradingAdjustStopInput,
+  success: TradingAdjustStopResult,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Adjust stop")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
 export const TradingToolkit = Toolkit.make(
   TradingGetMissionTool,
   TradingPublishPlanTool,
@@ -407,4 +428,5 @@ export const TradingToolkit = Toolkit.make(
   TradingListWatchesTool,
   TradingCancelWatchTool,
   TradingExecuteTool,
+  TradingAdjustStopTool,
 );

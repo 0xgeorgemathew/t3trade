@@ -33,7 +33,8 @@ import type { TradingTradeHistory } from "./history.ts";
 import type { TargetCalibration } from "./calibration.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./mission.ts";
-import { TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
+import { Price, TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
+import { StopAdjustmentJustification, StopAdjustmentRefusalCode } from "./stopAdjustment.ts";
 import { TradingOrderIntent } from "./execution.ts";
 import { tradingPlanAuthoredFields, TradingPlanState, ProfitTargetBasis } from "./strategy.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
@@ -57,6 +58,7 @@ export const TRADING_GET_ACCOUNT_STATE_TOOL = "trading_get_account_state";
 export const TRADING_GET_POSITION_TOOL = "trading_get_position";
 export const TRADING_GET_OPEN_ORDERS_TOOL = "trading_get_open_orders";
 export const TRADING_GET_PLAYBOOK_TOOL = "trading_get_playbook";
+export const TRADING_ADJUST_STOP_TOOL = "trading_adjust_stop";
 /**
  * The whole position lifecycle, not just entries.
  *
@@ -391,6 +393,81 @@ export const TradingExecuteInput = TradingRequestEntryInput;
 export type TradingExecuteInput = TradingRequestEntryInput;
 export const TradingExecuteResult = TradingRequestEntryResult;
 export type TradingExecuteResult = TradingRequestEntryResult;
+
+// -- trading_adjust_stop (plan 24 §5.2) --------------------------------------
+
+/**
+ * The refusals that are about the mission rather than the policy.
+ *
+ * `checkStopAdjustment` answers "is this move within the rules"; these are the
+ * cases where the question could not be asked at all — nothing to adjust, no
+ * price to measure against, or a harness reasoning against a superseded plan.
+ */
+export const TradingAdjustStopRefusalContext = Schema.Literals([
+  "no_position",
+  "no_resting_stop",
+  "stale_strategy_version",
+  "market_data_unavailable",
+  /** The policy passed but the exchange replacement did not confirm. */
+  "replacement_failed",
+]);
+export type TradingAdjustStopRefusalContext = typeof TradingAdjustStopRefusalContext.Type;
+
+/**
+ * Move the stop on an open position, inside the policy.
+ *
+ * The same `replaceProtection` path `trading_execute` `modify_stop` takes, with
+ * `checkStopAdjustment`'s rules in front of it: the risk envelope the entry was
+ * approved with, a per-call step cap measured in ATR, a noise floor, the
+ * breakeven ratchet, and a rate limit. Everything the server needs to check
+ * those it measures itself; `observedAtrUsd` is the agent's own number, kept
+ * only so a stop derived from stale data can be refused rather than placed.
+ */
+export const TradingAdjustStopInput = Schema.Struct({
+  ...missionBound,
+  market: TradingMarket,
+  newStopPrice: Price,
+  justification: StopAdjustmentJustification,
+  /** The ATR the agent measured this turn; cross-checked against the server's. */
+  observedAtrUsd: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** The strategy version the harness believes is current; stale is rejected. */
+  expectedVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  /**
+   * The same three proofs `trading_execute`'s intent carries. An accepted
+   * adjustment runs through the identical execution path — preview, lease
+   * check, place-and-confirm-before-cancel — so it has to present the identical
+   * evidence rather than a second, weaker version of it.
+   */
+  executionSequence: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  expectedAuthorityVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  activeHarnessRunId: TradingId,
+});
+export type TradingAdjustStopInput = typeof TradingAdjustStopInput.Type;
+
+export const TradingAdjustStopResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("adjusted"),
+    previousStop: Schema.Number,
+    newStop: Schema.Number,
+    /** Distance from the current mark to the new stop. */
+    stopDistanceUsd: Schema.Number,
+    /** What the position now loses if it stops out. */
+    plannedLossAtStopUsd: Schema.Number,
+    /** Adjustments left on this position before the budget refuses. */
+    remainingAdjustments: Schema.Number,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("refused"),
+    refusalCode: Schema.Union([StopAdjustmentRefusalCode, TradingAdjustStopRefusalContext]),
+    /** The stop still resting, unchanged. */
+    previousStop: Schema.Number,
+    /** What was asked for, so the harness can see the two numbers together. */
+    newStop: Schema.Number,
+    /** Which bound was hit, in the numbers the rule is expressed in. */
+    detail: Schema.String,
+  }),
+]);
+export type TradingAdjustStopResult = typeof TradingAdjustStopResult.Type;
 
 export const TradingResolveMarketInput = Schema.Struct({
   ...missionBound,

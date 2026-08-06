@@ -1,6 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import {
   TRADING_CANCEL_WATCH_TOOL,
+  TRADING_ADJUST_STOP_TOOL,
   TRADING_ESTIMATE_COSTS_TOOL,
   TRADING_EXECUTE_TOOL,
   TRADING_GET_MARKET_STRUCTURE_TOOL,
@@ -51,6 +52,7 @@ it("exposes the §14.3 mission tools, the §14.2 read tools, and the §14.4 watc
       TRADING_EXECUTE_TOOL,
       TRADING_LIST_WATCHES_TOOL,
       TRADING_CANCEL_WATCH_TOOL,
+      TRADING_ADJUST_STOP_TOOL,
     ].sort(),
   );
 });
@@ -171,6 +173,24 @@ it("tells the harness how to move a level rather than add one", () => {
   expect(register).toContain("ADDITION");
 });
 
+// The bounded stop tool is only safe because the harness can read WHY a move
+// was refused and correct it. A description that names the tool without naming
+// the rules leaves it guessing, and a guessing agent retries the same refusal.
+it("names the bounds trading_adjust_stop actually enforces", () => {
+  const adjust = TradingToolkit.tools[TRADING_ADJUST_STOP_TOOL].description ?? "";
+  // Where it sits relative to the unbounded primitive.
+  expect(adjust).toContain("trading_execute");
+  // The five policy rules, in the codes the result reports them under.
+  expect(adjust).toContain("risk_envelope");
+  expect(adjust).toContain("step_too_large");
+  expect(adjust).toContain("atr_mismatch");
+  expect(adjust).toContain("noise_floor");
+  expect(adjust).toContain("breakeven_ratchet");
+  expect(adjust).toContain("adjustment_budget");
+  // A refusal costs nothing, which is what makes trying one safe.
+  expect(adjust).toContain("Refused leaves the resting stop untouched");
+});
+
 it("marks reading as safe and publishing as non-idempotent", () => {
   const annotations = (tool: Tool.Any) => ({
     readonly: Context.get(tool.annotations, Tool.Readonly),
@@ -196,16 +216,22 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 // A description says what the tool returns and what each field means — not when
 // to call it, what to conclude, or another tool's contract. Keep the whole
 // toolkit on a budget so a verbose description cannot quietly creep back in:
-// no single description over 1,300 chars, the total under 10,000, and the tool
-// count pinned at 19 (T6 added the playbook read; this guards against a
-// regression).
+// no single description over 1,300 chars, the total under 11,200, and the tool
+// count pinned at 20.
+//
+// The total was 10,000 while there were 19 tools. Plan 24's
+// `trading_adjust_stop` is the 20th, and it pays for itself: the eight refusal
+// codes it enumerates are the tool's actual contract, and an agent that cannot
+// read them tries the same refused move again. The per-tool cap is unchanged —
+// that is the rule that actually stops verbosity; the total only tracks how
+// many tools there are.
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 
-  expect(tools.length, "expected exactly 19 trading tools").toBe(19);
+  expect(tools.length, "expected exactly 20 trading tools").toBe(20);
 
   const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
-  expect(total, "total description chars must stay under 10,000").toBeLessThan(10_000);
+  expect(total, "total description chars must stay under 11,200").toBeLessThan(11_200);
 
   for (const tool of tools) {
     const len = (tool.description ?? "").length;

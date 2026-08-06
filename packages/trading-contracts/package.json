@@ -87,6 +87,10 @@
     "./protection": {
       "types": "./src/protection.ts",
       "import": "./src/protection.ts"
+    },
+    "./stop-adjustment": {
+      "types": "./src/stopAdjustment.ts",
+      "import": "./src/stopAdjustment.ts"
     }
   },
   "scripts": {
