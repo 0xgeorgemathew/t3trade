@@ -222,6 +222,8 @@ export interface ChartGeometry {
   readonly gutterTags: ReadonlyArray<GutterTag>;
   /** Scheduled future events, placed on the x axis in the future gutter. */
   readonly timeMarkers: ReadonlyArray<ChartTimeMarker>;
+  /** Events that already happened, placed inside the drawn window. */
+  readonly pastMarkers: ReadonlyArray<ChartPastMarker>;
   /** Armed conditions the chart did not draw, so the panel can say how many. */
   readonly droppedConditions: number;
 }
@@ -247,6 +249,30 @@ export interface ChartTimeMarker {
 
 /** @see ChartTimeMarker.tone */
 export type ChartTimeMarkerTone = "auto" | "planned";
+
+/** How many past ticks the axis holds before it stops drawing them. */
+export const MAX_DRAWN_PAST_MARKERS = 20;
+
+/**
+ * Something that already happened, placed on the time axis — plan 24 §4.2.
+ *
+ * The mirror of {@link ChartTimeMarker}: that one stands in the future gutter
+ * for a moment the plan is committed to, this one stands in the drawn window
+ * for a moment that has been. A wake, a publish, a stop move — the chart is
+ * then a record of the mission's turns and not only of its price.
+ */
+export interface ChartPastMarker {
+  readonly key: string;
+  readonly kind: string;
+  /** Epoch millis the event happened at. */
+  readonly at: number;
+  /** ViewBox x, inside the drawn window. */
+  readonly x: number;
+  /** A wake's cause, for colour-coding by trigger class. */
+  readonly cause?: string;
+  /** True when the run this marker stands for did not complete. */
+  readonly failed?: boolean;
+}
 
 /** Input shape for {@link computeChartGeometry}. */
 export interface ComputeChartGeometryInput {
@@ -305,6 +331,19 @@ export interface ComputeChartGeometryInput {
     readonly label: string;
     readonly at: number;
     readonly tone?: ChartTimeMarkerTone;
+  }>;
+  /**
+   * Moments that have already happened, newest-first as the projection sends
+   * them. Placed inside the drawn window; anything older than the first candle
+   * is dropped rather than pinned to the left edge, for the same reason an old
+   * fill is.
+   */
+  readonly pastMarkers?: ReadonlyArray<{
+    readonly key: string;
+    readonly kind: string;
+    readonly at: number;
+    readonly cause?: string | undefined;
+    readonly failed?: boolean | undefined;
   }>;
 }
 
@@ -835,6 +874,24 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
       }))
     : [];
 
+  // --- past markers: the mission's own turns, on the same axis. ------------
+  // Only the ones inside the drawn window: an event before the first candle has
+  // no honest x, and the cap keeps a mission that woke two hundred times from
+  // fencing its own price line in. Newest-first in, so the cap drops the oldest.
+  const pastMarkers: ChartPastMarker[] = [];
+  for (const marker of input.pastMarkers ?? []) {
+    if (pastMarkers.length >= MAX_DRAWN_PAST_MARKERS) break;
+    if (marker.at < timeStart || marker.at > timeEnd) continue;
+    pastMarkers.push({
+      key: marker.key,
+      kind: marker.kind,
+      at: marker.at,
+      x: clamp(xForTime(marker.at), 0, nowX),
+      ...(marker.cause === undefined ? {} : { cause: marker.cause }),
+      ...(marker.failed === undefined ? {} : { failed: marker.failed }),
+    });
+  }
+
   return {
     viewBoxWidth: CHART_VIEWBOX_WIDTH,
     viewBoxHeight: CHART_VIEWBOX_HEIGHT,
@@ -855,6 +912,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     markPoint,
     gutterTags: buildGutterTags(levels, markPoint, markPrice),
     timeMarkers,
+    pastMarkers,
     droppedConditions,
   };
 }

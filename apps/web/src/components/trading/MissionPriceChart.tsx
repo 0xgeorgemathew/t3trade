@@ -105,7 +105,41 @@ interface MissionPriceChartProps {
     readonly at: number;
     readonly tone?: "auto" | "planned";
   }>;
+  /** Moments that already happened, newest first. Ignored without `nowMillis`. */
+  readonly pastMarkers?: ReadonlyArray<{
+    readonly key: string;
+    readonly kind: string;
+    readonly at: number;
+    readonly cause?: string | undefined;
+    readonly failed?: boolean | undefined;
+  }>;
   readonly className?: string;
+}
+
+/** How tall a past-event tick stands off the bottom edge, in viewBox units. */
+const PAST_MARKER_TICK_HEIGHT = 6;
+
+/**
+ * The colour of a past-event tick, by what the event was — plan 24 §4.1.
+ *
+ * The reading the rug is for is the *mix*: a run of muted ticks is the
+ * staleness floor waking a mission that had nothing to decide, an amber one is
+ * a level the market actually reached. A failed run is drawn in loss-red
+ * because it is a turn the mission was owed and did not get.
+ */
+function pastMarkerColor(marker: {
+  readonly kind: string;
+  readonly cause?: string | undefined;
+  readonly failed?: boolean | undefined;
+}): string {
+  if (marker.failed === true) return "var(--color-loss)";
+  if (marker.kind === "stop_adjusted") return "var(--color-loss)";
+  if (marker.kind === "strategy_published") return "var(--color-foreground)";
+  // A wake the market caused is the one worth seeing; a scheduled one is the
+  // backstop, and the rug should read as quieter where the clock did the work.
+  return marker.cause === "scheduled_reassessment"
+    ? "var(--color-muted-foreground)"
+    : "var(--color-armed)";
 }
 
 /**
@@ -291,6 +325,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     flash,
     nowMillis,
     timeMarkers,
+    pastMarkers,
     className,
   } = props;
 
@@ -307,6 +342,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     ...(pendingOrder === undefined ? {} : { pendingOrder }),
     ...(nowMillis === undefined ? {} : { nowMillis }),
     ...(timeMarkers === undefined ? {} : { timeMarkers }),
+    ...(pastMarkers === undefined ? {} : { pastMarkers }),
   });
 
   // Too few candles → the parent renders a skeleton / "chart unavailable".
@@ -406,6 +442,24 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             // plan chose to be woken for.
             strokeDasharray={marker.tone === "auto" ? "1 5" : "3 4"}
             opacity={marker.overdue ? 0.9 : marker.tone === "auto" ? 0.3 : 0.45}
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+
+        {/* The mission's own turns, as a rug of ticks along the bottom edge.
+            Full-height rules here would fence the price line in behind twenty
+            verticals; a rug says "these are the moments" without competing with
+            the one saturated shape on screen. */}
+        {geometry.pastMarkers.map((marker) => (
+          <line
+            key={`past-${marker.key}`}
+            x1={marker.x}
+            y1={CHART_VIEWBOX_HEIGHT - PAST_MARKER_TICK_HEIGHT}
+            x2={marker.x}
+            y2={CHART_VIEWBOX_HEIGHT}
+            stroke={pastMarkerColor(marker)}
+            strokeWidth={1}
+            opacity={marker.failed === true ? 0.9 : 0.55}
             vectorEffect="non-scaling-stroke"
           />
         ))}

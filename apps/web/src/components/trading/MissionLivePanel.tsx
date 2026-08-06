@@ -62,6 +62,7 @@ import {
 import {
   deriveChartConditions,
   deriveChartFillMarkers,
+  deriveChartPastMarkers,
   deriveChartTimeMarkers,
   deriveEffectiveLeverage,
   deriveNextReassessmentAt,
@@ -79,6 +80,7 @@ import {
   hyperliquidTradeUrl,
   isMissionComplete,
   type ChartFillMarker,
+  type ChartPastMarkerInput,
   type ChartTimeMarkerInput,
   type StrategyPlan,
   type UpNextItem,
@@ -290,6 +292,11 @@ export function MissionLivePanel({
   // one appointment, the axis is the whole queue.
   const timeMarkers = deriveChartTimeMarkers(mission);
 
+  // What has already happened, as a rug of ticks along the axis: the mission's
+  // own wakes, publishes and stop moves, which no amount of current state can
+  // show. Bounded server-side, and again by the geometry's own cap.
+  const pastMarkers = deriveChartPastMarkers(mission);
+
   // The checklist is capped because the panel now sits directly above the
   // composer: a mission that has republished a few times can hold a dozen
   // watches, and an unbounded list would push the input off the screen.
@@ -467,6 +474,7 @@ export function MissionLivePanel({
           flash={flash}
           nowMillis={nowMillis}
           timeMarkers={timeMarkers}
+          pastMarkers={pastMarkers}
         />
       </div>
 
@@ -681,6 +689,7 @@ function ChartSlot(props: {
   readonly flash: { readonly price: number; readonly nonce: number } | null;
   readonly nowMillis: number;
   readonly timeMarkers: ReadonlyArray<ChartTimeMarkerInput>;
+  readonly pastMarkers: ReadonlyArray<ChartPastMarkerInput>;
 }): ReactNode {
   const { data, isLoading, error } = props;
 
@@ -730,6 +739,7 @@ function ChartSlot(props: {
         flash={props.flash}
         nowMillis={props.nowMillis}
         timeMarkers={props.timeMarkers}
+        pastMarkers={props.pastMarkers}
         className={CHART_HEIGHT_CLASS}
       />
     );

@@ -27,6 +27,7 @@ import {
   deriveChartConditions,
   deriveChartFillMarkers,
   deriveMissionPhases,
+  deriveChartPastMarkers,
   deriveChartTimeMarkers,
   deriveNextReassessmentAt,
   MAX_DRAWN_TIME_MARKERS,
@@ -1698,5 +1699,53 @@ describe("deriveUpNextItems", () => {
       NOW,
     );
     expect(items).toEqual([]);
+  });
+});
+
+describe("deriveChartPastMarkers", () => {
+  it("parses the projection's ISO moments into axis millis, order preserved", () => {
+    const markers = deriveChartPastMarkers({
+      missionTimeline: [
+        { at: "2026-08-06T12:03:00.000Z", kind: "stop_adjusted", label: "trail_peak" },
+        {
+          at: "2026-08-06T12:00:00.000Z",
+          kind: "wake",
+          label: "scheduled_reassessment",
+          cause: "scheduled_reassessment",
+        },
+      ],
+    });
+
+    expect(markers.map((marker) => marker.kind)).toEqual(["stop_adjusted", "wake"]);
+    expect(markers[0]!.at).toBe(Date.parse("2026-08-06T12:03:00.000Z"));
+    expect(markers[1]!.at).toBe(Date.parse("2026-08-06T12:00:00.000Z"));
+  });
+
+  // A tick at a time it did not happen is worse than no tick, so an entry whose
+  // moment will not parse is dropped rather than filed at zero.
+  it("drops an entry with an unparseable moment", () => {
+    expect(
+      deriveChartPastMarkers({
+        missionTimeline: [{ at: "not-a-time", kind: "wake", label: "user_message" }],
+      }),
+    ).toEqual([]);
+  });
+
+  it("reads a failed run off the label the projection composed", () => {
+    const markers = deriveChartPastMarkers({
+      missionTimeline: [
+        {
+          at: "2026-08-06T12:00:00.000Z",
+          kind: "wake",
+          label: "market_watch_triggered (failed)",
+          cause: "market_watch_triggered",
+        },
+      ],
+    });
+    expect(markers[0]).toMatchObject({ failed: true, cause: "market_watch_triggered" });
+  });
+
+  it("is empty for a mission with no timeline at all", () => {
+    expect(deriveChartPastMarkers({})).toEqual([]);
   });
 });

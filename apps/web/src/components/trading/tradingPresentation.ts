@@ -1672,6 +1672,56 @@ export function deriveNextReassessmentAt(mission: {
   return next;
 }
 
+/** One past event, ready to hand to the chart's `pastMarkers` input. */
+export interface ChartPastMarkerInput {
+  readonly key: string;
+  readonly kind: string;
+  /** Epoch millis — the projection sends ISO, the axis wants a number. */
+  readonly at: number;
+  readonly cause?: string;
+  readonly failed?: boolean;
+}
+
+/**
+ * The mission's own turns, as ticks for the time axis — plan 24 §4.2.
+ *
+ * `missionTimeline` is newest-first and already bounded server-side, so this is
+ * a parse and a filter rather than a derivation: entries whose `at` will not
+ * parse are dropped, because a tick at a time it did not happen is worse than
+ * no tick. The order is preserved, which is what lets the geometry's cap drop
+ * the oldest rather than the nearest.
+ *
+ * A failed run is read off the label the projection composed — the entry
+ * carries the raw cause separately, so the suffix is the only place the outcome
+ * lives.
+ */
+export function deriveChartPastMarkers(mission: {
+  readonly missionTimeline?:
+    | ReadonlyArray<{
+        readonly at: string;
+        readonly kind: string;
+        readonly label: string;
+        readonly cause?: string | undefined;
+      }>
+    | undefined;
+}): ReadonlyArray<ChartPastMarkerInput> {
+  const markers: ChartPastMarkerInput[] = [];
+  (mission.missionTimeline ?? []).forEach((entry, index) => {
+    const at = Date.parse(entry.at);
+    if (Number.isNaN(at)) return;
+    markers.push({
+      // The timeline carries no id of its own, and two wakes can share a
+      // millisecond only if they share an index too.
+      key: `${entry.kind}-${index}-${entry.at}`,
+      kind: entry.kind,
+      at,
+      ...(entry.cause === undefined ? {} : { cause: entry.cause }),
+      ...(entry.label.endsWith("(failed)") ? { failed: true } : {}),
+    });
+  });
+  return markers;
+}
+
 /** How many future ticks the chart's gutter holds before it says "+N". */
 export const MAX_DRAWN_TIME_MARKERS = 5;
 

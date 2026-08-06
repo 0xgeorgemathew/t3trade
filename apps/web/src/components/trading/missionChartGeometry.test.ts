@@ -6,6 +6,7 @@ import {
   FUTURE_GUTTER_RATIO,
   GUTTER_LABEL_MIN_SEPARATION,
   MAX_DRAWN_CONDITIONS,
+  MAX_DRAWN_PAST_MARKERS,
   MIN_CANDLES_FOR_SVG,
   PLOT_WIDTH,
   computeChartGeometry,
@@ -773,6 +774,7 @@ describe("computeChartGeometry — wall-clock axis", () => {
 
 describe("computeChartGeometry — time markers", () => {
   const candles = fiveWalkingCandles();
+  const firstOpenTime = candles[0]!.openTime;
   const lastOpenTime = candles[candles.length - 1]!.openTime;
   const now = lastOpenTime + 30_000;
 
@@ -824,6 +826,41 @@ describe("computeChartGeometry — time markers", () => {
     // Clamped forward to now: an overdue event is not in the past of the axis,
     // it is the next thing that should happen.
     expect(geometry.timeMarkers[0]!.x).toBeCloseTo(geometry.nowX, 6);
+  });
+
+  // The rug of past events. An event before the window's first candle has no
+  // honest x — the same rule the fill markers already follow.
+  it("places past events inside the drawn window and drops the ones before it", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      pastMarkers: [
+        { key: "recent", kind: "wake", at: now - 30_000, cause: "scheduled_reassessment" },
+        { key: "ancient", kind: "wake", at: firstOpenTime - 60_000 },
+      ],
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.pastMarkers.map((marker) => marker.key)).toEqual(["recent"]);
+    expect(geometry.pastMarkers[0]!.x).toBeGreaterThan(0);
+    expect(geometry.pastMarkers[0]!.x).toBeLessThanOrEqual(geometry.nowX);
+    expect(geometry.pastMarkers[0]!.cause).toBe("scheduled_reassessment");
+  });
+
+  // Newest-first in, so the cap has to drop the OLDEST — a rug trimmed from the
+  // front would stop before the events that just happened.
+  it("caps the rug at the newest events", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      pastMarkers: Array.from({ length: MAX_DRAWN_PAST_MARKERS + 5 }, (_unused, index) => ({
+        key: `w${index}`,
+        kind: "wake",
+        at: now - index * 1_000,
+      })),
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.pastMarkers).toHaveLength(MAX_DRAWN_PAST_MARKERS);
+    expect(geometry.pastMarkers[0]!.key).toBe("w0");
   });
 
   it("carries the marker's tone through, defaulting to planned", () => {
