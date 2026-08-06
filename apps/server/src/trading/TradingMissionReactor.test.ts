@@ -36,6 +36,7 @@ import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import type { HarnessRunRequest } from "./Schemas.ts";
 import { TradingMissionProjection } from "./TradingMissionProjection.ts";
 import { TradingMissionReactor, TradingMissionReactorLive } from "./TradingMissionReactor.ts";
+import { TradingAutoMission } from "./TradingAutoMission.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import {
   HyperliquidReconciler,
@@ -281,6 +282,12 @@ const withAutoMissionArmed = <A, E, R>(body: Effect.Effect<A, E, R>) =>
       }),
   );
 
+/** Ask the auto-mission path whether this message starts a mission. */
+const claimFirstMessage = (threadId: ThreadId, text: string) =>
+  TradingAutoMission.pipe(
+    Effect.flatMap((autoMission) => autoMission.claimFirstMessage({ threadId, text })),
+  );
+
 /**
  * A live mission bound to `threadId`, written straight to the domain.
  *
@@ -339,25 +346,30 @@ const openLabThread = (threadId: ThreadId) =>
         createdAt: NOW,
       })
       .pipe(Effect.ignore);
-    // Two drains: the first runs the thread.created handler, whose dispatched
-    // mission.create enqueues the create-requested event the second drains.
-    yield* settle;
     yield* settle;
   });
 
-it.layer(TestLayer)("auto-mission shortcut", (it) => {
-  it.effect("gives a thread opened in the lab workspace a mission of its own", () =>
+it.layer(TestLayer)("auto-mission on the first message", (it) => {
+  // Creation moved off `thread.created`: the harness used to be analysing a
+  // market before the user had typed anything, against a static instruction
+  // nobody wrote. The first message IS the mandate.
+  it.effect("creates a mission whose instruction is the thread's first message", () =>
     Effect.gen(function* () {
       yield* started;
       yield* settle;
 
       const labThread = ThreadId.make("thread-trading-reactor-lab");
-      yield* withAutoMissionArmed(openLabThread(labThread));
+      yield* openLabThread(labThread);
+      const claim = yield* withAutoMissionArmed(
+        claimFirstMessage(labThread, "Scalp ETH on the 1m and tell me before you enter."),
+      );
+      assert.equal(claim.kind, "mission_created");
+      yield* settle;
 
       const projection = yield* TradingMissionProjection;
       const mission = yield* projection.getByThreadId(labThread).pipe(Effect.orDie);
-      assert.ok(Option.isSome(mission), "the lab thread should have been given a mission");
-      assert.equal(mission.value.instruction, POC_DEFAULT_INSTRUCTION);
+      assert.ok(Option.isSome(mission), "the first message should have created a mission");
+      assert.equal(mission.value.instruction, "Scalp ETH on the 1m and tell me before you enter.");
     }).pipe(Effect.scoped),
   );
 
@@ -367,40 +379,20 @@ it.layer(TestLayer)("auto-mission shortcut", (it) => {
       yield* settle;
 
       // `started`'s thread lives at process.cwd(), not LAB_ROOT.
-      yield* withAutoMissionArmed(settle);
+      const claim = yield* withAutoMissionArmed(claimFirstMessage(THREAD_ID, "hello"));
+      assert.equal(claim.kind, "not_applicable");
+      yield* settle;
 
       const projected = yield* projectedMission;
       assert.ok(Option.isNone(projected), "a thread outside the lab must not get a mission");
     }).pipe(Effect.scoped),
   );
 
-  // The profile registry is an in-memory Map, so a restart loses every binding
-  // while the mission rows survive. The rebind path returns early on a thread
-  // that already holds the mission — and if it returned without re-binding, the
-  // first wake after a restart would open with the unrestricted toolset.
-  it.effect("re-binds the trading profile when a live mission is seen on a cold start", () =>
-    Effect.gen(function* () {
-      yield* started;
-      yield* settle;
-
-      const labThread = ThreadId.make("thread-trading-reactor-coldstart");
-      yield* seedMissionOnThread(labThread);
-      // The process that bound the profile is gone; only the row survived.
-      clearSessionProfile(labThread);
-
-      yield* withAutoMissionArmed(openLabThread(labThread));
-
-      assert.isTrue(
-        isTradingThread(labThread),
-        "a thread still holding a live mission must be re-bound to the trading profile",
-      );
-    }).pipe(Effect.scoped),
-  );
-
   // The safety rule. One active mission per user (§10.1) means claiming the slot
   // retires the incumbent — and revoking a mission that still holds exposure
   // would strand a live position behind a mission with no authority to manage
-  // it. A position-holding incumbent keeps the slot; the new thread gets nothing.
+  // it. A position-holding incumbent keeps the slot; the new thread gets nothing
+  // and the user is told why.
   it.effect("refuses to take the slot from a mission that still holds a position", () =>
     Effect.gen(function* () {
       yield* started;
@@ -416,7 +408,10 @@ it.layer(TestLayer)("auto-mission shortcut", (it) => {
       `;
 
       const labThread = ThreadId.make("thread-trading-reactor-lab-blocked");
-      yield* withAutoMissionArmed(openLabThread(labThread));
+      yield* openLabThread(labThread);
+      const claim = yield* withAutoMissionArmed(claimFirstMessage(labThread, "trade for me"));
+      assert.equal(claim.kind, "slot_held");
+      yield* settle;
 
       const projection = yield* TradingMissionProjection;
       const claimed = yield* projection.getByThreadId(labThread).pipe(Effect.orDie);
@@ -425,6 +420,27 @@ it.layer(TestLayer)("auto-mission shortcut", (it) => {
       const incumbent = yield* projectedMission;
       assert.ok(Option.isSome(incumbent));
       assert.notEqual(incumbent.value.status, "revoked", "the incumbent must keep its authority");
+    }).pipe(Effect.scoped),
+  );
+
+  // An old thread with history that is typed into again is an ordinary
+  // conversation, not a fresh mandate.
+  it.effect("leaves a thread that has already run turns alone", () =>
+    Effect.gen(function* () {
+      yield* started;
+      yield* settle;
+
+      const labThread = ThreadId.make("thread-trading-reactor-lab-used");
+      yield* openLabThread(labThread);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id, turn_id, state, requested_at, checkpoint_files_json
+        ) VALUES (${labThread}, 'turn-1', 'completed', ${NOW}, '[]')
+      `;
+
+      const claim = yield* withAutoMissionArmed(claimFirstMessage(labThread, "another message"));
+      assert.equal(claim.kind, "not_applicable");
     }).pipe(Effect.scoped),
   );
 });
@@ -480,6 +496,30 @@ const recordFill = Effect.gen(function* () {
   `;
 });
 
+/**
+ * The last status the reactor announced for the test mission.
+ *
+ * Settle now deletes the mission once it is flat, so the terminal status is no
+ * longer readable from the projection — the announced event is where it lives.
+ */
+const lastAnnouncedStatus = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ readonly status: string | null }>`
+    SELECT json_extract(payload_json, '$.status') AS status
+    FROM orchestration_events
+    WHERE event_type = 'trading.mission-status-changed'
+    ORDER BY sequence DESC LIMIT 1
+  `;
+  return rows[0]?.status ?? null;
+});
+
+/** How many mission rows survive. Settle deletes them; nothing else should. */
+const missionRowCount = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ readonly c: number }>`SELECT COUNT(*) AS c FROM trading_missions`;
+  return rows[0]?.c ?? 0;
+});
+
 /** Settle a thread the way the sidebar's Settle does, then drain the reactor. */
 const settleThread = (threadId: ThreadId) =>
   Effect.gen(function* () {
@@ -496,16 +536,19 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
   // Settle is the way out of a mission. A thread the user has finished with
   // must not keep an authority that wakes, trades, and holds the one active
   // slot the next thread needs.
-  it.effect("revokes the mission bound to the settled thread", () =>
+  it.effect("revokes and then deletes the mission bound to the settled thread", () =>
     Effect.gen(function* () {
       yield* started;
       yield* createQuietMission;
 
       yield* settleThread(THREAD_ID);
 
+      assert.equal(yield* lastAnnouncedStatus, "revoked");
+      // A settled mission is gone, not archived: every row it wrote goes with
+      // it, and it disappears from every surface within one poll tick.
+      assert.equal(yield* missionRowCount, 0);
       const projected = yield* projectedMission;
-      assert.ok(Option.isSome(projected));
-      assert.equal(projected.value.status, "revoked");
+      assert.ok(Option.isNone(projected));
     }).pipe(Effect.scoped),
   );
 
@@ -521,9 +564,8 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
 
       yield* settleThread(THREAD_ID);
 
-      const projected = yield* projectedMission;
-      assert.ok(Option.isSome(projected));
-      assert.equal(projected.value.status, "completed");
+      assert.equal(yield* lastAnnouncedStatus, "completed");
+      assert.equal(yield* missionRowCount, 0);
     }).pipe(Effect.scoped),
   );
 
@@ -539,9 +581,8 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
 
       yield* settleThread(THREAD_ID);
 
-      const projected = yield* projectedMission;
-      assert.ok(Option.isSome(projected));
-      assert.equal(projected.value.status, "revoked");
+      assert.equal(yield* lastAnnouncedStatus, "revoked");
+      assert.equal(yield* missionRowCount, 0);
     }).pipe(Effect.scoped),
   );
 
@@ -577,9 +618,10 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  // `findMissionByThreadId` returns only a still-authoritative mission, so the
-  // second settle has nothing to act on. Settle is a bulk action in the sidebar
-  // and must stay a silent no-op the second time.
+  // `findMissionByThreadId` returns only a still-authoritative mission, and the
+  // row is gone by the second call anyway, so the second settle has nothing to
+  // act on. Settle is a bulk action in the sidebar and must stay a silent
+  // no-op the second time.
   it.effect("is a no-op when the mission is already revoked", () =>
     Effect.gen(function* () {
       yield* started;
@@ -588,9 +630,8 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
       yield* settleThread(THREAD_ID);
       yield* settleThread(THREAD_ID);
 
-      const projected = yield* projectedMission;
-      assert.ok(Option.isSome(projected));
-      assert.equal(projected.value.status, "revoked");
+      assert.equal(yield* lastAnnouncedStatus, "revoked");
+      assert.equal(yield* missionRowCount, 0);
     }).pipe(Effect.scoped),
   );
 });

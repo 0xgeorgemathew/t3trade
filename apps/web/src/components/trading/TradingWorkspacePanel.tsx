@@ -11,7 +11,6 @@ import { Button } from "../ui/button";
 import { MissionStalenessBanner } from "./MissionStalenessBanner";
 import { MissionStripBar } from "./MissionStripBar";
 import { useMissionControls, type MissionControls } from "./useMissionControls";
-import { NewMissionForm } from "./NewMissionForm";
 import {
   deriveMissionPhases,
   derivePausedExposure,
@@ -446,18 +445,6 @@ function TradingWorkspaceForEnvironment({ environmentId }: { environmentId: Envi
           </p>
         ) : null}
       </SettingsSection>
-
-      {import.meta.env.DEV ? (
-        <NewMissionForm
-          environmentId={environmentId}
-          boundThreadIds={
-            new Set(
-              missions.filter((mission) => isLiveMission(mission.status)).map((m) => m.threadId),
-            )
-          }
-          hasActiveMission={missions.some((mission) => isLiveMission(mission.status))}
-        />
-      ) : null}
 
       {visibleMissions(missions).map((mission) => (
         <MissionWithControls key={mission.id} mission={mission} environmentId={environmentId} />

@@ -793,23 +793,20 @@ export function isMissionComplete(status: TradingMissionStatus): boolean {
 }
 
 /**
- * The missions worth a card in the workspace.
+ * The missions worth a card in the workspace: the live ones.
  *
- * Every mission ever created stays in the projection, and since a thread now
- * opens one and settling it revokes one, that is a growing wall of Revoked
- * cards — each with no controls, because a mission with no authority has
- * nothing left to press. The live missions are the work. The most recent
- * finished one is kept because it is where a mission that just ended reports
- * its result, and losing it the instant it ends would be worse than the wall.
+ * A finished mission is deleted server-side once it is flat, so in practice
+ * nothing is filtered here — the projection stops carrying it within a poll
+ * tick. This stays as the client's own guarantee that a settled mission is not
+ * shown, for the window between the terminal status landing and the row going
+ * away.
  *
  * Input order is the projection's: newest first.
  */
 export function visibleMissions<T extends { readonly status: TradingMissionStatus }>(
   missions: ReadonlyArray<T>,
 ): ReadonlyArray<T> {
-  const live = missions.filter((mission) => !isMissionComplete(mission.status));
-  const lastFinished = missions.find((mission) => isMissionComplete(mission.status));
-  return lastFinished === undefined ? live : [...live, lastFinished];
+  return missions.filter((mission) => !isMissionComplete(mission.status));
 }
 
 export function deriveCompletionSummary(mission: {
@@ -1233,91 +1230,14 @@ export function formatDuration(millis: number): string {
   return `${seconds}s`;
 }
 
-// -- new-mission form (development only) -------------------------------------
-//
-// The POC has no mission-creation surface: Privy owns account onboarding and
-// arrives in PROMPT-06, and nothing before it dispatches `trading.mission.create`.
-// Until then the workspace offers a seeding form so the protection and control
-// paths can be exercised end-to-end by hand. The two derivations below are here
-// rather than in the component so they can be tested without rendering.
-
 /**
  * Whether a mission still holds its thread and the user's one active slot.
  *
  * `revoked` and `completed` are terminal: the server's create guard looks only
  * for a mission outside those two, so a thread whose only mission is terminal
- * is free again. Treating a revoked mission as still binding its thread would
- * burn a thread permanently on every run — and since a mission thread is
- * usually archived afterwards, the picker would empty out entirely.
+ * is free again. A terminal mission is also deleted once it is flat, so this
+ * mostly answers for the window between the two.
  */
 export function isLiveMission(status: string): boolean {
   return status !== "revoked" && status !== "completed";
-}
-
-/** A thread a new mission could bind to. */
-export interface MissionThreadOption {
-  readonly threadId: string;
-  readonly title: string;
-}
-
-/**
- * The threads that can take a new mission.
- *
- * §10.2 freezes one active mission onto one thread, so a thread that already
- * carries a live mission is not offered — picking it would only produce a
- * `TradingMissionAlreadyActiveError` at the reactor.
- */
-export function selectableMissionThreads(
-  threads: ReadonlyArray<{
-    readonly id: string;
-    readonly title: string;
-    readonly archivedAt: string | null;
-  }>,
-  boundThreadIds: ReadonlySet<string>,
-): ReadonlyArray<MissionThreadOption> {
-  const free = threads.filter(
-    (thread) => thread.archivedAt === null && !boundThreadIds.has(thread.id),
-  );
-
-  // Providers title threads themselves, so several can read "Greeting". Binding
-  // a mission to the wrong one of those is silent — the panel simply appears on
-  // a thread you are not looking at — so repeated titles carry an id suffix.
-  const timesSeen = new Map<string, number>();
-  for (const thread of free) {
-    timesSeen.set(thread.title, (timesSeen.get(thread.title) ?? 0) + 1);
-  }
-
-  return free.map((thread) => ({
-    threadId: thread.id,
-    title:
-      (timesSeen.get(thread.title) ?? 0) > 1
-        ? `${thread.title} (${thread.id.slice(0, 8)})`
-        : thread.title,
-  }));
-}
-
-/** Why a new-mission form cannot be submitted yet, or null when it can. */
-export function newMissionBlocker(input: {
-  readonly threadId: string | null;
-  readonly instruction: string;
-  /**
-   * The typed grant, or `null` for "resolve it from the account balance at
-   * creation" — an empty field is a valid submission, not a missing one.
-   */
-  readonly allocatedCapitalUsd: number | null;
-  readonly tradingAccountId: string;
-  /** A mission already exists in a status other than revoked/completed. */
-  readonly hasActiveMission: boolean;
-}): string | null {
-  // The domain holds one active mission per user, so a second create fails on a
-  // uniqueness constraint. Saying so beats surfacing the raw SQL error.
-  if (input.hasActiveMission)
-    return "A mission is already active. Revoke it before starting another.";
-  if (input.threadId === null) return "Pick a thread to bind the mission to.";
-  if (input.instruction.trim().length === 0)
-    return "Write the instruction the harness will act on.";
-  if (input.allocatedCapitalUsd !== null && !(input.allocatedCapitalUsd > 0))
-    return "Allocated capital must be greater than zero, or empty to use the account balance.";
-  if (input.tradingAccountId.trim().length === 0) return "Name the trading account.";
-  return null;
 }

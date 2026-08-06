@@ -87,6 +87,7 @@ import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { TradingMarketChart } from "./trading/TradingMarketChart.ts";
 import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
 import { TradingMissionProjectionLive } from "./trading/TradingMissionProjection.ts";
+import { TradingAutoMission } from "./trading/TradingAutoMission.ts";
 import { TradingTurnCoordinator } from "./trading/TradingTurnCoordinator.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
@@ -355,6 +356,7 @@ const buildAppUnderTest = (options?: {
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
     checkpointDiffQuery?: Partial<CheckpointDiffQuery.CheckpointDiffQuery["Service"]>;
     tradingTurnCoordinator?: Partial<TradingTurnCoordinator["Service"]>;
+    tradingAutoMission?: Partial<TradingAutoMission["Service"]>;
     tradingMarketPrice?: Partial<TradingMarketPrice["Service"]>;
     tradingMarketChart?: Partial<TradingMarketChart["Service"]>;
     browserTraceCollector?: Partial<BrowserTraceCollector.BrowserTraceCollector["Service"]>;
@@ -801,6 +803,15 @@ const buildAppUnderTest = (options?: {
         Layer.mock(TradingTurnCoordinator)({
           requestUserMessageRun: () => Effect.succeed(false),
           ...options?.layers?.tradingTurnCoordinator,
+        }),
+      ),
+      // The same path asks whether this message is the one that starts a
+      // mission. These tests run without the auto-mission shortcut, so it never
+      // claims one.
+      Layer.provide(
+        Layer.mock(TradingAutoMission)({
+          claimFirstMessage: () => Effect.succeed({ kind: "not_applicable" as const }),
+          ...options?.layers?.tradingAutoMission,
         }),
       ),
       Layer.provide(SqlitePersistenceMemory),

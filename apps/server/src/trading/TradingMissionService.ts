@@ -210,6 +210,33 @@ export interface TradingMissionServiceShape {
     readonly missionId: string;
     readonly market: string;
   }) => Effect.Effect<number | null, PersistenceSqlError>;
+
+  /**
+   * Erase a mission and everything keyed to it, in one transaction.
+   *
+   * A settled mission is finished, and every row it ever wrote is finished with
+   * it. Missions used to accumulate forever — the wall of settled rows on the
+   * Trading Settings page — because nothing ever removed one.
+   *
+   * This deletes the mission's realised history too: its `trading_closed_trades`
+   * rows go with it, so the calibration a later mission could have read off them
+   * is gone. That is the accepted trade of "settled means gone".
+   *
+   * Idempotent (deleting absent rows is a no-op) and NOT guarded: the caller is
+   * responsible for checking the mission is flat first. Deleting a mission that
+   * still holds a position would strand real exposure with no record of who
+   * opened it.
+   */
+  readonly deleteMission: (missionId: string) => Effect.Effect<void, PersistenceSqlError>;
+
+  /**
+   * Every mission in a permanently terminal status, plus every non-terminal
+   * mission whose bound thread no longer exists. The startup sweep's input.
+   */
+  readonly listDeletableMissions: () => Effect.Effect<
+    ReadonlyArray<{ readonly missionId: string; readonly status: string }>,
+    PersistenceSqlError
+  >;
 }
 
 export class TradingMissionService extends Context.Service<
@@ -562,6 +589,47 @@ const makeTradingMissionService = Effect.gen(function* () {
       return yield* getMission(input.missionId);
     });
 
+  const deleteMission: TradingMissionServiceShape["deleteMission"] = (missionId) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          // Children first, then the projection, then the mission row. Order
+          // does not matter to SQLite here (no foreign keys are declared), but
+          // it keeps the intent readable: nothing is left pointing at a row
+          // that is gone.
+          yield* sql`DELETE FROM trading_watches WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_harness_runs WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_event_inbox WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_execution_records WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_orders WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_fills WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_position_snapshots WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_risk_reservations WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_closed_trades WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_account_snapshots WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_account_observations WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_authority_versions WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM momentum_strategy_versions WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM projection_trading_missions WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_missions WHERE mission_id = ${missionId}`;
+        }),
+      )
+      .pipe(Effect.mapError(sqlFail("deleteMission")), Effect.asVoid);
+
+  const listDeletableMissions: TradingMissionServiceShape["listDeletableMissions"] = () =>
+    sql<{ readonly mission_id: string; readonly status: string }>`
+      SELECT m.mission_id, m.status
+      FROM trading_missions m
+      WHERE m.status IN ('revoked', 'completed')
+         OR NOT EXISTS (
+              SELECT 1 FROM projection_threads t
+              WHERE t.thread_id = json_extract(m.harness_json, '$.threadId')
+            )
+    `.pipe(
+      Effect.mapError(sqlFail("listDeletableMissions")),
+      Effect.map((rows) => rows.map((row) => ({ missionId: row.mission_id, status: row.status }))),
+    );
+
   return {
     createMission,
     transition,
@@ -574,6 +642,8 @@ const makeTradingMissionService = Effect.gen(function* () {
     listPendingExecutions,
     getMasterWalletAddress,
     readPeakUnrealisedPnl,
+    deleteMission,
+    listDeletableMissions,
   } satisfies TradingMissionServiceShape;
 });
 

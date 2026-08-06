@@ -74,6 +74,7 @@ import { TradingMarketChart } from "./trading/TradingMarketChart.ts";
 import { isChartReadEntitled } from "./trading/chartReadEntitlement.ts";
 import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
+import { TradingAutoMission } from "./trading/TradingAutoMission.ts";
 import { TradingTurnCoordinator } from "./trading/TradingTurnCoordinator.ts";
 
 /** The `updatedAt` an empty mission snapshot reports. */
@@ -382,6 +383,7 @@ const makeWsRpcLayer = (
       const tradingMarketPrice = yield* TradingMarketPrice;
       const tradingMarketChart = yield* TradingMarketChart;
       const tradingTurnCoordinator = yield* TradingTurnCoordinator;
+      const tradingAutoMission = yield* TradingAutoMission;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
       const keybindings = yield* Keybindings.Keybindings;
@@ -983,7 +985,9 @@ const makeWsRpcLayer = (
 
             yield* runSetupProgram();
 
-            return yield* orchestrationEngine.dispatch(finalTurnStartCommand);
+            // The thread exists now, so this message is its first — which is
+            // where a trading mission is born, if this machine makes them.
+            return yield* dispatchTradingAwareTurnStart(finalTurnStartCommand, targetProjectId);
           });
 
           return yield* bootstrapProgram.pipe(
@@ -998,17 +1002,34 @@ const makeWsRpcLayer = (
         });
 
       /**
-       * A plain turn start on a thread bound to a live trading mission goes
-       * through the trading wake path instead, so the operator's message
-       * arrives with a fresh mission snapshot and holds the decision lease
-       * rather than racing a watch-fired run. The coordinator answers `false`
-       * whenever it did not take the turn, and the ordinary dispatch runs.
+       * Route a turn start past the two trading paths that may own it.
+       *
+       * A thread's FIRST message starts a mission whose instruction is that
+       * message (`TradingAutoMission`); the `mission_created` bootstrap run is
+       * that message's turn, so the ordinary dispatch is skipped.
+       *
+       * Every later message on a thread bound to a live mission goes through
+       * the wake path instead, so the operator's message arrives with a fresh
+       * mission snapshot and holds the decision lease rather than racing a
+       * watch-fired run.
+       *
+       * Both answer "not mine" for anything else, and the ordinary dispatch
+       * runs — including when the mission slot is held, which comes back as a
+       * `notice` the composer shows.
        */
-      const dispatchTurnStart = (
+      const dispatchTradingAwareTurnStart = (
         command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
+        projectId: string | undefined,
       ) =>
         Effect.gen(function* () {
-          if (command.bootstrap) return yield* dispatchBootstrapTurnStart(command);
+          const claim = yield* tradingAutoMission.claimFirstMessage({
+            threadId: command.threadId,
+            text: command.message.text,
+            ...(projectId === undefined ? {} : { projectId }),
+          });
+          if (claim.kind === "mission_created") {
+            return { sequence: yield* orchestrationEngine.latestSequence };
+          }
 
           const routed = yield* tradingTurnCoordinator.requestUserMessageRun({
             threadId: command.threadId,
@@ -1016,14 +1037,22 @@ const makeWsRpcLayer = (
           });
           if (routed) return { sequence: yield* orchestrationEngine.latestSequence };
 
-          return yield* orchestrationEngine
+          const dispatched = yield* orchestrationEngine
             .dispatch(command)
             .pipe(
               Effect.mapError((cause) =>
                 toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
               ),
             );
+          return claim.kind === "slot_held" ? { ...dispatched, notice: claim.message } : dispatched;
         });
+
+      const dispatchTurnStart = (
+        command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
+      ) =>
+        command.bootstrap
+          ? dispatchBootstrapTurnStart(command)
+          : dispatchTradingAwareTurnStart(command, undefined);
 
       const dispatchNormalizedCommand = (
         normalizedCommand: OrchestrationCommand,

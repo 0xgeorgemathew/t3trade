@@ -32,8 +32,6 @@ import {
   hyperliquidTradeUrl,
   isPositionDataStale,
   isLiveMission,
-  newMissionBlocker,
-  selectableMissionThreads,
   shouldShowMissionStrip,
   visibleMissions,
 } from "./tradingPresentation";
@@ -711,51 +709,6 @@ describe("formatDuration", () => {
   });
 });
 
-describe("selectableMissionThreads", () => {
-  const thread = (id: string, archivedAt: string | null = null) => ({
-    id,
-    title: `Thread ${id}`,
-    archivedAt,
-  });
-
-  it("offers the threads that are free to take a mission", () => {
-    const options = selectableMissionThreads([thread("a"), thread("b")], new Set());
-    expect(options.map((option) => option.threadId)).toEqual(["a", "b"]);
-    expect(options[0]?.title).toBe("Thread a");
-  });
-
-  // §10.2 freezes one active mission onto one thread, so offering a bound
-  // thread would only produce a rejection at the reactor.
-  it("withholds a thread that already carries a mission", () => {
-    const options = selectableMissionThreads([thread("a"), thread("b")], new Set(["a"]));
-    expect(options.map((option) => option.threadId)).toEqual(["b"]);
-  });
-
-  it("withholds archived threads", () => {
-    const options = selectableMissionThreads([thread("a", "2026-08-02T00:00:00Z")], new Set());
-    expect(options).toEqual([]);
-  });
-
-  // Providers title threads themselves and duplicates are common ("Greeting").
-  // Binding a mission to the wrong one of two identically named threads is
-  // silent — the panel appears on a thread you are not looking at.
-  it("distinguishes threads that share a title", () => {
-    const options = selectableMissionThreads(
-      [
-        { id: "b4bfb480-4180-493c", title: "Greeting", archivedAt: null },
-        { id: "eb148ced-7bac-4035", title: "Greeting", archivedAt: null },
-        { id: "edd33aaa-8cca-4064", title: "Explore Trading Options", archivedAt: null },
-      ],
-      new Set(),
-    );
-    expect(options.map((option) => option.title)).toEqual([
-      "Greeting (b4bfb480)",
-      "Greeting (eb148ced)",
-      "Explore Trading Options",
-    ]);
-  });
-});
-
 describe("isLiveMission", () => {
   // The server's create guard admits any mission outside these two, so a
   // terminal mission neither holds its thread nor the one active slot. Counting
@@ -769,43 +722,12 @@ describe("isLiveMission", () => {
   });
 });
 
-describe("newMissionBlocker", () => {
-  const valid = {
-    threadId: "thread_1",
-    instruction: "Trade ETH momentum",
-    allocatedCapitalUsd: 50,
-    tradingAccountId: "local-hyperliquid-testnet",
-    hasActiveMission: false,
-  };
-
-  it("admits a complete form", () => {
-    expect(newMissionBlocker(valid)).toBeNull();
-  });
-
-  // The domain holds one active mission per user, so a second create would fail
-  // on a uniqueness constraint rather than on anything the form said.
-  it("blocks while a mission is already active", () => {
-    expect(newMissionBlocker({ ...valid, hasActiveMission: true })).toMatch(/already active/i);
-  });
-
-  it("names what is missing, one thing at a time", () => {
-    expect(newMissionBlocker({ ...valid, threadId: null })).toMatch(/thread/i);
-    expect(newMissionBlocker({ ...valid, instruction: "   " })).toMatch(/instruction/i);
-    expect(newMissionBlocker({ ...valid, tradingAccountId: "" })).toMatch(/account/i);
-  });
-
-  // A blank capital field parses to NaN, which must block rather than dispatch
-  // a mission with an unusable allocation.
-  it("blocks non-positive and unparseable capital", () => {
-    expect(newMissionBlocker({ ...valid, allocatedCapitalUsd: 0 })).toMatch(/capital/i);
-    expect(newMissionBlocker({ ...valid, allocatedCapitalUsd: Number.NaN })).toMatch(/capital/i);
-  });
-});
-
 describe("visibleMissions", () => {
   const mission = (id: string, status: TradingMissionStatus) => ({ id, status });
 
-  it("keeps the live missions and the most recently finished one", () => {
+  // A settled mission is deleted server-side; until the projection catches up,
+  // this is what keeps it off every surface.
+  it("keeps the live missions and nothing else", () => {
     const visible = visibleMissions([
       mission("revoked-newest", "revoked"),
       mission("live", "position_open"),
@@ -813,16 +735,16 @@ describe("visibleMissions", () => {
       mission("completed-oldest", "completed"),
     ]);
 
-    expect(visible.map((m) => m.id)).toEqual(["live", "revoked-newest"]);
+    expect(visible.map((m) => m.id)).toEqual(["live"]);
   });
 
-  it("still shows the last mission when every one of them has finished", () => {
+  it("shows nothing when every mission has finished", () => {
     const visible = visibleMissions([
       mission("revoked-newest", "revoked"),
       mission("revoked-older", "revoked"),
     ]);
 
-    expect(visible.map((m) => m.id)).toEqual(["revoked-newest"]);
+    expect(visible).toEqual([]);
   });
 
   it("has nothing to show before the first mission exists", () => {

@@ -1440,6 +1440,15 @@ export type ProjectionPendingApprovalDecision = typeof ProjectionPendingApproval
 
 export const DispatchResult = Schema.Struct({
   sequence: NonNegativeInt,
+  /**
+   * Something the user needs to know about a command that otherwise succeeded.
+   *
+   * Today there is one: a first message that would have started a trading
+   * mission, on a machine whose single active-mission slot is held by a mission
+   * with a live position. The message still becomes an ordinary turn — this is
+   * what tells the user why the thread is not a trading thread.
+   */
+  notice: Schema.optional(Schema.String),
 });
 export type DispatchResult = typeof DispatchResult.Type;
 

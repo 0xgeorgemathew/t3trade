@@ -32,6 +32,8 @@ import { TradingMarketChartLive } from "./TradingMarketChart.ts";
 import { TradingMarketPriceLive } from "./TradingMarketPrice.ts";
 import { TradingMissionProjectionLive } from "./TradingMissionProjection.ts";
 import { TradingMissionServiceLive } from "./TradingMissionService.ts";
+import { TradingAutoMissionLive } from "./TradingAutoMission.ts";
+import { TradingMissionSweepLive } from "./TradingMissionSweep.ts";
 import { TradingPreviewServiceLive } from "./TradingPreviewService.ts";
 import { TradingStrategyServiceLive } from "./TradingStrategyService.ts";
 import { TradingTurnCoordinatorLive } from "./TradingTurnCoordinator.ts";
@@ -153,6 +155,9 @@ const TradingExecutionLayerLive = Layer.mergeAll(
 
 export const TradingLayerLive = Layer.mergeAll(
   TradingMissionServiceLive,
+  // Housekeeping, once at boot: settled missions and missions whose thread is
+  // gone are deleted rather than accumulated. See `TradingMissionSweep`.
+  TradingMissionSweepLive.pipe(Layer.provide(TradingMissionServiceLive)),
   TradingStrategyServiceLive,
   TradingWatchServiceLive,
   TradingEventInboxLive,
@@ -166,6 +171,12 @@ export const TradingLayerLive = Layer.mergeAll(
   // trades the reconciler recorded.
   TradingCalibrationServiceLive,
   coordinatorWithDeps,
+  // A thread's first message is what creates its mission, so the decision sits
+  // on the dispatch path in `ws.ts` rather than in the reactor.
+  TradingAutoMissionLive.pipe(
+    Layer.provide(TradingMissionServiceLive),
+    Layer.provide(AutoMissionConfigLive.pipe(Layer.provide(InterimSignerConfigLive))),
+  ),
   TradingExecutionLayerLive,
   HyperliquidWsLayerLive,
 ).pipe(Layer.provideMerge(infoWithHttp));
