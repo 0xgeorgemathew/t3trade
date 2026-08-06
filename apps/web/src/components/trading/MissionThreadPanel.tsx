@@ -6,9 +6,16 @@
  * - {@link MissionThreadBanners} is chrome. The exception banners that sit with
  *   the strip above the thread, for as long as the mission is armed or exposed,
  *   so a feed or staleness warning stays on screen without hunting.
- * - {@link MissionThreadCards} is content. The execution surfaces — an order
- *   intent while one is in flight, the live position, the recent fill receipts
- *   — render at the end of the message timeline and scroll with it.
+ * - {@link MissionThreadCards} is content. The execution *events* — an order
+ *   intent while one is in flight, the fill receipts, the completion summary —
+ *   render at the end of the message timeline and scroll with it.
+ *
+ * The live position is deliberately not here. It is state, not an event: it
+ * changes every reconcile, and a changing number parked in a scrolling log
+ * reads as a fact recorded at the point you scrolled past. It lives in the
+ * pinned `MissionLivePanel` instead, which is also where its entry price and
+ * size stopped being said twice — once by the position card, once by the fill
+ * receipt directly beneath it.
  *
  * The split is the point. A pinned band that grows with every fill covers the
  * conversation it is supposed to annotate; the prototype puts the cards inline
@@ -25,7 +32,6 @@ import type {
   EnvironmentId,
   OrchestrationTradingMission,
   TradingFillView,
-  TradingPositionView,
   TradingExecutionView,
 } from "@t3tools/contracts";
 import type { ReactNode } from "react";
@@ -95,15 +101,13 @@ function Card({
 }
 
 /**
- * A run of `label value` pairs on one wrapping line.
+ * One `label value` pair on a receipt's line.
  *
  * The receipt shape from the prototype: a settled fact is a short list of
- * numbers, and a grid of labelled boxes gives it more room than it earns.
+ * numbers, and a grid of labelled boxes gives it more room than it earns. The
+ * wrapping row that holds these is the receipt itself now, rather than a
+ * `StatLine` inside a card.
  */
-function StatLine({ children }: { children: ReactNode }) {
-  return <div className="flex flex-wrap gap-x-6 gap-y-1.5 px-3 py-2 text-xs">{children}</div>;
-}
-
 function Stat({ label, value, tone }: { label: string; value: string; tone?: Tone }) {
   return (
     <span className="text-muted-foreground">
@@ -230,7 +234,19 @@ function OrderIntentCard({
   );
 }
 
-/** A fill receipt: what filled, at what price, and what it cost (§10). */
+/**
+ * A fill receipt: what filled, at what price, and what it cost (§10).
+ *
+ * One line, not a card. A session can fill a dozen times, and every one of them
+ * is shown — a receipt that took a title bar, a chip row and a stat row each
+ * meant the thread could only afford to keep the last three. Stripped to a
+ * single row, the same fill costs about a fifth of the height, so the whole
+ * history fits and nothing has to be truncated away.
+ *
+ * The price is labelled `Entry` or `Exit` rather than "Average fill". Which end
+ * of the position a fill was is the thing being read; that the price is a
+ * size-weighted average of the lots that filled it is implementation detail.
+ */
 function FillReceipt({
   fill,
   intent,
@@ -247,117 +263,40 @@ function FillReceipt({
   // An entry has no result yet, and "Realized $0.00" on one reads as a trade
   // that made nothing rather than a trade that has not finished.
   const showRealized = lifecycle === null || lifecycle.action !== "open" || fill.closedPnl !== 0;
+  // Without a lifecycle label the fill's end of the position is unknown, and
+  // "Entry" would be a guess — `Fill` says exactly what is known.
+  const priceLabel = lifecycle === null ? "Fill" : lifecycle.action === "close" ? "Exit" : "Entry";
 
   return (
-    <Card
-      title="Filled"
-      badge={
-        <LifecycleChips
-          market={fill.market}
-          leverage={leverage}
-          lifecycle={lifecycle}
-          fallbackDetail={`${sideLabel(fill.side)} ${formatSize(fill.filledSize)}`}
+    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-lg border border-border bg-card/40 px-3 py-1.5 text-xs">
+      <LifecycleChips
+        market={fill.market}
+        leverage={leverage}
+        lifecycle={lifecycle}
+        fallbackDetail={`${sideLabel(fill.side)} ${formatSize(fill.filledSize)}`}
+      />
+      <Stat label="Size" value={formatSize(fill.filledSize)} />
+      <Stat label={priceLabel} value={formatPrice(fill.avgFillPrice)} />
+      {slippagePercent === null ? null : (
+        // Positive means the fill spent some of the slippage bound the server
+        // priced the limit at; negative means it did better than the bound.
+        <Stat
+          label="Slippage"
+          value={formatSignedPercent(slippagePercent)}
+          tone={slippagePercent > 0 ? "loss" : slippagePercent < 0 ? "profit" : undefined}
         />
-      }
-      meta={`${new Date(fill.tradedAt).toLocaleTimeString()} · #${fill.orderId}`}
-    >
-      <StatLine>
-        <Stat label="Size" value={formatSize(fill.filledSize)} />
-        <Stat label="Average fill" value={formatPrice(fill.avgFillPrice)} />
-        {slippagePercent === null ? null : (
-          // Positive means the fill spent some of the slippage bound the server
-          // priced the limit at; negative means it did better than the bound.
-          <Stat
-            label="Slippage"
-            value={formatSignedPercent(slippagePercent)}
-            tone={slippagePercent > 0 ? "loss" : slippagePercent < 0 ? "profit" : undefined}
-          />
-        )}
-        <Stat label="Fee" value={formatSignedUsd(-fill.feeUsd)} />
-        {showRealized && (
-          <Stat
-            label="Realized"
-            value={formatSignedUsd(fill.closedPnl)}
-            tone={pnlTone(fill.closedPnl)}
-          />
-        )}
-      </StatLine>
-    </Card>
-  );
-}
-
-/**
- * The live position card: entry, mark, unrealised P&L, protection (§10).
- *
- * Only ever rendered while something is held — see {@link MissionThreadCards}.
- * The projection keeps a mission's snapshot row after the position closes, with
- * its size zeroed, and rendering that row produced a card headed "Flat · open"
- * reporting a size of zero as fully protected. Every figure on it was true and
- * the card as a whole was a lie.
- */
-function PositionCard({
-  position,
-  markPrice,
-  leverage,
-}: {
-  position: TradingPositionView;
-  /** The live mark, preferred over the snapshot's own as it is newer. */
-  markPrice: number | null;
-  /** The market's configured leverage, for the chip. */
-  leverage: number | null;
-}) {
-  const direction = position.size > 0 ? "long" : "short";
-  // §16.1: a stop that covers less than the position is the difference between
-  // a bounded loss and an open-ended one, so it is a figure, not a checkmark.
-  const protection =
-    position.protectedSize === 0
-      ? "None"
-      : Math.abs(position.protectedSize) >= Math.abs(position.size)
-        ? "Full"
-        : `${formatSize(Math.abs(position.protectedSize))} of ${formatSize(Math.abs(position.size))}`;
-  const mark = markPrice ?? position.markPrice ?? null;
-
-  return (
-    <Card
-      title="Position"
-      badge={
-        <LifecycleChips
-          market={position.market}
-          leverage={leverage}
-          // The position IS the open half of the cycle — that is what a card
-          // rendering only while exposure is held means.
-          lifecycle={{ direction, action: "open", actionLabel: "Open" }}
-          fallbackDetail=""
+      )}
+      <Stat label="Fee" value={formatSignedUsd(-fill.feeUsd)} />
+      {showRealized && (
+        <Stat
+          label="Realized"
+          value={formatSignedUsd(fill.closedPnl)}
+          tone={pnlTone(fill.closedPnl)}
         />
-      }
-      meta={`Margin $${position.marginUsed.toFixed(2)}`}
-    >
-      <div className="grid grid-cols-3 gap-x-4 gap-y-3 px-3 py-3">
-        <Cell label="Size" value={formatSize(Math.abs(position.size))} />
-        {position.entryPrice === undefined ? null : (
-          <Cell label="Entry" value={formatPrice(position.entryPrice)} />
-        )}
-        {mark === null ? null : <Cell label="Mark" value={formatPrice(mark)} />}
-        <Cell
-          label="Unrealised"
-          value={formatSignedUsd(position.unrealisedPnl)}
-          tone={pnlTone(position.unrealisedPnl)}
-        />
-        <Cell label="Protected" value={protection} />
-        {position.liquidationPrice === undefined ? null : (
-          <Cell label="Liquidation" value={formatPrice(position.liquidationPrice)} />
-        )}
-      </div>
-    </Card>
-  );
-}
-
-/** One labelled figure in the position card's grid. */
-function Cell({ label, value, tone }: { label: string; value: string; tone?: Tone }) {
-  return (
-    <div className="flex flex-col gap-0.5">
-      <span className="text-[11px] text-muted-foreground">{label}</span>
-      <span className={`text-xs font-medium tabular-nums ${toneClass(tone)}`}>{value}</span>
+      )}
+      <span className="ml-auto tabular-nums text-muted-foreground">
+        {new Date(fill.tradedAt).toLocaleTimeString()} · #{fill.orderId}
+      </span>
     </div>
   );
 }
@@ -629,14 +568,17 @@ export function MissionThreadCards({ mission }: { readonly mission: Orchestratio
       ) : mission.inFlightExecution !== null ? (
         <OrderIntentCard exec={mission.inFlightExecution} leverage={leverage} />
       ) : null}
-      {openPosition && (
-        <PositionCard
-          position={openPosition}
-          markPrice={mission.marketPrice ?? null}
-          leverage={leverage}
-        />
-      )}
-      {mission.recentFills.slice(0, 3).map((fill) => (
+      {/*
+        Every fill the mission has made, not the last three. The cap was there
+        because each receipt was a card; as a single row a fill costs about a
+        fifth of the height, and a session that scaled in twice and out three
+        times is unreadable if two of those five are missing.
+
+        Reversed: the projection serves newest-first (its LIMIT has to), but
+        these rows sit at the end of a message timeline that reads downward, so
+        the oldest fill belongs at the top and the newest nearest the composer.
+      */}
+      {mission.recentFills.toReversed().map((fill) => (
         <FillReceipt
           key={`${fill.orderId}-${fill.tradedAt}`}
           fill={fill}

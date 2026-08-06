@@ -8,18 +8,18 @@
  *
  * @module MissionStalenessBanner
  */
-import type { TradingMissionStatus } from "@t3tools/trading-contracts";
-
 import { cn } from "~/lib/utils";
-import { describeStaleness } from "./tradingPresentation";
+import { describeStaleness, type StalenessSubject } from "./tradingPresentation";
 
-export interface StalenessSubject {
-  readonly status: TradingMissionStatus;
-  readonly position: { readonly size: number; readonly observedAt: string } | null;
-}
+export type { StalenessSubject };
 
 /**
- * Renders nothing while the read is fresh.
+ * Renders nothing until the read has stopped landing altogether.
+ *
+ * The band between "late" and "stopped" belongs to the live panel's own chip,
+ * not to a full-width banner: a banner that appears and disappears on a cycle
+ * teaches the operator to ignore banners, which is the opposite of what this
+ * one is for.
  *
  * `Date.now()` is read on each render rather than on a timer: the projection
  * poll is what moves this, and a second timer would only let the banner

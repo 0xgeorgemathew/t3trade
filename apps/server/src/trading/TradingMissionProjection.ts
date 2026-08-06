@@ -184,9 +184,10 @@ interface FillRow {
 /**
  * The mission's realised result, aggregated across every fill.
  *
- * Separate from `recentFills` because the receipt list is capped at three: a
- * completion summary built from that cap would understate any mission that
- * traded more than three times.
+ * Separate from `recentFills` because that list is capped at all: a completion
+ * summary built from a capped list would understate any mission that traded
+ * more times than the cap. It is also grouped by order there, so its row count
+ * is orders, not fills.
  */
 interface MissionResultRow {
   readonly realized_pnl: number | null;
@@ -471,11 +472,17 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       `.pipe(Effect.mapError(sqlFail("execution")));
       const inFlightExecution = execRows[0] ?? null;
 
-      // The three most recent orders, newest first — each one the sum of its own
-      // partial fills. The average price is size-weighted, because the plain
-      // mean of a dozen slices is not the price the order got. Capped at 3 to
-      // match the receipt list the thread card renders, so the projection and
-      // the UI agree on the count rather than the UI truncating silently.
+      // The mission's orders, newest first — each one the sum of its own partial
+      // fills. The average price is size-weighted, because the plain mean of a
+      // dozen slices is not the price the order got.
+      //
+      // The cap was 3, to match a receipt list the thread rendered as three
+      // cards. The receipts are single rows now and the thread shows all of
+      // them, because a session that opened and closed twice before the trade
+      // on screen has to be readable — and the chart plots the same fills as
+      // markers, so a truncated list would silently truncate the chart too. The
+      // limit that remains is a payload guard on a 3s poll, not a display
+      // choice: it is far above any real mission's order count.
       const recentFills = yield* sql<FillRow>`
         SELECT
           MIN(cloid) AS cloid,
@@ -490,7 +497,7 @@ const makeTradingMissionProjection = Effect.gen(function* () {
           MAX(traded_at) AS traded_at
         FROM trading_fills WHERE mission_id = ${missionId}
         GROUP BY order_id, market, side
-        ORDER BY MAX(traded_at) DESC LIMIT 3
+        ORDER BY MAX(traded_at) DESC LIMIT 50
       `.pipe(Effect.mapError(sqlFail("fills")));
 
       // The realised result across EVERY fill, for the completion summary.

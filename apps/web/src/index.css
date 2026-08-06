@@ -556,6 +556,30 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     }
   }
 
+  /*
+   * The mission live panel sits directly on top of the composer, so it is the
+   * same pane of glass: the same surface tint, the same blur and saturation,
+   * and the same hairline outline. An opaque card there read as a second,
+   * heavier object stacked on a light one.
+   */
+  .mission-panel-glass {
+    --mission-panel-surface: var(--card);
+    --mission-panel-outline: rgb(0 0 0 / 8%);
+
+    border-color: var(--mission-panel-outline);
+    background: color-mix(in srgb, var(--mission-panel-surface) var(--glass-opacity), transparent);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+    box-shadow: 0 12px 28px -18px rgb(0 0 0 / 40%);
+  }
+
+  .dark .mission-panel-glass {
+    --mission-panel-surface: color-mix(in srgb, var(--background) 96%, var(--color-white));
+    --mission-panel-outline: color-mix(in srgb, var(--color-white) 5%, transparent);
+
+    box-shadow: none;
+  }
+
   .alert-glass {
     --alert-glass-tint: transparent;
 

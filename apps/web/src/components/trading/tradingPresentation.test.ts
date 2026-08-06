@@ -1,4 +1,4 @@
-import type { TradingMissionStatus } from "@t3tools/trading-contracts";
+import type { PersistedWatch, TradingMissionStatus } from "@t3tools/trading-contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -12,6 +12,7 @@ import {
   describeMandate,
   describeTradingAccount,
   describeWatch,
+  deriveUpNextItems,
   deriveWatchConditions,
   formatDuration,
   formatPrice,
@@ -23,14 +24,21 @@ import {
   readFillLifecycle,
   readIntentLifecycle,
   deriveFillSlippagePercent,
+  deriveChartConditions,
+  deriveChartFillMarkers,
   deriveMissionPhases,
+  deriveNextReassessmentAt,
   derivePausedExposure,
   deriveStrategyPlan,
+  describeDelayedRead,
   describeStaleness,
   formatLeverage,
   formatSignedPercent,
   hyperliquidTradeUrl,
-  isPositionDataStale,
+  POSITION_DELAYED_AFTER_MILLIS,
+  POSITION_STALE_AFTER_MILLIS,
+  readPositionFreshness,
+  readPositionReadAge,
   isLiveMission,
   shouldShowMissionStrip,
   visibleMissions,
@@ -288,82 +296,105 @@ describe("money and price formatting", () => {
   });
 });
 
-describe("stale-data banner", () => {
+describe("position read freshness", () => {
   const now = 1_700_000_000_000;
-  const fresh = new Date(now - 1_000).toISOString();
-  const old = new Date(now - 6_000).toISOString();
+  const at = (ageMillis: number) => new Date(now - ageMillis).toISOString();
+  const held = (ageMillis: number) =>
+    ({ status: "position_open", position: { size: 0.5, observedAt: at(ageMillis) } }) as const;
 
-  it("stays quiet on a fresh position read", () => {
+  it("stays current through a whole reconcile cycle", () => {
+    expect(readPositionFreshness(held(1_000), now)).toBe("current");
+    // §18.2 #8's reconcile is `Schedule.spaced(5s)` — spaced from completion —
+    // so an age of six or seven seconds is an ordinary cycle, not a fault. The
+    // old 5s threshold called this stale, which is why the banner blinked on
+    // and off for the life of every position.
+    expect(readPositionFreshness(held(6_000), now)).toBe("current");
+    expect(readPositionFreshness(held(12_000), now)).toBe("current");
+  });
+
+  it("calls the read delayed after three missed reconciles", () => {
+    expect(readPositionFreshness(held(POSITION_DELAYED_AFTER_MILLIS + 1), now)).toBe("delayed");
+    expect(readPositionFreshness(held(30_000), now)).toBe("delayed");
+  });
+
+  it("calls the read stale only once it has stopped landing", () => {
+    expect(readPositionFreshness(held(POSITION_STALE_AFTER_MILLIS + 1), now)).toBe("stale");
+    expect(readPositionFreshness(held(300_000), now)).toBe("stale");
+  });
+
+  it("stays current when there is no position to be stale about", () => {
+    expect(readPositionFreshness({ status: "waiting", position: null }, now)).toBe("current");
+  });
+
+  // §18.2 #8's periodic reconcile only runs against exposure, so a flat
+  // mission's last snapshot ages out once and is never refreshed. Reading the
+  // timestamp alone latched the warning on for the rest of the session, on a
+  // mission with nothing at risk and nothing suspended.
+  it("stays current on a flat mission whose snapshot has stopped refreshing", () => {
     expect(
-      isPositionDataStale(
-        { status: "position_open", position: { size: 0.5, observedAt: fresh } },
+      readPositionFreshness(
+        { status: "waiting", position: { size: 0, observedAt: at(600_000) } },
         now,
       ),
-    ).toBe(false);
-  });
-
-  it("fires once the read passes the 5s account window", () => {
-    expect(
-      isPositionDataStale(
-        { status: "position_open", position: { size: 0.5, observedAt: old } },
-        now,
-      ),
-    ).toBe(true);
-  });
-
-  it("stays quiet when there is no position to be stale about", () => {
-    expect(isPositionDataStale({ status: "waiting", position: null }, now)).toBe(false);
-  });
-
-  // §18.2 #8's periodic reconcile only runs while a position is open, so a flat
-  // mission's last snapshot ages out after five seconds and is never refreshed.
-  // Reading the timestamp alone latched the banner on for the rest of the
-  // session, on a mission with nothing at risk and nothing suspended.
-  it("stays quiet on a flat mission whose snapshot has stopped refreshing", () => {
-    expect(
-      isPositionDataStale({ status: "waiting", position: { size: 0, observedAt: old } }, now),
-    ).toBe(false);
+    ).toBe("current");
   });
 
   // A revoked mission keeps its final position row forever. Yesterday's mission
   // must not warn about today's order placement.
-  it("stays quiet on a terminal mission holding a historical snapshot", () => {
+  it("stays current on a terminal mission holding a historical snapshot", () => {
     expect(
-      isPositionDataStale({ status: "revoked", position: { size: 0.5, observedAt: old } }, now),
-    ).toBe(false);
+      readPositionFreshness(
+        { status: "revoked", position: { size: 0.5, observedAt: at(600_000) } },
+        now,
+      ),
+    ).toBe("current");
     expect(
-      isPositionDataStale({ status: "completed", position: { size: 0.5, observedAt: old } }, now),
-    ).toBe(false);
+      readPositionFreshness(
+        { status: "completed", position: { size: 0.5, observedAt: at(600_000) } },
+        now,
+      ),
+    ).toBe("current");
+  });
+
+  it("ages nothing off an unparseable timestamp", () => {
+    expect(
+      readPositionReadAge(
+        { status: "position_open", position: { size: 0.5, observedAt: "?" } },
+        now,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("stale-data surfaces", () => {
+  const now = 1_700_000_000_000;
+  const at = (ageMillis: number) => new Date(now - ageMillis).toISOString();
+  const held = (ageMillis: number) =>
+    ({ status: "position_open", position: { size: 0.5, observedAt: at(ageMillis) } }) as const;
+
+  // The quiet half: enough to say the numbers are behind, without asserting
+  // anything about the order path that is probably not true yet.
+  it("shows the panel chip through the delayed band", () => {
+    expect(describeDelayedRead(held(20_000), now)).toBe("stale 20s");
+    expect(describeDelayedRead(held(6_000), now)).toBeNull();
   });
 
   // The banner's whole job is telling a read that is a second late from one
   // that stopped four minutes ago, and it could not: both read "stale".
   it("says how long ago the last read landed", () => {
-    expect(
-      describeStaleness({ status: "position_open", position: { size: 0.5, observedAt: old } }, now),
-    ).toBe(
+    expect(describeStaleness(held(50_000), now)).toBe(
       "Position data is stale. Order placement is suspended until a fresh read lands. " +
-        "Last update 6s ago.",
+        "Last update 50s ago.",
     );
-
-    expect(
-      describeStaleness(
-        {
-          status: "position_open",
-          position: { size: 0.5, observedAt: new Date(now - 254_000).toISOString() },
-        },
-        now,
-      ),
-    ).toContain("Last update 4m 14s ago.");
+    expect(describeStaleness(held(254_000), now)).toContain("Last update 4m 14s ago.");
   });
 
-  it("says nothing at all while the read is fresh", () => {
-    expect(
-      describeStaleness(
-        { status: "position_open", position: { size: 0.5, observedAt: fresh } },
-        now,
-      ),
-    ).toBeNull();
+  // "Order placement is suspended" is a claim about the execution path. A read
+  // one cycle behind does not support it.
+  it("says nothing at all until the read has actually stopped", () => {
+    expect(describeStaleness(held(1_000), now)).toBeNull();
+    expect(describeStaleness(held(6_000), now)).toBeNull();
+    expect(describeStaleness(held(20_000), now)).toBeNull();
     expect(describeStaleness({ status: "waiting", position: null }, now)).toBeNull();
   });
 });
@@ -1177,5 +1208,428 @@ describe("deriveWatchConditions", () => {
       ],
     })!;
     expect(armed.rows[0]?.met).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// chart levels
+// ---------------------------------------------------------------------------
+
+describe("deriveChartConditions", () => {
+  const persisted = <W>(id: string, watch: W, status: "active" | "triggered" = "active") => ({
+    id,
+    missionId: "mission-1",
+    strategyVersion: 1,
+    watch,
+    status,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+  });
+
+  const priceCross = persisted("w-price", {
+    type: "price_cross" as const,
+    market: "ETH" as const,
+    priceSource: "mark" as const,
+    direction: "above" as const,
+    price: 1_868.4,
+  });
+
+  const pnlAbove = persisted("w-pnl-up", {
+    type: "pnl_above" as const,
+    market: "ETH" as const,
+    valueUsd: 20,
+  });
+
+  const pnlBelow = persisted("w-pnl-down", {
+    type: "pnl_below" as const,
+    market: "ETH" as const,
+    valueUsd: -10,
+  });
+
+  it("draws watches that carry a price outright", () => {
+    expect(deriveChartConditions({ watches: [priceCross] })).toEqual([
+      { price: 1_868.4, direction: "above", met: false },
+    ]);
+  });
+
+  it("ignores terminal watches", () => {
+    expect(
+      deriveChartConditions({ watches: [{ ...priceCross, status: "consumed" as const }] }),
+    ).toEqual([]);
+  });
+
+  // `pnl = size × (mark − entry)`, so a $20 profit on half an ETH is $40 of
+  // price. These were dropped as "no y on a price chart", which was only ever
+  // true of a flat mission — and they are the levels that decide when a winner
+  // is banked and a loser cut.
+  it("resolves a long's PnL watches into prices above and below its entry", () => {
+    const basis = { entryPrice: 1_900, size: 0.5 };
+    expect(deriveChartConditions({ watches: [pnlAbove, pnlBelow] }, basis)).toEqual([
+      { price: 1_940, direction: "above", met: false },
+      { price: 1_880, direction: "below", met: false },
+    ]);
+  });
+
+  // The signed size carries the direction: a short's profit lives BELOW its
+  // entry, so `pnl_above` has to resolve downward. Getting this backwards would
+  // draw a short's target on the side of the chart that liquidates it.
+  it("inverts a short's PnL watches, because its profit is below its entry", () => {
+    const basis = { entryPrice: 1_900, size: -0.5 };
+    expect(deriveChartConditions({ watches: [pnlAbove, pnlBelow] }, basis)).toEqual([
+      { price: 1_860, direction: "below", met: false },
+      { price: 1_920, direction: "above", met: false },
+    ]);
+  });
+
+  it("draws no PnL level while flat, rather than inventing one", () => {
+    expect(deriveChartConditions({ watches: [pnlAbove] })).toEqual([]);
+    expect(deriveChartConditions({ watches: [pnlAbove] }, { entryPrice: 1_900, size: 0 })).toEqual(
+      [],
+    );
+  });
+
+  // `pnl_giveback` is measured from the position's peak unrealised PnL, and
+  // `TradingPositionView` does not carry the peak — so there is no honest level
+  // to draw. It stays a checklist row.
+  it("leaves pnl_giveback to the checklist", () => {
+    const giveback = persisted("w-give", {
+      type: "pnl_giveback" as const,
+      market: "ETH" as const,
+      drawdownUsd: 5,
+    });
+    expect(
+      deriveChartConditions({ watches: [giveback] }, { entryPrice: 1_900, size: 0.5 }),
+    ).toEqual([]);
+  });
+
+  it("carries the met flag from a triggered watch", () => {
+    expect(
+      deriveChartConditions({ watches: [{ ...priceCross, status: "triggered" as const }] })[0],
+    ).toMatchObject({ met: true });
+  });
+});
+
+describe("deriveNextReassessmentAt", () => {
+  const reassessment = (id: string, runAt: number, status: "active" | "consumed" = "active") => ({
+    id,
+    missionId: "mission-1",
+    strategyVersion: 1,
+    watch: { type: "scheduled_reassessment" as const, runAt },
+    status,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+  });
+
+  it("returns the earliest armed reassessment", () => {
+    expect(
+      deriveNextReassessmentAt({
+        watches: [reassessment("a", 1_700_000_300_000), reassessment("b", 1_700_000_120_000)],
+      }),
+    ).toBe(1_700_000_120_000);
+  });
+
+  it("ignores reassessments that have already been consumed", () => {
+    expect(
+      deriveNextReassessmentAt({
+        watches: [reassessment("a", 1_700_000_120_000, "consumed")],
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when none is armed", () => {
+    expect(deriveNextReassessmentAt({ watches: [] })).toBeNull();
+  });
+});
+
+describe("deriveChartFillMarkers", () => {
+  const fill = (over: {
+    readonly orderId: number;
+    readonly tradedAt: string;
+    readonly avgFillPrice: number;
+    readonly closedPnl: number;
+    readonly direction?: string;
+  }) => over;
+
+  it("marks an opening fill as an open", () => {
+    const markers = deriveChartFillMarkers({
+      recentFills: [
+        fill({
+          orderId: 1,
+          tradedAt: "2026-08-06T12:00:00.000Z",
+          avgFillPrice: 1_900,
+          closedPnl: 0,
+          direction: "Open Long",
+        }),
+      ],
+    });
+
+    expect(markers).toHaveLength(1);
+    expect(markers[0]!.kind).toBe("open");
+    expect(markers[0]!.price).toBe(1_900);
+    expect(markers[0]!.at).toBe(Date.parse("2026-08-06T12:00:00.000Z"));
+  });
+
+  // The colour of a close is the only place the chart says whether the position
+  // it ended paid — the position row is gone by then.
+  it("colours a close by what it realised", () => {
+    const markers = deriveChartFillMarkers({
+      recentFills: [
+        fill({
+          orderId: 1,
+          tradedAt: "2026-08-06T12:05:00.000Z",
+          avgFillPrice: 1_950,
+          closedPnl: 12.5,
+          direction: "Close Long",
+        }),
+        fill({
+          orderId: 2,
+          tradedAt: "2026-08-06T12:06:00.000Z",
+          avgFillPrice: 1_850,
+          closedPnl: -8,
+          direction: "Close Long",
+        }),
+        fill({
+          orderId: 3,
+          tradedAt: "2026-08-06T12:07:00.000Z",
+          avgFillPrice: 1_900,
+          closedPnl: 0,
+          direction: "Close Short",
+        }),
+      ],
+    });
+
+    expect(markers.map((m) => m.kind)).toEqual(["close_profit", "close_loss", "close_flat"]);
+  });
+
+  // A reversal realises the old exposure, so it reads as a close.
+  it("treats a reversal as a close", () => {
+    const markers = deriveChartFillMarkers({
+      recentFills: [
+        fill({
+          orderId: 1,
+          tradedAt: "2026-08-06T12:05:00.000Z",
+          avgFillPrice: 1_950,
+          closedPnl: 4,
+          direction: "Long > Short",
+        }),
+      ],
+    });
+
+    expect(markers[0]!.kind).toBe("close_profit");
+  });
+
+  // `side` alone cannot tell an open from a close, so an unlabelled fill is
+  // drawn as neither rather than guessed at.
+  it("marks a fill with no lifecycle label as unknown", () => {
+    const markers = deriveChartFillMarkers({
+      recentFills: [
+        fill({
+          orderId: 1,
+          tradedAt: "2026-08-06T12:00:00.000Z",
+          avgFillPrice: 1_900,
+          closedPnl: 0,
+        }),
+      ],
+    });
+
+    expect(markers[0]!.kind).toBe("unknown");
+  });
+
+  it("drops a fill whose timestamp does not parse", () => {
+    const markers = deriveChartFillMarkers({
+      recentFills: [
+        fill({
+          orderId: 1,
+          tradedAt: "not a time",
+          avgFillPrice: 1_900,
+          closedPnl: 0,
+          direction: "Open Long",
+        }),
+      ],
+    });
+
+    expect(markers).toEqual([]);
+  });
+
+  it("keys each marker by order and time, so partials do not collide", () => {
+    const markers = deriveChartFillMarkers({
+      recentFills: [
+        fill({
+          orderId: 7,
+          tradedAt: "2026-08-06T12:00:00.000Z",
+          avgFillPrice: 1_900,
+          closedPnl: 0,
+          direction: "Open Long",
+        }),
+        fill({
+          orderId: 7,
+          tradedAt: "2026-08-06T12:00:05.000Z",
+          avgFillPrice: 1_901,
+          closedPnl: 0,
+          direction: "Open Long",
+        }),
+      ],
+    });
+
+    expect(new Set(markers.map((m) => m.key)).size).toBe(2);
+  });
+});
+
+describe("deriveUpNextItems", () => {
+  const NOW = 1_700_000_000_000;
+
+  const watch = (
+    id: string,
+    inner: PersistedWatch["watch"],
+    armedReason?: PersistedWatch["armedReason"],
+  ): PersistedWatch => ({
+    id,
+    missionId: "mission-1",
+    strategyVersion: 1,
+    watch: inner,
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...(armedReason === undefined ? {} : { armedReason }),
+  });
+
+  const flatMission = {
+    watches: [] as ReadonlyArray<PersistedWatch>,
+    marketPrice: 1_900,
+    inFlightExecution: null,
+    position: null,
+    strategy: null,
+  };
+
+  it("is empty when the mission has nothing scheduled", () => {
+    expect(deriveUpNextItems(flatMission, NOW)).toEqual([]);
+  });
+
+  it("orders the classes: working order, stop, levels, then the clock", () => {
+    const items = deriveUpNextItems(
+      {
+        ...flatMission,
+        inFlightExecution: { limitPrice: 1_901 },
+        position: { size: 1, entryPrice: 1_900, unrealisedPnl: 0 },
+        strategy: { protection: { stopPrice: 1_890 } },
+        watches: [
+          watch(
+            "w-time",
+            { type: "scheduled_reassessment", runAt: NOW + 160_000 },
+            "staleness_floor",
+          ),
+          watch("w-price", {
+            type: "price_cross",
+            market: "ETH",
+            priceSource: "mark",
+            direction: "below",
+            price: 1_899,
+          }),
+        ],
+      },
+      NOW,
+    );
+    expect(items.map((item) => item.kind)).toEqual(["order", "stop", "price", "time"]);
+    expect(items[1]?.label).toBe("stop 1,890");
+    // 10 points of adverse move on one unit of size.
+    expect(items[1]?.detail).toBe("$10.00 risk");
+    expect(items[2]?.label).toBe("wake @ 1,899 ↓");
+    expect(items[2]?.detail).toBe("1 away");
+    expect(items[3]?.label).toBe("reassess in 2m 40s");
+    expect(items[3]?.chip).toBe("auto");
+  });
+
+  it("ranks price and pnl levels by how near they are", () => {
+    const items = deriveUpNextItems(
+      {
+        ...flatMission,
+        position: { size: 1, entryPrice: 1_900, unrealisedPnl: 1 },
+        watches: [
+          watch("far", {
+            type: "price_cross",
+            market: "ETH",
+            priceSource: "mark",
+            direction: "above",
+            price: 1_950,
+          }),
+          watch("near", { type: "pnl_above", market: "ETH", valueUsd: 2 }, "profit_target"),
+        ],
+      },
+      NOW,
+    );
+    expect(items.map((item) => item.key)).toEqual(["near", "far"]);
+    expect(items[0]?.label).toBe("bank at +$2.00");
+    expect(items[0]?.chip).toBe("target");
+    // The target's price, resolved through the exposure it is measured on.
+    expect(items[0]?.priceLevel).toBe(1_902);
+  });
+
+  it("chips a runtime-armed stop-proximity wake", () => {
+    const items = deriveUpNextItems(
+      {
+        ...flatMission,
+        position: { size: -1, entryPrice: 1_900, unrealisedPnl: 0 },
+        watches: [
+          watch(
+            "prox",
+            {
+              type: "price_cross",
+              market: "ETH",
+              priceSource: "mark",
+              direction: "above",
+              price: 1_905,
+            },
+            "stop_proximity",
+          ),
+        ],
+      },
+      NOW,
+    );
+    expect(items[0]?.chip).toBe("stop");
+  });
+
+  it("warns when a waiting plan names a trigger level nothing is armed at", () => {
+    const items = deriveUpNextItems(
+      {
+        ...flatMission,
+        strategy: {
+          currentAction: "waiting",
+          entryPlan: {
+            conditions: [
+              { description: "enter if price reclaims 1899", priceLevel: 1_899 },
+              { description: "abandon if the 1m closes under 1880", priceLevel: 1_880 },
+            ],
+          },
+        },
+        watches: [
+          watch("armed", {
+            type: "price_cross",
+            market: "ETH",
+            priceSource: "mark",
+            direction: "below",
+            price: 1_880,
+          }),
+        ],
+      },
+      NOW,
+    );
+    // The armed level is a price pill; only the unarmed one becomes a warning.
+    expect(items.map((item) => item.kind)).toEqual(["price", "entry"]);
+    expect(items[1]).toMatchObject({ label: "entry? 1,899", tone: "warning", detail: "not armed" });
+  });
+
+  it("keeps the entry view off a mission that is already in the market", () => {
+    const items = deriveUpNextItems(
+      {
+        ...flatMission,
+        position: { size: 1, entryPrice: 1_900, unrealisedPnl: 0 },
+        strategy: {
+          currentAction: "holding",
+          entryPlan: { conditions: [{ description: "…", priceLevel: 1_899 }] },
+        },
+      },
+      NOW,
+    );
+    expect(items).toEqual([]);
   });
 });

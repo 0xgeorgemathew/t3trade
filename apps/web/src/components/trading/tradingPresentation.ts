@@ -1,9 +1,12 @@
 import type {
   MarketWatch,
+  MomentumStrategyAction,
   PersistedWatch,
   PersistedWatchStatus,
   TradingMissionStatus,
+  TradingTimeframe,
 } from "@t3tools/trading-contracts";
+import { findUnarmedEntryConditions, isWaitingLikeAction } from "@t3tools/trading-contracts";
 
 /** The ten §11.1 statuses, as the workspace names them. */
 export const MISSION_STATUS_LABELS: Record<TradingMissionStatus, string> = {
@@ -670,60 +673,91 @@ export function describeEntryPermission(control: {
 }
 
 /**
- * Whether order placement is suspended because the position read is stale
- * (§13's 5s account window).
+ * How late a position read may be before the surface says anything at all.
  *
- * The banner is driven by the same freshness rule the execution path enforces,
- * so the user is told placement is suspended for the same reason it actually
- * is — not by a separate UI-side timer that could disagree.
+ * This is NOT §13's 5s account window, and setting it to that window was the
+ * bug. The refresh it measures is §18.2 #8's periodic reconcile, whose schedule
+ * is `Schedule.spaced(5s)` — spaced from *completion*, so one cycle is five
+ * seconds plus an exchange round trip plus the reconcile's own writes. On top of
+ * that, `observed_at` is the server's clock at the top of the pass and this
+ * compares it against the browser's, so any skew between the two lands here too.
  *
- * Two conditions have to hold before that claim is true, and checking only the
- * timestamp made it false in the common case. `observed_at` is refreshed by the
- * §18.2 #8 periodic reconcile, which runs *only while a position is open*: a
- * flat mission's last snapshot ages out after five seconds and never comes
- * back, so the banner latched on and stayed on. And a revoked mission keeps its
- * final position row forever, so yesterday's mission still showed a live
- * suspension warning today. Neither had anything suspended — a flat mission has
- * nothing to go stale about, and a revoked one is blocked by being revoked.
+ * A threshold equal to the refresh period is therefore below the floor of what
+ * it measures: the age sweeps past it near the end of every single cycle, and
+ * the banner blinked on and off for the life of every position. Three missed
+ * reconciles is the first age that means a read has actually stopped landing.
  */
-export const ACCOUNT_STALE_AFTER_MILLIS = 5_000;
+export const POSITION_DELAYED_AFTER_MILLIS = 15_000;
 
-export function isPositionDataStale(
-  mission: {
-    readonly status: TradingMissionStatus;
-    readonly position: { readonly size: number; readonly observedAt: string } | null;
-  },
-  nowMs: number,
-): boolean {
-  if (isMissionComplete(mission.status)) return false;
+/**
+ * How late a read must be before the surface claims placement is suspended.
+ *
+ * "Order placement is suspended" is a strong claim about the execution path, so
+ * it waits until the read has missed roughly nine reconciles — by then the feed
+ * is not late, it is broken. Between the two thresholds the panel shows a quiet
+ * `stale 20s` chip instead: enough to say the numbers are not current, without
+ * asserting something about the order path that is probably not true yet.
+ */
+export const POSITION_STALE_AFTER_MILLIS = 45_000;
 
-  const position = mission.position;
-  if (position === null || position.size === 0) return false;
+/** How current the position read is, in the three bands the surfaces show. */
+export type PositionFreshness = "current" | "delayed" | "stale";
 
-  return nowMs - Date.parse(position.observedAt) > ACCOUNT_STALE_AFTER_MILLIS;
+export interface StalenessSubject {
+  readonly status: TradingMissionStatus;
+  readonly position: { readonly size: number; readonly observedAt: string } | null;
 }
 
 /**
- * The staleness banner's own text, or null when nothing is stale.
+ * The age of the position read, or null when there is nothing to age.
  *
- * "Position data is stale" alone left the operator with no way to tell a read
- * that is a second late from one that stopped four minutes ago — and those are
- * very different situations to be holding a position through. The age is the
- * whole point of the banner, so it goes in the sentence.
+ * Null in three cases, each of which used to produce a false warning: a
+ * completed mission (its final row never refreshes again), a flat mission
+ * (§18.2 #8's reconcile only runs against exposure, so a flat snapshot ages out
+ * once and stays aged out), and an unparseable timestamp.
  */
-export function describeStaleness(
-  mission: {
-    readonly status: TradingMissionStatus;
-    readonly position: { readonly size: number; readonly observedAt: string } | null;
-  },
-  nowMs: number,
-): string | null {
-  if (!isPositionDataStale(mission, nowMs)) return null;
+export function readPositionReadAge(subject: StalenessSubject, nowMs: number): number | null {
+  if (isMissionComplete(subject.status)) return null;
 
-  const observedAt =
-    mission.position === null ? Number.NaN : Date.parse(mission.position.observedAt);
-  const age = Number.isNaN(observedAt) ? null : formatDuration(nowMs - observedAt);
-  const lastUpdate = age === null ? "" : ` Last update ${age} ago.`;
+  const position = subject.position;
+  if (position === null || position.size === 0) return null;
+
+  const observedAt = Date.parse(position.observedAt);
+  if (Number.isNaN(observedAt)) return null;
+
+  return Math.max(0, nowMs - observedAt);
+}
+
+export function readPositionFreshness(subject: StalenessSubject, nowMs: number): PositionFreshness {
+  const age = readPositionReadAge(subject, nowMs);
+  if (age === null) return "current";
+  if (age > POSITION_STALE_AFTER_MILLIS) return "stale";
+  if (age > POSITION_DELAYED_AFTER_MILLIS) return "delayed";
+  return "current";
+}
+
+/** The panel header's quiet chip — `stale 20s` — or null while current. */
+export function describeDelayedRead(subject: StalenessSubject, nowMs: number): string | null {
+  const freshness = readPositionFreshness(subject, nowMs);
+  if (freshness === "current") return null;
+
+  const age = readPositionReadAge(subject, nowMs);
+  return age === null ? "stale" : `stale ${formatDuration(age)}`;
+}
+
+/**
+ * The staleness banner's own text, or null below the suspension threshold.
+ *
+ * The age is the whole point of the sentence: a read that is a second late and
+ * one that stopped four minutes ago are very different situations to be holding
+ * a position through, and "Position data is stale" alone said the same thing
+ * about both.
+ */
+export function describeStaleness(subject: StalenessSubject, nowMs: number): string | null {
+  if (readPositionFreshness(subject, nowMs) !== "stale") return null;
+
+  const age = readPositionReadAge(subject, nowMs);
+  const lastUpdate = age === null ? "" : ` Last update ${formatDuration(age)} ago.`;
   return `Position data is stale. Order placement is suspended until a fresh read lands.${lastUpdate}`;
 }
 
@@ -1219,36 +1253,423 @@ export function deriveWatchConditions(mission: {
   return { rows, nextReassessmentAt };
 }
 
+// ---------------------------------------------------------------------------
+// The "Up next" strip — plan 24 §3
+// ---------------------------------------------------------------------------
+
+/** One pill in the strip: a single thing the mission is going to do or meet. */
+export interface UpNextItem {
+  /** Stable across polls, so React does not remount the pill every 3s. */
+  readonly key: string;
+  readonly kind: "order" | "stop" | "price" | "pnl" | "time" | "entry";
+  /** The pill's own words, e.g. `wake @ 1899 ↓`. */
+  readonly label: string;
+  /** How far away it is, in its own units. Null when nothing measures it. */
+  readonly detail: string | null;
+  /** A short provenance chip — `auto`, `target`, `stop`. Null for harness-armed. */
+  readonly chip: string | null;
+  /** `warning` is the plan naming a level nothing is armed at. */
+  readonly tone: "normal" | "warning";
+  /** The chart level this pill points at, for the click-to-flash interaction. */
+  readonly priceLevel: number | null;
+}
+
 /**
- * The armed price levels a chart can draw, nearest-first is the caller's job.
+ * Everything the mission is waiting on, as one ordered list of pills.
  *
- * Only the two watch types that carry a price level appear: a `pnl_above` or a
- * `scheduled_reassessment` has no y on a price chart, and drawing one at an
- * invented level would be worse than the text row that already reports it.
+ * The panel already showed the *nearest* reassessment as a countdown and the
+ * armed watches as a checklist. Neither answers "what happens next", because
+ * the checklist is a set of predicates in registration order and the countdown
+ * is one item out of several. This is the schedule: every future event the
+ * projection already carries, in the order it is likely to arrive.
+ *
+ * Ordering is by class, then by nearness inside the class — deliberately, not
+ * for want of a cleverer sort. A price two dollars away and a reassessment
+ * three minutes away have no common unit, and a single blended rank would be a
+ * number no one could check. The classes are ordered by how settled the event
+ * is: an order already working, then the stop that is standing, then the levels
+ * the market has to reach, then the clock, then the entry view a waiting plan
+ * named but did not arm.
+ *
+ * Derives from the projection alone — no RPC, no new server state.
  */
-export function deriveChartConditions(mission: {
-  readonly watches: ReadonlyArray<PersistedWatch>;
-}): ReadonlyArray<{
+export function deriveUpNextItems(
+  mission: {
+    readonly watches: ReadonlyArray<PersistedWatch>;
+    readonly marketPrice?: number | undefined;
+    readonly inFlightExecution: { readonly limitPrice?: number | undefined } | null;
+    readonly position: {
+      readonly size: number;
+      readonly entryPrice?: number | undefined;
+      readonly unrealisedPnl: number;
+    } | null;
+    readonly strategy: {
+      readonly currentAction?: string | undefined;
+      readonly entryPlan?: { readonly conditions?: ReadonlyArray<unknown> | undefined } | undefined;
+      readonly protection?: { readonly stopPrice?: number | undefined } | undefined;
+    } | null;
+  },
+  nowMillis: number,
+): ReadonlyArray<UpNextItem> {
+  const markPrice = mission.marketPrice ?? null;
+  const position = mission.position;
+
+  const orders: UpNextItem[] = [];
+  if (mission.inFlightExecution !== null) {
+    const limit = mission.inFlightExecution.limitPrice;
+    orders.push({
+      key: "order",
+      kind: "order",
+      label: "order working",
+      detail: limit === undefined ? null : formatPrice(limit),
+      chip: null,
+      tone: "normal",
+      priceLevel: limit ?? null,
+    });
+  }
+
+  // The stop is a standing future event, not just a line on the chart: it is
+  // the one thing on this list that ends the trade without the agent acting.
+  const stops: UpNextItem[] = [];
+  const stopPrice = mission.strategy?.protection?.stopPrice;
+  if (stopPrice !== undefined && position !== null && position.size !== 0) {
+    const entry = position.entryPrice;
+    const risk =
+      entry === undefined
+        ? null
+        : Math.max(0, position.size > 0 ? entry - stopPrice : stopPrice - entry) *
+          Math.abs(position.size);
+    stops.push({
+      key: "stop",
+      kind: "stop",
+      label: `stop ${formatPrice(stopPrice)}`,
+      detail: risk === null ? null : `${formatUsdPrecise(risk)} risk`,
+      chip: null,
+      tone: "normal",
+      priceLevel: stopPrice,
+    });
+  }
+
+  const levels: Array<{ readonly item: UpNextItem; readonly distance: number }> = [];
+  const times: Array<{ readonly item: UpNextItem; readonly at: number }> = [];
+
+  for (const persisted of mission.watches) {
+    if (persisted.status !== "active") continue;
+    const watch = persisted.watch;
+
+    if (watch.type === "price_cross" || watch.type === "candle_close") {
+      const arrow = watch.direction === "above" ? "↑" : "↓";
+      const distance = markPrice === null ? null : Math.abs(markPrice - watch.price);
+      levels.push({
+        item: {
+          key: persisted.id,
+          kind: "price",
+          label: `wake @ ${formatPrice(watch.price)} ${arrow}`,
+          detail: distance === null ? null : `${formatPrice(distance)} away`,
+          chip: persisted.armedReason === "stop_proximity" ? "stop" : null,
+          tone: "normal",
+          priceLevel: watch.price,
+        },
+        distance: distance ?? Number.POSITIVE_INFINITY,
+      });
+      continue;
+    }
+
+    if (watch.type === "pnl_above" || watch.type === "pnl_below") {
+      const isTarget = watch.type === "pnl_above";
+      const gap = position === null ? null : Math.abs(position.unrealisedPnl - watch.valueUsd);
+      levels.push({
+        item: {
+          key: persisted.id,
+          kind: "pnl",
+          label: `${isTarget ? "bank at" : "flag at"} ${formatSignedUsd(watch.valueUsd)}`,
+          detail: gap === null ? null : `${formatUsdPrecise(gap)} away`,
+          chip: persisted.armedReason === "profit_target" ? "target" : null,
+          tone: "normal",
+          priceLevel: derivePnlLevelPrice(
+            watch.valueUsd,
+            position === null || position.entryPrice === undefined
+              ? null
+              : { entryPrice: position.entryPrice, size: position.size },
+          ),
+        },
+        distance: gap ?? Number.POSITIVE_INFINITY,
+      });
+      continue;
+    }
+
+    if (watch.type === "pnl_giveback") {
+      // Measured from the position's own peak, which the projection does not
+      // carry — so it is listed without a distance rather than with a guess.
+      levels.push({
+        item: {
+          key: persisted.id,
+          kind: "pnl",
+          label: `give back ${formatUsdPrecise(watch.drawdownUsd)}`,
+          detail: "from peak",
+          chip: null,
+          tone: "normal",
+          priceLevel: null,
+        },
+        distance: Number.POSITIVE_INFINITY,
+      });
+      continue;
+    }
+
+    if (watch.type === "scheduled_reassessment") {
+      times.push({
+        item: {
+          key: persisted.id,
+          kind: "time",
+          label: `reassess in ${formatDuration(watch.runAt - nowMillis)}`,
+          detail: null,
+          chip: persisted.armedReason === "staleness_floor" ? "auto" : null,
+          tone: "normal",
+          priceLevel: null,
+        },
+        at: watch.runAt,
+      });
+    }
+  }
+
+  // A waiting plan's own trigger levels. Only the ones nothing is armed at
+  // make a pill: an armed trigger is already in the list above, and showing it
+  // twice would say the mission is watching two things when it is watching one.
+  const entries: UpNextItem[] = [];
+  const currentAction = mission.strategy?.currentAction;
+  const isWaiting =
+    currentAction !== undefined && isWaitingLikeAction(currentAction as MomentumStrategyAction);
+  if (position === null && isWaiting) {
+    const conditions = (mission.strategy?.entryPlan?.conditions ?? []).flatMap((condition) =>
+      readConditionHint(condition) === null ? [] : [readConditionHint(condition)!],
+    );
+    const unarmed = findUnarmedEntryConditions({ conditions, watches: mission.watches });
+    for (const condition of unarmed) {
+      entries.push({
+        key: `entry:${condition.priceLevel}`,
+        kind: "entry",
+        label: `entry? ${formatPrice(condition.priceLevel)}`,
+        detail: "not armed",
+        chip: null,
+        tone: "warning",
+        priceLevel: condition.priceLevel,
+      });
+    }
+  }
+
+  return [
+    ...orders,
+    ...stops,
+    ...levels.sort((a, b) => a.distance - b.distance).map((entry) => entry.item),
+    ...times.sort((a, b) => a.at - b.at).map((entry) => entry.item),
+    ...entries,
+  ];
+}
+
+/**
+ * A published condition as `findUnarmedEntryConditions` wants it.
+ *
+ * Same structural read as {@link readConditionDescription}: the decoded form is
+ * always the object, but the TS type is the input union, so the hints are
+ * reached through a guard rather than a cast. Null when there is no prose at
+ * all — a condition with no description is not a condition.
+ */
+function readConditionHint(condition: unknown): {
+  readonly description: string;
+  readonly priceLevel?: number | undefined;
+  readonly timeframe?: TradingTimeframe | undefined;
+} | null {
+  const description = readConditionDescription(condition);
+  if (description === null) return null;
+  const hints = condition as {
+    readonly priceLevel?: unknown;
+    readonly timeframe?: unknown;
+  };
+  return {
+    description,
+    ...(typeof hints.priceLevel === "number" ? { priceLevel: hints.priceLevel } : {}),
+    ...(typeof hints.timeframe === "string"
+      ? { timeframe: hints.timeframe as TradingTimeframe }
+      : {}),
+  };
+}
+
+/**
+ * A dollar figure with its cents, for the strip.
+ *
+ * {@link formatUsd} rounds to whole dollars, which is right for a plan's size
+ * and wrong for a $0.50 stop risk on a POC-sized position — the whole figure
+ * would round to "$1" or vanish to "$0".
+ */
+const formatUsdPrecise = (value: number): string => `$${Math.abs(value).toFixed(2)}`;
+
+/** A drawable chart level derived from one armed watch. */
+export interface DrawableCondition {
   readonly price: number;
   readonly direction: "above" | "below";
   readonly met: boolean;
-}> {
-  const drawable: Array<{
-    readonly price: number;
-    readonly direction: "above" | "below";
-    readonly met: boolean;
-  }> = [];
+}
+
+/**
+ * The exposure a PnL watch has to be resolved against to become a price.
+ *
+ * Both figures come from the position snapshot. `size` is signed — that sign is
+ * what decides which way price has to move for PnL to rise.
+ */
+export interface PnlLevelBasis {
+  readonly entryPrice: number;
+  readonly size: number;
+}
+
+/**
+ * Turn an unrealised-PnL threshold into the price that produces it.
+ *
+ * `pnl = size × (mark − entry)`, so `mark = entry + pnl / size`. The signed
+ * size carries the direction for free: a short's `size` is negative, so a
+ * profit target resolves BELOW its entry, which is exactly where a short's
+ * profit lives. Null without an exposure to divide by — a flat mission's PnL
+ * watch has no price, and inventing one would put a line on the chart at a
+ * level nothing is actually watching.
+ */
+export function derivePnlLevelPrice(valueUsd: number, basis: PnlLevelBasis | null): number | null {
+  if (basis === null || basis.size === 0) return null;
+  return basis.entryPrice + valueUsd / basis.size;
+}
+
+/**
+ * The armed price levels a chart can draw; nearest-first is the caller's job.
+ *
+ * Three watch types resolve to a y. `price_cross` and `candle_close` carry a
+ * price outright. `pnl_above` and `pnl_below` carry one too, once there is a
+ * position to resolve them against — and those are the levels that matter most
+ * while exposed, because they are where the plan has decided to bank a winner
+ * or cut a loser. They used to be dropped as "no y on a price chart", which was
+ * true only of a flat mission.
+ *
+ * `pnl_giveback` still has no level: it is measured from the position's peak
+ * unrealised PnL, and `TradingPositionView` does not carry the peak even though
+ * the reconciler records it. It stays a checklist row until the projection
+ * surfaces `peakUnrealisedPnl`.
+ */
+export function deriveChartConditions(
+  mission: { readonly watches: ReadonlyArray<PersistedWatch> },
+  /** The open position, when there is one. Null while flat. */
+  basis: PnlLevelBasis | null = null,
+): ReadonlyArray<DrawableCondition> {
+  const drawable: DrawableCondition[] = [];
+
   for (const persisted of mission.watches) {
     if (persisted.status !== "active" && persisted.status !== "triggered") continue;
     const watch = persisted.watch;
-    if (watch.type !== "price_cross" && watch.type !== "candle_close") continue;
-    drawable.push({
-      price: watch.price,
-      direction: watch.direction,
-      met: persisted.status === "triggered",
-    });
+    const met = persisted.status === "triggered";
+
+    if (watch.type === "price_cross" || watch.type === "candle_close") {
+      drawable.push({ price: watch.price, direction: watch.direction, met });
+      continue;
+    }
+
+    if (watch.type === "pnl_above" || watch.type === "pnl_below") {
+      const valueUsd = watch.valueUsd;
+      const price = derivePnlLevelPrice(valueUsd, basis);
+      if (price === null) continue;
+      // Which way price must move to satisfy the watch. PnL rises with price
+      // on a long and falls with it on a short, so a short's profit target is
+      // a "below" and its loss floor is an "above".
+      const pnlRisesWithPrice = basis!.size > 0;
+      const wantsPnlUp = watch.type === "pnl_above";
+      drawable.push({
+        price,
+        direction: wantsPnlUp === pnlRisesWithPrice ? "above" : "below",
+        met,
+      });
+    }
   }
+
   return drawable;
+}
+
+/**
+ * What a fill was, in the one dimension a chart marker can carry.
+ *
+ * An open and a close are the two ends of a position's life, and a close is
+ * worth colouring by what it realised — the chart is then a record of every
+ * position the session took, not only the one it is in.
+ */
+export type ChartFillKind = "open" | "close_profit" | "close_loss" | "close_flat" | "unknown";
+
+/** One fill, ready to be placed on the chart's time axis. */
+export interface ChartFillMarker {
+  readonly key: string;
+  /** Epoch millis of the fill. */
+  readonly at: number;
+  readonly price: number;
+  readonly kind: ChartFillKind;
+}
+
+/**
+ * Every fill in the mission, as markers for the chart's time axis.
+ *
+ * The panel used to draw only the current entry, so a session that had opened
+ * and closed twice before the trade on screen showed no sign of either. These
+ * are the session's activity: where it went in, where it came out, and whether
+ * coming out paid.
+ *
+ * A fill whose `direction` the exchange did not label reads as `unknown` rather
+ * than being guessed at — `side` alone cannot tell an open from a close.
+ * Unparseable timestamps are dropped; there is no honest x for them.
+ */
+export function deriveChartFillMarkers(mission: {
+  readonly recentFills: ReadonlyArray<{
+    readonly orderId: number;
+    readonly tradedAt: string;
+    readonly avgFillPrice: number;
+    readonly closedPnl: number;
+    readonly direction?: string | undefined;
+  }>;
+}): ReadonlyArray<ChartFillMarker> {
+  const markers: ChartFillMarker[] = [];
+
+  for (const fill of mission.recentFills) {
+    const at = Date.parse(fill.tradedAt);
+    if (Number.isNaN(at)) continue;
+
+    const lifecycle = readFillLifecycle(fill.direction);
+    const kind: ChartFillKind =
+      lifecycle === null
+        ? "unknown"
+        : lifecycle.action === "open"
+          ? "open"
+          : fill.closedPnl > 0
+            ? "close_profit"
+            : fill.closedPnl < 0
+              ? "close_loss"
+              : "close_flat";
+
+    markers.push({ key: `${fill.orderId}-${fill.tradedAt}`, at, price: fill.avgFillPrice, kind });
+  }
+
+  return markers;
+}
+
+/**
+ * The next scheduled reassessment, as epoch millis, or null when none is armed.
+ *
+ * Separate from {@link deriveWatchConditions} because it is wanted in states
+ * that function is not called for: a reassessment is scheduled just as often
+ * while a position is open as while one is being waited for, and the chart
+ * marks it on the axis either way.
+ */
+export function deriveNextReassessmentAt(mission: {
+  readonly watches: ReadonlyArray<PersistedWatch>;
+}): number | null {
+  let next: number | null = null;
+  for (const persisted of mission.watches) {
+    if (persisted.status !== "active") continue;
+    const watch = persisted.watch;
+    if (watch.type !== "scheduled_reassessment") continue;
+    if (next === null || watch.runAt < next) next = watch.runAt;
+  }
+  return next;
 }
 
 /** "2m 30s" from a duration in millis. */
