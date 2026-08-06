@@ -205,6 +205,21 @@ export function watchCoverageFloorMillis(input: {
   return Math.min(Math.max(10 * bar, 5 * MINUTE), 30 * MINUTE);
 }
 
+/**
+ * The slow sanity interval for a position that *is* covered on both sides.
+ *
+ * The tight holding floor above exists for the deaf case: nothing armed can
+ * wake the mission, so it must be woken on time alone. A position with a level
+ * or a PnL line armed on each side, or a confirmed exchange stop, is not that
+ * case — waking it every three bars spends a full harness turn to conclude
+ * "hold". It still deserves a periodic look at whether the thesis itself is
+ * still true, so this is 10× the tight floor, clamped to [15 min, 2 h].
+ */
+export function watchSanityBackstopMillis(timeframe: TradingTimeframe): number {
+  const tight = watchCoverageFloorMillis({ timeframe, holdingPosition: true });
+  return Math.min(Math.max(10 * tight, 15 * MINUTE), 120 * MINUTE);
+}
+
 /** Which directions a mission's armed watches can actually fire in. */
 export interface WatchCoverage {
   /** An armed watch that fires if price rises from here. */
@@ -218,37 +233,78 @@ export interface WatchCoverage {
 /**
  * Read what a mission's watches can actually wake it for.
  *
- * Only `price_cross` and `candle_close` carry a direction and a level, so only
- * they can cover a side. `order_update` and `position_update` fire on a change
- * in size — real events, but a position whose only armed watches are those can
- * watch its own mark run away and never hear about it, which is exactly the
- * session this rule exists because of.
+ * `price_cross` and `candle_close` carry a direction and a level, so they cover
+ * a side directly. A level on the wrong side of the mark does not count: a
+ * "cross above 1850" armed while price is already 1860 is not upside coverage;
+ * it is a condition that was true before it was written.
  *
- * A level on the wrong side of the mark does not count either. A "cross above
- * 1850" armed while price is already 1860 is not upside coverage; it is a
- * condition that was true before it was written.
+ * PnL watches cover a side too, when the position's direction is known. A
+ * `pnl_above` is a level in dollars on the winning side, `pnl_below` and
+ * `pnl_giveback` are levels on the losing side, and the evaluator re-reads
+ * reconciled unrealised PnL on every sweep — so a long with a loss line and a
+ * target armed hears both ways it can move. Which price direction each maps to
+ * comes from the sign of `positionSize`; without it they cover nothing, because
+ * "winning" has no meaning.
+ *
+ * A confirmed exchange-native stop covering the whole position also counts as
+ * losing-side coverage: the position cannot run through it without the exchange
+ * acting, and the exchange acting produces a `position_update`.
+ *
+ * `order_update` and `position_update` on their own cover nothing. They fire on
+ * a change in size — real events, but a position whose only armed watches are
+ * those can watch its own mark run away and never hear about it, which is
+ * exactly the session this rule exists because of.
  */
 export function readWatchCoverage(input: {
   readonly watches: ReadonlyArray<PersistedWatch>;
   readonly markPrice: number;
   readonly nowMillis: number;
   readonly floorMillis?: number;
+  /** Signed position size. Absent or zero means PnL watches cover no side. */
+  readonly positionSize?: number;
+  /** Absolute size covered by confirmed exchange-native protection. */
+  readonly protectedSize?: number;
 }): WatchCoverage {
   const active = input.watches.filter((w) => w.status === "active");
+  const isLong = (input.positionSize ?? 0) > 0;
+  const isShort = (input.positionSize ?? 0) < 0;
 
   let coversUpside = false;
   let coversDownside = false;
+
+  /** The price direction that a gain, and a loss, would move this position. */
+  const coverWinningSide = () => {
+    if (isLong) coversUpside = true;
+    if (isShort) coversDownside = true;
+  };
+  const coverLosingSide = () => {
+    if (isLong) coversDownside = true;
+    if (isShort) coversUpside = true;
+  };
 
   for (const persisted of active) {
     const watch = persisted.watch;
     if (watch.type === "price_cross" || watch.type === "candle_close") {
       if (watch.direction === "above" && watch.price >= input.markPrice) coversUpside = true;
       if (watch.direction === "below" && watch.price <= input.markPrice) coversDownside = true;
+      continue;
     }
+    if (watch.type === "pnl_above") coverWinningSide();
+    if (watch.type === "pnl_below" || watch.type === "pnl_giveback") coverLosingSide();
   }
+
+  const size = Math.abs(input.positionSize ?? 0);
+  const fullyProtected = size > 0 && (input.protectedSize ?? 0) >= size - PROTECTION_EPSILON;
+  if (fullyProtected) coverLosingSide();
 
   return { coversUpside, coversDownside, coversByReassessment: hasReassessmentWithin(input) };
 }
+
+/**
+ * Slack when comparing a protected size against the position size. Exchange
+ * rounding leaves the reduce-only order a hair short of the position it covers.
+ */
+const PROTECTION_EPSILON = 1e-9;
 
 /**
  * Whether an armed reassessment is due inside the floor.

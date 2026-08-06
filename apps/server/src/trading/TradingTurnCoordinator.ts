@@ -51,6 +51,7 @@ import {
   isDeafWhileHoldingPosition,
   readWatchCoverage,
   watchCoverageFloorMillis,
+  watchSanityBackstopMillis,
 } from "@t3tools/trading-contracts/watch";
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -375,10 +376,13 @@ const make = Effect.gen(function* () {
    *  1. While holding a position with a live strategy, arm a `pnl_above` watch
    *     at the strategy's declared profit target — the win worth banking. This
    *     runs in addition to the coverage logic, before it.
-   *  2. The coverage floor: if the run left levels armed on both sides of the
-   *     mark, or a reassessment due inside the window, nothing happens.
-   *     Otherwise one reassessment is registered so the mission gets at least
-   *     one more turn. The floor scales with the strategy's primary timeframe.
+   *  2. The coverage floor: if the run left nothing that can fire on one of the
+   *     two sides the mark can move — a price level, a PnL line, or a confirmed
+   *     exchange stop — a reassessment is registered at the tight floor so the
+   *     mission gets at least one more turn. A mission that *is* covered gets
+   *     the slow sanity backstop instead, because it will be woken by a real
+   *     event and a three-bar metronome only buys turns that conclude "hold".
+   *     Both intervals scale with the strategy's primary timeframe.
    *
    * It never blocks the settlement. The lease is already released by the time
    * this runs, and a mission that could not be given a watch is still better
@@ -394,8 +398,12 @@ const make = Effect.gen(function* () {
       const mission = yield* missions.getMission(missionId);
       if (!isActiveMissionStatus(mission.status)) return;
 
-      const rows = yield* sql<{ readonly size: number; readonly mark_px: number | null }>`
-        SELECT size, mark_px FROM trading_position_snapshots
+      const rows = yield* sql<{
+        readonly size: number;
+        readonly mark_px: number | null;
+        readonly protected_size: number | null;
+      }>`
+        SELECT size, mark_px, protected_size FROM trading_position_snapshots
         WHERE mission_id = ${missionId} AND size != 0
       `.pipe(Effect.mapError(sqlFail("ensureNotDeaf:position")));
 
@@ -460,15 +468,32 @@ const make = Effect.gen(function* () {
               markPrice,
               nowMillis: now,
               floorMillis: holdingFloor,
+              positionSize: position.size,
+              protectedSize: position.protected_size ?? 0,
             });
 
-      if (!isDeafWhileHoldingPosition(coverage)) return;
+      if (isDeafWhileHoldingPosition(coverage)) {
+        yield* armStalenessFloor({
+          missionId,
+          nowMillis: now,
+          floorMillis: holdingFloor,
+          detail: { positionSize: position.size, coverage, primaryTimeframe },
+        });
+        return;
+      }
+
+      // Covered on both sides. The mission will be woken by a real event, so the
+      // only thing left to schedule is the slow look at whether the thesis still
+      // holds — not the three-bar metronome the deaf case needs.
+      const sanityFloor = watchSanityBackstopMillis(primaryTimeframe);
+      if (hasReassessmentWithin({ watches: armed, nowMillis: now, floorMillis: sanityFloor }))
+        return;
 
       yield* armStalenessFloor({
         missionId,
         nowMillis: now,
-        floorMillis: holdingFloor,
-        detail: { positionSize: position.size, coverage, primaryTimeframe },
+        floorMillis: sanityFloor,
+        detail: { positionSize: position.size, coverage, primaryTimeframe, sanityBackstop: true },
       });
     }).pipe(
       Effect.catchCause((cause) =>
