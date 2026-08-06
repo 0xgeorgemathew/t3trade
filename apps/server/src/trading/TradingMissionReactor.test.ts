@@ -715,7 +715,8 @@ it.layer(TestLayer)("trading mission reactor", (it) => {
 
   it.effect("§16.4: permits revocation while a mission is blocked", () =>
     // §16.4 item 4: revocation is explicitly permitted while blocked, so the
-    // user can wind the mission down without first clearing the block.
+    // user can wind the mission down without first clearing the block. It ends
+    // the same way a settle does — announced revoked, then deleted once flat.
     Effect.gen(function* () {
       yield* started;
       yield* createMission;
@@ -723,9 +724,9 @@ it.layer(TestLayer)("trading mission reactor", (it) => {
 
       yield* control("trading.mission.revoke");
 
-      const revoked = yield* projectedMission;
-      assert.ok(Option.isSome(revoked), "expected a projected mission row");
-      assert.equal(revoked.value.status, "revoked");
+      assert.equal(yield* lastAnnouncedStatus, "revoked");
+      assert.equal(yield* missionRowCount, 0);
+      assert.ok(Option.isNone(yield* projectedMission));
     }),
   );
 

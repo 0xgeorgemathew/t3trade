@@ -695,6 +695,13 @@ const make = Effect.gen(function* () {
     });
 
     yield* announceStatus({ missionId, threadId, status: updated.status });
+
+    // A user's Revoke ends the mission the same way a settle does, so it ends
+    // the same way: the thread is released and the row is deleted once flat.
+    if (updated.status === "revoked" || updated.status === "completed") {
+      yield* Effect.sync(() => clearSessionProfile(threadId));
+      yield* deleteWhenTerminalAndFlat(missionId);
+    }
   });
 
   /**
