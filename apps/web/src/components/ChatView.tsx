@@ -5760,10 +5760,7 @@ function ChatViewContent(props: ChatViewProps) {
           onDismiss={() => setThreadError(activeThread.id, null)}
         />
         {boundMission && (
-          <>
-            <MissionThreadBanners mission={boundMission} feedError={missionFeedError} />
-            <MissionLivePanel mission={boundMission} environmentId={environmentId} />
-          </>
+          <MissionThreadBanners mission={boundMission} feedError={missionFeedError} />
         )}
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
@@ -5875,6 +5872,11 @@ function ChatViewContent(props: ChatViewProps) {
                   ) : (
                     <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                   )}
+                  {boundMission && !isDraftHeroState ? (
+                    <div className="mx-auto mb-2 w-full max-w-3xl">
+                      <MissionLivePanel mission={boundMission} environmentId={environmentId} />
+                    </div>
+                  ) : null}
                   {threadSyncPhase && !activeEnvironmentUnavailable ? (
                     <ThreadSyncStatusPill phase={threadSyncPhase} />
                   ) : null}

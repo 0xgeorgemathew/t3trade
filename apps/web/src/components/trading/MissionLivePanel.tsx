@@ -79,6 +79,10 @@ const CHART_HEIGHT_CLASS = "h-[168px] w-full";
 /** Collapsed summary row height, in pixels. */
 const COLLAPSED_ROW_HEIGHT_PX = 32;
 
+/** The panel sits above the composer, so it is a card with its own edges rather
+ *  than a band bolted to the header. */
+const PANEL_BOX_CLASS = "overflow-hidden rounded-xl border border-border bg-card/80 shadow-sm";
+
 /** Which of the four surfaces the projection says to render. */
 type PanelState = "planning" | "armed" | "live" | "complete";
 
@@ -185,7 +189,10 @@ export function MissionLivePanel({
       <div
         data-testid="mission-live-panel"
         data-panel-state="planning"
-        className="flex items-center gap-2 border-b border-border bg-card/40 px-3 py-2 text-xs text-muted-foreground sm:px-4"
+        className={cn(
+          PANEL_BOX_CLASS,
+          "flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground sm:px-4",
+        )}
       >
         <span className="size-1.5 animate-pulse rounded-full bg-armed" aria-hidden />
         <span>Analysing the market…</span>
@@ -205,7 +212,10 @@ export function MissionLivePanel({
       <div
         data-testid="mission-live-panel"
         data-panel-state="complete"
-        className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-card/40 px-3 py-2 text-xs sm:px-4"
+        className={cn(
+          PANEL_BOX_CLASS,
+          "flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs sm:px-4",
+        )}
       >
         <span className="text-foreground">{mission.market} finished</span>
         <span className={cn("font-medium tabular-nums", net >= 0 ? "text-profit" : "text-loss")}>
@@ -222,11 +232,7 @@ export function MissionLivePanel({
   // --- collapsed: the 32px summary row. -------------------------------------
   if (collapsed) {
     return (
-      <div
-        data-testid="mission-live-panel"
-        data-panel-state={state}
-        className="border-b border-border bg-card/40"
-      >
+      <div data-testid="mission-live-panel" data-panel-state={state} className={PANEL_BOX_CLASS}>
         <CollapsedRow
           market={mission.market}
           leverageLabel={leverage === null ? null : formatLeverage(leverage)}
@@ -244,11 +250,7 @@ export function MissionLivePanel({
   }
 
   return (
-    <div
-      data-testid="mission-live-panel"
-      data-panel-state={state}
-      className="border-b border-border bg-card/40"
-    >
+    <div data-testid="mission-live-panel" data-panel-state={state} className={PANEL_BOX_CLASS}>
       {/* Header: what the mission is doing, and the numbers that go with it. */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs sm:px-4">
         {position === null ? (
