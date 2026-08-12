@@ -40,6 +40,7 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { applyTradingTurnContract } from "../TradingSessionProfile.ts";
 
 import {
   ProviderAdapterRequestError,
@@ -1546,7 +1547,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         : undefined;
     return yield* session.runtime
       .sendTurn({
-        ...(input.input !== undefined ? { input: input.input } : {}),
+        // A trading thread carries the provider-neutral decision contract on
+        // every turn: Codex has no replaceable system prompt at this seam, and
+        // an ordinary coding-agent context is not the context a mission runs in.
+        ...(input.input !== undefined
+          ? { input: applyTradingTurnContract(input.threadId, input.input) }
+          : {}),
         ...(input.modelSelection?.instanceId === boundInstanceId
           ? { model: input.modelSelection.model }
           : {}),

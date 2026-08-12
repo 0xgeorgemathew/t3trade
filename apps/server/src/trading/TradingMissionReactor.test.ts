@@ -15,7 +15,7 @@ import {
   ThreadId,
   TradingMissionId,
 } from "@t3tools/contracts";
-import { POC_DEFAULT_INSTRUCTION } from "@t3tools/trading-contracts/strategy";
+import { POC_STANDING_INSTRUCTION } from "@t3tools/trading-contracts/strategy";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -369,7 +369,14 @@ it.layer(TestLayer)("auto-mission on the first message", (it) => {
       const projection = yield* TradingMissionProjection;
       const mission = yield* projection.getByThreadId(labThread).pipe(Effect.orDie);
       assert.ok(Option.isSome(mission), "the first message should have created a mission");
-      assert.equal(mission.value.instruction, "Scalp ETH on the 1m and tell me before you enter.");
+      // The message is the mandate and comes first; the standing operating note
+      // is appended behind it. Before this the note was resolved and then never
+      // read, so the documented default reached no mission at all.
+      assert.ok(
+        mission.value.instruction.startsWith("Scalp ETH on the 1m and tell me before you enter."),
+        "the mandate is the user's own words, unaltered and first",
+      );
+      assert.include(mission.value.instruction, POC_STANDING_INSTRUCTION);
     }).pipe(Effect.scoped),
   );
 

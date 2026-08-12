@@ -1,7 +1,7 @@
 import * as Option from "effect/Option";
 import { describe, expect, it } from "vite-plus/test";
 
-import { POC_DEFAULT_INSTRUCTION } from "@t3tools/trading-contracts/strategy";
+import { POC_STANDING_INSTRUCTION } from "@t3tools/trading-contracts/strategy";
 
 import { AUTO_MISSION_DEFAULT_ACCOUNT_ID, resolveAutoMission } from "./AutoMissionConfig.ts";
 
@@ -31,7 +31,7 @@ describe("resolveAutoMission", () => {
   it("is on for an armed signer, with no workspace narrowing by default", () => {
     expect(Option.getOrThrow(resolveAutoMission({}, ARMED))).toEqual({
       workspaceRoot: null,
-      instruction: POC_DEFAULT_INSTRUCTION,
+      standingInstruction: POC_STANDING_INSTRUCTION,
       // Unset means "size the mandate from the live account value at
       // creation" — see `MissionCapital`.
       allocatedCapitalUsd: null,
@@ -57,10 +57,25 @@ describe("resolveAutoMission", () => {
 
     expect(Option.getOrThrow(settings)).toEqual({
       workspaceRoot: "/lab/t3-trade-test",
-      instruction: "Trade ETH momentum on 5m candles.",
+      standingInstruction: "Trade ETH momentum on 5m candles.",
       allocatedCapitalUsd: 250,
       tradingAccountId: "acct_2",
     });
+  });
+
+  // The note is appended to the user's own mandate, so "append nothing" has to
+  // be sayable. It is the one knob where set-but-empty differs from unset.
+  it("appends nothing when the standing note is set empty", () => {
+    const settings = resolveAutoMission({ T3_TRADES_AUTO_MISSION_INSTRUCTION: "  " }, ARMED);
+    expect(Option.getOrThrow(settings).standingInstruction).toBe("");
+  });
+
+  // The note carries the interval the loop turns on and nothing else. A market
+  // named here would contradict whatever market the user's mandate names — the
+  // same drift this rename exists to close, pointing the other way.
+  it("keeps the default note free of any market or direction", () => {
+    expect(POC_STANDING_INSTRUCTION).not.toMatch(/\bETH\b|\bBTC\b|\blong\b|\bshort\b/);
+    expect(POC_STANDING_INSTRUCTION).toContain("1m");
   });
 
   it("treats a whitespace-only workspace root as no narrowing", () => {

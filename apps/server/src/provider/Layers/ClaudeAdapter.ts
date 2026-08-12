@@ -72,6 +72,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as SessionProfile from "../SessionProfile.ts";
+import * as TradingSessionProfile from "../TradingSessionProfile.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
@@ -905,26 +906,12 @@ const CLAUDE_SETTING_SOURCES = [
 ] as const satisfies ReadonlyArray<SettingSource>;
 
 /**
- * System prompt for a locked trading thread.
- *
- * This is the ONLY context a trading thread starts with: the tools it has, the
- * loop it runs, and the fact that it has nothing else (no shell, no filesystem,
- * no subagents — those built-ins are removed via `tools: []`, and this prompt
- * says so plainly so the model does not waste a turn reaching for them). The
- * strategy itself is NOT here; it lives in `trading_get_playbook`, which keeps
- * one source of truth and lets the mandate change without a code release.
+ * The trading system prompt is provider-neutral and lives in
+ * `TradingSessionProfile`, alongside the tool allowlist it names. It is
+ * re-exported here because this adapter's own tests (and its `tools: []` lock)
+ * are what prove a trading thread starts with nothing else.
  */
-export const TRADING_SYSTEM_PROMPT = `You are a trading agent on the t3-trade harness. Your only tools are the mcp__t3-trade__* tools.
-
-The loop you run is wake-decide-arm-execute:
-1. On each wakeup, read what woke you (a fired watch, a fill, an order update, or a scheduled reassessment) via the trading inbox and market tools.
-2. Decide: publish a plan with trading_publish_plan, or stand down with trading_stand_down.
-3. Arm the watches that should wake you next via trading_register_watch.
-4. Act on the exchange only through trading_execute (entries, reduces, closes, cancels, stop moves).
-
-You have no shell, no filesystem, no Read/Edit/Write, no web access, and no subagents. Everything you can possibly do is one of the mcp__t3-trade__* tools; if a task seems to need anything else, it is out of scope — say so rather than reach for a tool you do not have.
-
-Your trading strategy, entry rules, and risk parameters are NOT given here. Read them with trading_get_playbook and follow the procedure it returns.`;
+export const TRADING_SYSTEM_PROMPT = TradingSessionProfile.TRADING_SYSTEM_PROMPT;
 
 function buildPromptText(
   input: ProviderSendTurnInput,
@@ -3606,7 +3593,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(tradingProfile
           ? {
               tools: [] as string[],
-              allowedTools: ["mcp__t3-trade__*"],
+              // Explicit trading tool names, not `mcp__t3-trade__*`: the
+              // preview toolkit is mounted on the same MCP server, so the
+              // wildcard also handed a trading session a browser.
+              allowedTools: [...TradingSessionProfile.TRADING_ALLOWED_TOOL_NAMES],
               strictMcpConfig: true,
             }
           : {}),

@@ -91,6 +91,30 @@
     "./stop-adjustment": {
       "types": "./src/stopAdjustment.ts",
       "import": "./src/stopAdjustment.ts"
+    },
+    "./decision": {
+      "types": "./src/decision.ts",
+      "import": "./src/decision.ts"
+    },
+    "./quote": {
+      "types": "./src/quote.ts",
+      "import": "./src/quote.ts"
+    },
+    "./exit": {
+      "types": "./src/exit.ts",
+      "import": "./src/exit.ts"
+    },
+    "./recovery": {
+      "types": "./src/recovery.ts",
+      "import": "./src/recovery.ts"
+    },
+    "./policy": {
+      "types": "./src/policy.ts",
+      "import": "./src/policy.ts"
+    },
+    "./replay": {
+      "types": "./src/replay.ts",
+      "import": "./src/replay.ts"
     }
   },
   "scripts": {

@@ -8,10 +8,11 @@
  * lab, where a testing loop is "open a thread, watch it trade" repeated dozens
  * of times a day.
  *
- * So: on a server whose interim signer is armed, every new thread gets a
- * mission the moment it exists, with the POC authority and the default 1m
- * instruction. Settling the thread revokes it again (see
- * `TradingMissionReactor`), which makes the sidebar's Settle the way out.
+ * So: on a server whose interim signer is armed, a thread gets a mission on its
+ * FIRST MESSAGE — that message is the mandate (see `TradingAutoMission`) — under
+ * the POC authority, with the standing operating note appended. Settling the
+ * thread revokes it again (see `TradingMissionReactor`), which makes the
+ * sidebar's Settle the way out.
  *
  * Arming the signer is the opt-in. It is already the deliberate, one-time act
  * that turns a checkout into a trading lab — nothing here can spend anything
@@ -30,8 +31,11 @@
  *                                            is sized from the live account
  *                                            value at creation time (see
  *                                            `MissionCapital`).
- *   - `T3_TRADES_AUTO_MISSION_INSTRUCTION` — optional instruction, default
- *                                            `POC_DEFAULT_INSTRUCTION`.
+ *   - `T3_TRADES_AUTO_MISSION_INSTRUCTION` — optional standing note appended to
+ *                                            the mandate the user types,
+ *                                            default `POC_STANDING_INSTRUCTION`.
+ *                                            It does not replace the mandate;
+ *                                            set it empty to append nothing.
  *   - `T3_TRADES_AUTO_MISSION_ACCOUNT`     — optional trading account id.
  *
  * This does not arm execution and does not widen any authority. The mission it
@@ -42,7 +46,7 @@
  */
 import { Context, Effect, Layer, Option } from "effect";
 
-import { POC_DEFAULT_INSTRUCTION } from "@t3tools/trading-contracts/strategy";
+import { POC_STANDING_INSTRUCTION } from "@t3tools/trading-contracts/strategy";
 
 import { InterimSignerConfig } from "./InterimSignerConfig.ts";
 
@@ -53,7 +57,11 @@ export interface AutoMissionSettings {
    * thread on the installation.
    */
   readonly workspaceRoot: string | null;
-  readonly instruction: string;
+  /**
+   * Appended to the mandate the user types, never used in place of it. Empty
+   * means the mission carries the user's words alone.
+   */
+  readonly standingInstruction: string;
   /**
    * The operator's explicit mandate size, or `null` for "resolve it from the
    * live account value at creation" — see `MissionCapital`.
@@ -103,12 +111,16 @@ export const resolveAutoMission = (
   const allocatedCapitalUsd = Number.isFinite(capital) && capital > 0 ? capital : null;
 
   const workspaceRoot = env.T3_TRADES_AUTO_MISSION_WORKSPACE?.trim();
-  const instruction = env.T3_TRADES_AUTO_MISSION_INSTRUCTION?.trim();
   const tradingAccountId = env.T3_TRADES_AUTO_MISSION_ACCOUNT?.trim();
+
+  // Set-but-empty is a real answer here — it means "append nothing" — so this
+  // one reads presence rather than truthiness. The others fall back on empty
+  // because an empty workspace root or account id is a typo, not an intent.
+  const configured = env.T3_TRADES_AUTO_MISSION_INSTRUCTION;
 
   return Option.some({
     workspaceRoot: workspaceRoot || null,
-    instruction: instruction || POC_DEFAULT_INSTRUCTION,
+    standingInstruction: configured === undefined ? POC_STANDING_INSTRUCTION : configured.trim(),
     allocatedCapitalUsd,
     tradingAccountId: tradingAccountId || AUTO_MISSION_DEFAULT_ACCOUNT_ID,
   });

@@ -43,14 +43,17 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { type PersistenceSqlError } from "../persistence/Errors.ts";
 import type { PersistedWatch } from "./Schemas.ts";
-import { TradingTimeframe } from "./Schemas.ts";
+import { TradingMarket, TradingTimeframe } from "./Schemas.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
 
-/** The POC market every mission trades (§10.1). */
-const POC_MARKET = "ETH";
+/** The market assumed for a candle delivery that does not name its coin. */
+const DEFAULT_MARKET = "ETH";
+
+/** Every market a mission may be mandated to trade (§10.1). */
+const MARKETS = TradingMarket.literals;
 
 /**
  * The five §13 direct candle intervals. Subscribing to all of them keeps the
@@ -290,10 +293,16 @@ const make = Effect.gen(function* () {
    * the dedupe key is scoped per watch and close so a replay cannot wake the
    * harness twice.
    */
-  const evaluateCandleClose = (tracked: TrackedWatch, interval: string, candle: DeliveredCandle) =>
+  const evaluateCandleClose = (
+    tracked: TrackedWatch,
+    market: string,
+    interval: string,
+    candle: DeliveredCandle,
+  ) =>
     Effect.gen(function* () {
       const watch = tracked.watch.watch;
       if (watch.type !== "candle_close") return;
+      if (market !== watch.market) return;
       if (interval !== watch.interval) return;
 
       const matched =
@@ -620,7 +629,8 @@ const make = Effect.gen(function* () {
       const candle = candleFromDelivery(delivery);
       if (candle === undefined) return;
 
-      const key = `${delivery.subscription.coin ?? POC_MARKET}:${interval}`;
+      const market = delivery.subscription.coin ?? DEFAULT_MARKET;
+      const key = `${market}:${interval}`;
       const previous = lastDelivered.get(key);
       lastDelivered.set(key, candle);
 
@@ -628,62 +638,89 @@ const make = Effect.gen(function* () {
       if (finalized === undefined) return;
 
       const tracked = yield* activeTrackedWatches();
-      yield* Effect.forEach(tracked, (t) => evaluateCandleClose(t, interval, finalized));
+      yield* Effect.forEach(tracked, (t) => evaluateCandleClose(t, market, interval, finalized));
     });
+
+  const evaluateOne = (t: TrackedWatch, observedAt: number) => {
+    switch (t.watch.watch.type) {
+      case "price_cross":
+        return evaluatePriceCross(t);
+      case "scheduled_reassessment":
+        return evaluateScheduled(t, observedAt);
+      case "position_update":
+        return evaluatePositionUpdate(t);
+      case "order_update":
+        return evaluateOrderUpdate(t);
+      case "pnl_above":
+        return evaluatePnlAbove(t);
+      case "pnl_below":
+        return evaluatePnlBelow(t);
+      case "pnl_giveback":
+        return evaluatePnlGiveback(t);
+      default:
+        return Effect.void;
+    }
+  };
 
   const sweep: WatchEvaluatorShape["sweep"] = Effect.gen(function* () {
     const tracked = yield* activeTrackedWatches();
     const observedAt = yield* nowMs;
     for (const t of tracked) {
-      switch (t.watch.watch.type) {
-        case "price_cross":
-          yield* evaluatePriceCross(t);
-          break;
-        case "scheduled_reassessment":
-          yield* evaluateScheduled(t, observedAt);
-          break;
-        case "position_update":
-          yield* evaluatePositionUpdate(t);
-          break;
-        case "order_update":
-          yield* evaluateOrderUpdate(t);
-          break;
-        case "pnl_above":
-          yield* evaluatePnlAbove(t);
-          break;
-        case "pnl_below":
-          yield* evaluatePnlBelow(t);
-          break;
-        case "pnl_giveback":
-          yield* evaluatePnlGiveback(t);
-          break;
-        default:
-          break;
-      }
+      // Contained per watch: the evaluators read the exchange and the DB
+      // through `orDie`, and one watch's transient failure must not starve the
+      // rest of this sweep — a silent evaluator is a deaf mission wearing a
+      // healthy status.
+      yield* evaluateOne(t, observedAt).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("WatchEvaluator: one evaluation failed; the sweep continues", {
+            watchId: t.watch.id,
+            watchType: t.watch.watch.type,
+            cause: String(cause),
+          }),
+        ),
+      );
     }
   });
 
   const start: WatchEvaluatorShape["start"] = () =>
     Effect.gen(function* () {
-      // One candle subscription per §13 direct interval for the POC market.
+      // One candle subscription per market per §13 direct interval.
       // Deliveries route to the candle-close watches bound to that interval.
       //
       // The forked consumers read the services the evaluator captured at build,
       // so nothing extra is required in the forked fibers' context.
-      for (const interval of DIRECT_INTERVALS) {
-        const subscription = ws.subscribe({ type: "candle", coin: POC_MARKET, interval });
-        yield* Effect.forkScoped(
-          Stream.runForEach(subscription, (delivery) =>
-            evaluateDelivery(delivery).pipe(Effect.ignore),
-          ),
-        );
+      // `catchCause`, not `ignore`: `ignore` swallows typed failures only, and
+      // the evaluators die (`orDie`) on gateway/DB errors — a defect escaping
+      // here would kill the consumer fiber and silence every watch it drives,
+      // with nothing on the mission to say it happened.
+      for (const market of MARKETS) {
+        for (const interval of DIRECT_INTERVALS) {
+          const subscription = ws.subscribe({ type: "candle", coin: market, interval });
+          yield* Effect.forkScoped(
+            Stream.runForEach(subscription, (delivery) =>
+              evaluateDelivery(delivery).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("WatchEvaluator: candle evaluation failed", {
+                    cause: String(cause),
+                  }),
+                ),
+              ),
+            ),
+          );
+        }
       }
 
       // The slow sweep for price-cross and scheduled watches.
       yield* Effect.forkScoped(
         Effect.gen(function* () {
           while (true) {
-            yield* sweep.pipe(Effect.ignore);
+            yield* sweep.pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("WatchEvaluator: sweep failed; retrying next interval", {
+                  cause: String(cause),
+                }),
+              ),
+            );
             yield* Effect.sleep(SWEEP_INTERVAL);
           }
         }),

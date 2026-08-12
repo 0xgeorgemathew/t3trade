@@ -17,6 +17,7 @@
  */
 import {
   MarketWatch,
+  TradingMarket,
   TradingPlanState,
   PersistedWatch,
   PersistedWatchStatus,
@@ -40,6 +41,10 @@ import {
 
 export const TradingMissionId = Schema.String.pipe(Schema.brand("TradingMissionId"));
 export type TradingMissionId = typeof TradingMissionId.Type;
+
+// Re-exported so orchestration.ts can type the composer's per-thread market
+// choice without importing the trading spec package directly.
+export { TradingMarket };
 
 // -- execution read-model views (PROMPT-04 Step 10) --------------------------
 
@@ -286,6 +291,8 @@ export const TradingMissionCreateCommand = Schema.Struct({
   instruction: TrimmedNonEmptyString,
   /** Omit to have the server resolve the mandate from the live account value. */
   allocatedCapitalUsd: Schema.optional(Schema.Number),
+  /** The market the mission is mandated to trade. Omit for the default (ETH). */
+  market: Schema.optional(TradingMarket),
   createdAt: IsoDateTime,
 });
 
@@ -511,6 +518,8 @@ export const TradingMissionCreateRequestedPayload = Schema.Struct({
    * was created without one.
    */
   allocatedCapitalUsd: Schema.optional(Schema.Number),
+  /** The market the mission is mandated to trade. Absent means the default (ETH). */
+  market: Schema.optional(TradingMarket),
   requestedAt: IsoDateTime,
 });
 

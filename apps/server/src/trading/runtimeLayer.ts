@@ -24,6 +24,7 @@ import { TradingAccountBootstrapLive } from "./TradingAccountBootstrap.ts";
 import { HyperliquidReconcilerLive } from "./HyperliquidReconciler.ts";
 import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingExecutionOutcomeLive } from "./TradingExecutionOutcome.ts";
+import { TradingExecutionReceiptsLive } from "./TradingExecutionReceipts.ts";
 import { TradingExecutionGuardLive } from "./TradingExecutionGuard.ts";
 import { InterimSignerConfigLive } from "./InterimSignerConfig.ts";
 import { IocSlippageConfigLive } from "./IocSlippageConfig.ts";
@@ -48,6 +49,8 @@ import { TradingCostEstimatorLive } from "./TradingCostEstimator.ts";
 import { TradingTradeHistoryServiceLive } from "./TradingTradeHistoryService.ts";
 import { TradingCalibrationServiceLive } from "./TradingCalibrationService.ts";
 import { TradingStopAdjustmentServiceLive } from "./TradingStopAdjustmentService.ts";
+import { TradingExitServiceLive } from "./TradingExitService.ts";
+import { TradingQuoteServiceLive } from "./TradingQuoteService.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
@@ -118,6 +121,10 @@ const TradingFoundation = Layer.mergeAll(
   // lab, so it is built on top of the signer rather than beside it.
   AutoMissionConfigLive.pipe(Layer.provide(InterimSignerConfigLive)),
   exchangeWithHttp,
+  // One shared set of execution latches: the reactor opens them, the tool
+  // waiting on `trading_execute` blocks on them. Built here so both sides see
+  // the same instance rather than two maps that never meet.
+  TradingExecutionReceiptsLive,
   HyperliquidNonceCoordinatorLive(),
   HyperliquidWebSocketClientLive,
 );
@@ -178,6 +185,24 @@ export const TradingLayerLive = Layer.mergeAll(
     Layer.provide(HyperliquidReadLayerLive),
     Layer.provide(TradingMissionServiceLive),
     Layer.provide(TradingStrategyServiceLive),
+  ),
+  // `trading_quote_entry` prices and sizes an entry against the mission, the
+  // lease, the live book and the budget, so it needs the mission service and
+  // the slippage config at build; everything else it reads per call.
+  TradingQuoteServiceLive.pipe(
+    Layer.provide(TradingMissionServiceLive),
+    Layer.provide(IocSlippageConfigLive),
+    Layer.provide(TradingBudgetReaderLive),
+    Layer.provide(costEstimatorWithGateway),
+    Layer.provide(HyperliquidReadLayerLive),
+  ),
+  // The three exit tools size themselves from the canonical position, so they
+  // need the mission service, the book, and the slippage allowance the crossing
+  // reduce-only IOC is priced with.
+  TradingExitServiceLive.pipe(
+    Layer.provide(TradingMissionServiceLive),
+    Layer.provide(IocSlippageConfigLive),
+    Layer.provide(HyperliquidReadLayerLive),
   ),
   coordinatorWithDeps,
   // A thread's first message is what creates its mission, so the decision sits

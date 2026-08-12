@@ -43,6 +43,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { applyTradingTurnContract } from "../TradingSessionProfile.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -962,7 +963,13 @@ export function makeCursorAdapter(
 
           const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
           if (input.input?.trim()) {
-            promptParts.push({ type: "text", text: input.input.trim() });
+            // On a trading thread the turn carries the provider-neutral
+            // decision contract ahead of the wakeup — Cursor's ACP session has
+            // no replaceable system prompt.
+            promptParts.push({
+              type: "text",
+              text: applyTradingTurnContract(input.threadId, input.input.trim()),
+            });
           }
           if (input.attachments && input.attachments.length > 0) {
             for (const attachment of input.attachments) {

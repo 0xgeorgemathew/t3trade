@@ -132,7 +132,14 @@ const make = Effect.gen(function* () {
         ? (strategy.value.timeframes[0] ?? POC_DEFAULT_TIMEFRAME)
         : POC_DEFAULT_TIMEFRAME;
 
-      const snapshot = yield* gateway.getMarketSnapshot(input.market).pipe(Effect.orDie);
+      // Exchange reads refuse rather than die: a transient gateway failure is
+      // "cannot measure right now", and the stop the position has is safe.
+      const snapshot = yield* gateway
+        .getMarketSnapshot(input.market)
+        .pipe(Effect.catch(() => Effect.succeed(null)));
+      if (snapshot === null) {
+        return refuse("market_data_unavailable", "the market snapshot could not be read", noStop);
+      }
       const { bidPrice, askPrice } = snapshot.bestBidOffer;
       if (bidPrice === undefined || askPrice === undefined) {
         return refuse(
@@ -150,7 +157,12 @@ const make = Effect.gen(function* () {
       const address = yield* missions
         .getMasterWalletAddress(mission.tradingAccountId)
         .pipe(Effect.orDie);
-      const openOrders = yield* gateway.getOpenOrders(address).pipe(Effect.orDie);
+      const openOrders = yield* gateway
+        .getOpenOrders(address)
+        .pipe(Effect.catch(() => Effect.succeed(null)));
+      if (openOrders === null) {
+        return refuse("market_data_unavailable", "open orders could not be read", noStop);
+      }
       const protective = openOrders.filter((order) =>
         isProtectiveOrder(
           {
@@ -192,7 +204,10 @@ const make = Effect.gen(function* () {
           interval: timeframe,
           maxBars: VOLATILITY_LOOKBACK_BARS,
         })
-        .pipe(Effect.orDie);
+        .pipe(Effect.catch(() => Effect.succeed(null)));
+      if (history === null) {
+        return refuse("market_data_unavailable", "candle history could not be read", prices);
+      }
       const volatility = measureVolatility({
         market: input.market,
         interval: timeframe,
@@ -216,17 +231,22 @@ const make = Effect.gen(function* () {
           (isLong ? 1 : -1) * (strategy.value.protection.targetProfitUsd / Math.abs(position.size))
         : undefined;
 
+      const openedAt = position.opened_at ?? 0;
+
       // The entry's approved stop — the risk envelope no adjustment may widen.
+      // Scoped to THIS position (market, opened since): the first stop of the
+      // mission's life belongs to whatever trade opened first, and after a
+      // direction flip it can sit on the wrong side entirely — an envelope that
+      // would refuse every loosening or approve any widening.
       const originalStopPrice = yield* sql<{ readonly stop_price: number | null }>`
         SELECT stop_price FROM trading_execution_records
-        WHERE mission_id = ${input.missionId} AND stop_price IS NOT NULL
-        ORDER BY created_at ASC
+        WHERE mission_id = ${input.missionId} AND market = ${input.market}
+          AND stop_price IS NOT NULL AND created_at >= ${openedAt}
+        ORDER BY created_at ASC LIMIT 1
       `.pipe(
         Effect.mapError(toPersistenceSqlError("TradingStopAdjustmentService.envelope")),
         Effect.map((rows) => rows[0]?.stop_price ?? currentStopPrice),
       );
-
-      const openedAt = position.opened_at ?? 0;
       const adjustments = yield* sql<{
         readonly count: number;
         readonly last_at: number | null;

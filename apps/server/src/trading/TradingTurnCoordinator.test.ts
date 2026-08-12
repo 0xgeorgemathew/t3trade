@@ -26,12 +26,33 @@ import { TradingWatchService, TradingWatchServiceLive } from "./TradingWatchServ
  * stream is empty so the release watcher never fires — the tests that need a
  * released lease set the row to `completed` directly.
  */
+const dispatchedTexts: Array<string> = [];
 const stubEngine = Layer.succeed(OrchestrationEngineService, {
-  dispatch: () => Effect.succeed({ sequence: 0 }),
+  dispatch: (command: { readonly message?: { readonly text: string } }) =>
+    Effect.sync(() => {
+      if (command.message !== undefined) dispatchedTexts.push(command.message.text);
+      return { sequence: 0 };
+    }),
   readEvents: () => Stream.empty,
   streamDomainEvents: Stream.empty,
   latestSequence: Effect.succeed(0),
-});
+} as never);
+
+/**
+ * The bootstrap wakeup the coordinator dispatches for a mission with no
+ * strategy: plain JSON, so a test can read the contract the turn was given.
+ */
+const awaitBootstrapWake = (cause: string) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 500; attempt++) {
+      const found = dispatchedTexts
+        .map((text) => JSON.parse(text) as Record<string, unknown>)
+        .find((wake) => wake["bootstrap"] === true && wake["cause"] === cause);
+      if (found !== undefined) return found;
+      yield* Effect.yieldNow;
+    }
+    throw new Error(`no bootstrap wake dispatched for cause ${cause}`);
+  });
 
 /**
  * A recording wakeup composer. The unit tests do not exercise the wake path
@@ -74,7 +95,7 @@ const harness: TradingHarnessBinding = {
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 49 });
+  yield* runMigrations({ toMigrationInclusive: 52 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_harness_runs`;
@@ -82,6 +103,20 @@ const migrated = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_watches`;
   yield* sql`DELETE FROM momentum_strategy_versions`;
   composeFails = false;
+  dispatchedTexts.length = 0;
+});
+
+/** Create a mission and leave it without a strategy — the stand-down shape. */
+const seedMissionWithoutStrategy = Effect.gen(function* () {
+  const missions = yield* TradingMissionService;
+  yield* missions.createMission({
+    missionId: "mission_1",
+    userId: "local",
+    tradingAccountId: "acct_1",
+    instruction: "Trade ETH momentum",
+    allocatedCapitalUsd: 1_000,
+    harness,
+  });
 });
 
 /** Create a mission with a published strategy so a run can start against it. */
@@ -185,19 +220,13 @@ layer("TradingTurnCoordinator", (it) => {
     }),
   );
 
-  it.effect("blocks a run for a mission with no published strategy (except mission_created)", () =>
+  it.effect("blocks a watch-fired run for a mission with no published strategy", () =>
+    // Nothing could have armed the watch without a strategy, so a watch cause
+    // arriving here is stale — unlike a schedule or an operator message, which
+    // are the mission asking to finish the job of publishing one.
     Effect.gen(function* () {
       yield* migrated;
-      // Create the mission but do NOT publish a strategy.
-      const missions = yield* TradingMissionService;
-      yield* missions.createMission({
-        missionId: "mission_1",
-        userId: "local",
-        tradingAccountId: "acct_1",
-        instruction: "Trade ETH momentum",
-        allocatedCapitalUsd: 1_000,
-        harness,
-      });
+      yield* seedMissionWithoutStrategy;
 
       const coordinator = yield* TradingTurnCoordinator;
       const outcome = yield* coordinator.requestRun({
@@ -215,15 +244,7 @@ layer("TradingTurnCoordinator", (it) => {
   it.effect("allows the mission_created cause without a published strategy", () =>
     Effect.gen(function* () {
       yield* migrated;
-      const missions = yield* TradingMissionService;
-      yield* missions.createMission({
-        missionId: "mission_1",
-        userId: "local",
-        tradingAccountId: "acct_1",
-        instruction: "Trade ETH momentum",
-        allocatedCapitalUsd: 1_000,
-        harness,
-      });
+      yield* seedMissionWithoutStrategy;
 
       const coordinator = yield* TradingTurnCoordinator;
       const outcome = yield* coordinator.requestRun({
@@ -232,6 +253,55 @@ layer("TradingTurnCoordinator", (it) => {
       });
 
       assert.equal(outcome.status, "started");
+
+      // The first turn is asked for a plan but not accused of owing one.
+      const wake = yield* awaitBootstrapWake("mission_created");
+      assert.isUndefined(wake["publishOverdue"]);
+      assert.isString(wake["firstTurnContract"]);
+    }),
+  );
+
+  it.effect("wakes a strategy-less mission on its staleness floor, publish overdue", () =>
+    // The stand-down mission. Its first turn declined to enter and published
+    // nothing, so the coverage floor armed a reassessment. That wake used to be
+    // bounced here as `no_active_strategy`, which left the mission dormant and
+    // burned a failed run per floor.
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMissionWithoutStrategy;
+
+      const coordinator = yield* TradingTurnCoordinator;
+      const outcome = yield* coordinator.requestRun({
+        missionId: "mission_1",
+        cause: "scheduled_reassessment",
+      });
+
+      assert.equal(outcome.status, "started");
+
+      const wake = yield* awaitBootstrapWake("scheduled_reassessment");
+      assert.equal(wake["publishOverdue"], true);
+      assert.include(String(wake["firstTurnContract"]), "trading_publish_plan");
+    }),
+  );
+
+  it.effect("carries the operator's text into a strategy-less mission's wake", () =>
+    // The bootstrap branch used to drop `userMessage` outright — reachable only
+    // now that this cause gets here at all. A message that wakes a turn and
+    // then vanishes from it is worse than no wake.
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMissionWithoutStrategy;
+
+      const coordinator = yield* TradingTurnCoordinator;
+      const routed = yield* coordinator.requestUserMessageRun({
+        threadId: "thread_1",
+        text: "why did you not take that trade?",
+      });
+      assert.isTrue(routed);
+
+      const wake = yield* awaitBootstrapWake("user_message");
+      assert.equal(wake["userMessage"], "why did you not take that trade?");
+      assert.equal(wake["publishOverdue"], true);
     }),
   );
 
@@ -371,6 +441,19 @@ layer("TradingTurnCoordinator", (it) => {
       }
 
       assert.equal(yield* runStatus, "failed");
+      // Releasing the lease also closes the run's decision: a run that ended
+      // without publishing anything is the funnel's `no_decision`, not a blank.
+      const decision = yield* sql<{
+        readonly outcome: string | null;
+        readonly stand_down_code: string | null;
+        readonly provider: string | null;
+      }>`
+        SELECT outcome, stand_down_code, provider FROM trading_harness_runs
+        WHERE mission_id = 'mission_1'
+      `;
+      assert.equal(decision[0]?.outcome, "no_decision");
+      assert.equal(decision[0]?.stand_down_code, "not_published");
+      assert.equal(decision[0]?.provider, "claude");
       const reasons = (yield* activeWatches).map((row) => row.armed_reason).sort();
       // The spent level is armed again, and the floor's reassessment is there
       // as the backstop if the level never comes back.
@@ -521,7 +604,7 @@ it.live("releases the lease and consumes claimed inbox events when the turn ends
     );
 
     yield* Effect.gen(function* () {
-      yield* runMigrations({ toMigrationInclusive: 49 });
+      yield* runMigrations({ toMigrationInclusive: 52 });
       const missions = yield* TradingMissionService;
       yield* missions.createMission({
         missionId: "mission_1",

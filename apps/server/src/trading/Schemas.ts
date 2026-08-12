@@ -91,8 +91,10 @@ export {
 } from "@t3tools/trading-contracts/tools";
 
 export {
+  findMisarmedEntryConditions,
   findUnarmedEntryConditions,
   MarketWatch,
+  MisarmedEntryCondition,
   PersistedWatch,
   PersistedWatchStatus,
   UnarmedEntryCondition,

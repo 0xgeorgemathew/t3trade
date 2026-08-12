@@ -14,6 +14,7 @@
  * @module TradingMissionProjection
  */
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -33,6 +34,7 @@ import {
   TradingMissionBlockedReason,
   TradingMissionControl,
   TradingMissionStatus,
+  WatchArmedReason,
 } from "./Schemas.ts";
 
 export interface TradingMissionProjectionShape {
@@ -76,6 +78,7 @@ const decodeMarketWatchJson = Schema.decodeUnknownSync(
 const decodeStatus = Schema.decodeUnknownSync(TradingMissionStatus);
 const decodeBlockedReason = Schema.decodeUnknownSync(TradingMissionBlockedReason);
 const decodeWatchStatus = Schema.decodeUnknownSync(PersistedWatch.fields.status);
+const decodeArmedReason = Schema.decodeUnknownSync(WatchArmedReason);
 
 /**
  * Decode one mission's persisted strategy, degrading to "no strategy" when the
@@ -93,6 +96,11 @@ const decodeWatchStatus = Schema.decodeUnknownSync(PersistedWatch.fields.status)
  */
 const loggedUndecodableStrategies = new Set<string>();
 
+/** A persisted strategy row that no longer decodes against the current schema. */
+class UndecodableStrategyError extends Data.TaggedError("UndecodableStrategyError")<{
+  readonly cause: unknown;
+}> {}
+
 const readStrategy = (row: {
   readonly mission_id: string;
   readonly strategy_json: string | null;
@@ -104,9 +112,9 @@ const readStrategy = (row: {
   }
   return Effect.try({
     try: () => decodeStrategyJson(strategyJson),
-    catch: (cause) => cause,
+    catch: (cause) => new UndecodableStrategyError({ cause }),
   }).pipe(
-    Effect.catch((cause) => {
+    Effect.catch(({ cause }) => {
       const key = `${row.mission_id}:${row.strategy_version}`;
       if (loggedUndecodableStrategies.has(key)) {
         return Effect.succeed(null);
@@ -462,13 +470,14 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         readonly strategy_version: number;
         readonly watch_json: string;
         readonly status: string;
+        readonly armed_reason: string | null;
         readonly created_at: number;
         readonly updated_at: number;
         readonly last_observed_value: number | null;
         readonly last_evaluated_at: number | null;
       }>`
-        SELECT watch_id, mission_id, strategy_version, watch_json, status, created_at, updated_at,
-               last_observed_value, last_evaluated_at
+        SELECT watch_id, mission_id, strategy_version, watch_json, status, armed_reason,
+               created_at, updated_at, last_observed_value, last_evaluated_at
         FROM trading_watches
         WHERE mission_id = ${input.missionId}
         ORDER BY created_at DESC, watch_id DESC
@@ -491,9 +500,14 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         strategyVersion: row.strategy_version,
         watch: decodeMarketWatchJson(row.watch_json),
         status: decodeWatchStatus(row.status),
+        // The web's provenance chips ("auto", "target", "stop") read this; a
+        // mapping that drops it renders every watch as harness-armed.
+        ...(row.armed_reason === null ? {} : { armedReason: decodeArmedReason(row.armed_reason) }),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
-        ...(row.last_observed_value === null
+        // Guarded on BOTH columns: `lastEvaluatedAt` is typed non-null when
+        // present, so a half-written pair must encode as absent, not as null.
+        ...(row.last_observed_value === null || row.last_evaluated_at === null
           ? {}
           : {
               lastObservedValue: row.last_observed_value,

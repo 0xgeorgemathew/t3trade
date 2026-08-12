@@ -773,7 +773,7 @@ const buildAppUnderTest = (options?: {
       ),
     );
 
-    const appLayer = servedRoutesLayer.pipe(
+    const appLayerWithTrading = servedRoutesLayer.pipe(
       // The /mcp trading toolkit and the mission snapshot RPC both read
       // persisted mission state, so the routes layer now genuinely needs the
       // trading projection and a database to build.
@@ -815,6 +815,9 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(SqlitePersistenceMemory),
+    );
+
+    const appLayer = appLayerWithTrading.pipe(
       Layer.provide(resourceTelemetryLayer),
       Layer.provide(
         Layer.mock(BrowserTraceCollector.BrowserTraceCollector)({

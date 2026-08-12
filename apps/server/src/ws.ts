@@ -1026,6 +1026,7 @@ const makeWsRpcLayer = (
             threadId: command.threadId,
             text: command.message.text,
             ...(projectId === undefined ? {} : { projectId }),
+            ...(command.tradingMarket === undefined ? {} : { market: command.tradingMarket }),
           });
           if (claim.kind === "mission_created") {
             return { sequence: yield* orchestrationEngine.latestSequence };

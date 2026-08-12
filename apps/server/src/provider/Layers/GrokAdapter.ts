@@ -35,6 +35,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { applyTradingTurnContract } from "../TradingSessionProfile.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -950,7 +951,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_model", cause),
               });
 
-              const text = input.input?.trim();
+              // Trading threads carry the provider-neutral decision contract
+              // ahead of the wakeup: Grok's ACP session has no replaceable
+              // system prompt.
+              const text = input.input?.trim()
+                ? applyTradingTurnContract(input.threadId, input.input.trim())
+                : input.input?.trim();
               const imagePromptParts = yield* Effect.forEach(
                 input.attachments ?? [],
                 (attachment) =>

@@ -36,6 +36,7 @@ import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./
 import { Price, TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
 import { StopAdjustmentJustification, StopAdjustmentRefusalCode } from "./stopAdjustment.ts";
 import { TradingOrderIntent } from "./execution.ts";
+import { FailureRecovery } from "./recovery.ts";
 import { tradingPlanAuthoredFields, TradingPlanState, ProfitTargetBasis } from "./strategy.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
 import { Playbook, TradingPlaybookName } from "./playbook.ts";
@@ -83,8 +84,9 @@ export const TRADING_REQUEST_ENTRY_TOOL = "trading_request_entry";
  * These are distinct from `trading_publish_plan`'s in-band
  * `outcome: "rejected"`, which reports a *published* result the harness can
  * retry against. A `TradingToolRejectedError` means the call never reached the
- * mission: the credential did not carry the capability, or the calling thread
- * is not the thread an active mission is bound to (§10.2).
+ * mission: the credential did not carry the capability, the calling thread is
+ * not the thread an active mission is bound to (§10.2), or the market read the
+ * answer is made of could not be taken.
  *
  * Fork-owned: the spec names the tools and their payloads but does not publish
  * a tool-level failure type.
@@ -94,6 +96,9 @@ export const TradingToolRejectionReason = Schema.Literals([
   "thread_not_bound_to_mission",
   "mission_not_bound_to_thread",
   "mission_not_found",
+  /** A required exchange read failed. The tool has nothing to answer with, and
+      saying so is better than the opaque crash a defect produces. */
+  "market_data_unavailable",
 ]);
 export type TradingToolRejectionReason = typeof TradingToolRejectionReason.Type;
 
@@ -303,12 +308,41 @@ const missionBound = {
   missionId: Schema.optional(TradingId),
 } as const;
 
+/**
+ * One execution, named either by a server-cut quote or by a hand-built intent.
+ *
+ * `quoteId` is the whole call for an entry: `trading_quote_entry` already
+ * derived the strategy version, the authority version, the lease-owning run,
+ * the sequence, the crossing limit price, and a size inside every ceiling, so
+ * repeating them here is four more chances to be refused for a reason that has
+ * nothing to do with the market.
+ *
+ * The legacy intent fields remain decodable so old clients receive a precise
+ * migration refusal instead of a schema error. They are no longer executable:
+ * every live action uses a quote or its dedicated server-owned tool.
+ */
 export const TradingRequestEntryInput = Schema.Struct({
   ...missionBound,
-  intent: TradingOrderIntent,
-  expectedAuthorityVersion: Schema.Number,
-  activeHarnessRunId: TradingId,
-});
+  /** A quote from `trading_quote_entry`. Supplies every field below. */
+  quoteId: Schema.optional(TradingId),
+  intent: Schema.optional(TradingOrderIntent),
+  expectedAuthorityVersion: Schema.optional(Schema.Number),
+  activeHarnessRunId: Schema.optional(TradingId),
+}).check(
+  Schema.makeFilter((input) => {
+    const quoteForm = input.quoteId !== undefined;
+    const intentFields = [
+      input.intent,
+      input.expectedAuthorityVersion,
+      input.activeHarnessRunId,
+    ].filter((value) => value !== undefined).length;
+    if (quoteForm && intentFields > 0) return "quoteId cannot be combined with a full intent.";
+    if (!quoteForm && intentFields !== 3) {
+      return "Give quoteId alone, or all legacy intent fields together.";
+    }
+    return true;
+  }),
+);
 export type TradingRequestEntryInput = typeof TradingRequestEntryInput.Type;
 
 export const TradingRequestEntryResult = Schema.Struct({
@@ -384,13 +418,35 @@ export const TradingRequestEntryResult = Schema.Struct({
    * closed at — the limit above is only the bound it could not cross.
    */
   avgFillPrice: Schema.optional(Schema.Number),
+  /**
+   * Whether this outcome is worth trying again, and what to do if it is not.
+   *
+   * Every failure used to arrive as the same thing — a turn that did not trade
+   * — so a rate-limited read and an authority that forbids the direction were
+   * indistinguishable, and standing down was the only response available to
+   * both. This says which one happened. `retryable` is never true for anything
+   * that spent a nonce: an unknown submission is settled by reading state, not
+   * by sending it again.
+   */
+  recovery: Schema.optional(FailureRecovery),
 });
 export type TradingRequestEntryResult = typeof TradingRequestEntryResult.Type;
 
 // `trading_execute` is the same call under the name that describes it. The
 // aliases are exported separately so a caller reads the name it is using.
-export const TradingExecuteInput = TradingRequestEntryInput;
-export type TradingExecuteInput = TradingRequestEntryInput;
+/**
+ * The live execution tool's intentionally tiny input.
+ *
+ * `TradingRequestEntryInput` remains above as a decoder for callers on the old
+ * wire shape, but advertising those fields to a harness invites it to choose a
+ * form the server must refuse. The published tool accepts only the token whose
+ * server-owned intent has already cleared preview.
+ */
+export const TradingExecuteInput = Schema.Struct({
+  ...missionBound,
+  quoteId: TradingId,
+});
+export type TradingExecuteInput = typeof TradingExecuteInput.Type;
 export const TradingExecuteResult = TradingRequestEntryResult;
 export type TradingExecuteResult = TradingRequestEntryResult;
 
@@ -432,15 +488,8 @@ export const TradingAdjustStopInput = Schema.Struct({
   observedAtrUsd: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   /** The strategy version the harness believes is current; stale is rejected. */
   expectedVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
-  /**
-   * The same three proofs `trading_execute`'s intent carries. An accepted
-   * adjustment runs through the identical execution path — preview, lease
-   * check, place-and-confirm-before-cancel — so it has to present the identical
-   * evidence rather than a second, weaker version of it.
-   */
-  executionSequence: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
-  expectedAuthorityVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
-  activeHarnessRunId: TradingId,
+  // Execution identity is allocated from current server state after the
+  // adjustment policy accepts; the harness supplies none of it.
 });
 export type TradingAdjustStopInput = typeof TradingAdjustStopInput.Type;
 

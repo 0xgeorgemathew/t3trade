@@ -90,7 +90,6 @@ import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommand
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
-import { resolveMissionLockedProviderMessages } from "./missionLockedProviderMessages";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
@@ -568,18 +567,15 @@ export interface ChatComposerProps {
   // Provider / model
   lockedProvider: ProviderDriverKind | null;
   /**
-   * The driver kind a live trading mission has bound this thread to, when it
-   * has - `null` on every non-mission thread. Distinct from `lockedProvider`
-   * (which a continued session also sets): only a mission lock knows *why* the
-   * picker is locked, so only it can explain an unavailable provider as "enable
-   * <this one> in Settings" instead of the generic "no provider available".
-   */
-  missionLockedProvider: ProviderDriverKind | null;
-  /**
    * Extra footer controls for a thread bound to a trading mission. Undefined on
    * every other thread, which then renders exactly the footer it did before.
    */
   missionControls?: ReactNode;
+  /**
+   * The start-page asset picker. Supplied only while a draft's first message is
+   * being composed — the one moment the mission's market is still a choice.
+   */
+  assetPicker?: ReactNode;
   providerStatuses: ServerProvider[];
   activeProjectDefaultModelSelection: ModelSelection | null | undefined;
   activeThreadModelSelection: ModelSelection | null | undefined;
@@ -675,8 +671,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     runtimeMode,
     interactionMode,
     lockedProvider,
-    missionLockedProvider,
     missionControls,
+    assetPicker,
     providerStatuses,
     activeProjectDefaultModelSelection,
     activeThreadModelSelection,
@@ -870,15 +866,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [providerInstanceEntries, selectedInstanceId],
   );
   const noProviderAvailable = selectedProviderEntry === undefined;
-  // When a mission lock is the reason no provider is selectable, name the
-  // bound driver so the composer says "enable Claude" rather than the generic
-  // "no provider available" that leaves the user wondering why the picker is
-  // locked. A non-mission lock (continued session) still falls through to the
-  // generic strings.
-  const missionLockedMessages = resolveMissionLockedProviderMessages(missionLockedProvider);
-  const missionLockedUnavailablePlaceholder = missionLockedMessages.placeholder;
-  const missionLockedUnavailableBanner = missionLockedMessages.banner;
-  const missionLockedFooterLabel = missionLockedMessages.footerLabel;
   // The driver kind follows the instance that will actually run the turn,
   // which can differ from the persisted selection when that selection is
   // disabled.
@@ -2803,9 +2790,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   ? activePendingProgress.customAnswer ||
                     "Type your own answer, or leave this blank to use the selected option"
                   : prompt.trim() ||
-                    (noProviderAvailable
-                      ? (missionLockedUnavailablePlaceholder ?? "Enable a provider in Settings")
-                      : "Ask anything...")}
+                    (noProviderAvailable ? "Enable a provider in Settings" : "Ask anything...")}
               </button>
               <button
                 type="button"
@@ -3031,8 +3016,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         : projectSelectionRequired
                           ? "Choose a project above to start a thread"
                           : noProviderAvailable
-                            ? (missionLockedUnavailablePlaceholder ??
-                              "Enable a provider in Settings to send a message")
+                            ? "Enable a provider in Settings to send a message"
                             : phase === "disconnected"
                               ? "Ask for follow-up changes or attach images"
                               : "Ask anything, @tag files/folders, $use skills, or / for commands"
@@ -3098,11 +3082,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     variant="ghost"
                     disabled
                     data-chat-provider-unavailable="true"
-                    title={missionLockedUnavailableBanner ?? "No provider is available"}
+                    title="No provider is available"
                     className="shrink-0 gap-2 px-2 text-muted-foreground/70 sm:px-3"
                   >
                     <CircleAlertIcon className="size-4" />
-                    {missionLockedFooterLabel ?? "No provider available"}
+                    No provider available
                   </Button>
                 ) : (
                   <ProviderModelPicker
@@ -3164,6 +3148,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     />
                   </>
                 )}
+                {assetPicker}
                 {missionControls}
               </div>
 

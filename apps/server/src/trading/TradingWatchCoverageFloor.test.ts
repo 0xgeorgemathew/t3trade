@@ -372,15 +372,24 @@ layer("run settlement: the armed-coverage floor", (it) => {
     }),
   );
 
-  it.effect("leaves a flat mission with no thesis alone", () =>
-    // Nothing has been published, so there is nothing to come back to. A
-    // create, a publish, or a user control moves this mission on.
+  it.effect("arms a reassessment for a flat mission that published nothing", () =>
+    // The stand-down case. A turn that read the market and declined to enter
+    // has reached a conclusion, and this used to be treated as "nothing to come
+    // back to": no watch, no schedule, dormant until the operator typed. The
+    // floor runs on the default timeframe, because no strategy named one.
     Effect.gen(function* () {
       yield* seed;
       yield* runOneTurn;
 
       const active = yield* activeWatches;
-      assert.deepEqual(active, []);
+      assert.equal(active.length, 1);
+      const watch = active[0]!.watch;
+      assert.equal(watch.type, "scheduled_reassessment");
+      assert.equal(active[0]!.armedReason, "staleness_floor");
+      if (watch.type !== "scheduled_reassessment") return;
+      const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      const flatFloor = watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: false });
+      assert.isAtMost(watch.runAt, now + flatFloor + 1_000);
     }),
   );
 

@@ -12,26 +12,26 @@ import {
   scopeThreadRef,
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef, SidebarProjectGroupingMode } from "@t3tools/contracts";
+import type {
+  OrchestrationTradingMission,
+  ScopedThreadRef,
+  SidebarProjectGroupingMode,
+} from "@t3tools/contracts";
+import type { TradingMissionStatus } from "@t3tools/trading-contracts";
 import {
-  AlarmClockIcon,
   AlarmClockOffIcon,
   CheckIcon,
   ChevronDownIcon,
   CircleAlertIcon,
-  CircleCheckIcon,
-  CircleDashedIcon,
   ClockIcon,
   CopyIcon,
   FolderIcon,
   FolderPlusIcon,
   GitBranchIcon,
   EllipsisIcon,
-  MessageSquareIcon,
   PlusIcon,
   SearchIcon,
   ServerIcon,
-  SquarePenIcon,
   Trash2Icon,
   Undo2Icon,
 } from "lucide-react";
@@ -67,7 +67,6 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { isModelPickerOpen } from "../modelPickerVisibility";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { isMacPlatform } from "~/lib/utils";
-import { useOpenPrLink } from "../lib/openPullRequestLink";
 import { readLocalApi } from "../localApi";
 import {
   deriveProjectGroupingOverrideKey,
@@ -105,7 +104,6 @@ import { formatRelativeTimeLabel, parseTimestampDate } from "../timestampFormat"
 import type { SidebarThreadSummary } from "../types";
 import { cn } from "~/lib/utils";
 import {
-  formatWorkingDurationLabel,
   firstValidTimestampMs,
   hasUnseenCompletion,
   isTrailingDoubleClick,
@@ -113,18 +111,15 @@ import {
   resolveAdjacentThreadId,
   resolveSettledTimestamp,
   resolveSidebarV2Status,
-  resolveWorkingStartedAt,
   shouldNavigateAfterProjectRemoval,
   sortLogicalProjectsForSidebar,
   sortSettledThreadsForSidebarV2,
   sortThreadsForSidebarV2,
 } from "./Sidebar.logic";
 import { resolveLocalCheckoutBranchMismatch } from "./BranchToolbar.logic";
-import {
-  prStatusIndicator,
-  resolveThreadPr,
-  settledPrHoverColorClass,
-} from "./ThreadStatusIndicators";
+import { resolveThreadPr } from "./ThreadStatusIndicators";
+import { MISSION_STATUS_LABELS, formatSignedUsd } from "./trading/tradingPresentation";
+import { orchestrationEnvironment } from "../state/orchestration";
 import {
   resolveSnoozePresets,
   snoozeWakeDescription,
@@ -150,7 +145,15 @@ import {
 } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Kbd } from "./ui/kbd";
-import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "./ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "./ui/menu";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
@@ -199,23 +202,6 @@ function JumpHintBadge(props: { label: string }) {
       className="pointer-events-none absolute right-1.5 top-1/2 z-10 inline-flex h-5 -translate-y-1/2 items-center rounded-full border border-border/80 bg-background/95 px-1.5 font-mono text-[10px] font-medium tracking-tight text-foreground shadow-sm"
     >
       {props.label}
-    </span>
-  );
-}
-
-// Self-ticking so only this span re-renders each second, not the whole row.
-function WorkingDuration(props: { startedAt: string | null }) {
-  const startedMs = props.startedAt !== null ? Date.parse(props.startedAt) : Number.NaN;
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (Number.isNaN(startedMs)) return;
-    const id = window.setInterval(() => setTick((tick) => tick + 1), 1_000);
-    return () => window.clearInterval(id);
-  }, [startedMs]);
-  if (Number.isNaN(startedMs)) return null;
-  return (
-    <span className="font-mono tabular-nums">
-      {formatWorkingDurationLabel(Date.now() - startedMs)}
     </span>
   );
 }
@@ -359,8 +345,28 @@ function SnoozePopoverButton(props: {
   );
 }
 
+/**
+ * The dot colour of each mission state, following the reference design: amber
+ * while the mission waits on the market, emerald while it holds exposure, red
+ * when something stopped it, and muted once nothing is live any more.
+ */
+const MISSION_STATUS_DOT: Record<TradingMissionStatus, string> = {
+  initializing: "bg-sky-500",
+  analysing: "bg-sky-500",
+  waiting: "bg-orange-400",
+  executing: "bg-sky-500",
+  position_open: "bg-emerald-500",
+  paused: "bg-muted-foreground/50",
+  agent_unavailable: "bg-red-500",
+  blocked: "bg-red-500",
+  revoked: "bg-red-500",
+  completed: "bg-muted-foreground/50",
+};
+
 const SidebarV2Row = memo(function SidebarV2Row(props: {
   thread: SidebarThreadSummary;
+  /** The trading mission bound to this thread, when one exists. */
+  mission: OrchestrationTradingMission | null;
   variant: "card" | "slim";
   // Slim rows are either settled (action: un-settle) or merely quiet
   // (seen Ready threads — action: settle).
@@ -423,7 +429,6 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   const threadKey = scopedThreadKey(threadRef);
   const lastVisitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[threadKey]);
   const isSelected = useThreadSelectionStore((state) => state.selectedThreadKeys.has(threadKey));
-  const openPrLink = useOpenPrLink();
 
   // Same semantics as v1 (never-visited counts as read): flipping the beta
   // flag must not light up every historical thread as unread.
@@ -448,48 +453,39 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   const isInFlight = status === "working" || status === "approval" || status === "input";
   const shouldRecede =
     (status === "ready" || isInFlight) && !isUnread && !isWoke && !props.isActive && !isSelected;
-  // Status hues follow the system-wide convention set by sidebar v1 and the
-  // mobile Live Activity/widgets (amber approval, indigo input, sky working)
-  // so a thread reads the same color everywhere it surfaces.
-  const topStatus =
-    status === "working"
-      ? {
-          label: "Working",
-          icon: "working" as const,
-          className:
-            "animate-sidebar-working-text text-sky-600 motion-reduce:animate-none dark:text-sky-400",
-        }
-      : status === "approval"
-        ? {
-            label: "Approval",
-            icon: null,
-            className: "text-amber-700 dark:text-amber-300",
-          }
-        : status === "input"
-          ? {
-              label: "Input",
-              icon: null,
-              className: "text-indigo-600 dark:text-indigo-300",
-            }
-          : status === "failed"
+  // The row's second line: a coloured dot, the state, and the mission's P&L
+  // when it has one. A mission-bound thread reads its state from the mission;
+  // blocked-on-you thread states (approval, input, failed) still outrank it
+  // because they are the states that need a human now.
+  const mission = props.mission;
+  const missionPnlUsd =
+    mission === null
+      ? null
+      : mission.position !== null && mission.position.size !== 0
+        ? mission.position.unrealisedPnl
+        : mission.result.fillCount > 0
+          ? mission.result.realizedPnlUsd
+          : null;
+  const statusLine: { label: string; dotClassName: string; pnlLabel: string | null } | null =
+    status === "approval"
+      ? { label: "Approval required", dotClassName: "bg-blue-400", pnlLabel: null }
+      : status === "input"
+        ? { label: "Input needed", dotClassName: "bg-indigo-400", pnlLabel: null }
+        : status === "failed"
+          ? { label: "Failed", dotClassName: "bg-red-500", pnlLabel: null }
+          : mission !== null
             ? {
-                label: "Failed",
-                icon: null,
-                className: "text-red-700 dark:text-red-300",
+                label: MISSION_STATUS_LABELS[mission.status],
+                dotClassName: MISSION_STATUS_DOT[mission.status],
+                pnlLabel: missionPnlUsd === null ? null : formatSignedUsd(missionPnlUsd),
               }
-            : isWoke
-              ? {
-                  label: "Woke",
-                  icon: "woke" as const,
-                  className: "text-amber-700 dark:text-amber-300",
-                }
-              : isUnread
-                ? {
-                    label: "Done",
-                    icon: "done" as const,
-                    className: "text-emerald-700 dark:text-emerald-300",
-                  }
-                : null;
+            : status === "working"
+              ? { label: "Working", dotClassName: "bg-sky-500", pnlLabel: null }
+              : isWoke
+                ? { label: "Woke", dotClassName: "bg-amber-400", pnlLabel: null }
+                : isUnread
+                  ? { label: "Done", dotClassName: "bg-emerald-500", pnlLabel: null }
+                  : null;
 
   const gitCwd = thread.worktreePath ?? props.projectCwd;
   const gitStatus = useEnvironmentQuery(
@@ -510,8 +506,6 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
     threadBranch: thread.branch,
     gitStatus: gitStatus.data,
   });
-  const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
-  const settledPrHoverClass = pr ? settledPrHoverColorClass(pr.state) : undefined;
   // Report the PR state up: the parent partitions rows with effectiveSettled,
   // and a merged/closed PR auto-settles a thread — data only rows have.
   const prState = pr?.state ?? null;
@@ -528,9 +522,6 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   const modelLabel = selectedModel
     ? getTriggerDisplayModelLabel(selectedModel)
     : thread.modelSelection.model;
-
-  const isRemote =
-    props.currentEnvironmentId !== null && thread.environmentId !== props.currentEnvironmentId;
 
   const detailsTooltip = (
     <SidebarV2ThreadTooltip
@@ -648,13 +639,6 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   useEffect(() => {
     if (!showSnoozeButton) setSnoozeMenuOpen(false);
   }, [showSnoozeButton]);
-  const handlePrClick = useCallback(
-    (event: ReactMouseEvent<HTMLElement>) => {
-      if (pr?.url) openPrLink(event, pr.url);
-    },
-    [openPrLink, pr],
-  );
-
   // All Sidebar V2 rows share one surface model. Live threads used to look
   // like elevated cards while settled threads were plain rows, leaving neither
   // a useful hierarchy nor a reliable hover cue. Status now lives in the row
@@ -690,26 +674,12 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   ) : (
     <span
       className={cn(
-        "min-w-0 flex-1 text-sm",
-        shouldRecede ? "font-normal" : "font-medium",
-        variant === "card"
-          ? cn(
-              "truncate",
-              isUnread || isWoke
-                ? "text-foreground"
-                : shouldRecede
-                  ? "text-muted-foreground/80"
-                  : status === "failed"
-                    ? "text-foreground/95"
-                    : "text-foreground/90",
-            )
+        "min-w-0 flex-1 truncate text-sm",
+        shouldRecede
+          ? "font-normal text-muted-foreground/80 group-hover/v2-row:text-foreground"
           : cn(
-              "truncate group-hover/v2-row:text-foreground",
-              props.isActive || isWoke
-                ? "text-foreground"
-                : isUnread
-                  ? "text-muted-foreground"
-                  : "text-muted-foreground/70",
+              "font-medium",
+              props.isActive || isUnread || isWoke ? "text-foreground" : "text-foreground/90",
             ),
       )}
     >
@@ -717,139 +687,16 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
     </span>
   );
 
-  const prBadge =
-    prStatus && pr ? (
-      <button
-        type="button"
-        onClick={handlePrClick}
-        className={cn(
-          "shrink-0 font-mono text-xs hover:underline",
-          variant === "slim" && variantAction === "unsettle"
-            ? props.isActive
-              ? "text-muted-foreground/70"
-              : cn("text-muted-foreground/35 transition-colors", settledPrHoverClass)
-            : prStatus.colorClass,
-        )}
-        aria-label={prStatus.tooltip}
-      >
-        #{pr.number}
-      </button>
-    ) : null;
-
-  if (variant === "slim") {
-    return (
-      <li
-        data-thread-item
-        className="list-none [content-visibility:auto] [contain-intrinsic-size:auto_34px]"
-      >
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <div
-                role="button"
-                tabIndex={0}
-                data-testid="sidebar-v2-row-slim"
-                className={cn(rowSurfaceClassName, "flex h-9 items-center gap-2.5 px-2.5")}
-                onClick={handleClick}
-                onDoubleClick={handleDoubleClick}
-                onKeyDown={handleKeyDown}
-                onContextMenu={handleContextMenu}
-              />
-            }
-          >
-            {/* Settled history recedes: dimmed favicon at rest, restored on
-              hover so the tail stays scannable when you're hunting. */}
-            <span
-              className={cn(
-                "shrink-0 transition-opacity",
-                !props.isActive &&
-                  "opacity-40 grayscale group-hover/v2-row:opacity-100 group-hover/v2-row:grayscale-0",
-              )}
-            >
-              <ProjectFavicon
-                environmentId={thread.environmentId}
-                cwd={props.projectCwd ?? ""}
-                className="size-4"
-                fallbackIcon={MessageSquareIcon}
-              />
-            </span>
-            {title}
-            {/* The PR badge stays outside the hover-fading slot: it must
-              remain visible AND clickable while the row is hovered. Only
-              the time/jump label yields to the settle affordance. */}
-            {prBadge}
-            <span className="relative ml-auto flex h-6 min-w-8 shrink-0 items-center justify-end">
-              <span className="inline-flex justify-end tabular-nums text-muted-foreground/55 transition-opacity group-hover/v2-row:opacity-0">
-                {variantAction === "unsnooze" && props.snoozeWakeLabelText !== null ? (
-                  // Snoozed rows show when they come BACK, not when they were
-                  // last touched — the return ticket is the row's whole story.
-                  <span className="text-xs text-blue-600 tabular-nums dark:text-blue-400">
-                    {props.snoozeWakeLabelText}
-                  </span>
-                ) : isWoke ? (
-                  // A wake can land straight in the settled tail (e.g. PR
-                  // merged while snoozed); the signal must survive the trip.
-                  <span
-                    role="status"
-                    aria-label="Woke from snooze"
-                    className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-300"
-                  >
-                    <AlarmClockIcon aria-hidden className="size-3" />
-                    Woke
-                  </span>
-                ) : (
-                  <span className="text-xs">
-                    {variantAction === "unsettle"
-                      ? settledTimeLabel(thread)
-                      : threadTimeLabel(thread)}
-                  </span>
-                )}
-              </span>
-              {variantAction === "unsnooze" ? (
-                !props.snoozeSupported ? null : (
-                  <button
-                    type="button"
-                    aria-label="Wake thread now"
-                    onClick={handleUnsnoozeClick}
-                    className="absolute inset-y-0 right-0 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-2 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/v2-row:opacity-100"
-                  >
-                    <AlarmClockOffIcon className="size-3" />
-                  </button>
-                )
-              ) : !props.settlementSupported ? null : variantAction === "unsettle" ? (
-                <button
-                  type="button"
-                  aria-label="Un-settle thread"
-                  onClick={handleUnsettleClick}
-                  className="absolute inset-y-0 right-0 -mr-1 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/v2-row:opacity-100"
-                >
-                  <Undo2Icon className="mb-px size-3.5" />
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  aria-label="Settle thread"
-                  onClick={handleSettleClick}
-                  className="absolute inset-y-0 right-0 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-2 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/v2-row:opacity-100"
-                >
-                  <CheckIcon className="size-3" />
-                </button>
-              )}
-            </span>
-            {props.jumpLabel ? <JumpHintBadge label={props.jumpLabel} /> : null}
-          </TooltipTrigger>
-          {detailsTooltip}
-        </Tooltip>
-      </li>
-    );
-  }
-
-  const diff = latestTurnDiff(thread);
+  // Every row shares the reference design's two-line layout: the title with
+  // the time on the right, then a coloured dot and the state beneath it. The
+  // variants differ only in which hover action the time slot yields to.
+  const timeLabel =
+    variantAction === "unsettle" ? settledTimeLabel(thread) : threadTimeLabel(thread);
 
   return (
     <li
       data-thread-item
-      className="list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_96px]"
+      className="list-none py-px [content-visibility:auto] [contain-intrinsic-size:auto_56px]"
     >
       <Tooltip>
         <TooltipTrigger
@@ -857,7 +704,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
             <div
               role="button"
               tabIndex={0}
-              data-testid="sidebar-v2-row-card"
+              data-testid={variant === "slim" ? "sidebar-v2-row-slim" : "sidebar-v2-row-card"}
               className={rowSurfaceClassName}
               onClick={handleClick}
               onDoubleClick={handleDoubleClick}
@@ -866,29 +713,11 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
             />
           }
         >
-          <div className="relative z-10 h-[4.875rem] px-2.5 py-2">
-            <div className="flex h-5 min-w-0 items-center gap-1.5">
-              <ProjectFavicon
-                environmentId={thread.environmentId}
-                cwd={props.projectCwd ?? ""}
-                className="size-4 shrink-0"
-              />
-              {props.projectTitle ? (
-                <span
-                  className={cn(
-                    "min-w-0 flex-1 truncate text-xs text-muted-foreground/85",
-                    shouldRecede ? "font-normal" : "font-medium",
-                  )}
-                >
-                  {props.projectTitle}
-                </span>
-              ) : (
-                <span className="flex-1" />
-              )}
-              {/* The visible state owns this slot's width: status at rest,
-                  actions on hover/focus or while the popover is open. Keeping
-                  the hidden state out of flow lets the project label reclaim
-                  space without either state overlapping it. */}
+          <div className="relative z-10 px-2.5 py-2">
+            <div className="flex min-w-0 items-center gap-2">
+              {title}
+              {/* The visible state owns this slot's width: the time at rest,
+                  actions on hover/focus or while the snooze popover is open. */}
               <span className="group/v2-status-slot relative ml-auto flex h-5 min-w-8 shrink-0 items-stretch justify-end text-xs">
                 <span
                   className={cn(
@@ -896,97 +725,80 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                     snoozeMenuOpen && "absolute right-0 opacity-0",
                   )}
                 >
-                  {topStatus ? (
-                    <span
-                      className={cn(
-                        "inline-flex items-center gap-1 font-medium",
-                        topStatus.className,
-                      )}
-                    >
-                      {topStatus.icon === "working" ? (
-                        <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
-                      ) : topStatus.icon === "done" ? (
-                        <CircleCheckIcon aria-hidden className="size-4 shrink-0" />
-                      ) : topStatus.icon === "woke" ? (
-                        <AlarmClockIcon aria-hidden className="size-4 shrink-0" />
-                      ) : null}
-                      {/* The label alone is the live region: a role="status"
-                          wrapper around the ticking duration would make
-                          screen readers announce every second. */}
-                      <span role="status">{topStatus.label}</span>
-                      {status === "working" ? (
-                        <span aria-hidden>
-                          <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
-                        </span>
-                      ) : null}
+                  {variantAction === "unsnooze" && props.snoozeWakeLabelText !== null ? (
+                    // Snoozed rows show when they come BACK, not when they
+                    // were last touched — the return ticket is the row's story.
+                    <span className="text-blue-600 tabular-nums dark:text-blue-400">
+                      {props.snoozeWakeLabelText}
                     </span>
                   ) : (
-                    threadTimeLabel(thread)
+                    timeLabel
                   )}
                 </span>
-                {props.settlementSupported || showSnoozeButton ? (
-                  <span
-                    className={cn(
-                      "absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity focus-within:static focus-within:opacity-100 group-hover/v2-row:static group-hover/v2-row:opacity-100",
-                      snoozeMenuOpen && "static opacity-100",
-                    )}
-                  >
-                    {showSnoozeButton ? (
-                      <SnoozePopoverButton
-                        open={snoozeMenuOpen}
-                        onOpenChange={setSnoozeMenuOpen}
-                        onSnooze={handleSnoozePreset}
-                      />
-                    ) : null}
-                    {props.settlementSupported ? (
+                <span
+                  className={cn(
+                    "absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity focus-within:static focus-within:opacity-100 group-hover/v2-row:static group-hover/v2-row:opacity-100",
+                    snoozeMenuOpen && "static opacity-100",
+                  )}
+                >
+                  {variantAction === "unsnooze" ? (
+                    props.snoozeSupported ? (
                       <button
                         type="button"
-                        aria-label="Settle thread"
-                        onClick={handleSettleClick}
+                        aria-label="Wake thread now"
+                        onClick={handleUnsnoozeClick}
+                        className="inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground hover:text-foreground"
+                      >
+                        <AlarmClockOffIcon className="size-3.5" />
+                      </button>
+                    ) : null
+                  ) : variantAction === "unsettle" ? (
+                    props.settlementSupported ? (
+                      <button
+                        type="button"
+                        aria-label="Un-settle thread"
+                        onClick={handleUnsettleClick}
                         className="-mr-1 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground hover:text-foreground"
                       >
-                        <CheckIcon className="size-3.5" />
-                        Settle
+                        <Undo2Icon className="mb-px size-3.5" />
                       </button>
-                    ) : null}
-                  </span>
-                ) : null}
-              </span>
-            </div>
-            <div className="mt-1 flex min-w-0">{title}</div>
-            <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/75">
-              {thread.branch ? (
-                <span className="min-w-0 flex-1 truncate whitespace-nowrap">{thread.branch}</span>
-              ) : (
-                <span className="flex-1" />
-              )}
-              {prBadge}
-              {diff ? (
-                <span className="shrink-0 font-mono">
-                  <span className="text-emerald-600 dark:text-emerald-400">+{diff.insertions}</span>{" "}
-                  <span className="text-red-600 dark:text-red-400">−{diff.deletions}</span>
+                    ) : null
+                  ) : (
+                    <>
+                      {showSnoozeButton ? (
+                        <SnoozePopoverButton
+                          open={snoozeMenuOpen}
+                          onOpenChange={setSnoozeMenuOpen}
+                          onSnooze={handleSnoozePreset}
+                        />
+                      ) : null}
+                      {props.settlementSupported ? (
+                        <button
+                          type="button"
+                          aria-label="Settle thread"
+                          onClick={handleSettleClick}
+                          className="-mr-1 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <CheckIcon className="size-3.5" />
+                        </button>
+                      ) : null}
+                    </>
+                  )}
                 </span>
-              ) : null}
-              <span
-                aria-hidden
-                className="pointer-events-none ml-auto inline-flex shrink-0 items-center gap-1"
-              >
-                {isRemote ? (
-                  <span className="inline-flex shrink-0 items-center text-sidebar-muted-foreground/70">
-                    <ServerIcon aria-hidden className="size-3.5" />
-                  </span>
-                ) : null}
-                {driverKind ? (
-                  <span className="inline-flex shrink-0 items-center opacity-60">
-                    <ProviderInstanceIcon
-                      driverKind={driverKind}
-                      displayName={thread.session?.providerName ?? modelInstanceId}
-                      iconClassName="size-3.5"
-                    />
-                  </span>
-                ) : null}
               </span>
             </div>
+            {statusLine ? (
+              <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/75">
+                <span
+                  aria-hidden
+                  className={cn("size-1.5 shrink-0 rounded-full", statusLine.dotClassName)}
+                />
+                <span role="status" className="min-w-0 truncate">
+                  {statusLine.label}
+                  {statusLine.pnlLabel !== null ? ` · ${statusLine.pnlLabel}` : null}
+                </span>
+              </div>
+            ) : null}
           </div>
           {props.jumpLabel ? <JumpHintBadge label={props.jumpLabel} /> : null}
         </TooltipTrigger>
@@ -995,15 +807,6 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
     </li>
   );
 });
-
-function latestTurnDiff(
-  thread: SidebarThreadSummary,
-): { insertions: number; deletions: number } | null {
-  // Shells don't carry checkpoint summaries; diff stats render only when the
-  // shell projection grows them. Kept as a seam so the row layout is ready.
-  void thread;
-  return null;
-}
 
 export default function SidebarV2() {
   const projects = useProjects();
@@ -1057,6 +860,31 @@ export default function SidebarV2() {
   );
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  // Trading missions live on the primary (local) environment. Joined here by
+  // threadId so every row can carry its mission's state and P&L; polled on the
+  // same cadence the mission surfaces use, because the projection is pull-only.
+  const missionSnapshot = useEnvironmentQuery(
+    primaryEnvironmentId
+      ? orchestrationEnvironment.tradingMissionSnapshot({
+          environmentId: primaryEnvironmentId,
+          input: {},
+        })
+      : null,
+  );
+  const refreshMissionSnapshot = missionSnapshot.refresh;
+  useEffect(() => {
+    if (primaryEnvironmentId === null) return;
+    const id = window.setInterval(refreshMissionSnapshot, 3_000);
+    return () => window.clearInterval(id);
+  }, [primaryEnvironmentId, refreshMissionSnapshot]);
+  const missionByThreadKey = useMemo(() => {
+    const byKey = new Map<string, OrchestrationTradingMission>();
+    if (primaryEnvironmentId === null) return byKey;
+    for (const mission of missionSnapshot.data?.missions ?? []) {
+      byKey.set(scopedThreadKey(scopeThreadRef(primaryEnvironmentId, mission.threadId)), mission);
+    }
+    return byKey;
+  }, [missionSnapshot.data, primaryEnvironmentId]);
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
@@ -2234,154 +2062,132 @@ export default function SidebarV2() {
         className="gap-0"
         fixedHeader={
           <SidebarGroup className="gap-1 p-2">
-            <div className="flex items-center gap-1">
-              <div className="min-w-0 flex-1">
-                <CommandDialogTrigger
+            <CommandDialogTrigger
+              render={
+                <SidebarMenuButton
+                  type="button"
+                  aria-label="Search threads and commands"
+                  className="focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+                  data-testid="command-palette-trigger"
+                />
+              }
+            >
+              <SearchIcon />
+              <div className="flex-1 truncate text-left">Search</div>
+              {commandPaletteShortcutLabel ? (
+                <Kbd className="mr-px h-4 min-w-0 rounded-sm bg-sidebar-control-surface px-1.5 text-[10px] text-sidebar-muted-foreground ring-1 ring-sidebar-border">
+                  {commandPaletteShortcutLabel}
+                </Kbd>
+              ) : null}
+            </CommandDialogTrigger>
+            {projectGroups.length > 0 ? (
+              <Menu open={projectScopeMenuOpen} onOpenChange={setProjectScopeMenuOpen}>
+                <MenuTrigger
                   render={
                     <SidebarMenuButton
-                      type="button"
-                      aria-label="Search threads and commands"
-                      className="focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
-                      data-testid="command-palette-trigger"
+                      aria-label="Filter threads by project"
+                      className="min-w-0 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
                     />
                   }
                 >
-                  <SearchIcon />
-                  <div className="flex-1 truncate text-left">Search</div>
-                  {commandPaletteShortcutLabel ? (
-                    <Kbd className="mr-px h-4 min-w-0 rounded-sm bg-sidebar-control-surface px-1.5 text-[10px] text-sidebar-muted-foreground ring-1 ring-sidebar-border">
-                      {commandPaletteShortcutLabel}
-                    </Kbd>
-                  ) : null}
-                </CommandDialogTrigger>
-              </div>
-              <div className="shrink-0">
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <SidebarMenuButton
-                        size="icon"
-                        type="button"
-                        className="relative focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
-                        onClick={handleNewThreadClick}
-                        disabled={projects.length === 0}
-                        aria-label="New thread"
-                      />
-                    }
-                  >
-                    <SquarePenIcon />
-                    <span
-                      className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-                      aria-hidden="true"
+                  {scopedProjectGroup ? (
+                    <ProjectFavicon
+                      environmentId={scopedProjectGroup.environmentId}
+                      cwd={scopedProjectGroup.workspaceRoot}
+                      className="size-4 shrink-0"
                     />
-                  </TooltipTrigger>
-                  <TooltipPopup side="right">
-                    {newThreadShortcutLabel
-                      ? `New thread (${newThreadShortcutLabel})`
-                      : "New thread"}
-                  </TooltipPopup>
-                </Tooltip>
-              </div>
-            </div>
-            {projectGroups.length > 0 ? (
-              <div className="flex items-center gap-1">
-                <Menu open={projectScopeMenuOpen} onOpenChange={setProjectScopeMenuOpen}>
-                  <MenuTrigger
-                    render={
-                      <SidebarMenuButton
-                        aria-label="Filter threads by project"
-                        className="min-w-0 flex-1 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
-                      />
+                  ) : (
+                    <FolderIcon className="size-4 shrink-0" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate">
+                    {scopedProjectGroup?.displayName ?? "All strategies"}
+                  </span>
+                  <ChevronDownIcon className="-mr-px size-4 shrink-0" />
+                </MenuTrigger>
+                <MenuPopup align="start" className="w-(--anchor-width)">
+                  <MenuRadioGroup
+                    value={projectScopeKey ?? "all"}
+                    onValueChange={(value) =>
+                      setProjectScopeKey(value === "all" ? null : (value as string))
                     }
                   >
-                    {scopedProjectGroup ? (
-                      <ProjectFavicon
-                        environmentId={scopedProjectGroup.environmentId}
-                        cwd={scopedProjectGroup.workspaceRoot}
-                        className="size-4 shrink-0"
-                      />
-                    ) : (
-                      <FolderIcon className="size-4 shrink-0" />
-                    )}
-                    <span className="min-w-0 flex-1 truncate">
-                      {scopedProjectGroup?.displayName ?? "All projects"}
-                    </span>
-                    <ChevronDownIcon className="-mr-px size-4 shrink-0" />
-                  </MenuTrigger>
-                  <MenuPopup align="start" className="w-(--anchor-width)">
-                    <MenuRadioGroup
-                      value={projectScopeKey ?? "all"}
-                      onValueChange={(value) =>
-                        setProjectScopeKey(value === "all" ? null : (value as string))
-                      }
+                    <MenuRadioItem
+                      value="all"
+                      closeOnClick
+                      className="h-8 min-h-8 px-1 py-0 text-sm font-medium [&>span:last-child]:flex [&>span:last-child]:min-w-0 [&>span:last-child]:items-center [&>span:last-child]:gap-2"
                     >
-                      <MenuRadioItem
-                        value="all"
-                        closeOnClick
-                        className="h-8 min-h-8 px-1 py-0 text-sm font-medium [&>span:last-child]:flex [&>span:last-child]:min-w-0 [&>span:last-child]:items-center [&>span:last-child]:gap-2"
-                      >
-                        <FolderIcon className="size-4 shrink-0" />
-                        <span className="min-w-0 truncate text-sm">All projects</span>
-                      </MenuRadioItem>
-                      {projectGroups.map((project) => {
-                        const scopeKey = project.projectKey;
-                        return (
-                          <MenuRadioItem
-                            key={scopeKey}
-                            value={scopeKey}
-                            closeOnClick
-                            className="h-8 min-h-8 px-1 py-0 text-sm font-medium [&>span:last-child]:flex [&>span:last-child]:min-w-0 [&>span:last-child]:items-center [&>span:last-child]:gap-2"
+                      <FolderIcon className="size-4 shrink-0" />
+                      <span className="min-w-0 truncate text-sm">All strategies</span>
+                    </MenuRadioItem>
+                    {projectGroups.map((project) => {
+                      const scopeKey = project.projectKey;
+                      return (
+                        <MenuRadioItem
+                          key={scopeKey}
+                          value={scopeKey}
+                          closeOnClick
+                          className="h-8 min-h-8 px-1 py-0 text-sm font-medium [&>span:last-child]:flex [&>span:last-child]:min-w-0 [&>span:last-child]:items-center [&>span:last-child]:gap-2"
+                        >
+                          <ProjectFavicon
+                            environmentId={project.environmentId}
+                            cwd={project.workspaceRoot}
+                            className="size-4 shrink-0"
+                          />
+                          <span className="min-w-0 truncate text-sm">{project.displayName}</span>
+                          <button
+                            type="button"
+                            aria-label={`Project actions for ${project.displayName}`}
+                            title={`Project actions for ${project.displayName}`}
+                            className="ml-auto inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/55 outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              void handleProjectActions(event, project);
+                            }}
                           >
-                            <ProjectFavicon
-                              environmentId={project.environmentId}
-                              cwd={project.workspaceRoot}
-                              className="size-4 shrink-0"
-                            />
-                            <span className="min-w-0 truncate text-sm">{project.displayName}</span>
-                            <button
-                              type="button"
-                              aria-label={`Project actions for ${project.displayName}`}
-                              title={`Project actions for ${project.displayName}`}
-                              className="ml-auto inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/55 outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                              onPointerDown={(event) => event.stopPropagation()}
-                              onClick={(event) => {
-                                void handleProjectActions(event, project);
-                              }}
-                            >
-                              <EllipsisIcon className="size-3.5" />
-                            </button>
-                          </MenuRadioItem>
-                        );
-                      })}
-                    </MenuRadioGroup>
-                  </MenuPopup>
-                </Menu>
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <SidebarMenuButton
-                        size="icon"
-                        className="relative shrink-0 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
-                        onClick={openAddProjectCommandPalette}
-                        type="button"
-                        aria-label="New project"
-                      />
-                    }
-                  >
+                            <EllipsisIcon className="size-3.5" />
+                          </button>
+                        </MenuRadioItem>
+                      );
+                    })}
+                  </MenuRadioGroup>
+                  <MenuSeparator />
+                  <MenuItem onClick={openAddProjectCommandPalette}>
                     <FolderPlusIcon />
-                    <span
-                      className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-                      aria-hidden="true"
-                    />
-                  </TooltipTrigger>
-                  <TooltipPopup side="right">New project</TooltipPopup>
-                </Tooltip>
-              </div>
+                    New project
+                  </MenuItem>
+                </MenuPopup>
+              </Menu>
             ) : null}
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <SidebarMenuButton
+                    type="button"
+                    className="focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+                    onClick={handleNewThreadClick}
+                    disabled={projects.length === 0}
+                    aria-label="New strategy"
+                  />
+                }
+              >
+                <PlusIcon />
+                <div className="flex-1 truncate text-left">New strategy</div>
+              </TooltipTrigger>
+              <TooltipPopup side="right">
+                {newThreadShortcutLabel
+                  ? `New strategy (${newThreadShortcutLabel})`
+                  : "New strategy"}
+              </TooltipPopup>
+            </Tooltip>
           </SidebarGroup>
         }
       >
         <SidebarGroup className="px-2 pb-1 pt-0">
+          {activeThreads.length + snoozedThreads.length + settledThreads.length > 0 ? (
+            <div className="px-2.5 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">
+              Recent
+            </div>
+          ) : null}
           <TooltipProvider
             key="sidebar-thread-tooltips-150"
             delay={150}
@@ -2413,6 +2219,7 @@ export default function SidebarV2() {
                       // painted over text).
                       key={`${threadKey}:${rowVariant}`}
                       thread={thread}
+                      mission={missionByThreadKey.get(threadKey) ?? null}
                       variant={rowVariant}
                       // Snoozed rows wake; settled rows un-settle (explicit
                       // settles clear the override, auto-settled rows get

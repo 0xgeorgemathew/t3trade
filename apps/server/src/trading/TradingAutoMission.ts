@@ -16,6 +16,7 @@
  * @module TradingAutoMission
  */
 import { CommandId, ThreadId, TradingMissionId } from "@t3tools/contracts";
+import type { TradingMarket } from "@t3tools/trading-contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -69,6 +70,11 @@ export interface TradingAutoMissionShape {
      * otherwise read nothing and decline every brand-new thread.
      */
     readonly projectId?: string;
+    /**
+     * The market the composer's asset picker chose for this thread. Absent
+     * means the default market.
+     */
+    readonly market?: TradingMarket;
   }) => Effect.Effect<AutoMissionOutcome>;
 }
 
@@ -143,8 +149,22 @@ const make = Effect.gen(function* () {
       const bound = yield* missions.findMissionByThreadId(input.threadId);
       if (Option.isSome(bound)) return { kind: "not_applicable" } as const;
 
-      const instruction = input.text.trim().slice(0, MAX_INSTRUCTION_CHARS);
-      if (instruction === "") return { kind: "not_applicable" } as const;
+      // The message is the mandate; the standing note is the operating default
+      // no user's mandate will ever state (which interval the loop turns on).
+      // Appending rather than replacing is the fix for a real drift: the
+      // configured instruction was resolved here and then never read, so the
+      // documented default reached no mission and the knob that set it did
+      // nothing at all.
+      //
+      // The note is kept whole and the mandate is what gives way, because a
+      // half-sentence about candle intervals is worse than none.
+      const standing = settings.value.standingInstruction;
+      const suffix = standing === "" ? "" : `\n\n${standing}`;
+      const mandate = input.text
+        .trim()
+        .slice(0, Math.max(0, MAX_INSTRUCTION_CHARS - suffix.length));
+      if (mandate === "") return { kind: "not_applicable" } as const;
+      const instruction = `${mandate}${suffix}`;
 
       if (yield* hasPriorTurns(input.threadId)) return { kind: "not_applicable" } as const;
       const scoped = yield* inScope({
@@ -201,6 +221,7 @@ const make = Effect.gen(function* () {
         ...(settings.value.allocatedCapitalUsd === null
           ? {}
           : { allocatedCapitalUsd: settings.value.allocatedCapitalUsd }),
+        ...(input.market === undefined ? {} : { market: input.market }),
         createdAt: yield* nowIso,
       });
 

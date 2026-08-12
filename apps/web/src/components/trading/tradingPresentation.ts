@@ -122,6 +122,62 @@ const readNumber = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
 
 /**
+ * Read a card out of the flat key=value rendering the server switched the
+ * wakeup to (`TradingWakeupComposer.renderWakeup`): a `trading-harness-wakeup`
+ * first line, `section:` headers at column 0, and indented `key=value` pairs
+ * beneath them. The JSON branch above stays for older persisted messages.
+ *
+ * Same posture as the JSON parse: every field optional, only the first line
+ * decides, and a shape this build does not fully understand still renders as a
+ * card over the raw text.
+ */
+function deriveFlatWakeupCard(text: string): WakeupCard | null {
+  const firstLine = text.slice(0, text.indexOf("\n") === -1 ? text.length : text.indexOf("\n"));
+  if (firstLine.trim() !== "trading-harness-wakeup") return null;
+
+  /** The scalar rendered on its own indented line under a top-level `name:`. */
+  const sectionScalar = (name: string): string | null => {
+    const match = text.match(new RegExp(`^${name}:\\n\\s+(\\S+)`, "m"));
+    return match?.[1] ?? null;
+  };
+  /** The first `key=value` pair anywhere in the payload. */
+  const pairValue = (key: string): string | null => {
+    const match = text.match(new RegExp(`(?:^|\\s)${key}=([^\\s]+)`));
+    return match?.[1] ?? null;
+  };
+  /** The indented body of a top-level section, or null when absent. */
+  const sectionBody = (name: string): string | null => {
+    const match = text.match(new RegExp(`^${name}:\\n((?:[ ].*(?:\\n|$))*)`, "m"));
+    return match?.[1] ?? null;
+  };
+
+  const marketName = pairValue("market");
+  const markPriceRaw = pairValue("markPrice");
+  const markPrice = markPriceRaw === null ? null : readNumber(Number(markPriceRaw));
+
+  const strategyBody = sectionBody("activeStrategy");
+  const versionRaw = strategyBody?.match(/(?:^|\s)version=(\d+)/)?.[1] ?? null;
+
+  const eventsBody = sectionBody("pendingEvents");
+  const pendingEventCount =
+    eventsBody === null ? 0 : (eventsBody.match(/^\s*\[\d+\]/gm) ?? []).length;
+
+  return {
+    causeLabel: humanizeLiteral(sectionScalar("cause") ?? "wakeup"),
+    bootstrap: false,
+    marketLabel:
+      marketName === null
+        ? null
+        : markPrice === null
+          ? marketName
+          : `${marketName} · ${formatPrice(markPrice)}`,
+    strategyLabel: versionRaw === null ? null : `Strategy v${versionRaw}`,
+    pendingEventCount,
+    rawJson: text,
+  };
+}
+
+/**
  * Read a wakeup card out of a message's text, or `null` when the text is not a
  * wakeup at all.
  *
@@ -132,6 +188,7 @@ const readNumber = (value: unknown): number | null =>
  */
 export function deriveWakeupCard(text: string): WakeupCard | null {
   const trimmed = text.trim();
+  if (trimmed.startsWith("trading-harness-wakeup")) return deriveFlatWakeupCard(trimmed);
   if (!trimmed.startsWith("{") || !trimmed.includes("trading-harness-wakeup")) return null;
 
   let parsed: unknown;
@@ -647,16 +704,6 @@ export function describeTradingAccount(tradingAccountId: string): string {
   return tradingAccountId;
 }
 
-/** The mandate pill: the grant, and the most it is allowed to lose. */
-export function describeMandate(authority: {
-  readonly allocatedCapitalUsd: number;
-  readonly maximumCumulativeLossUsd: number;
-}): string {
-  return `${formatUsd(authority.allocatedCapitalUsd)} · max loss ${formatUsd(
-    authority.maximumCumulativeLossUsd,
-  )}`;
-}
-
 /**
  * The entry-permission pill.
  *
@@ -964,8 +1011,22 @@ export interface StrategyPlan {
   /**
    * The conservative rung of the target ladder. Required positive on the
    * contract — never null.
+   *
+   * On a stand-down plan this is not a target at all: it is the minimum viable
+   * target the costs demanded, which the market did not offer. Read
+   * {@link StrategyPlan.isStandDown} before presenting it as something the
+   * mission is aiming at.
    */
   readonly targetUsd: number;
+  /**
+   * Whether this plan is a stand-down: the turn read the market, found no
+   * target worth taking after costs, and published that conclusion rather than
+   * inventing one (`targetProfitBasis.insufficientVolatility`).
+   *
+   * Nothing is armed at `targetUsd` on such a plan — there is no position and
+   * no `pnl_above` — so it is a threshold, not a level.
+   */
+  readonly isStandDown: boolean;
   /** The full target ladder in prose; null when the harness published none. */
   readonly targetRationale: string | null;
   readonly basis: StrategyPlanBasis | null;
@@ -1030,6 +1091,7 @@ export function deriveStrategyPlan(mission: {
             readonly lookbackBars: number;
             readonly expectedHoldBars: number;
             readonly historicalHitRatePercent?: number | undefined;
+            readonly insufficientVolatility?: boolean | undefined;
           }
         | undefined;
       readonly maximumPlannedLossUsd?: number | undefined;
@@ -1081,6 +1143,7 @@ export function deriveStrategyPlan(mission: {
     stopSummary,
     // Required positive on the contract (PositiveUsdAmount): it is never null.
     targetUsd: strategy.protection?.targetProfitUsd ?? 0,
+    isStandDown: basisStruct?.insufficientVolatility === true,
     targetRationale: strategy.protection?.targetProfitRationale ?? null,
     basis,
     maxLossUsd: strategy.protection?.maximumPlannedLossUsd ?? null,
@@ -1439,10 +1502,13 @@ export function deriveUpNextItems(
   const currentAction = mission.strategy?.currentAction;
   const isWaiting =
     currentAction !== undefined && isWaitingLikeAction(currentAction as MomentumStrategyAction);
-  if (position === null && isWaiting) {
-    const conditions = (mission.strategy?.entryPlan?.conditions ?? []).flatMap((condition) =>
-      readConditionHint(condition) === null ? [] : [readConditionHint(condition)!],
-    );
+  // Flat is `size === 0`, not `position === null`: a closed position leaves its
+  // snapshot row behind zeroed, and the wakeup composer gates on the same test.
+  if ((position === null || position.size === 0) && isWaiting) {
+    const conditions = (mission.strategy?.entryPlan?.conditions ?? []).flatMap((condition) => {
+      const hint = readConditionHint(condition);
+      return hint === null ? [] : [hint];
+    });
     const unarmed = findUnarmedEntryConditions({ conditions, watches: mission.watches });
     for (const condition of unarmed) {
       entries.push({

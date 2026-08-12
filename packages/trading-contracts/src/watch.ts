@@ -417,3 +417,104 @@ export function findUnarmedEntryConditions(input: {
   }
   return unarmed;
 }
+
+// ---------------------------------------------------------------------------
+// Entry conditions armed with the wrong kind of watch
+// ---------------------------------------------------------------------------
+
+/**
+ * A trigger whose armed watch cannot evaluate the evidence it declared.
+ *
+ * The failure this catches is specific and was invisible: a close-confirmed
+ * breakout armed as a `price_cross` fires on the wick that trades through the
+ * level and closes back inside. The mission is woken, spends a turn, finds the
+ * break failed, and re-arms — the "premature wake / stand-down / re-arm cycle"
+ * with no evidence at either end that anything was wrong.
+ *
+ * The mirror is also wrong: a range boundary armed as a `candle_close` waits a
+ * whole bar past the touch, which in a range is most of the move.
+ */
+export const MisarmedEntryCondition = Schema.Struct({
+  description: Schema.String,
+  priceLevel: Price,
+  /** What the condition declared it needs. */
+  confirmation: Schema.Literals(["close", "touch"]),
+  /** The watch type armed at that level. */
+  armedAs: Schema.Literals(["price_cross", "candle_close"]),
+  /** The watch type the confirmation calls for. */
+  shouldBe: Schema.Literals(["price_cross", "candle_close"]),
+  mismatch: Schema.Literals(["watch_type", "timeframe", "direction"]),
+});
+export type MisarmedEntryCondition = typeof MisarmedEntryCondition.Type;
+
+/**
+ * Find entry conditions armed with a watch that cannot evaluate them.
+ *
+ * A condition with no `confirmation` is skipped: it made no claim about what
+ * would confirm it, and guessing on its behalf is how a wick becomes an entry.
+ * A condition with no armed watch at all is `findUnarmedEntryConditions`'s
+ * finding, not this one's.
+ */
+export function findMisarmedEntryConditions(input: {
+  readonly conditions: ReadonlyArray<{
+    readonly description: string;
+    readonly priceLevel?: number | undefined;
+    readonly confirmation?: "close" | "touch" | undefined;
+    readonly timeframe?: string | undefined;
+    readonly direction?: "above" | "below" | undefined;
+  }>;
+  readonly watches: ReadonlyArray<PersistedWatch>;
+}): ReadonlyArray<MisarmedEntryCondition> {
+  const armed = input.watches.flatMap((persisted) => {
+    if (persisted.status !== "active") return [];
+    const watch = persisted.watch;
+    if (watch.type !== "price_cross" && watch.type !== "candle_close") return [];
+    return [
+      {
+        type: watch.type,
+        price: watch.price,
+        direction: watch.direction,
+        interval: watch.type === "candle_close" ? watch.interval : undefined,
+      },
+    ];
+  });
+
+  const misarmed: Array<MisarmedEntryCondition> = [];
+  for (const condition of input.conditions) {
+    const level = condition.priceLevel;
+    const confirmation = condition.confirmation;
+    if (level === undefined || confirmation === undefined) continue;
+
+    const shouldBe = confirmation === "close" ? "candle_close" : "price_cross";
+    const tolerance = (Math.abs(level) * ENTRY_HINT_TOLERANCE_BPS) / 10_000;
+    const at = armed.filter((watch) => Math.abs(watch.price - level) <= tolerance);
+    if (at.length === 0) continue;
+    const matching = at.some(
+      (watch) =>
+        watch.type === shouldBe &&
+        (condition.direction === undefined || watch.direction === condition.direction) &&
+        (confirmation !== "close" ||
+          condition.timeframe === undefined ||
+          watch.interval === condition.timeframe),
+    );
+    if (matching) continue;
+
+    const armedWatch = at[0]!;
+    const mismatch =
+      armedWatch.type !== shouldBe
+        ? ("watch_type" as const)
+        : condition.direction !== undefined && armedWatch.direction !== condition.direction
+          ? ("direction" as const)
+          : ("timeframe" as const);
+
+    misarmed.push({
+      description: condition.description,
+      priceLevel: level,
+      confirmation,
+      armedAs: armedWatch.type,
+      shouldBe,
+      mismatch,
+    });
+  }
+  return misarmed;
+}

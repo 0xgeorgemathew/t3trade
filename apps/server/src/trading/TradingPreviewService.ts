@@ -33,7 +33,7 @@ import {
 } from "@t3tools/trading-contracts/protection";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
 
-/** One of the 17 §16.3 checklist items, in order. */
+/** One of the 17 §16.3 checklist items, in order, plus the exit-only item. */
 export const PREVIEW_CHECKLIST_ITEMS = [
   "mission_active",
   "entries_allowed",
@@ -52,6 +52,15 @@ export const PREVIEW_CHECKLIST_ITEMS = [
   "reservations_plus_proposed_within_budget",
   "no_conflicting_execution_pending",
   "valid_stop_defined",
+  /**
+   * Exit-only: there is something to reduce or close.
+   *
+   * Not a §16.3 row — §16.3 is the position-INCREASE checklist and has no word
+   * for "you asked to exit a position you do not hold". The exit path needs one,
+   * because the alternative is reporting that refusal under an entry item the
+   * harness then tries to satisfy by changing its size.
+   */
+  "position_exists",
 ] as const;
 export type PreviewChecklistItem = (typeof PREVIEW_CHECKLIST_ITEMS)[number];
 
@@ -95,6 +104,8 @@ export interface PreviewContext {
   readonly expectedAuthorityVersion: number;
   /** The harness run id that owns the decision lease for this mission. */
   readonly activeHarnessRunId: string | null;
+  /** The run id attached to the request being previewed. */
+  readonly requestingHarnessRunId: string;
   /**
    * The armed execution-wallet address for this mission's account. Until
    * PROMPT-06's approved-wallet registry, this is the interim signer's own
@@ -186,9 +197,14 @@ const authorityVersionCurrent: Check = (_intent, ctx) =>
       );
 
 const harnessRunOwnsLease: Check = (_intent, ctx) =>
-  ctx.activeHarnessRunId !== null
+  ctx.activeHarnessRunId !== null && ctx.activeHarnessRunId === ctx.requestingHarnessRunId
     ? Effect.void
-    : reject("harness_run_owns_lease", "no harness run currently owns the decision lease");
+    : reject(
+        "harness_run_owns_lease",
+        ctx.activeHarnessRunId === null
+          ? "no harness run currently owns the decision lease"
+          : `request run ${ctx.requestingHarnessRunId} does not own the lease held by ${ctx.activeHarnessRunId}`,
+      );
 
 /**
  * The mission's open position in this market, from the reconciled budget
@@ -245,10 +261,15 @@ const directionPermitted: Check = (intent, ctx) => {
   return Effect.void;
 };
 
-const marketIsEth: Check = (intent, _ctx) =>
-  intent.market === "ETH"
+// The checklist-item key predates the BTC mandate and is kept for spec/log
+// continuity: the check is "the intent trades the mission's mandated market".
+const marketIsEth: Check = (intent, ctx) =>
+  intent.market === ctx.mission.market
     ? Effect.void
-    : reject("market_is_eth", `POC trades ETH only; got ${intent.market}`);
+    : reject(
+        "market_is_eth",
+        `mission is mandated to ${ctx.mission.market} only; got ${intent.market}`,
+      );
 
 const executionWalletApproved: Check = (_intent, ctx) =>
   // Armed-signer gate (not an approved-wallet registry check). Until PROMPT-06
@@ -339,6 +360,22 @@ const plannedLossWithinCeiling: Check = (intent, ctx) =>
         `$${plannedLossOf(intent)} exceeds per-position ceiling $${ctx.mission.authority.maximumPlannedRiskPerPositionUsd}`,
       );
 
+/**
+ * Eq 4 — everything this intent puts at risk, not only what its stop loses.
+ *
+ * `reservedRisk = plannedLossAtStop + entryFee + exitFee + slippageReserve`.
+ * The same number the execution service reserves before signing, and therefore
+ * the same number item 15 has to test the budget against: measuring the gate
+ * against the planned loss alone admitted intents whose reservation the budget
+ * could not actually cover, and the shortfall was exactly the round-trip cost —
+ * the one component of risk that is certain rather than conditional.
+ */
+const proposedReservationUsd = (intent: TradingOrderIntent, ctx: PreviewContext): number => {
+  const notional = intent.size * intent.limitPrice;
+  const rate = bps(ctx.takerFeeRateBps);
+  return plannedLossOf(intent) + notional * rate * 2 + notional * bps(ctx.stopSlippageReserveBps);
+};
+
 const reservationsPlusProposedWithinBudget: Check = (intent, ctx) => {
   const budget = evaluateLossBudget(ctx.budget);
   if (budget.exhausted && !isPermittedUnderExhaustion(intent.actionType)) {
@@ -347,12 +384,14 @@ const reservationsPlusProposedWithinBudget: Check = (intent, ctx) => {
       "budget exhausted; action not permitted under §16.4",
     );
   }
-  const afterProposed = budget.remainingCumulativeLossUsd - plannedLossOf(intent);
+  const proposed = proposedReservationUsd(intent, ctx);
+  const afterProposed = budget.remainingCumulativeLossUsd - proposed;
   return afterProposed >= 0
     ? Effect.void
     : reject(
         "reservations_plus_proposed_within_budget",
-        `proposed risk would drive remaining to $${afterProposed.toFixed(2)}`,
+        `proposed reservation $${proposed.toFixed(2)} (stop loss $${plannedLossOf(intent).toFixed(2)} ` +
+          `+ round-trip cost) exceeds the $${budget.remainingCumulativeLossUsd.toFixed(2)} remaining`,
       );
 };
 
@@ -408,6 +447,94 @@ const CHECKS: ReadonlyArray<{ item: PreviewChecklistItem; run: Check }> = [
   { item: "valid_stop_defined", run: validStopDefined },
 ];
 
+// --- the exit checklist ----------------------------------------------------
+//
+// §16.3 is the position-INCREASE checklist, and running it over an exit is what
+// made exits unreachable exactly when they mattered most: `entries_allowed`
+// refused a close on a mission whose entries the operator had just switched
+// off; `mission_active` refused one on a mission `blocked` for cumulative loss;
+// `direction_permitted` refused the sell that closes a long under a long-only
+// authority; `exchange_minimum_met` refused a dust position that is precisely
+// the position you cannot leave sitting there; and the budget item refused the
+// action that STOPS the bleeding because the bleeding had used the budget up.
+//
+// None of those rules is wrong about entries. They are simply about entries.
+// The exit list below keeps every check that is about whether this exit can be
+// executed correctly, and drops every check that is about whether more exposure
+// should be permitted.
+
+/**
+ * A mission that can still act on the exchange.
+ *
+ * Wider than item 1 on purpose: `blocked` and `paused` are the states an exit
+ * is most needed in, and a mission whose loss budget is exhausted still holds a
+ * position someone has to be able to flatten. Only the terminal statuses — the
+ * mission is over, the authority is gone — refuse.
+ */
+const EXIT_REFUSING_STATUSES: ReadonlySet<string> = new Set(["revoked", "completed"]);
+
+const missionCanExit: Check = (_intent, ctx) =>
+  EXIT_REFUSING_STATUSES.has(ctx.mission.status)
+    ? reject("mission_active", `mission is ${ctx.mission.status}; there is nothing left to exit`)
+    : Effect.void;
+
+/**
+ * Something to reduce, and enough of it.
+ *
+ * The size on the intent is already the canonical exposure clamped by the
+ * guard, so this is not a second opinion about how much to sell — it is the
+ * one case the guard cannot express as a size: there is no position at all.
+ */
+const positionExists: Check = (intent, ctx) => {
+  const open = ctx.budget.openPositions.find((position) => position.size > 0);
+  if (open === undefined) {
+    return reject("position_exists", `no open ${intent.market} position to ${intent.actionType}`);
+  }
+  return Effect.void;
+};
+
+/**
+ * Size and price, without the exchange minimum.
+ *
+ * A position below `MIN_NOTIONAL_USD` is dust, and dust is where the minimum
+ * inverts: applied to an exit it refuses the only action that removes the
+ * position. Hyperliquid accepts a reduce-only order under the minimum for
+ * exactly this reason, so the exit path asks the smaller question — is there a
+ * positive size and a positive price to send.
+ */
+const exitSizeAndPriceValid: Check = sizeAndPriceValid;
+
+/**
+ * The one authority flag an exit still answers to.
+ *
+ * `allowPartialReduction: false` is not a restriction on exiting — a full close
+ * clears it — it is the user saying "all or nothing". Keeping it here is what
+ * lets everything else about `direction_permitted` be dropped: the allowed
+ * direction, the reversal rule and the scale-in rule are all about opening, and
+ * the sell that closes a long is not a short.
+ */
+const partialReductionPermitted: Check = (intent, ctx) => {
+  if (intent.actionType !== "reduce" || ctx.mission.authority.allowPartialReduction) {
+    return Effect.void;
+  }
+  const open = openPositionOf(ctx);
+  return open !== undefined && intent.size < open.size
+    ? reject("direction_permitted", "authority does not permit partial reduction")
+    : Effect.void;
+};
+
+const EXIT_CHECKS: ReadonlyArray<{ item: PreviewChecklistItem; run: Check }> = [
+  { item: "mission_active", run: missionCanExit },
+  { item: "harness_run_owns_lease", run: harnessRunOwnsLease },
+  { item: "market_is_eth", run: marketIsEth },
+  { item: "execution_wallet_approved", run: executionWalletApproved },
+  { item: "account_and_bbo_fresh", run: accountAndBboFresh },
+  { item: "position_exists", run: positionExists },
+  { item: "direction_permitted", run: partialReductionPermitted },
+  { item: "size_and_price_valid", run: exitSizeAndPriceValid },
+  { item: "no_conflicting_execution_pending", run: noConflictingExecution },
+];
+
 /**
  * The preview service. Runs the §16.3 checklist and returns the validated
  * preview with the risk it must reserve, or the first rejection.
@@ -422,27 +549,29 @@ export class TradingPreviewService extends Context.Service<
   }
 >()("t3/trading/TradingPreviewService") {}
 
-/** Pure preview — runs all 17 checks in order, returns the validated preview. */
+/**
+ * Pure preview — the checklist this intent's action type actually calls for.
+ *
+ * An increase runs all 17 §16.3 items in their listed order. An exit runs the
+ * eight that are about executing it correctly; see `EXIT_CHECKS` for why the
+ * other nine do not apply to something that removes exposure.
+ */
 export const previewOrder = (
   intent: TradingOrderIntent,
   ctx: PreviewContext,
 ): Effect.Effect<TradingPreview, TradingPreviewRejection> =>
   Effect.gen(function* () {
-    for (const { run } of CHECKS) {
+    const increasing = isPositionIncreasing(intent.actionType);
+    for (const { run } of increasing ? CHECKS : EXIT_CHECKS) {
       yield* run(intent, ctx);
     }
     // Eq 4: reservedRisk = plannedLossAtStop + entryFee + exitFee + slippageReserve.
     // Both the entry and the stop-out exit pay the taker rate; the slippage
     // reserve is the authority's bps on the protected notional. The execution
     // service persists this reservation before signing (§16.3: "reserve before
-    // signing").
-    const notional = intent.size * intent.limitPrice;
-    const rate = bps(ctx.takerFeeRateBps);
-    const estimatedEntryFeeUsd = notional * rate;
-    const estimatedExitFeeUsd = notional * rate;
-    const stopSlippageReserveUsd = notional * bps(ctx.stopSlippageReserveBps);
-    const reservedRiskUsd =
-      plannedLossOf(intent) + estimatedEntryFeeUsd + estimatedExitFeeUsd + stopSlippageReserveUsd;
+    // signing"). An exit plans no loss, so its reservation is the round trip it
+    // still pays — real money, and the only part of Eq 4 that applies to it.
+    const reservedRiskUsd = proposedReservationUsd(intent, ctx);
     return { intent, reservedRiskUsd } as TradingPreview;
   }).pipe(
     // A refused intent is a normal outcome, but it is also the most common

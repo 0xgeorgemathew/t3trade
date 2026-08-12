@@ -30,6 +30,7 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { applyTradingTurnContract } from "../TradingSessionProfile.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
   ProviderAdapterProcessError,
@@ -1464,7 +1465,11 @@ export function makeOpenCodeAdapter(
         });
       }
 
-      const text = input.input?.trim();
+      // Trading threads carry the provider-neutral decision contract ahead of
+      // the wakeup: OpenCode sessions have no replaceable system prompt here.
+      const text = input.input?.trim()
+        ? applyTradingTurnContract(input.threadId, input.input.trim())
+        : input.input?.trim();
       const fileParts = toOpenCodeFileParts({
         attachments: input.attachments,
         resolveAttachmentPath: (attachment) =>

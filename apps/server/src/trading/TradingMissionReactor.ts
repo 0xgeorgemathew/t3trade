@@ -51,6 +51,7 @@ import { setSessionProfile, clearSessionProfile } from "../provider/SessionProfi
 import type { PersistedWatch, TradingHarnessRunCause } from "./Schemas.ts";
 import { executionRefusedKey, executionSettledKey } from "./ExecutionRefusal.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
+import { TradingExecutionReceipts } from "./TradingExecutionReceipts.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
@@ -72,6 +73,8 @@ import { ALL_MISSION_STATUSES, isActiveMissionStatus } from "./MissionTransition
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { evaluateLossBudget } from "@t3tools/trading-contracts/loss-accounting";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+
+import { recordExchangeOutcome, recordExecutionRefusal } from "./TradingRunTelemetry.ts";
 
 type TradingRequestEvent = Extract<
   OrchestrationEvent,
@@ -231,6 +234,7 @@ const make = Effect.gen(function* () {
   const coordinator = yield* TradingTurnCoordinator;
   const watches = yield* TradingWatchService;
   const inbox = yield* TradingEventInbox;
+  const receipts = yield* TradingExecutionReceipts;
   const crypto = yield* Crypto.Crypto;
   const guard = yield* TradingExecutionGuard;
   const execution = yield* HyperliquidExecutionService;
@@ -417,7 +421,7 @@ const make = Effect.gen(function* () {
   const processCreateRequested = Effect.fn("TradingMissionReactor.create")(function* (
     event: Extract<TradingRequestEvent, { type: "trading.mission-create-requested" }>,
   ) {
-    const { missionId, threadId, tradingAccountId, instruction, allocatedCapitalUsd } =
+    const { missionId, threadId, tradingAccountId, instruction, allocatedCapitalUsd, market } =
       event.payload;
 
     const harness = yield* resolveHarnessBinding(threadId);
@@ -441,6 +445,7 @@ const make = Effect.gen(function* () {
       tradingAccountId,
       instruction,
       allocatedCapitalUsd: capital.allocatedCapitalUsd,
+      ...(market === undefined ? {} : { market }),
       harness,
     });
     // Bind the trading profile to the thread so the provider adapter (the
@@ -1228,6 +1233,13 @@ const make = Effect.gen(function* () {
     const orderBook = yield* gateway.getOrderBook(intent.market);
     const budget = evaluateLossBudget(budgetInput);
     const sql = yield* SqlClient.SqlClient;
+    const activeRunRows = yield* sql<{ readonly run_id: string }>`
+      SELECT run_id FROM trading_harness_runs
+      WHERE mission_id = ${missionId} AND status NOT IN ('completed', 'failed')
+      ORDER BY started_at DESC
+      LIMIT 1
+    `;
+    const currentHarnessRunId = activeRunRows[0]?.run_id ?? null;
     // Preview item 16 exists to stop two submit sequences racing one nonce and
     // idempotency window, and that is all it should stop. "In flight" is
     // therefore the mid-submission statuses only: a record the exchange has
@@ -1269,7 +1281,8 @@ const make = Effect.gen(function* () {
         currentStrategyVersion: mission.strategyVersion,
         currentAuthorityVersion: mission.authorityVersion,
         expectedAuthorityVersion,
-        activeHarnessRunId,
+        activeHarnessRunId: currentHarnessRunId,
+        requestingHarnessRunId: activeHarnessRunId,
         approvedExecutionWalletAddress,
         bbo: orderBook.bestBidOffer,
         accountObservedAt: budgetInput.observedAt,
@@ -1294,6 +1307,7 @@ const make = Effect.gen(function* () {
     // on the wire and sizes the exit against the canonical position. That is
     // what stops a `reduce` with `reduceOnly: false` from crossing through flat
     // into an unprotected reversal `allowDirectionReversal: false` forbids.
+    let exchangeStatus = "succeeded";
     if (intent.actionType === "close") {
       yield* guard.reduceOnlyClose(executionInput);
     } else if (intent.actionType === "reduce") {
@@ -1311,8 +1325,17 @@ const make = Effect.gen(function* () {
       });
       yield* recordExecutionSettled(intent.executionSequence, missionId, summary);
     } else {
-      yield* execution.submitOrder(executionInput);
+      const record = yield* execution.submitOrder(executionInput);
+      exchangeStatus = record.status;
     }
+
+    // An order reached the exchange. The funnel counts that separately from a
+    // published plan: it is the only outcome that ends in exposure.
+    yield* recordExchangeOutcome(yield* SqlClient.SqlClient, {
+      missionId,
+      action: intent.actionType,
+      status: exchangeStatus,
+    }).pipe(Effect.catchCause(() => Effect.void));
 
     // §18.2 trigger #4: converge local state to canonical exchange state after
     // the submit landed. Local records are hints until this confirms them.
@@ -1417,6 +1440,14 @@ const make = Effect.gen(function* () {
         occurredAt,
         summary: `execution ${intent.executionSequence} refused: ${describeRefusal(cause)}`,
       });
+
+      // The same refusal on the decision funnel: a run that tried to trade and
+      // was stopped by a gate is a different outcome from one that never tried.
+      const sql = yield* SqlClient.SqlClient;
+      yield* recordExecutionRefusal(sql, {
+        missionId,
+        reason: describeRefusal(cause),
+      }).pipe(Effect.catchCause(() => Effect.void));
     },
   );
 
@@ -1453,6 +1484,18 @@ const make = Effect.gen(function* () {
                   { missionId: event.payload.missionId },
                   cause,
                 ),
+              ),
+              // Last, and only last: the tool waiting on this request wakes the
+              // moment the latch opens and immediately reads the durable
+              // record. Signalling any earlier — before the refusal above is
+              // written, before the mission has left `executing` — wakes it to
+              // read state that is not there yet, and it reports an execution
+              // that has finished as still in flight.
+              Effect.andThen(
+                receipts.settle({
+                  missionId: event.payload.missionId,
+                  executionSequence: event.payload.intent.executionSequence,
+                }),
               ),
             ),
           ),

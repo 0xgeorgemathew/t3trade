@@ -22,8 +22,12 @@ import { TradingRequestEntryResult } from "@t3tools/trading-contracts/tools";
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import { executionRefusedKey, executionSettledKey } from "./ExecutionRefusal.ts";
-import { TradingBudgetReaderLive } from "./TradingBudgetReader.ts";
+import { TradingBudgetReader } from "./TradingBudgetReader.ts";
 import { TradingEventInbox, TradingEventInboxLive } from "./TradingEventInbox.ts";
+import {
+  TradingExecutionReceipts,
+  TradingExecutionReceiptsLive,
+} from "./TradingExecutionReceipts.ts";
 import {
   TradingExecutionOutcome,
   TradingExecutionOutcomeLive,
@@ -42,10 +46,33 @@ const FailingGateway = Layer.succeed(HyperliquidGateway)({
   getTakerFeeRateBps: () => Effect.die("no network in this test"),
 } as unknown as HyperliquidGateway["Service"]);
 
+/**
+ * Set for the one test that needs the budget read to fail. The reader is
+ * acquired once at layer build, so the failure has to be switchable from
+ * inside it rather than provided per call.
+ */
+let budgetReadFails = false;
+
+const SwitchableBudgetReader = Layer.succeed(TradingBudgetReader)({
+  read: (request: { readonly maximumCumulativeLossUsd: number }) =>
+    budgetReadFails
+      ? Effect.die("budget read failed")
+      : Effect.succeed({
+          maximumCumulativeLossUsd: request.maximumCumulativeLossUsd,
+          closedPnlUsd: 0,
+          netFundingUsd: 0,
+          allPaidTradingFeesUsd: 0,
+          openPositions: [],
+          pendingEntries: [],
+          observedAt: 1_000,
+        }),
+} as unknown as (typeof TradingBudgetReader)["Service"]);
+
 const layer = it.layer(
   TradingExecutionOutcomeLive.pipe(
     Layer.provideMerge(TradingEventInboxLive),
-    Layer.provideMerge(TradingBudgetReaderLive),
+    Layer.provideMerge(TradingExecutionReceiptsLive),
+    Layer.provideMerge(SwitchableBudgetReader),
     Layer.provideMerge(FailingGateway),
     Layer.provideMerge(NodeSqliteClient.layerMemory()),
     Layer.provideMerge(NodeServices.layer),
@@ -322,6 +349,84 @@ layer("TradingExecutionOutcome", (it) => {
       assert.equal(outcome.status, "submitted");
       assert.equal(outcome.executionId, undefined);
       assert.match(outcome.detail ?? "", /still being executed/);
+      assert.doesNotThrow(() => encodeForHarness(outcome));
+    }),
+  );
+  it.effect("never tells the harness to retry a submission whose outcome is unknown", () =>
+    Effect.gen(function* () {
+      // The one case that could turn one intended order into two real ones.
+      yield* migrated;
+
+      const outcomes = yield* TradingExecutionOutcome;
+      const fiber = yield* outcomes.awaitOutcome(input).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(Duration.seconds(30));
+      const outcome = yield* Fiber.join(fiber);
+
+      assert.equal(outcome.status, "submitted");
+      assert.equal(outcome.recovery?.retryable, false);
+      assert.equal(outcome.recovery?.action, "read_state");
+      assert.doesNotThrow(() => encodeForHarness(outcome));
+    }),
+  );
+
+  it.effect("classifies a recorded refusal so the harness knows whether to re-quote", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* (yield* TradingEventInbox).persist({
+        missionId: MISSION_ID,
+        category: "system",
+        deduplicationKey: executionRefusedKey(0),
+        payload: {},
+        occurredAt: 1_000,
+        summary:
+          "execution 0 refused: TradingPreviewRejection(account_and_bbo_fresh): BBO aged 5200ms past the 2s window",
+      });
+
+      const outcome = yield* (yield* TradingExecutionOutcome).awaitOutcome(input);
+
+      // Nothing was signed, and the only thing wrong was the age of a price.
+      assert.equal(outcome.status, "rejected");
+      assert.equal(outcome.recovery?.action, "re_quote");
+      assert.doesNotThrow(() => encodeForHarness(outcome));
+    }),
+  );
+
+  it.effect("answers as soon as the reactor settles, without waiting out a poll", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+
+      const receipts = yield* TradingExecutionReceipts;
+      const outcomes = yield* TradingExecutionOutcome;
+      const fiber = yield* outcomes.awaitOutcome(input).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      // The reactor's own order: write the durable record, then signal. The
+      // clock never moves, so nothing here can be a poll that happened to land.
+      yield* insertRecord("filled");
+      yield* receipts.settle({ missionId: MISSION_ID, executionSequence: 0 });
+
+      const outcome = yield* Fiber.join(fiber);
+      assert.equal(outcome.status, "filled");
+    }),
+  );
+
+  it.effect("reports an unreadable budget as unknown, never as exhausted", () =>
+    Effect.gen(function* () {
+      // §16.4 uses `exhausted` for a mission that must stop trading, and a
+      // harness told that stops trading. A failed read says nothing about the
+      // budget, so it must not say that word.
+      yield* migrated;
+      yield* insertRecord("filled");
+      budgetReadFails = true;
+
+      const outcome = yield* (yield* TradingExecutionOutcome)
+        .awaitOutcome(input)
+        .pipe(Effect.ensuring(Effect.sync(() => (budgetReadFails = false))));
+
+      assert.equal(outcome.status, "filled");
+      assert.equal(outcome.budget.exhausted, false);
+      assert.match(outcome.detail ?? "", /unknown, not exhausted/);
       assert.doesNotThrow(() => encodeForHarness(outcome));
     }),
   );

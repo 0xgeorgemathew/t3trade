@@ -18,6 +18,7 @@
  */
 import { Schema } from "effect";
 import { FreshnessMeta, OrderBookLevel } from "./market.ts";
+import { ACTIVE_TRADING_POLICY } from "./policy.ts";
 import { ExchangeMarket, Price, UnixMillis } from "./primitives.ts";
 
 /**
@@ -28,8 +29,11 @@ import { ExchangeMarket, Price, UnixMillis } from "./primitives.ts";
  * 1x pays the exchange and the harness takes the variance for nothing. Two is
  * the floor the momentum loop is held to — deliberately blunt, because the
  * failure it exists to stop is not a target that is slightly too small.
+ *
+ * Read from the policy in force rather than written here, so a calibrated
+ * version moves this check and the doctrine that describes it together.
  */
-export const PROFIT_TARGET_COST_MULTIPLE = 2;
+export const PROFIT_TARGET_COST_MULTIPLE = ACTIVE_TRADING_POLICY.momentum.targetCostMultiple;
 
 /** Where the taker fee rate in an estimate came from. */
 export const FeeRateSource = Schema.Literals(["hyperliquid_user_fees", "authority_fallback"]);

@@ -37,6 +37,7 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import * as SessionProfile from "../SessionProfile.ts";
+import { TRADING_ALLOWED_TOOL_NAMES } from "../TradingSessionProfile.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import {
   makeClaudeAdapter,
@@ -415,9 +416,12 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       const options = createInput?.options;
       // `tools: []` removes every built-in tool; `allowedTools` auto-approves
-      // the only things left (the MCP tools). Both must be exactly these.
+      // the only things left — the twenty trading tools by name. The old
+      // `mcp__t3-trade__*` wildcard also allowed the preview toolkit, which is
+      // mounted on the same MCP server.
       assert.deepEqual(options?.tools, []);
-      assert.deepEqual(options?.allowedTools, ["mcp__t3-trade__*"]);
+      assert.deepEqual(options?.allowedTools, [...TRADING_ALLOWED_TOOL_NAMES]);
+      assert.ok(!options?.allowedTools?.includes("mcp__t3-trade__*"));
       // No filesystem setting sources, no preset system prompt, no cwd, no
       // additional directories, and strict MCP config so a misconfigured
       // server fails closed.

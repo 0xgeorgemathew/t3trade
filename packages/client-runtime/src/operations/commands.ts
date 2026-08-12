@@ -324,6 +324,8 @@ export interface TradingMissionCreateInput {
   readonly instruction: string;
   /** Omit to have the server size the mandate from the live account value. */
   readonly allocatedCapitalUsd?: number;
+  /** The market the mission is mandated to trade. Omit for the default (ETH). */
+  readonly market?: "ETH" | "BTC";
 }
 
 export const tradingMissionCreate: (input: TradingMissionCreateInput) => CommandEffect = Effect.fn(
@@ -343,6 +345,7 @@ export const tradingMissionCreate: (input: TradingMissionCreateInput) => Command
     ...(input.allocatedCapitalUsd === undefined
       ? {}
       : { allocatedCapitalUsd: input.allocatedCapitalUsd }),
+    ...(input.market === undefined ? {} : { market: input.market }),
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
   });

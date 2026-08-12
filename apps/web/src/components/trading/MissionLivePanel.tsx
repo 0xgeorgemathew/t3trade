@@ -10,7 +10,7 @@
 //
 // Four explicit states, driven purely by the projection:
 //
-//   planning  no strategy yet          → one line, "Analysing the market…"
+//   planning  no strategy yet          → chart + schedule, "Analysing the market…"
 //   armed     strategy, flat, watching → chart + condition levels + plan summary
 //   live      position open            → the same, plus P&L and the held figures
 //   complete  mission finished         → the net result, until the row is deleted
@@ -24,7 +24,15 @@
 // not repeat them; the entry price is on the chart and in the strip but nowhere
 // else on screen.
 //
-// `armed` and `live` draw the same surface. The chart's gate used to be "a
+// `planning`, `armed` and `live` draw the same surface; what differs is how
+// much of it there is anything to say about. Planning has a market, a mark, a
+// candle series and a run history from its first turn, and none of that needs a
+// published strategy — but it has no thesis, no levels and no target, so the
+// header states only the market and the mark, and the checklist and plan
+// disclosure are absent rather than empty. Nothing on the surface is invented
+// to fill the space a plan will later take.
+//
+// The chart's gate used to be "a
 // position exists", which meant a mission spent its whole waiting phase showing
 // nothing at all — and waiting is most of a mission's life. The plan's levels
 // used to be gated the other way, on `armed`, so they all vanished the instant
@@ -146,14 +154,25 @@ const VISIBLE_BARS = 60;
 const PANEL_BOX_CLASS = "mission-panel-glass overflow-hidden rounded-xl border";
 
 /** Which of the four surfaces the projection says to render. */
-type PanelState = "planning" | "armed" | "live" | "complete";
+export type PanelState = "planning" | "armed" | "live" | "complete";
 
-function readPanelState(mission: OrchestrationTradingMission): PanelState {
+export function readPanelState(mission: OrchestrationTradingMission): PanelState {
   if (isMissionComplete(mission.status)) return "complete";
   // A closed position leaves its snapshot row behind with size zeroed, so this
   // is gated on exposure rather than on the row existing.
   if (mission.position !== null && mission.position.size !== 0) return "live";
   return mission.strategy === null ? "planning" : "armed";
+}
+
+/**
+ * Whether a state draws candles, and so puts the 15s chart poll on the wire.
+ *
+ * Everything the chart needs — a market and an interval — exists from mission
+ * creation, so the only state that sits it out is the finished one, whose chart
+ * is the timeline's completion summary.
+ */
+export function panelWantsChart(state: PanelState): boolean {
+  return state !== "complete";
 }
 
 export function MissionLivePanel({
@@ -207,7 +226,11 @@ export function MissionLivePanel({
   // drawing it unconditionally left a stop rule hanging on the chart across a
   // flat mission, at a price nothing was protecting any more.
   const stopPrice = position === null ? null : (protection?.stopPrice ?? null);
-  const targetProfitUsd = protection?.targetProfitUsd ?? null;
+  // A stand-down's `targetProfitUsd` is the target the costs demanded and the
+  // market did not offer. Drawing a target line at it would put a level on the
+  // chart for a trade that was explicitly declined, so it is read as a
+  // threshold in the plan summary and nowhere else.
+  const targetProfitUsd = plan?.isStandDown === true ? null : (protection?.targetProfitUsd ?? null);
   const targetPrice =
     entryPrice !== null && targetProfitUsd !== null && position !== null
       ? deriveTargetPrice(entryPrice, targetProfitUsd, position.size)
@@ -229,10 +252,13 @@ export function MissionLivePanel({
   const exchangeUrl = hyperliquidTradeUrl(mission.market, mission.tradingAccountId);
 
   // --- Chart feed. ----------------------------------------------------------
-  // Live and armed both draw candles; planning has nothing to draw them against
-  // yet, and complete is reported by the summary card in the timeline, so
-  // neither puts a poll on the wire.
-  const wantsChart = state === "armed" || state === "live";
+  // Planning draws candles too. The chart needs a market and an interval, both
+  // known the moment the mission is created — gating it on a published strategy
+  // meant a mission that had taken four turns, and had a market, a mark and a
+  // run history, showed one line of text saying it was thinking. Only
+  // `complete` sits it out: that mission is reported by the summary card in the
+  // timeline, and a second chart of the same finished trade is a duplicate.
+  const wantsChart = panelWantsChart(state);
   const interval: ChartInterval = strategy?.timeframes?.[0] ?? "1m";
   const chart = useTradingMarketChart(environmentId, mission.market, interval, {
     enabled: wantsChart,
@@ -300,7 +326,12 @@ export function MissionLivePanel({
   // The checklist is capped because the panel now sits directly above the
   // composer: a mission that has republished a few times can hold a dozen
   // watches, and an unbounded list would push the input off the screen.
-  const rows = watches?.rows ?? [];
+  //
+  // Planning shows none of them. The only thing armed before a publish is the
+  // staleness reassessment, which the schedule strip above already names — and
+  // a checklist headed by a condition the mission never chose reads as a plan
+  // when there is not one.
+  const rows = state === "planning" ? [] : (watches?.rows ?? []);
   const visibleRows = rows.slice(0, MAX_CONDITION_ROWS);
   const hiddenRows = rows.length - visibleRows.length;
 
@@ -317,24 +348,6 @@ export function MissionLivePanel({
   // The quiet half of the staleness signal. The loud half — the banner that
   // claims placement is suspended — waits for a much older read.
   const delayedRead = describeDelayedRead(mission, nowMillis);
-
-  // --- planning: one line, no chart. ----------------------------------------
-  if (state === "planning") {
-    return (
-      <div
-        data-testid="mission-live-panel"
-        data-panel-state="planning"
-        className={cn(
-          PANEL_BOX_CLASS,
-          "flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground sm:px-4",
-        )}
-      >
-        <span className="size-1.5 animate-pulse rounded-full bg-armed" aria-hidden />
-        <span>Analysing the market…</span>
-        <span className="ml-auto text-foreground">{mission.market}</span>
-      </div>
-    );
-  }
 
   // --- complete: the result, one line. --------------------------------------
   // The full review — the post-mortem chart and the fee/PnL breakdown — is the
@@ -372,9 +385,11 @@ export function MissionLivePanel({
           market={mission.market}
           leverageLabel={leverage === null ? null : formatLeverage(leverage)}
           summary={
-            position === null
-              ? describeArmedSummary(watches)
-              : `${position.size > 0 ? "Long" : "Short"} · ${formatSignedUsd(position.unrealisedPnl)}`
+            state === "planning"
+              ? "Analysing"
+              : position === null
+                ? describeArmedSummary(watches)
+                : `${position.size > 0 ? "Long" : "Short"} · ${formatSignedUsd(position.unrealisedPnl)}`
           }
           summaryToneClass={position === null ? "text-muted-foreground" : pnlToneClass}
           progressPercent={progressPercent}
@@ -388,7 +403,13 @@ export function MissionLivePanel({
     <div data-testid="mission-live-panel" data-panel-state={state} className={PANEL_BOX_CLASS}>
       {/* Header: what the mission is doing, and the numbers that go with it. */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs sm:px-4">
-        {position === null ? (
+        {state === "planning" ? (
+          <PlanningHeader
+            market={mission.market}
+            markPrice={markPrice}
+            nextReassessmentAt={nextReassessmentAt}
+          />
+        ) : position === null ? (
           <ArmedHeader
             market={mission.market}
             plan={plan}
@@ -615,6 +636,42 @@ function describeArmedSummary(armed: { readonly rows: ReadonlyArray<unknown> } |
 }
 
 /**
+ * The planning header: the mission is on the market but has published nothing.
+ *
+ * It says only what is true — the market, the mark, and when it will look
+ * again. No thesis, no size, no leverage ceiling: those are plan figures, and
+ * there is no plan. The pulse is the same one the old one-line planning panel
+ * carried, because the statement has not changed; what changed is that the
+ * chart underneath it is now drawn.
+ */
+function PlanningHeader({
+  market,
+  markPrice,
+  nextReassessmentAt,
+}: {
+  readonly market: string;
+  readonly markPrice: number | null;
+  readonly nextReassessmentAt: number | null;
+}): ReactNode {
+  const countdown = formatReassessmentCountdown(nextReassessmentAt);
+  return (
+    <>
+      <span className="inline-flex flex-none items-center gap-1.5 rounded-full border border-armed/40 bg-armed/10 px-2 py-px text-[11px] font-medium text-armed">
+        <span className="size-1.5 animate-pulse rounded-full bg-armed" aria-hidden />
+        <span>{market}</span>
+      </span>
+      <span className="text-foreground">Analysing the market…</span>
+      {markPrice === null ? null : (
+        <span className="tabular-nums text-muted-foreground">{formatPrice(markPrice)}</span>
+      )}
+      {countdown === null ? null : (
+        <span className="tabular-nums text-muted-foreground">{countdown}</span>
+      )}
+    </>
+  );
+}
+
+/**
  * The armed header: what the plan intends, in the plainest terms it has.
  *
  * Leverage reads `up to 20x` rather than a number, because nothing is levered
@@ -830,7 +887,14 @@ function PlanDisclosure({ plan }: { readonly plan: StrategyPlan }): ReactNode {
           <PlanField label="Initial size" value={formatUsd(plan.initialSizeUsd)} />
         )}
         {plan.stopSummary === null ? null : <PlanField label="Stop" value={plan.stopSummary} />}
-        <PlanField label="Target" value={formatUsd(plan.targetUsd)} />
+        <PlanField
+          label={plan.isStandDown ? "Not viable" : "Target"}
+          value={
+            plan.isStandDown
+              ? `needs ≥ ${formatUsd(plan.targetUsd)} to arm`
+              : formatUsd(plan.targetUsd)
+          }
+        />
         {plan.maxLossUsd === null ? null : (
           <PlanField label="Max loss" value={formatUsd(plan.maxLossUsd)} />
         )}

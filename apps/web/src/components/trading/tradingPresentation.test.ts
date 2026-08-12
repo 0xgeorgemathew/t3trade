@@ -9,7 +9,6 @@ import {
   deriveRejectedOrder,
   deriveWakeupCard,
   describeEntryPermission,
-  describeMandate,
   describeTradingAccount,
   describeWatch,
   deriveUpNextItems,
@@ -264,12 +263,6 @@ describe("composer controls", () => {
     expect(describeTradingAccount("prod-hyperliquid-mainnet")).toBe("Hyperliquid · Mainnet");
     // Guessing "mainnet" for an unlabelled account is the expensive direction.
     expect(describeTradingAccount("account-7")).toBe("account-7");
-  });
-
-  it("states the grant and the ceiling on it", () => {
-    expect(describeMandate({ allocatedCapitalUsd: 1000, maximumCumulativeLossUsd: 350 })).toBe(
-      "$1,000 · max loss $350",
-    );
   });
 
   it("reports the control block rather than a permission model that does not exist", () => {
@@ -877,6 +870,42 @@ describe("deriveWakeupCard", () => {
     expect(card?.causeLabel).toBe("market watch triggered");
   });
 
+  // The server renders the wakeup as flat key=value text now, not JSON — the
+  // card has to read that form too or every wake goes back to a wall of text.
+  it("reads one line out of the flat key=value rendering", () => {
+    const flat = [
+      "trading-harness-wakeup",
+      "kind:",
+      "  trading-harness-wakeup",
+      "missionId:",
+      "  mission_1",
+      "cause:",
+      "  scheduled_reassessment",
+      "marketSnapshot:",
+      "  market=BTC",
+      "  markPrice=64517",
+      "  bestBidOffer:",
+      "    bidPrice=64497 askPrice=64520",
+      "pendingEvents:",
+      "  [0] category=market summary=candle closed",
+      "  [1] category=timer summary=reassessment due",
+      "activeStrategy:",
+      "  version=4",
+      "  name=BTC 1m momentum",
+      "mandate-and-authority: call trading_get_mission",
+    ].join("\n");
+
+    const card = deriveWakeupCard(flat);
+
+    expect(card).not.toBeNull();
+    expect(card?.causeLabel).toBe("scheduled reassessment");
+    expect(card?.marketLabel).toBe("BTC · 64,517");
+    expect(card?.strategyLabel).toBe("Strategy v4");
+    expect(card?.pendingEventCount).toBe(2);
+    expect(card?.bootstrap).toBe(false);
+    expect(card?.rawJson).toBe(flat);
+  });
+
   it("leaves anything that is not a wakeup alone", () => {
     expect(deriveWakeupCard("what is the price of ETH?")).toBeNull();
     expect(deriveWakeupCard('{"kind":"something-else","cause":"x"}')).toBeNull();
@@ -1045,6 +1074,42 @@ describe("deriveStrategyPlan", () => {
       },
     })!;
     expect(plan.basis).toBeNull();
+  });
+
+  // The stand-down publish: the turn read the market, found nothing worth
+  // taking after costs, and recorded that. `targetProfitUsd` is then the target
+  // the costs DEMANDED, not one the mission is aiming at, and the flag is what
+  // stops the panel from drawing it as a level on a trade that was declined.
+  it("flags a stand-down plan from the basis, so its target reads as a threshold", () => {
+    const plan = deriveStrategyPlan({
+      strategyVersion: 1,
+      strategy: {
+        ...strategy,
+        protection: {
+          ...strategy.protection,
+          targetProfitUsd: 8.6,
+          targetProfitBasis: {
+            ...strategy.protection.targetProfitBasis,
+            insufficientVolatility: true,
+          },
+        },
+      },
+    })!;
+    expect(plan.isStandDown).toBe(true);
+    expect(plan.targetUsd).toBe(8.6);
+  });
+
+  it("does not flag an ordinary plan as a stand-down", () => {
+    expect(deriveStrategyPlan(mission)?.isStandDown).toBe(false);
+    // Nor when a basis was published without the field at all.
+    const noBasis = deriveStrategyPlan({
+      strategyVersion: 1,
+      strategy: {
+        ...strategy,
+        protection: { ...strategy.protection, targetProfitBasis: undefined },
+      },
+    })!;
+    expect(noBasis.isStandDown).toBe(false);
   });
 
   it("reports the scaling flags as allowed / not allowed", () => {

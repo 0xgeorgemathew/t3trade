@@ -69,6 +69,9 @@ export type Price = typeof Price.Type;
 export const EvmAddress = Schema.TemplateLiteral(["0x", Schema.String]);
 export type EvmAddress = typeof EvmAddress.Type;
 
-/** The single POC market. Declared type: `"ETH"`. */
-export const TradingMarket = Schema.Literal("ETH");
+/** The markets a mission may be mandated to trade. Declared type: `"ETH" | "BTC"`. */
+export const TradingMarket = Schema.Literals(["ETH", "BTC"]);
 export type TradingMarket = typeof TradingMarket.Type;
+
+/** The market a mission trades when none was chosen at creation. */
+export const DEFAULT_TRADING_MARKET: TradingMarket = "ETH";

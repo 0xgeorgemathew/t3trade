@@ -15,7 +15,6 @@ import {
   type ThreadId,
   type TurnId,
   type KeybindingCommand,
-  isProviderDriverKind,
   OrchestrationThreadActivity,
   ProviderInteractionMode,
   ProviderDriverKind,
@@ -170,7 +169,8 @@ import { MissionLivePanel } from "./trading/MissionLivePanel";
 import { MissionComposerControls } from "./trading/MissionComposerControls";
 import { MissionHeaderPill } from "./trading/MissionHeaderPill";
 import { MissionThreadBanners, MissionThreadCards } from "./trading/MissionThreadPanel";
-import { isLiveMission } from "./trading/tradingPresentation";
+import { TradingAssetPicker } from "./trading/TradingAssetPicker";
+import type { TradingMarket } from "@t3tools/trading-contracts";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
 import { useClientSettings, useEnvironmentSettings } from "../hooks/useSettings";
@@ -1861,23 +1861,15 @@ function ChatViewContent(props: ChatViewProps) {
     activeThread?.modelSelection.instanceId ??
     activeProject?.defaultModelSelection?.instanceId ??
     null;
-  // §10.2: a mission's harness binding is immutable while the mission is live,
-  // so the thread it owns cannot change provider underneath it. The composer's
-  // model picker is the harness selector in a mission-bound thread, and this is
-  // what locks it — the same mechanism a continued session already uses.
-  const missionHarnessProvider =
-    boundMission !== null &&
-    isLiveMission(boundMission.status) &&
-    isProviderDriverKind(boundMission.harness.provider)
-      ? boundMission.harness.provider
-      : null;
-  const lockedProvider =
-    missionHarnessProvider ??
-    deriveLockedProvider({
-      thread: activeThread,
-      selectedProvider: selectedProviderByThreadId,
-      threadProvider,
-    });
+  const lockedProvider = deriveLockedProvider({
+    thread: activeThread,
+    selectedProvider: selectedProviderByThreadId,
+    threadProvider,
+  });
+  // The start page's asset choice. A mission's market is fixed at creation, so
+  // this only matters for the first message of a draft; it rides that turn's
+  // `tradingMarket` field into the auto-mission create path.
+  const [draftTradingMarket, setDraftTradingMarket] = useState<TradingMarket>("ETH");
   // Once a thread selects an environment, never substitute the primary
   // environment's config while the selected environment is still loading.
   const serverConfig = activeThread
@@ -4839,6 +4831,7 @@ function ChatViewContent(props: ChatViewProps) {
           runtimeMode,
           interactionMode,
           ...(bootstrap ? { bootstrap } : {}),
+          ...(isFirstMessage ? { tradingMarket: draftTradingMarket } : {}),
           createdAt: messageCreatedAt,
         },
       });
@@ -5422,17 +5415,6 @@ function ChatViewContent(props: ChatViewProps) {
       if (!activeThread) {
         return null;
       }
-      // The harness lock outranks the session lock: a mission holds its provider
-      // for as long as it holds authority, and starting a new thread — what the
-      // session-lock copy suggests — would not move this mission to it.
-      if (missionHarnessProvider !== null) {
-        const driver = providerStatuses.find(
-          (snapshot) => snapshot.instanceId === instanceId,
-        )?.driver;
-        if (driver !== undefined && driver !== missionHarnessProvider) {
-          return "Harness bound to the active mission. Revoke the mission to change it.";
-        }
-      }
       const reason = getStartedThreadModelChangeBlockReason({
         providers: providerStatuses,
         hasStartedSession: activeThread.session !== null,
@@ -5442,7 +5424,7 @@ function ChatViewContent(props: ChatViewProps) {
       });
       return reason ? `${reason.description} Start a new thread to use this model.` : null;
     },
-    [activeThread, missionHarnessProvider, providerStatuses],
+    [activeThread, providerStatuses],
   );
 
   const onProviderModelSelect = useCallback(
@@ -5726,8 +5708,6 @@ function ChatViewContent(props: ChatViewProps) {
           {!rightPanelOpen ? panelLayoutControls : null}
           <ChatHeader
             activeThreadEnvironmentId={activeThread.environmentId}
-            activeThreadId={activeThread.id}
-            {...(routeKind === "draft" && draftId ? { draftId } : {})}
             {...(boundMission
               ? {
                   missionSlot: (
@@ -5738,20 +5718,7 @@ function ChatViewContent(props: ChatViewProps) {
             activeThreadTitle={activeThread.title}
             activeProjectName={activeProject?.title}
             activeProjectCwd={activeProject?.workspaceRoot ?? null}
-            openInCwd={gitCwd}
-            activeProjectScripts={activeProject?.scripts}
-            preferredScriptId={
-              activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
-            }
-            keybindings={keybindings}
-            availableEditors={availableEditors}
-            rightPanelOpen={rightPanelOpen}
-            gitCwd={gitCwd}
             onNewThreadInProject={handleNewThreadInActiveProject}
-            onRunProjectScript={runProjectScript}
-            onAddProjectScript={saveProjectScript}
-            onUpdateProjectScript={updateProjectScript}
-            onDeleteProjectScript={deleteProjectScript}
           />
         </header>
 
@@ -5934,11 +5901,20 @@ function ChatViewContent(props: ChatViewProps) {
                             runtimeMode={runtimeMode}
                             interactionMode={interactionMode}
                             lockedProvider={lockedProvider}
-                            missionLockedProvider={missionHarnessProvider}
                             {...(boundMission
                               ? {
                                   missionControls: (
                                     <MissionComposerControls mission={boundMission} />
+                                  ),
+                                }
+                              : {})}
+                            {...(isDraftHeroState
+                              ? {
+                                  assetPicker: (
+                                    <TradingAssetPicker
+                                      value={draftTradingMarket}
+                                      onChange={setDraftTradingMarket}
+                                    />
                                   ),
                                 }
                               : {})}

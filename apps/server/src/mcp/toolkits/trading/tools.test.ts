@@ -21,6 +21,12 @@ import {
   TRADING_REGISTER_WATCH_TOOL,
   TRADING_RESOLVE_MARKET_TOOL,
 } from "@t3tools/trading-contracts/tools";
+import { TRADING_QUOTE_ENTRY_TOOL } from "@t3tools/trading-contracts/quote";
+import {
+  TRADING_CANCEL_ORDER_TOOL,
+  TRADING_CLOSE_POSITION_TOOL,
+  TRADING_REDUCE_POSITION_TOOL,
+} from "@t3tools/trading-contracts/exit";
 import * as Context from "effect/Context";
 import { Tool } from "effect/unstable/ai";
 
@@ -49,7 +55,11 @@ it("exposes the §14.3 mission tools, the §14.2 read tools, and the §14.4 watc
       TRADING_GET_OPEN_ORDERS_TOOL,
       TRADING_GET_PLAYBOOK_TOOL,
       TRADING_REGISTER_WATCH_TOOL,
+      TRADING_QUOTE_ENTRY_TOOL,
       TRADING_EXECUTE_TOOL,
+      TRADING_CLOSE_POSITION_TOOL,
+      TRADING_REDUCE_POSITION_TOOL,
+      TRADING_CANCEL_ORDER_TOOL,
       TRADING_LIST_WATCHES_TOOL,
       TRADING_CANCEL_WATCH_TOOL,
       TRADING_ADJUST_STOP_TOOL,
@@ -79,6 +89,16 @@ it("exports provider-compatible object schemas the harness can fill in", () => {
       `${tool.name} must take an explicit missionId`,
     ).toBeDefined();
   }
+});
+
+it("advertises only the server-owned quote form for execution", () => {
+  const schema = Tool.getJsonSchema(TradingToolkit.tools[TRADING_EXECUTE_TOOL]) as {
+    readonly properties?: Readonly<Record<string, unknown>>;
+    readonly required?: ReadonlyArray<string>;
+  };
+
+  expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["missionId", "quoteId"]);
+  expect(schema.required).toContain("quoteId");
 });
 
 // The publish description states the publish contract (versioning, what a
@@ -216,7 +236,7 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 // A description says what the tool returns and what each field means — not when
 // to call it, what to conclude, or another tool's contract. Keep the whole
 // toolkit on a budget so a verbose description cannot quietly creep back in:
-// no single description over 1,300 chars, the total under 11,200, and the tool
+// no single description over 1,300 chars, the total under 11,400, and the tool
 // count pinned at 20.
 //
 // The total was 10,000 while there were 19 tools. Plan 24's
@@ -225,13 +245,32 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 // read them tries the same refused move again. The per-tool cap is unchanged —
 // that is the rule that actually stops verbosity; the total only tracks how
 // many tools there are.
+//
+// Plan 25 bought the last 200: `trading_publish_plan` now states that a
+// declined entry still publishes (a turn that stood down silently left the
+// mission with no thesis and no watches, so nothing woke it again), and
+// `trading_estimate_costs` asks for rates to be quoted with their units — an
+// operator read "4.5" as $4.50 and there was nothing in the tool to prevent it.
+// Steps 3 and 4 of the viability plan bought the next 1,800. `trading_quote_entry`
+// is the 21st tool, and it exists because the eight fields it derives were eight
+// ways for a correct read of the market to die on the way to an order — its own
+// description pays part of itself back by shortening `trading_execute`'s entry
+// half. `trading_get_market_structure` gained the setup evidence that used to be
+// prose in the playbooks: the touch counts, the range stability, and the
+// close-versus-wick distinction every breakout rule already turned on.
+//
+// Step 5 adds the last three: `trading_close_position`, `trading_reduce_position`
+// and `trading_cancel_order`. They are cheap to describe precisely because there
+// is nothing to describe — a close takes no arguments at all — and what their
+// descriptions do buy is the sentence a harness most needs, which is that an
+// exit works in every state an entry does not.
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 
-  expect(tools.length, "expected exactly 20 trading tools").toBe(20);
+  expect(tools.length, "expected exactly 24 trading tools").toBe(24);
 
   const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
-  expect(total, "total description chars must stay under 11,200").toBeLessThan(11_200);
+  expect(total, "total description chars must stay under 15,000").toBeLessThan(15_000);
 
   for (const tool of tools) {
     const len = (tool.description ?? "").length;

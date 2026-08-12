@@ -7,6 +7,7 @@
  * @module TradingPlan
  */
 import { Effect, Option, Schema, SchemaIssue, SchemaTransformation } from "effect";
+import { PublishedStandDownCode } from "./decision.ts";
 import {
   PositiveUsdAmount,
   Price,
@@ -35,23 +36,30 @@ export type TradingTimeframe = typeof TradingTimeframe.Type;
 export const POC_DEFAULT_TIMEFRAME: TradingTimeframe = "1m";
 
 /**
- * The instruction a mission gets when its creator does not write one.
+ * The operating note every auto-created mission carries alongside its mandate.
  *
- * It is the mandate only — what the harness is being asked to do and on what
- * cadence — not the doctrine for how. The procedure (the regime read, the range
- * scalp, the momentum derivation, the standing rules) lives in the
- * `trading_get_playbook` tool, where the harness reads one playbook at a time
- * rather than carrying all of it on every wakeup.
+ * This used to be `POC_DEFAULT_INSTRUCTION`, a whole mandate ("Trade ETH on
+ * testnet using 1m candles…") that `AutoMissionConfig` resolved as the default
+ * instruction and `TradingAutoMission` then never read — the first message on a
+ * thread is the mandate, so the configured instruction reached no mission and
+ * the knob that set it did nothing. Two things had drifted at once: the
+ * documented default was not in force, and the sentence that WAS documented
+ * told every mission to arm candle-close watches, which the range playbook
+ * explicitly flags as misarmed at a boundary.
  *
- * It names the timeframe even though every wakeup already carries
- * `defaultTimeframe`: a harness weighs a direct instruction more heavily than a
- * field in a snapshot, and the two agreeing is what keeps the loop turning once
- * a minute rather than once every fifteen. Arming the watches on the same
- * interval is the other half — a 1m read with a 15m watch still waits fifteen
- * minutes to wake.
+ * What is left is only the part a user's own mandate will never state and the
+ * playbooks cannot: which interval the loop turns on. It names the timeframe
+ * even though every wakeup already carries `defaultTimeframe`, because a
+ * harness weighs a direct instruction more heavily than a field in a snapshot,
+ * and the two agreeing is what keeps the loop turning once a minute rather than
+ * once every fifteen.
+ *
+ * It names no market and no direction: those belong to the mandate the user
+ * writes, and a standing note that contradicted it would be the same drift
+ * again in the other direction.
  */
-export const POC_DEFAULT_INSTRUCTION =
-  "Trade ETH on testnet using 1m candles. Arm candle-close watches on the 1m interval so each run wakes within a minute. Read the regime before you look for a trade.";
+export const POC_STANDING_INSTRUCTION =
+  "Work on 1m candles unless your own read says otherwise, and arm each watch on that interval so a run wakes within a minute — the watch TYPE is the playbook's call, not this note's: a breakout confirms on the close, a range boundary triggers on the touch. Read the regime before you look for a trade.";
 
 /**
  * Prose the harness may leave out, decoded as an empty string.
@@ -78,6 +86,22 @@ export const AgentConditionDescription = Schema.Struct({
   timeframe: Schema.optional(TradingTimeframe),
   priceLevel: Schema.optional(Price),
   invalidatedBy: Schema.optional(TradingText),
+  /**
+   * Whether this trigger is only true on a bar close.
+   *
+   * `close` is a breakout: the momentum and ORB playbooks both require a candle
+   * to CLOSE through the level, so a `price_cross` watch armed at it wakes the
+   * mission on the wick that fails — the exact false start the doctrine names.
+   * `touch` is a range boundary, where the price is the trigger and waiting for
+   * the close gives the edge back.
+   *
+   * Nothing arms from this — watch predicates come from `MarketWatch` alone.
+   * What it does is make the mismatch checkable: see
+   * `findMisarmedEntryConditions`.
+   */
+  confirmation: Schema.optional(Schema.Literals(["close", "touch"])),
+  /** Crossing direction the armed watch must use, when known. */
+  direction: Schema.optional(Schema.Literals(["above", "below"])),
 });
 export type AgentConditionDescription = typeof AgentConditionDescription.Type;
 
@@ -338,6 +362,13 @@ export const tradingPlanAuthoredFields = {
   reentryConditions: Schema.Array(AgentConditionInput),
 
   currentAction: MomentumStrategyAction,
+
+  /**
+   * Why this accepted publish declined to enter. Omit when the plan carries a
+   * viable setup or an open position. Explicit attribution is what lets the
+   * decision funnel distinguish a quiet market from a move eaten by costs.
+   */
+  standDownCode: Schema.optional(PublishedStandDownCode),
 
   /** See `MomentumEntryPlan.explanation` — optional in, always present out. */
   explanation: OmittableProse,

@@ -28,6 +28,7 @@ import {
   TradingMissionRiskControlRequestedPayload,
   TradingMissionCreateRequestedPayload,
   TradingMissionId,
+  TradingMarket,
   TradingMissionRunStartedPayload,
   TradingMissionSnapshot,
   TradingMissionStatusChangedPayload,
@@ -723,6 +724,12 @@ export const ThreadTurnStartCommand = Schema.Struct({
   ),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  /**
+   * The market the composer's asset picker chose for this thread. Read only by
+   * the trading auto-mission path when this turn is a thread's first message;
+   * absent (every non-trading install, and every later turn) means the default.
+   */
+  tradingMarket: Schema.optional(TradingMarket),
   createdAt: IsoDateTime,
 });
 
@@ -742,6 +749,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  tradingMarket: Schema.optional(TradingMarket),
   createdAt: IsoDateTime,
 });
 
