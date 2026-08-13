@@ -8,11 +8,13 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import {
+  readActivityEvidence,
   readDecisionFunnel,
   readEnrichmentEvidence,
   recordExchangeOutcome,
   recordExecutionRefusal,
   recordToolCall,
+  recordViableCandidateSeen,
   settleRunDecision,
 } from "./TradingRunTelemetry.ts";
 
@@ -316,6 +318,65 @@ layer("TradingRunTelemetry", (it) => {
       assert.strictEqual(evidence.warranted, false);
       assert.strictEqual(evidence.sampleRuns, 1);
       assert.include(evidence.reason, "anecdote");
+    }),
+  );
+
+  // Plan 27 I3: "sat out all day" as a measurement. The count that matters is
+  // the stand-down that happened AFTER the structure read had already put a
+  // candidate through its cost gate — that flag is written by the read and
+  // survives on the run row for the activity evidence to find.
+  it.effect("measures activity, and the stand-downs that had a viable candidate", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed();
+
+      // The mission lived 100 minutes and held a position for 30 of them.
+      yield* sql`UPDATE trading_missions SET created_at = 0, updated_at = ${100 * 60_000}`;
+      yield* sql`
+        INSERT INTO trading_closed_trades (
+          mission_id, market, opened_at, closed_at, hold_millis, direction, size,
+          entry_price, exit_price, realized_pnl, fees_paid, net_pnl,
+          peak_unrealised_pnl, trough_unrealised_pnl, giveback_from_peak, fill_count
+        ) VALUES (
+          ${MISSION}, 'ETH', 0, ${30 * 60_000}, ${30 * 60_000}, 'long', 1,
+          3000, 3010, 10, 1, 9, 12, -2, 3, 2
+        )
+      `;
+
+      // Run 1 saw a candidate clear its gate, then stood down anyway.
+      yield* recordViableCandidateSeen(sql, MISSION);
+      yield* sql`
+        UPDATE trading_harness_runs SET outcome = 'no_setup', status = 'completed'
+        WHERE run_id = 'run_1'
+      `;
+      // Run 2 stood down on an empty field — discipline, not a failure.
+      yield* sql`
+        INSERT INTO trading_harness_runs (
+          run_id, mission_id, cause, status, started_at, created_at, outcome
+        ) VALUES ('run_2', ${MISSION}, 'scheduled_reassessment', 'completed', 2000, 2000, 'no_setup')
+      `;
+
+      const activity = yield* readActivityEvidence(sql, { missionId: MISSION });
+      assert.strictEqual(activity.sessions, 1);
+      assert.strictEqual(activity.trades, 1);
+      assert.strictEqual(activity.tradesPerSession, 1);
+      assert.strictEqual(activity.timeInMarketPercent, 30);
+      assert.strictEqual(activity.standDownRuns, 2);
+      assert.strictEqual(activity.standDownsWithViableCandidate, 1);
+      assert.include(activity.reason, "cleared its cost gate");
+    }),
+  );
+
+  it.effect("records a viable candidate only onto an open run", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed();
+      yield* sql`UPDATE trading_harness_runs SET status = 'completed' WHERE run_id = 'run_1'`;
+
+      yield* recordViableCandidateSeen(sql, MISSION);
+
+      const run = yield* readRun;
+      assert.strictEqual(run.viable_candidate_seen, null);
     }),
   );
 });

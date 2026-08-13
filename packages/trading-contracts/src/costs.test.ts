@@ -205,3 +205,33 @@ describe("feeOnlyRoundTripUsd", () => {
     expect(feeOnlyRoundTripUsd(2_000, 5) * PROFIT_TARGET_COST_MULTIPLE).toBeCloseTo(4, 10);
   });
 });
+
+// Plan 27 I4: the quick-trades objective runs on ~$1,000 test wallets, so the
+// arithmetic has to close at that equity — a minimum viable target the fee
+// floor demands must fit comfortably inside the mandate's risk budget, or
+// every "no trade" would be the fees' fault rather than the market's.
+describe("quick-trades sizing sanity at $1,000 equity (plan 27 I4)", () => {
+  // The POC mandate at $1,000: $20 planned risk per position, $3,000 gross
+  // notional cap, 5 bps fallback taker fee per side (authority.ts §10.4).
+  const PLANNED_RISK_USD = 20;
+  const FALLBACK_TAKER_FEE_BPS = 5;
+
+  it("keeps the fee-floor target well inside the risk budget at 1x capital", () => {
+    const roundTripUsd = feeOnlyRoundTripUsd(1_000, FALLBACK_TAKER_FEE_BPS);
+    expect(roundTripUsd).toBeCloseTo(1, 10);
+    const minimumViableTargetUsd = roundTripUsd * PROFIT_TARGET_COST_MULTIPLE;
+    // $2 of target against a $20 risk cap: fees are a tenth of the budget,
+    // not the reason to stand down.
+    expect(minimumViableTargetUsd).toBeCloseTo(2, 10);
+    expect(minimumViableTargetUsd).toBeLessThanOrEqual(PLANNED_RISK_USD / 5);
+  });
+
+  it("stays fee-viable even at the full gross-notional cap", () => {
+    const roundTripUsd = feeOnlyRoundTripUsd(3_000, FALLBACK_TAKER_FEE_BPS);
+    const minimumViableTargetUsd = roundTripUsd * PROFIT_TARGET_COST_MULTIPLE;
+    // $6 at $3,000 notional still clears inside the $20 planned risk, so the
+    // sizing constants need no D2-gated adjustment for the small wallet.
+    expect(minimumViableTargetUsd).toBeCloseTo(6, 10);
+    expect(minimumViableTargetUsd).toBeLessThan(PLANNED_RISK_USD);
+  });
+});

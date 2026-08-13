@@ -59,7 +59,7 @@ export const POC_DEFAULT_TIMEFRAME: TradingTimeframe = "1m";
  * again in the other direction.
  */
 export const POC_STANDING_INSTRUCTION =
-  "Work on 1m candles unless your own read says otherwise, and arm each watch on that interval so a run wakes within a minute — the watch TYPE is the playbook's call, not this note's: a breakout confirms on the close, a range boundary triggers on the touch. Read the regime before you look for a trade.";
+  "Work on 1m candles unless your own read says otherwise, and arm each watch on that interval so a run wakes within a minute — the watch TYPE is the playbook's call, not this note's: a breakout confirms on the close, a range boundary triggers on the touch. Read the regime before you look for a trade. The objective is many small positive-expectancy trades, not one perfect one: run the tournament, take the best candidate that clears its gates, bank modest profits, and go again. Declining to trade must be justified against the best candidate on the table, never against perfection — standing down repeatedly while the field holds a viable candidate is itself a failure to report.";
 
 /**
  * Prose the harness may leave out, decoded as an empty string.

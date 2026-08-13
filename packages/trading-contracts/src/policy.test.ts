@@ -15,6 +15,7 @@ import { DIRECTION_SCORE_THRESHOLD } from "./momentum.ts";
 import { PLAYBOOKS } from "./playbook.ts";
 import {
   ACTIVE_TRADING_POLICY,
+  assessActivity,
   assessEnrichment,
   assessEntryGovernance,
   MIN_ENRICHMENT_SAMPLE_RUNS,
@@ -41,6 +42,10 @@ describe("the policy in force", () => {
     expect(TRADING_POLICY_V1.session.noNewEntryFinalMinutes).toBe(15);
     expect(TRADING_POLICY_V1.session.consecutiveLossesBeforeCooldown).toBe(3);
     expect(TRADING_POLICY_V1.session.cooldownMinutes).toBe(30);
+    // Plan 27 I2: the flat cadence as `watchCoverageFloorMillis` has always
+    // computed it. Shortening it is a candidate version through D2 replay.
+    expect(TRADING_POLICY_V1.reassessment.flatFloorBars).toBe(10);
+    expect(TRADING_POLICY_V1.reassessment.flatFloorClampMinutes).toEqual([5, 30]);
   });
 
   it("is where the arithmetic gets its numbers", () => {
@@ -73,6 +78,49 @@ describe("the policy in force", () => {
     expect(standing).toContain(
       `After ${ACTIVE_TRADING_POLICY.session.consecutiveLossesBeforeCooldown} consecutive`,
     );
+  });
+});
+
+describe("assessActivity", () => {
+  it("turns sessions into the three activity figures", () => {
+    const evidence = assessActivity({
+      sessions: [
+        // 100 minutes alive, 30 in the market, two trades.
+        { activeMillis: 100 * 60_000, trades: 2, heldMillis: 30 * 60_000 },
+        // 50 minutes alive, 15 in the market, one trade.
+        { activeMillis: 50 * 60_000, trades: 1, heldMillis: 15 * 60_000 },
+      ],
+      standDownRuns: 4,
+      standDownsWithViableCandidate: 3,
+    });
+    expect(evidence.sessions).toBe(2);
+    expect(evidence.trades).toBe(3);
+    expect(evidence.tradesPerSession).toBe(1.5);
+    expect(evidence.timeInMarketPercent).toBe(30);
+    expect(evidence.standDownsWithViableCandidate).toBe(3);
+    expect(evidence.reason).toContain("cleared its cost gate");
+  });
+
+  it("says the record is empty rather than dividing by it", () => {
+    const evidence = assessActivity({
+      sessions: [],
+      standDownRuns: 0,
+      standDownsWithViableCandidate: 0,
+    });
+    expect(evidence.tradesPerSession).toBe(0);
+    expect(evidence.timeInMarketPercent).toBe(0);
+    expect(evidence.reason).toContain("nothing to measure");
+  });
+
+  it("clamps time in market rather than reporting an impossible share", () => {
+    // A clock skew or an updated_at behind the last close must not read as
+    // 140% in the market.
+    const evidence = assessActivity({
+      sessions: [{ activeMillis: 10 * 60_000, trades: 1, heldMillis: 14 * 60_000 }],
+      standDownRuns: 0,
+      standDownsWithViableCandidate: 0,
+    });
+    expect(evidence.timeInMarketPercent).toBe(100);
   });
 });
 

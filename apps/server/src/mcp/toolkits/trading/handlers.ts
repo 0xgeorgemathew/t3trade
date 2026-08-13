@@ -34,6 +34,7 @@ import { TradingStrategyService } from "../../../trading/TradingStrategyService.
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
 import { allocateExecutionSequence } from "../../../trading/TradingExecutionSequence.ts";
 import { recordStructureRead } from "../../../trading/TradingLevelHistory.ts";
+import { recordViableCandidateSeen } from "../../../trading/TradingRunTelemetry.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import type { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
@@ -988,13 +989,23 @@ const handlers = {
               });
             }).pipe(Effect.catchCause(() => Effect.succeed(null)));
 
-      return {
-        ...structure,
-        candidates: compareCandidates(
-          structure,
-          cost === null ? null : { breakEvenPriceMoveUsd: cost.breakEvenPriceMoveUsd },
-        ),
-      };
+      const candidates = compareCandidates(
+        structure,
+        cost === null ? null : { breakEvenPriceMoveUsd: cost.breakEvenPriceMoveUsd },
+      );
+
+      // Plan 27 I3: if this read put a candidate through its cost gate, mark
+      // the open run — a later stand-down on this turn is then a refusal of a
+      // tradeable field, which is the count the activity evidence exists for.
+      // Best-effort: telemetry never costs the read.
+      if (mission !== null && candidates.some((candidate) => candidate.clearsCostGate === true)) {
+        yield* Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* recordViableCandidateSeen(sql, mission.id);
+        }).pipe(Effect.catchCause(() => Effect.void));
+      }
+
+      return { ...structure, candidates };
     }),
 
   trading_get_trade_history: (input) =>

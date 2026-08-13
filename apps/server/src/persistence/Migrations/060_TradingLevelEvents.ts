@@ -57,6 +57,12 @@ export default Effect.gen(function* () {
   yield* sql`ALTER TABLE trading_closed_trades ADD COLUMN stop_distance_atr_multiple REAL`;
   yield* sql`ALTER TABLE trading_closed_trades ADD COLUMN stop_noise_floor_multiple REAL`;
 
+  // Plan 27 I3: whether the run's structure read put at least one candidate
+  // that cleared its cost gate on the table. Null means no read happened (or
+  // predates the column); 1 is what makes "stood down on a tradeable field"
+  // countable instead of anecdotal.
+  yield* sql`ALTER TABLE trading_harness_runs ADD COLUMN viable_candidate_seen INTEGER`;
+
   yield* sql`
     CREATE TABLE IF NOT EXISTS trading_structure_reads (
       mission_id TEXT NOT NULL,

@@ -19,6 +19,7 @@ import {
   type MarketWatch,
   type PersistedWatch,
 } from "./watch.ts";
+import { ACTIVE_TRADING_POLICY } from "./policy.ts";
 
 const NOW = 1_753_000_000_000;
 const MARK = 1_850;
@@ -300,6 +301,24 @@ describe("watchCoverageFloorMillis", () => {
     assert.equal(
       watchCoverageFloorMillis({ timeframe: "3m", holdingPosition: false }),
       30 * MINUTE,
+    );
+  });
+
+  // Plan 27 I2: the flat cadence is a policy number, so a candidate version
+  // can shorten it through replay without touching this arithmetic.
+  it("reads the flat floor off the policy in force", () => {
+    const quicker = {
+      ...ACTIVE_TRADING_POLICY,
+      reassessment: { flatFloorBars: 3, flatFloorClampMinutes: [2, 10] as const },
+    };
+    assert.equal(
+      watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: false, policy: quicker }),
+      3 * MINUTE,
+    );
+    // The holding branch is coverage safety, not cadence policy — unchanged.
+    assert.equal(
+      watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: true, policy: quicker }),
+      3 * MINUTE,
     );
   });
 });

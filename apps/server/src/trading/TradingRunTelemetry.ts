@@ -28,7 +28,11 @@ import {
   type TradingDecisionOutcome,
   type TradingRunFacts,
 } from "@t3tools/trading-contracts/decision";
-import { assessEnrichment, assessEntryGovernance } from "@t3tools/trading-contracts/policy";
+import {
+  assessActivity,
+  assessEnrichment,
+  assessEntryGovernance,
+} from "@t3tools/trading-contracts/policy";
 import {
   TRADING_ADJUST_STOP_TOOL,
   TRADING_EXECUTE_TOOL,
@@ -453,6 +457,71 @@ export const readEntryGovernance = (sql: Sql, input?: { readonly missionId?: str
         netPnlUsd: row.net_pnl,
       })),
     );
+  });
+
+/**
+ * Mark the mission's open run as having seen a viable candidate — plan 27 I3.
+ *
+ * Called from the structure read when at least one tournament candidate
+ * cleared its cost gate. If the run then ends in a stand-down, that is the
+ * refusal the activity evidence counts: the field was tradeable and the loop
+ * declined it. No open run (a read outside a turn) records nothing.
+ */
+export const recordViableCandidateSeen = (sql: Sql, missionId: string) =>
+  Effect.gen(function* () {
+    const runId = yield* openRunIdForMission(sql, missionId);
+    if (runId === null) return;
+    yield* sql`
+      UPDATE trading_harness_runs SET viable_candidate_seen = 1 WHERE run_id = ${runId}
+    `;
+  });
+
+/**
+ * Activity as a measurement — plan 27 I3: how often the loop trades, how much
+ * of its life it spends holding, and how many grounded stand-downs happened
+ * with a candidate already through its cost gate. A session is a mission;
+ * with settled missions kept (H1), the read spans the whole record.
+ */
+export const readActivityEvidence = (sql: Sql, input?: { readonly missionId?: string }) =>
+  Effect.gen(function* () {
+    const missionId = input?.missionId ?? null;
+
+    const sessions = yield* sql<{
+      readonly active_millis: number;
+      readonly trades: number;
+      readonly held_millis: number;
+    }>`
+      SELECT
+        MAX(m.updated_at - m.created_at, 0) AS active_millis,
+        COUNT(t.mission_id) AS trades,
+        COALESCE(SUM(t.hold_millis), 0) AS held_millis
+      FROM trading_missions m
+      LEFT JOIN trading_closed_trades t ON t.mission_id = m.mission_id
+      WHERE (${missionId} IS NULL OR m.mission_id = ${missionId})
+      GROUP BY m.mission_id
+    `;
+
+    const standDowns = yield* sql<{
+      readonly stand_downs: number;
+      readonly with_viable_candidate: number;
+    }>`
+      SELECT
+        COUNT(*) AS stand_downs,
+        SUM(CASE WHEN viable_candidate_seen = 1 THEN 1 ELSE 0 END) AS with_viable_candidate
+      FROM trading_harness_runs
+      WHERE outcome IN ('no_setup', 'blocked_by_data')
+        AND (${missionId} IS NULL OR mission_id = ${missionId})
+    `;
+
+    return assessActivity({
+      sessions: sessions.map((row) => ({
+        activeMillis: row.active_millis,
+        trades: row.trades,
+        heldMillis: row.held_millis,
+      })),
+      standDownRuns: standDowns[0]?.stand_downs ?? 0,
+      standDownsWithViableCandidate: standDowns[0]?.with_viable_candidate ?? 0,
+    });
   });
 
 export const readEnrichmentEvidence = (sql: Sql, input?: { readonly missionId?: string }) =>

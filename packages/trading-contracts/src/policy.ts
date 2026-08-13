@@ -78,7 +78,23 @@ export interface SessionPolicy {
   readonly feeShareOfGrossWarningPercent: number;
 }
 
-/** One complete, versioned set of the six. */
+/**
+ * How soon a flat mission is re-woken to re-run the tournament — plan 27 I2.
+ *
+ * The quick-trades objective makes the flat cadence a policy number: a missed
+ * entry re-evaluated in minutes is another small trade found, one re-evaluated
+ * in an hour is a session spent flat. Shortening it ships like any other
+ * threshold — a candidate version through replay — which is why it lives here
+ * rather than as a constant in `watch.ts`.
+ */
+export interface ReassessmentPolicy {
+  /** The flat staleness floor, in bars of the strategy's primary timeframe. */
+  readonly flatFloorBars: number;
+  /** The floor's clamp, in minutes: no sooner than, no later than. */
+  readonly flatFloorClampMinutes: readonly [number, number];
+}
+
+/** One complete, versioned set of the numbers. */
 export interface TradingPolicy {
   /** Bumped whenever any number below changes. Never reused. */
   readonly version: number;
@@ -88,6 +104,7 @@ export interface TradingPolicy {
   readonly rangeReversion: RangePolicy;
   readonly openingRange: OpeningRangePolicy;
   readonly session: SessionPolicy;
+  readonly reassessment: ReassessmentPolicy;
 }
 
 /**
@@ -120,6 +137,13 @@ export const TRADING_POLICY_V1: TradingPolicy = {
     consecutiveLossesBeforeCooldown: 3,
     cooldownMinutes: 30,
     feeShareOfGrossWarningPercent: 50,
+  },
+  reassessment: {
+    // The values `watchCoverageFloorMillis` has always used for a flat
+    // mission: 10 bars, clamped to [5 min, 30 min]. Shortening them is a
+    // plan 27 I2 candidate and waits for D2 replay like every threshold.
+    flatFloorBars: 10,
+    flatFloorClampMinutes: [5, 30],
   },
 };
 
@@ -256,6 +280,84 @@ export function assessEntryGovernance(
         `worst regime at entry: ${lossesByRegime[0]?.regime ?? "unrecorded"} at ${lossesByRegime[0]?.netUsd ?? 0} USD net`;
 
   return { scored, unscored, lossesByRegime, reason };
+}
+
+/** One mission's worth of activity, as the funnel reads it — plan 27 I3. */
+export interface ActivitySession {
+  /** How long the mission has existed (or existed until it settled). */
+  readonly activeMillis: number;
+  /** Closed round trips. */
+  readonly trades: number;
+  /** Total time those trades held a position. */
+  readonly heldMillis: number;
+}
+
+export interface ActivityEvidence {
+  readonly sessions: number;
+  readonly trades: number;
+  readonly tradesPerSession: number;
+  /** Share of the missions' lifetime actually spent holding a position. */
+  readonly timeInMarketPercent: number;
+  /** Runs that ended in a grounded stand-down. */
+  readonly standDownRuns: number;
+  /**
+   * Of those, runs where the structure read had put at least one candidate
+   * that cleared its cost gate on the table — the quick-trades objective's
+   * reportable failure mode. Standing down on an empty field is discipline;
+   * standing down repeatedly on a tradeable one is the loop not doing its job.
+   */
+  readonly standDownsWithViableCandidate: number;
+  readonly reason: string;
+}
+
+const round1Percent = (value: number): number => Math.round(value * 10) / 10;
+
+/**
+ * "Sat out all day" as a measurement rather than an anecdote — plan 27 I3.
+ *
+ * Measurement, never a gate: nothing trades off this. It exists so the
+ * quick-trades objective (many small positive-expectancy trades over one
+ * perfect one) has numbers to be argued from — how often the loop trades, how
+ * much of its life it spends in the market, and how many of its refusals
+ * happened while a candidate had already cleared its cost gate.
+ */
+export function assessActivity(input: {
+  readonly sessions: ReadonlyArray<ActivitySession>;
+  readonly standDownRuns: number;
+  readonly standDownsWithViableCandidate: number;
+}): ActivityEvidence {
+  const sessions = input.sessions.length;
+  const trades = input.sessions.reduce((sum, session) => sum + session.trades, 0);
+  const activeMillis = input.sessions.reduce(
+    (sum, session) => sum + Math.max(0, session.activeMillis),
+    0,
+  );
+  const heldMillis = input.sessions.reduce(
+    (sum, session) => sum + Math.max(0, session.heldMillis),
+    0,
+  );
+
+  const tradesPerSession = sessions === 0 ? 0 : round1Percent(trades / sessions);
+  const timeInMarketPercent =
+    activeMillis <= 0 ? 0 : round1Percent(Math.min(100, (heldMillis / activeMillis) * 100));
+
+  const reason =
+    sessions === 0
+      ? "no sessions recorded yet — activity has nothing to measure"
+      : `${sessions} session(s), ${trades} trade(s) (${tradesPerSession} per session), ` +
+        `in the market ${timeInMarketPercent}% of the time; ` +
+        `${input.standDownRuns} grounded stand-down(s), ${input.standDownsWithViableCandidate} ` +
+        `of them with a candidate that had already cleared its cost gate — those are the wakes to explain`;
+
+  return {
+    sessions,
+    trades,
+    tradesPerSession,
+    timeInMarketPercent,
+    standDownRuns: input.standDownRuns,
+    standDownsWithViableCandidate: input.standDownsWithViableCandidate,
+    reason,
+  };
 }
 
 export function assessEnrichment(tallies: ReadonlyArray<StandDownTally>): EnrichmentEvidence {
