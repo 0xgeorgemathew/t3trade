@@ -61,8 +61,11 @@ for every intentional divergence.
 - **Testnet only.** There is no mainnet configuration and none should be added
   casually.
 - **The signer key is the gate.** Live execution is armed by the presence of an
-  interim signer key — either `T3_TRADES_INTERIM_SIGNER_KEY` or the file at
-  `<stateDir>/secrets/hyperliquid-interim-signer-key.bin`. With no key, the
+  interim signer key — either `T3_TRADES_INTERIM_SIGNER_KEY` or the ONE
+  canonical file at `~/.t3trade/secrets/hyperliquid-interim-signer-key.bin`
+  (base dir overridable via `T3TRADE_HOME`). Every instance — dev server,
+  worktree, packaged desktop app — reads that same file; upstream T3 Code's
+  `~/.t3` state directory is never involved. With no key, the
   gate stays unarmed and the server runs read-only. **A server started with the
   key present will place real testnet orders; there is no second flag.**
 - **Never commit or print a key.** The key never appears in logs, reports, or

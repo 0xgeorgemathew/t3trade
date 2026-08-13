@@ -1,8 +1,11 @@
 name: PR Size
 
 on:
-  pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
+  # Upstream community tooling: sizes and labels PRs from external
+  # contributors. This fork is solo, so it only labels its own PRs.
+  # pull_request_target:
+  #   types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
+  workflow_dispatch:
 
 permissions:
   contents: read

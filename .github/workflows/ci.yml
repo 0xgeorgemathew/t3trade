@@ -13,8 +13,8 @@ concurrency:
 jobs:
   check:
     name: Check
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -62,8 +62,8 @@ jobs:
 
   test:
     name: Test
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -80,13 +80,34 @@ jobs:
           cache: true
           run-install: true
 
+      # PRs whose changes are confined to fork-owned paths (trading packages,
+      # docs — see scripts/test-scope.ts) run only the fork's own tests and
+      # skip the Rust/Electron setup those tests never touch. Anything
+      # touching upstream code, and every push to main, runs the full suite.
+      - name: Determine test scope
+        id: scope
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr diff ${{ github.event.pull_request.number }} --name-only \
+            --repo ${{ github.repository }} > "${{ runner.temp }}/changed-files.txt"
+          node scripts/test-scope.ts "${{ runner.temp }}/changed-files.txt" >> "$GITHUB_OUTPUT"
+
       - name: Setup Rust
+        if: steps.scope.outputs.scope != 'fork'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Ensure Electron runtime is installed
+        if: steps.scope.outputs.scope != 'fork'
         run: vp run --filter @t3tools/desktop ensure:electron
 
-      - name: Test
+      - name: Test (fork scope)
+        if: steps.scope.outputs.scope == 'fork'
+        run: vp run test:fork
+
+      - name: Test (full)
+        if: steps.scope.outputs.scope != 'fork'
         env:
           T3CODE_TRANSFER_BUDGET_REPORT_PATH: ${{ runner.temp }}/t3code-transfer-budget.md
           T3CODE_TRANSFER_BUDGET_RESULT_PATH: ${{ runner.temp }}/thread-transfer-result.json
@@ -111,12 +132,13 @@ jobs:
           retention-days: 30
 
       - name: Test resource monitor
+        if: steps.scope.outputs.scope != 'fork'
         run: cargo test --locked --manifest-path native/resource-monitor/Cargo.toml
 
   mobile_native_static_analysis:
     name: Mobile Native Static Analysis
-    runs-on: blacksmith-6vcpu-macos-26
-    timeout-minutes: 10
+    runs-on: macos-26
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -143,8 +165,8 @@ jobs:
 
   release_smoke:
     name: Release Smoke
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6

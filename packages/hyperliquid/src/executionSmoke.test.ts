@@ -3,9 +3,9 @@
  * the order").
  *
  * Gated behind `T3_TRADES_LIVE_EXECUTION=1` AND an armed signer (the
- * `<repo>/.t3/secrets/hyperliquid-interim-signer-key.bin` file or the
- * `T3_TRADES_INTERIM_SIGNER_KEY` env var). Skipped otherwise — this is the
- * only test that talks to the live `/exchange` endpoint.
+ * canonical `~/.t3trade/secrets/hyperliquid-interim-signer-key.bin` file or
+ * the `T3_TRADES_INTERIM_SIGNER_KEY` env var). Skipped otherwise — this is
+ * the only test that talks to the live `/exchange` endpoint.
  *
  * The first probe is a signed `noop` action: Hyperliquid accepts it and
  * returns `{"response":{"type":"ok"}}` without placing any order. This proves
@@ -26,13 +26,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { HyperliquidExchangeClient, HyperliquidExchangeClientLive } from "./ExchangeClient.ts";
 import { exchangeResponseType } from "./ExchangeResponse.ts";
 import { createL1ActionHash, signL1ActionForWire } from "./Signing.ts";
+import { interimSignerKeyPath } from "./KeyLocation.ts";
 
-/**
- * The secret file lives at the repo root's `.t3/secrets/`. The test runner's
- * cwd is the package dir (`packages/hyperliquid`), so the repo root is two
- * levels up. No node:path import needed — a relative segment string suffices.
- */
-const SECRET_PATH = "../../.t3/secrets/hyperliquid-interim-signer-key.bin";
+const SECRET_PATH = interimSignerKeyPath();
 
 /** Load the signer key from env or the well-known secret file. */
 const loadSignerKey: Effect.Effect<Option.Option<Uint8Array>> = Effect.gen(function* () {

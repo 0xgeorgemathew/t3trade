@@ -39,11 +39,9 @@ import {
 import { formatPrice, formatSize } from "./Precision.ts";
 import { deriveCloid } from "./Cloid.ts";
 import { confirmedProtectedSize } from "@t3tools/trading-contracts/protection";
+import { interimSignerKeyPath } from "./KeyLocation.ts";
 
-const SECRET_PATH = new URL(
-  "../../../.t3/secrets/hyperliquid-interim-signer-key.bin",
-  import.meta.url,
-).pathname;
+const SECRET_PATH = interimSignerKeyPath();
 
 const loadSignerKey: Effect.Effect<Option.Option<Uint8Array>> = Effect.gen(function* () {
   const fromEnv = process.env.T3_TRADES_INTERIM_SIGNER_KEY?.trim();

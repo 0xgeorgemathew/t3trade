@@ -37,15 +37,9 @@ import { HyperliquidInfoClient, HyperliquidInfoClientLive } from "./InfoClient.t
 import { createL1ActionHash, signL1ActionForWire, addressFromPrivateKey } from "./Signing.ts";
 import { buildOrderAction, buildCancelByCloidAction, mapOrder } from "./OrderMapper.ts";
 import type { MarketBestBidOffer } from "@t3tools/trading-contracts/market";
+import { interimSignerKeyPath } from "./KeyLocation.ts";
 
-// Resolve the secret relative to this file (repo-root .t3/secrets/), so the
-// test finds the key regardless of the cwd vitest is invoked from. The prior
-// relative path "../../.t3/..." only resolved correctly when run from
-// packages/hyperliquid/src, not from the repo root.
-const SECRET_PATH = new URL(
-  "../../../.t3/secrets/hyperliquid-interim-signer-key.bin",
-  import.meta.url,
-).pathname;
+const SECRET_PATH = interimSignerKeyPath();
 
 const loadSignerKey: Effect.Effect<Option.Option<Uint8Array>> = Effect.gen(function* () {
   const fromEnv = process.env.T3_TRADES_INTERIM_SIGNER_KEY?.trim();

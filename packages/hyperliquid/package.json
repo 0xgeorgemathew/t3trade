@@ -20,6 +20,10 @@
       "types": "./src/wire.ts",
       "import": "./src/wire.ts"
     },
+    "./KeyLocation": {
+      "types": "./src/KeyLocation.ts",
+      "import": "./src/KeyLocation.ts"
+    },
     "./InfoClient": {
       "types": "./src/InfoClient.ts",
       "import": "./src/InfoClient.ts"
@@ -75,7 +79,8 @@
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
-    "test": "vp test run"
+    "test": "vp test run",
+    "test:fork": "vp test run"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
