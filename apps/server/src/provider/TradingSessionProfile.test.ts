@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { expect, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
-import { readFile } from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 
 import { TradingToolkit } from "../mcp/toolkits/trading/tools.ts";
 import { clearAllSessionProfiles, setSessionProfile } from "./SessionProfile.ts";
@@ -57,7 +57,7 @@ it("has every provider adapter apply the profile", async () => {
   // apply it as a turn contract, because their runtimes expose no replaceable
   // system prompt at the seam a turn is built.
   const read = async (file: string) =>
-    await readFile(new URL(`./Layers/${file}`, import.meta.url), "utf8");
+    await NodeFSP.readFile(new URL(`./Layers/${file}`, import.meta.url), "utf8");
 
   const claude = await read("ClaudeAdapter.ts");
   expect(claude).toContain("TRADING_SYSTEM_PROMPT");

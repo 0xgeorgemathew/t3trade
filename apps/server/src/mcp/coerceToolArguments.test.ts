@@ -238,36 +238,42 @@ describe("coerceToolArguments", () => {
       ).toEqual({ market: "ETH", interval: "1m", maxBars: 100 });
     });
 
-    it("coerces the nested numeric intent fields on trading_execute", () => {
+    it("coerces the numeric entry fields on trading_quote_entry", () => {
+      // The sizing fields are nullable numbers, so each is an `anyOf` whose
+      // number branch is itself an `anyOf` of the constrained number and the
+      // Infinity/NaN enum. Coercion has to reach through both levels.
       expect(
-        coerceToolArguments(schemaFor("trading_execute"), {
-          expectedAuthorityVersion: "1",
-          intent: {
-            missionId: "mission_1",
-            strategyVersion: "2",
-            executionSequence: "3",
-            actionType: "open",
-            market: "ETH",
-            side: "buy",
-            size: "0.01",
-            orderPreference: "resting_limit",
-            limitPrice: "1850.5",
-          },
-        }),
-      ).toEqual({
-        expectedAuthorityVersion: 1,
-        intent: {
+        coerceToolArguments(schemaFor("trading_quote_entry"), {
           missionId: "mission_1",
-          strategyVersion: 2,
-          executionSequence: 3,
-          actionType: "open",
           market: "ETH",
           side: "buy",
-          size: 0.01,
+          stopPrice: "1800",
+          sizeEth: "0.01",
+          notionalUsd: "250.5",
+          actionType: "open",
           orderPreference: "resting_limit",
-          limitPrice: 1850.5,
-        },
+        }),
+      ).toEqual({
+        missionId: "mission_1",
+        market: "ETH",
+        side: "buy",
+        stopPrice: 1800,
+        sizeEth: 0.01,
+        notionalUsd: 250.5,
+        actionType: "open",
+        orderPreference: "resting_limit",
       });
+    });
+
+    it("leaves the quote-id shape of trading_execute untouched", () => {
+      // `trading_execute` takes no numbers of its own since execution moved
+      // behind a quote id — an already-valid payload must pass through as-is.
+      expect(
+        coerceToolArguments(schemaFor("trading_execute"), {
+          missionId: "mission_1",
+          quoteId: "quote_1",
+        }),
+      ).toEqual({ missionId: "mission_1", quoteId: "quote_1" });
     });
 
     it("coerces through a $ref'd condition and leaves a prose condition a string", () => {
