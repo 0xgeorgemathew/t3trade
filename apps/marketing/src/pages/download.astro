@@ -80,6 +80,7 @@ import { GITHUB_REPOSITORY_URL } from "../lib/site";
 
     try {
       const release = await fetchLatestRelease();
+      if (!release) throw new Error("no release found");
 
       if (versionLabel && release.tag_name) {
         versionLabel.textContent = `Latest (${release.tag_name})`;
