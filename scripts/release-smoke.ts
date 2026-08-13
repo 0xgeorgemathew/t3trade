@@ -31,6 +31,11 @@ const workspaceFiles = [
   "packages/tailscale/package.json",
   "packages/effect-acp/package.json",
   "packages/effect-codex-app-server/package.json",
+  // The fork's own packages. apps/server depends on @t3tools/hyperliquid as a
+  // workspace package, so omitting these makes the fixture install fail to
+  // resolve it rather than exercising the release steps.
+  "packages/hyperliquid/package.json",
+  "packages/trading-contracts/package.json",
   "scripts/package.json",
 ] as const;
 
@@ -253,7 +258,7 @@ try {
   );
   assertContains(
     nightlyReleaseMetadata,
-    "name=T3 Code Nightly 9.9.10-nightly.20260413.321 (abcdef123456)",
+    "name=T3 Trade Nightly 9.9.10-nightly.20260413.321 (abcdef123456)",
     "Expected nightly metadata to include the short commit SHA in the release name.",
   );
 

@@ -657,6 +657,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       // A real async gap (not a microtask) parks the calling fiber so
       // Effect's scheduler runs the event pump fiber. `Effect.runPromise`
       // keeps this within the Effect timer API the linter requires.
+      // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- This is a mock SDK method the adapter calls as a plain promise; there is no Effect context to yield in, and it.effect cannot reach inside the test double.
       await Effect.runPromise(Effect.sleep("20 millis"));
       runtimeMock.state.abortCalls.push(input.sessionID);
     };

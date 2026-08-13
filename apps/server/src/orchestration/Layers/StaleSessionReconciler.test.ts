@@ -7,10 +7,9 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as ManagedRuntime from "effect/ManagedRuntime";
-import { assert, describe, it } from "vite-plus/test";
 
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
@@ -31,21 +30,20 @@ const THREAD_ID = ThreadId.make("thread-stale");
 const TURN_ID = TurnId.make("turn-stale");
 const CREATED_AT = "2026-01-01T00:00:00.000Z";
 
-const makeRuntime = () => {
-  const layer = OrchestrationEngineLive.pipe(
-    Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
-    Layer.provideMerge(OrchestrationProjectionPipelineLive),
-    Layer.provideMerge(OrchestrationEventStoreLive),
-    Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
-    Layer.provideMerge(RepositoryIdentityResolver.layer),
-    Layer.provideMerge(ThreadBackgroundLiveness.layer),
-    Layer.provideMerge(ThreadPlanProgress.layer),
-    Layer.provideMerge(SqlitePersistenceMemory),
-    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
-    Layer.provideMerge(NodeServices.layer),
-  );
-  return ManagedRuntime.make(layer);
-};
+/** Provided per test, not shared: both tests seed the same thread id, so each
+    needs its own in-memory database. */
+const testLayer = OrchestrationEngineLive.pipe(
+  Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+  Layer.provideMerge(OrchestrationProjectionPipelineLive),
+  Layer.provideMerge(OrchestrationEventStoreLive),
+  Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+  Layer.provideMerge(RepositoryIdentityResolver.layer),
+  Layer.provideMerge(ThreadBackgroundLiveness.layer),
+  Layer.provideMerge(ThreadPlanProgress.layer),
+  Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+  Layer.provideMerge(NodeServices.layer),
+);
 
 /** A thread mid-turn: session running, turn open, nothing completed. */
 const seedRunningThread = Effect.gen(function* () {
@@ -97,52 +95,40 @@ const seedRunningThread = Effect.gen(function* () {
 });
 
 describe("reconcileStaleSessions", () => {
-  it("stops a session left running by the previous process", async () => {
-    const runtime = makeRuntime();
-    try {
-      await runtime.runPromise(seedRunningThread);
-      await runtime.runPromise(reconcileStaleSessions);
+  it.effect("stops a session left running by the previous process", () =>
+    Effect.gen(function* () {
+      yield* seedRunningThread;
+      yield* reconcileStaleSessions;
 
-      const snapshot = await runtime.runPromise(
-        Effect.flatMap(ProjectionSnapshotQuery, (query) => query.getSnapshot()),
-      );
+      const query = yield* ProjectionSnapshotQuery;
+      const snapshot = yield* query.getSnapshot();
       const thread = snapshot.threads.find((entry) => entry.id === THREAD_ID);
 
       assert.equal(thread?.session?.status, "stopped");
       assert.equal(thread?.session?.activeTurnId, null);
       // The turn has to close too: the workspace counts "Working for …" from a
       // turn that has no completedAt.
-      const turns = await runtime.runPromise(
-        Effect.flatMap(ProjectionTurnRepository, (repository) =>
-          repository.listByThreadId({ threadId: THREAD_ID }),
-        ),
-      );
+      const repository = yield* ProjectionTurnRepository;
+      const turns = yield* repository.listByThreadId({ threadId: THREAD_ID });
       assert.equal(turns.length, 1);
       assert.equal(turns[0]?.state, "interrupted");
       assert.notEqual(turns[0]?.completedAt ?? null, null);
-    } finally {
-      await runtime.dispose();
-    }
-  });
+    }).pipe(Effect.provide(testLayer)),
+  );
 
-  it("leaves a settled session alone", async () => {
-    const runtime = makeRuntime();
-    try {
-      await runtime.runPromise(seedRunningThread);
-      await runtime.runPromise(reconcileStaleSessions);
-      const before = await runtime.runPromise(
-        Effect.flatMap(ProjectionSnapshotQuery, (query) => query.getSnapshot()),
-      );
-      await runtime.runPromise(reconcileStaleSessions);
-      const after = await runtime.runPromise(
-        Effect.flatMap(ProjectionSnapshotQuery, (query) => query.getSnapshot()),
-      );
+  it.effect("leaves a settled session alone", () =>
+    Effect.gen(function* () {
+      yield* seedRunningThread;
+      yield* reconcileStaleSessions;
+
+      const query = yield* ProjectionSnapshotQuery;
+      const before = yield* query.getSnapshot();
+      yield* reconcileStaleSessions;
+      const after = yield* query.getSnapshot();
 
       const updatedAt = (snapshot: typeof before) =>
         snapshot.threads.find((entry) => entry.id === THREAD_ID)?.session?.updatedAt;
       assert.equal(updatedAt(after), updatedAt(before));
-    } finally {
-      await runtime.dispose();
-    }
-  });
+    }).pipe(Effect.provide(testLayer)),
+  );
 });
