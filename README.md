@@ -8,7 +8,7 @@ harness hold the rails.
 
 _Alpha · Hyperliquid **testnet only** · macOS + web · MIT_
 
-**[t3trade.mathew.workers.dev](https://t3trade.mathew.workers.dev)** · [Releases](https://github.com/0xgeorgemathew/t3trade/releases)
+**[t3trade.pages.dev](https://t3trade.pages.dev)** · [Releases](https://github.com/0xgeorgemathew/t3trade/releases)
 
 <img src="docs/media/t3trade-mission.png" alt="T3 Trade running a BTC momentum mission: the agent's adjusted plan, armed watches, and a live position card with entry, stop, and target levels" width="920" />
 

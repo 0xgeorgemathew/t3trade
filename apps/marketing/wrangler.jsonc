@@ -2,9 +2,8 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "t3trade",
   "compatibility_date": "2026-08-01",
-  // Assets-only Worker: no main script, Workers static assets serves the
-  // built Astro site directly. Build with `pnpm build:marketing` first.
-  "assets": {
-    "directory": "./dist",
-  },
+  // Cloudflare Pages project `t3trade` → https://t3trade.pages.dev
+  // Build with `pnpm build:marketing`, then deploy with
+  // `wrangler pages deploy` from apps/marketing.
+  "pages_build_output_dir": "./dist",
 }
