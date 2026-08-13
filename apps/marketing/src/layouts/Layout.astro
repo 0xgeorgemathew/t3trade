@@ -9,9 +9,9 @@ interface Props {
 }
 
 const {
-  title = "T3 Trade — Agentic Trading Environment",
+  title = "T3 Trade — Trading Interface for Coding Agents",
   description =
-    "T3 Trade runs coding agents on Hyperliquid testnet with defined missions, enforced risk limits, and restricted trading tools. Alpha software.",
+    "T3 Trade is an open-source desktop and self-hosted web app for supervised perp trading with coding agents on Hyperliquid testnet.",
   pageClass,
 } = Astro.props;
 ---
@@ -39,7 +39,7 @@ const {
         <div class="nav-inner">
           <a href="/" class="nav-brand" aria-label="T3 Trade home">
             <span class="nav-brand-name">T3 Trade</span>
-            <span class="nav-brand-tag">ATE · alpha</span>
+            <span class="nav-brand-tag">testnet · alpha</span>
           </a>
           <div class="nav-right">
             <a
@@ -65,7 +65,7 @@ const {
       <footer class="footer">
         <div class="footer-inner">
           <div class="footer-brand">
-            <span>T3 Trade · MIT licensed · alpha software, Hyperliquid testnet only</span>
+            <span>T3 Trade · MIT licensed · alpha software · Hyperliquid testnet only</span>
           </div>
           <div class="footer-links">
             <a href={GITHUB_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">GitHub</a>

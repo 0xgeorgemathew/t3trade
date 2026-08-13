@@ -3,12 +3,12 @@ import Layout from "../layouts/Layout.astro";
 import { GITHUB_REPOSITORY_URL, UPSTREAM_REPOSITORY_URL } from "../lib/site";
 
 const previewChecks = [
-  { label: "mission market & side", detail: "within mission" },
-  { label: "leverage ≤ mission cap", detail: "20x ≤ 20x" },
-  { label: "gross notional within budget", detail: "reservation ledger" },
-  { label: "exchange minimums & tick size", detail: "size, price band" },
-  { label: "BBO freshness & slippage bound", detail: "priced off live book" },
-  { label: "stop-loss attached, reduce-only", detail: "mandatory" },
+  { label: "mission active; entries allowed", detail: "authority current" },
+  { label: "market, side, and leverage allowed", detail: "within mandate" },
+  { label: "account and order book fresh", detail: "live exchange data" },
+  { label: "size, price, and minimum valid", detail: "exchange rules" },
+  { label: "position and mission risk available", detail: "USD loss budget" },
+  { label: "valid reduce-only stop attached", detail: "required" },
 ];
 
 const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
@@ -38,16 +38,17 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     </div>
 
     <div class="container hero-inner">
-      <p class="eyebrow hero-eyebrow">Agentic Trading Environment · alpha · Hyperliquid testnet</p>
+      <p class="eyebrow hero-eyebrow">Open source · alpha · Hyperliquid testnet</p>
 
       <h1 class="hero-title display">
-        Run coding agents on Hyperliquid testnet<br />with enforced risk limits.
+        The trading interface<br />for coding agents.
       </h1>
 
       <p class="hero-sub">
-        T3 Trade is an <strong>Agentic Trading Environment</strong> for Hyperliquid testnet.
-        It gives coding agents typed, restricted tools to read market data, create plans,
-        and propose trades. T3 Trade enforces the mission and risk limits.
+        T3 Trade is an open-source desktop and self-hosted web app for supervised perp
+        trading on Hyperliquid testnet. Give an agent a mandate in plain English. T3 Trade
+        gives it a fixed set of market and execution tools, checks every proposed entry
+        against hard limits, and signs locally only after every check passes.
       </p>
 
       <div class="hero-actions">
@@ -64,8 +65,8 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
           choose Open on first launch
         </p>
         <p class="hero-caution">
-          Alpha software. Places real orders on Hyperliquid <strong>testnet</strong>.
-          Mainnet is not supported.
+          Alpha software. Places orders on Hyperliquid <strong>testnet</strong> only. Testnet
+          funds have no real-world value. Mainnet is not supported.
         </p>
       </div>
 
@@ -73,7 +74,7 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
         <figure class="hero-screenshot-frame">
           <img
             src="/t3trade-screenshot.webp"
-            alt="T3 Trade showing a BTC mission with the agent's plan, active price watches, and position details"
+            alt="T3 Trade desktop app showing a BTC trading thread, the agent's plan, market watches, and an open position"
             width="2400"
             height="1520"
             loading="eager"
@@ -81,8 +82,8 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
           />
         </figure>
         <figcaption class="hero-preview-caption">
-          A live mission showing the agent's plan, active price watches, and position data
-          from the exchange.
+          The desktop app showing one BTC trading mission: agent conversation, current plan,
+          market watches, and exchange position data.
         </figcaption>
       </div>
     </div>
@@ -92,35 +93,38 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
   <section id="missions" class="sec-missions">
     <div class="container">
       <div class="section-head">
-        <h2>Each mission has defined limits.</h2>
+        <h2>One thread. One market. One mandate.</h2>
         <p>
-          A mission connects one agent thread to one market with a written strategy, a
-          maximum-loss budget, and an expiry. The agent's trading tools are limited to that
-          mission.
+          A mission is a trading thread inside T3 Trade. Choose a perp market and type your
+          mandate as the first message. T3 Trade binds that agent conversation to one testnet
+          account and limits its tools by market, direction, leverage, notional, planned risk
+          per position, cumulative loss in USD, and margin mode.
         </p>
       </div>
 
       <div class="mission-grid">
         <div class="tile mission-tile">
-          <div class="mission-tile-label">Runs when market events occur</div>
+          <div class="mission-tile-label">Resumes when a condition is met</div>
           <p>
-            The agent can register watches for a price cross, an unrealised-PnL level, or a
-            candle close. When a watch fires, the agent receives current account, position,
-            order, and budget data.
+            The agent can use a tool to register a price cross, candle close, position update,
+            or unrealised-PnL watch. T3 Trade evaluates the watch and resumes the same thread
+            with fresh market, account, position, order, and budget data.
           </p>
         </div>
         <div class="tile mission-tile">
-          <div class="mission-tile-label">Uses exchange-reported state</div>
+          <div class="mission-tile-label">Reconciles with Hyperliquid</div>
           <p>
-            T3 Trade reads positions, orders, and fills from Hyperliquid. Its database stores
-            its own actions, while exchange data remains the source of truth.
+            T3 Trade reads canonical positions, orders, and fills from Hyperliquid after
+            submissions, fills, position updates, reconnects, and restarts. Local records do
+            not override the exchange.
           </p>
         </div>
         <div class="tile mission-tile">
-          <div class="mission-tile-label">Enforces the loss budget</div>
+          <div class="mission-tile-label">Accounts for risk before entry</div>
           <p>
-            Automated tests cover the loss calculations. An exhausted budget blocks new
-            exposure without removing stops from open positions.
+            Realised loss, paid fees, protected open-position risk, and pending-entry risk all
+            count toward the mission's USD loss limit. When the budget is exhausted, T3 Trade
+            blocks new exposure and keeps valid reduce-only protection in place.
           </p>
         </div>
       </div>
@@ -132,25 +136,28 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     <div class="container checklist-inner">
       <div class="checklist-copy">
         <div class="section-head" style="margin-bottom:0">
-          <h2>Every order must pass 17 checks.</h2>
+          <h2>Every entry passes the same 17 checks.</h2>
           <p>
-            Before signing, T3 Trade checks the mission, leverage, notional, exchange
-            minimums, risk reservations, and the required stop-loss. Any failed check rejects
-            the order.
+            Before signing a position-increasing order, T3 Trade checks mission status, entry
+            permission, current strategy and authority, agent lease, allowed direction and
+            market, signer approval, fresh account and order-book data, valid size and price,
+            exchange minimums, leverage, gross notional, per-position risk, cumulative loss
+            budget, pending execution conflicts, and the stop. One failure rejects the order.
           </p>
           <ul class="rail-list">
             <li>
-              <strong>Every position requires protection.</strong> Each confirmed position
-              increase must have an exchange-native reduce-only stop sized against the
-              exchange-reported position.
+              <strong>Every position increase requires a stop.</strong> T3 Trade submits an
+              exchange-native reduce-only stop, then confirms its size against the position
+              reported by Hyperliquid.
             </li>
             <li>
-              <strong>Retries do not duplicate orders.</strong> A deterministic client order ID
-              and local idempotency key make retries return the existing order record.
+              <strong>Retries reuse the same order identity.</strong> The client order ID and
+              local request key are deterministic, so a retry does not create a second order.
             </li>
             <li>
-              <strong>Controls work without the agent.</strong> Pause, cancel entries, reduce,
-              close, and revoke still work when the agent provider is stopped.
+              <strong>You keep direct control.</strong> Use the app to pause new entries, cancel
+              entry orders, reduce or close the position, and revoke the mission even when the
+              agent CLI is stopped.
             </li>
           </ul>
         </div>
@@ -160,7 +167,7 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
         <div class="tile preview-card">
           <div class="preview-head">
             <span class="preview-title">trading_preview_order</span>
-            <span class="preview-status">17 checks</span>
+            <span class="preview-status">17 required checks</span>
           </div>
           <ul class="preview-list">
             {previewChecks.map((check) => (
@@ -170,11 +177,11 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
                 <span class="preview-check-detail">{check.detail}</span>
               </li>
             ))}
-            <li class="preview-more">Sign and submit only after all checks pass</li>
+            <li class="preview-more">T3 Trade signs only after all 17 checks pass</li>
           </ul>
         </div>
         <div class="controls-strip" aria-label="Deterministic mission controls">
-          <span class="controls-strip-label">Works without the agent:</span>
+          <span class="controls-strip-label">Operator controls:</span>
           {controls.map((control) => (
             <span class="control-chip">{control}</span>
           ))}
@@ -187,10 +194,12 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
   <section id="harnesses" class="sec-harness">
     <div class="container">
       <div class="section-head">
-        <h2>Supports five coding-agent CLIs.</h2>
+        <h2>Bring your coding-agent CLI.</h2>
         <p>
-          T3 Trade uses coding-agent CLIs installed and authenticated on your machine. The
-          agent creates and explains the plan. Only T3 Trade accesses the signer key.
+          The interface inherited from T3 Code supports five CLIs installed and authenticated
+          on your machine. Trading missions currently run with Claude Code, Codex, or OpenCode.
+          Cursor and Grok remain available for regular coding threads. The agent never receives
+          the signer key.
         </p>
       </div>
 
@@ -199,35 +208,35 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
           <div class="harness-mark"><img src="/harnesses/claude-ai-icon.svg" alt="" /></div>
           <div class="harness-meta">
             <div class="harness-name">Claude Code</div>
-            <div class="harness-tag">claude auth login</div>
+            <div class="harness-tag">trading missions</div>
           </div>
         </div>
         <div class="harness">
           <div class="harness-mark"><img src="/harnesses/openai_dark.svg" alt="" /></div>
           <div class="harness-meta">
             <div class="harness-name">Codex CLI</div>
-            <div class="harness-tag">codex login</div>
+            <div class="harness-tag">trading missions</div>
           </div>
         </div>
         <div class="harness">
           <div class="harness-mark"><img src="/harnesses/opencode-dark.svg" alt="" /></div>
           <div class="harness-meta">
             <div class="harness-name">OpenCode</div>
-            <div class="harness-tag">opencode auth</div>
+            <div class="harness-tag">trading missions</div>
           </div>
         </div>
         <div class="harness">
           <div class="harness-mark"><img src="/harnesses/cursor_light.svg" alt="" /></div>
           <div class="harness-meta">
             <div class="harness-name">Cursor</div>
-            <div class="harness-tag">cursor-agent</div>
+            <div class="harness-tag">coding threads only</div>
           </div>
         </div>
         <div class="harness">
           <div class="harness-mark"><img src="/harnesses/grok-dark.svg" alt="" /></div>
           <div class="harness-meta">
             <div class="harness-name">Grok CLI</div>
-            <div class="harness-tag">grok login</div>
+            <div class="harness-tag">coding threads only</div>
           </div>
         </div>
       </div>
@@ -240,33 +249,32 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
       <div class="tile arming-card">
         <div class="arming-row">
           <span class="arming-state arming-state--safe">
-            <span class="arming-dot"></span> No signer key
+            <span class="arming-dot"></span> No valid signer key
           </span>
           <span class="arming-desc">
-            Read-only. You can use missions, watches, and plans, but orders are not signed or
-            submitted.
+            Execution is disabled. T3 Trade rejects every action that requires a signature.
           </span>
         </div>
         <div class="arming-divider" aria-hidden="true"></div>
         <div class="arming-row">
           <span class="arming-state arming-state--armed">
-            <span class="arming-dot"></span> Key present
+            <span class="arming-dot"></span> Valid key loaded
           </span>
           <span class="arming-desc">
-            Testnet order execution. No additional flag is required.
+            Execution is enabled for the Hyperliquid testnet account derived from the key.
           </span>
         </div>
       </div>
 
       <div class="arming-copy">
         <div class="section-head" style="margin-bottom:0">
-          <h2>The signer key enables execution.</h2>
+          <h2>Execution requires a local testnet private key.</h2>
           <p>
-            Hyperliquid requires signed orders. T3 Trade does not yet include wallet
-            onboarding, so you provide one <strong>interim signer key</strong> in
-            <code>~/.t3trade/secrets</code>. With the key, T3 Trade can place testnet orders.
-            Without it, T3 Trade is read-only. The key does not appear in logs, reports, or
-            the database. Expanded key management is not yet available.
+            This alpha has no wallet onboarding. To trade, provide one 32-byte EVM private key
+            for the Hyperliquid testnet account in <code>~/.t3trade/secrets</code>. T3 Trade
+            derives the account address, holds the raw key in server memory, and uses it to
+            sign orders locally. It does not write the key to logs, reports, or the database.
+            Use a testnet-only key. This temporary key setup is the only wallet path today.
           </p>
         </div>
       </div>
@@ -277,26 +285,26 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
   <section id="state" class="sec-state">
     <div class="container">
       <div class="section-head">
-        <h2>Current capabilities and limits.</h2>
-        <p>T3 Trade is built for supervised, budgeted testnet experiments.</p>
+        <h2>What ships in this alpha.</h2>
+        <p>T3 Trade is for supervised trading experiments on Hyperliquid testnet.</p>
       </div>
       <div class="state-grid">
         <div class="tile state-card">
           <div class="state-card-label state-card-label--is">Today</div>
           <ul>
-            <li>Hyperliquid testnet missions with defined scope and loss budgets</li>
-            <li>17-check order previews, required stops, and idempotent submission</li>
-            <li>Controls that work without the agent running</li>
-            <li>Web app and Apple Silicon macOS build; other platforms run from source</li>
+            <li>Trading missions for Claude Code, Codex, and OpenCode</li>
+            <li>Hyperliquid testnet orders with fixed authority and USD loss limits</li>
+            <li>Required reduce-only stops, exchange reconciliation, and retry-safe submission</li>
+            <li>Apple Silicon macOS app and a self-hosted web app that runs from source</li>
           </ul>
         </div>
         <div class="tile state-card">
           <div class="state-card-label state-card-label--isnt">Not today</div>
           <ul>
             <li>No mainnet support</li>
-            <li>No strategies, signals, or return guarantees</li>
-            <li>No wallet onboarding; you provide one interim signer key</li>
-            <li>No unattended use with real funds or mobile app</li>
+            <li>No packaged Windows, Linux, or Intel Mac builds</li>
+            <li>No wallet onboarding; execution uses one local testnet private key</li>
+            <li>No mobile app and no support for unattended trading with real funds</li>
           </ul>
         </div>
       </div>
@@ -308,13 +316,13 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     <div class="container">
       <div class="section-head" style="margin-bottom:0">
         <div class="eyebrow" style="margin-bottom:14px">Open source</div>
-        <h2>Open-source and documented.</h2>
+        <h2>Built on T3 Code. Open all the way down.</h2>
         <p>
           T3 Trade is an MIT-licensed fork
-          of <a class="inline-link" href={UPSTREAM_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">T3 Code</a> by
-          Ping Labs. Trading features are contained in dedicated packages. The rest of the
-          code stays close to upstream, and each intentional difference is recorded in a
-          patch ledger.
+          of <a class="inline-link" href={UPSTREAM_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">T3 Code</a>,
+          the open-source interface for running coding agents from one app. T3 Trade keeps the
+          upstream agent and repository workflows, adds trading in dedicated packages, and
+          records every intentional fork change in <code>PATCH_LEDGER.md</code>.
         </p>
         <div class="open-actions">
           <a class="btn btn-primary" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">
@@ -331,10 +339,11 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
   <!-- ── Final CTA ─────────────────────────────────────────────── -->
   <section id="download" class="sec-cta">
     <div class="container cta-inner">
-      <h2 class="display cta-title">Run a mission on testnet.</h2>
+      <h2 class="display cta-title">Run T3 Trade on testnet.</h2>
       <p class="cta-sub">
-        Download the alpha, fund a testnet account, define a mission, and review the agent's
-        actions.
+        Download the Apple Silicon Mac app, or run the server and web app from source. Install
+        one supported trading-agent CLI, add a testnet-only signer key, choose a perp, and type
+        your mandate.
       </p>
       <div class="cta-actions">
         <a id="cta-download-btn" class="btn btn-primary btn-lg" href="https://github.com/0xgeorgemathew/t3trade/releases">
@@ -343,8 +352,9 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
         <a class="btn btn-ghost btn-lg" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">Run from source</a>
       </div>
       <p class="cta-note">
-        The desktop build supports Apple Silicon and is unsigned. Right-click the app and
-        choose Open on first launch. Run from source on Windows, Linux, and Intel Macs.
+        The macOS build is Apple Silicon only and is not code-signed or notarized. On first
+        launch, right-click the app and choose Open to pass Gatekeeper. Run from source on
+        Windows, Linux, and Intel Macs.
         Older builds and checksums are on the <a href="https://github.com/0xgeorgemathew/t3trade/releases" target="_blank" rel="noopener noreferrer">releases page</a>.
       </p>
     </div>
