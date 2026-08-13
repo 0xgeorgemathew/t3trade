@@ -93,8 +93,8 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
           <div class="mission-tile-label">The exchange is the authority</div>
           <p>
             Positions, orders, and fills are always read back from Hyperliquid. The database
-            records what T3 Trade <em>did</em>; the exchange remains the source of what is
-            <em>true</em>.
+            records what T3 Trade <em>did</em>; the exchange remains the source of what
+            is <em>true</em>.
           </p>
         </div>
         <div class="tile mission-tile">
@@ -247,8 +247,8 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
           <h2>Armed only when you arm it.</h2>
           <p>
             Hyperliquid is a signed-order exchange, so live execution needs a key. T3 Trade
-            doesn't have wallet onboarding yet — for now you provision a single
-            <strong>interim signer key</strong> in one canonical location
+            doesn't have wallet onboarding yet — for now you provision a
+            single <strong>interim signer key</strong> in one canonical location
             (<code>~/.t3trade/secrets</code>), and its presence is the arming switch.
             Without it, the whole environment runs read-only. The key never appears in
             logs, reports, or the database. Deliberately blunt for the alpha; proper key
@@ -296,9 +296,9 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
         <div class="eyebrow" style="margin-bottom:14px">Open source</div>
         <h2>A fork with a paper trail.</h2>
         <p>
-          T3 Trade is an MIT-licensed fork of
-          <a class="inline-link" href={UPSTREAM_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">T3 Code</a>
-          by Ping Labs. The trading surface lives in a handful of clearly-bounded packages;
+          T3 Trade is an MIT-licensed fork
+          of <a class="inline-link" href={UPSTREAM_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">T3 Code</a> by
+          Ping Labs. The trading surface lives in a handful of clearly-bounded packages;
           everything else stays close to upstream, and every intentional divergence is
           recorded in a patch ledger.
         </p>
