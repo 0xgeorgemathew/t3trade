@@ -9,8 +9,8 @@
  */
 
 import * as Migrator from "effect/unstable/sql/Migrator";
-import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 
 // Import all migrations statically
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
@@ -66,6 +66,7 @@ import Migration0050 from "./Migrations/050_TradingStopAdjustments.ts";
 import Migration0051 from "./Migrations/051_TradingRunDecisions.ts";
 import Migration0052 from "./Migrations/052_TradingEntryQuotes.ts";
 import Migration0053 from "./Migrations/053_TradingExecutionSequences.ts";
+import Migration0054 from "./Migrations/054_ProjectionThreadTitleRegeneration.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -131,7 +132,13 @@ export const migrationEntries = [
   [51, "TradingRunDecisions", Migration0051],
   [52, "TradingEntryQuotes", Migration0052],
   [53, "TradingExecutionSequences", Migration0053],
+  // Upstream's own 035; renumbered to the fork's next free id because id 35 is
+  // already recorded as TradingDomain in every fork database. Every incoming
+  // upstream migration takes the next free fork id — see PATCH_LEDGER.
+  [54, "ProjectionThreadTitleRegeneration", Migration0054],
 ] as const;
+
+export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
 
 export const makeMigrationLoader = (throughId?: number) =>
   Migrator.fromRecord(
