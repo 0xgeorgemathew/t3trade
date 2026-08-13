@@ -23,7 +23,6 @@ import {
   formatUsd as usd,
   humanizeLiteral,
   hyperliquidTradeUrl,
-  isLiveMission,
   MISSION_STATUS_LABELS,
   settledMissions,
   shouldShowMissionStrip,

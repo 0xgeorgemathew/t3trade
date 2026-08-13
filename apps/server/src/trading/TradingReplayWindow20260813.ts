@@ -19,7 +19,7 @@
  *
  * @module TradingReplayWindow20260813
  */
-import { readFileSync } from "node:fs";
+import * as NodeFS from "node:fs";
 
 import type { MarketCandle, MarketCandleInterval } from "@t3tools/trading-contracts/market";
 import type { ReplayFixture, ReplaySessionState } from "@t3tools/trading-contracts/replay";
@@ -54,7 +54,7 @@ export function loadWindowCandles(
   interval: MarketCandleInterval & ("1m" | "5m" | "15m" | "1h"),
 ): ReadonlyArray<MarketCandle> {
   const path = new URL(`./replay-fixtures/eth-${interval}-2026-08-13.json`, import.meta.url);
-  const wire = JSON.parse(readFileSync(path, "utf8")) as ReadonlyArray<WireCandle>;
+  const wire = JSON.parse(NodeFS.readFileSync(path, "utf8")) as ReadonlyArray<WireCandle>;
   return wire.map(toCandle);
 }
 
