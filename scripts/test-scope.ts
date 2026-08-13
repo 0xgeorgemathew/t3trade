@@ -7,8 +7,8 @@
     as produced by `gh pr diff --name-only`) and prints `scope=fork` or
     `scope=full` on stdout for `$GITHUB_OUTPUT`.
 
-    Rationale: this repo is a fork of pingdotgg/t3code and rarely touches
-    upstream code (see docs/upstream/PATCH_LEDGER.md). Files under the
+    Rationale: this repo is a fork that rarely touches upstream code
+    (see docs/upstream/PATCH_LEDGER.md). Files under the
     fork-owned paths below are never imported by upstream tests, so a change
     confined to them cannot break the upstream suite — running only the
     fork's own tests is sufficient. Any file outside the list (upstream code,

@@ -31,6 +31,12 @@ const ALLOWED_FILES = new Set([
   // pending a marketing rebrand pass.
   "apps/marketing/src/lib/site.ts",
   "apps/marketing/src/lib/releases.ts",
+  // Desktop updater's "release notes" link. Same gap as the marketing files:
+  // it points at upstream's release tags because this fork publishes no
+  // releases of its own (the nightly release workflow is disabled), so
+  // repointing it at the fork would link to nothing. Reintroduced by the
+  // v0.0.33 sync; deferred in PATCH_LEDGER.md with the rebrand pass.
+  "apps/web/src/components/desktopUpdate.logic.ts",
 ]);
 
 const SEARCH_ROOTS = ["apps", "packages", "scripts", "infra"];
