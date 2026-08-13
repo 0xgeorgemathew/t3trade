@@ -377,7 +377,7 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
 
       if (heroBtn) heroBtn.href = dmg.browser_download_url;
       if (ctaBtn) ctaBtn.href = dmg.browser_download_url;
-      if (releaseLine && releaseTag && release.tag_name) {
+      if (releaseLine && releaseTag && release?.tag_name) {
         releaseTag.textContent = release.tag_name;
         releaseLine.hidden = false;
       }
