@@ -1257,6 +1257,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                   )}
                 >
                   <Undo2Icon className="mb-px size-3.5" />
+                  Un-settle
                 </button>
               ) : (
                 <button
@@ -1268,7 +1269,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                     isWoke && "group-hover/sidebar-row:static",
                   )}
                 >
-                  <CheckIcon className="size-3" />
+                  <CheckIcon className="size-3.5" />
+                  Settle
                 </button>
               )}
             </span>
