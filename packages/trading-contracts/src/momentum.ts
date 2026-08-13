@@ -63,6 +63,33 @@ export const MomentumDirection = Schema.Literals(["up", "down", "flat"]);
 export type MomentumDirection = typeof MomentumDirection.Type;
 
 /**
+ * Bars the recent directional score is measured over.
+ *
+ * The 120-bar `directionScore` answers "what has this window been doing?";
+ * two hours of drift inside it can leave the long score near zero while the
+ * last thirty bars grind one way. This shorter window is the one that turns
+ * first, so it is measured separately rather than blended in.
+ */
+export const RECENT_DIRECTION_BARS = 30;
+
+/**
+ * The trailing run of each pivot sequence, counted from the newest pivot back.
+ *
+ * Three consecutive lower highs is a market being sold at ever-lower levels —
+ * structure the 120-bar direction score is too slow to report. Each count is
+ * the number of consecutive steps at the END of its pivot sequence going that
+ * way; a step the other way, or an exact repeat, ends the run. At most one of
+ * each opposing pair is non-zero.
+ */
+export const PivotTrend = Schema.Struct({
+  consecutiveLowerHighs: Schema.Number,
+  consecutiveHigherLows: Schema.Number,
+  consecutiveLowerLows: Schema.Number,
+  consecutiveHigherHighs: Schema.Number,
+});
+export type PivotTrend = typeof PivotTrend.Type;
+
+/**
  * The last completed directional leg on this timeframe.
  *
  * Measured pivot to pivot: from the swing low that started it to the swing high
@@ -113,7 +140,12 @@ export type StructureBreakout = typeof StructureBreakout.Type;
  * identical in the decision funnel.
  */
 export const CandidateSetup = Schema.Struct({
-  kind: Schema.Literals(["momentum_breakout", "range_reversion", "opening_range_break"]),
+  kind: Schema.Literals([
+    "momentum_breakout",
+    "range_reversion",
+    "opening_range_break",
+    "trend_continuation",
+  ]),
   direction: Schema.Literals(["up", "down"]),
   interval: MarketCandleInterval,
   /** 0 to 1. Every component that feeds it is named in `rationale`. */
@@ -151,6 +183,20 @@ export const MomentumTimeframeContext = Schema.Struct({
    */
   directionScore: Schema.Number,
   direction: MomentumDirection,
+  /**
+   * The same net-over-total travel, over only the last `RECENT_DIRECTION_BARS`
+   * bars (the whole window when it is shorter).
+   *
+   * This is the number that turns first when a range starts grinding one way:
+   * the 120-bar score still reads flat while this one is already decisive. A
+   * large gap between the two is the transition the classifier names.
+   */
+  recentDirectionScore: Schema.Number,
+  /**
+   * The trailing run of each pivot sequence — see {@link PivotTrend}. All
+   * zeros when the window has too few pivots to make a run.
+   */
+  pivotTrend: PivotTrend,
   atrUsd: Schema.Number,
   atrPercent: Schema.Number,
   /**
@@ -193,6 +239,29 @@ export const MomentumTimeframeContext = Schema.Struct({
    */
   rangeStabilityPercent: Schema.optional(Schema.Number),
   /**
+   * How far the window's ceiling moved between its first and second half, in
+   * USD of price: second half's highest high minus the first half's.
+   *
+   * `rangeStabilityPercent` says whether the range kept its HEIGHT; a range
+   * whose height held while both bounds slid ten dollars lower is not stable,
+   * it is drifting — the grind this measurement exists to catch. Positive is
+   * up, negative is down. Absent when either half is too short to measure.
+   */
+  swingHighDriftUsd: Schema.optional(Schema.Number),
+  /** The same drift for the window's floor: second half's lowest low minus the first half's. */
+  swingLowDriftUsd: Schema.optional(Schema.Number),
+  /**
+   * Median favourable up move over median favourable down move, measured from
+   * each bar close over the next `EXCURSION_HORIZON_BARS` bars.
+   *
+   * Near 1 the window paid longs and shorts alike (ranging); far from 1 one
+   * side has been paying (trending). The same measurement `ObservedVolatility`
+   * publishes, computed here per timeframe so the regime classifier can read
+   * it without a second tool call. Absent when the window is too short to
+   * sample or the downside median is zero.
+   */
+  excursionSymmetryRatio: Schema.optional(Schema.Number),
+  /**
    * Bars whose high (or low) came within a fifth of an ATR of the swing.
    *
    * "Confirm the market has turned at each boundary more than once" and the
@@ -225,13 +294,88 @@ export const MomentumAlignment = Schema.Struct({
 });
 export type MomentumAlignment = typeof MomentumAlignment.Type;
 
+/**
+ * The classify playbook's regime read, applied in code.
+ *
+ * A verdict, not a permission: the harness may overrule it, but it has to say
+ * why, against the named evidence. `evidence[]` is every measured feature that
+ * voted for the classification; `conflicts[]` names every feature pair that
+ * disagreed, because the turns where the features disagree are exactly the
+ * turns a transition begins and the classifier refuses to paper over them.
+ */
+export const MarketRegime = Schema.Struct({
+  classification: Schema.Literals(["trending", "ranging", "transition"]),
+  evidence: Schema.Array(Schema.String),
+  conflicts: Schema.Array(Schema.String),
+});
+export type MarketRegime = typeof MarketRegime.Type;
+
+/**
+ * One row of the strategy tournament — a scored setup joined with its
+ * playbook's cost gate and the distance to its trigger.
+ *
+ * The playbooks each state a gate ("range height >= 2.2x the break-even
+ * move"); this is every candidate held against its own gate in one table, so
+ * the turn that picks a strategy compares the whole field instead of the one
+ * setup it happened to look at. Evidence, never permission: `clearsCostGate`
+ * false does not stop anything, and the harness still writes its own reason
+ * for the candidate it runs and the ones it declines.
+ */
+export const StrategyCandidate = Schema.Struct({
+  /** The playbook the candidate belongs to — same literals as `CandidateSetup.kind`. */
+  strategy: Schema.Literals([
+    "momentum_breakout",
+    "range_reversion",
+    "opening_range_break",
+    "trend_continuation",
+  ]),
+  direction: Schema.Literals(["up", "down"]),
+  interval: MarketCandleInterval,
+  /** The setup's own 0-1 score, copied so the table sorts the same way `setups[]` does. */
+  score: Schema.Number,
+  /** The price the candidate triggers at — the level to arm. */
+  level: Price,
+  /** True: arm a `candle_close`. False: a `price_cross` at the boundary. */
+  closeConfirmed: Schema.Boolean,
+  /** How far the last close sits from the trigger, in USD of price. */
+  distanceToTriggerUsd: Schema.Number,
+  /**
+   * The move the candidate's playbook says is on offer: the range height for
+   * a reversion or ORB, the last impulse's size for a breakout or
+   * continuation. Absent when the frame could not measure it.
+   */
+  availableMoveUsd: Schema.optional(Schema.Number),
+  /**
+   * `availableMoveUsd` over the break-even price move at the current book.
+   * Absent when no cost estimate was readable — absence is "unknown", never
+   * "free".
+   */
+  costMultiple: Schema.optional(Schema.Number),
+  /** The multiple the candidate's own playbook gate demands. */
+  requiredCostMultiple: Schema.Number,
+  /** `costMultiple >= requiredCostMultiple`. Absent with `costMultiple`. */
+  clearsCostGate: Schema.optional(Schema.Boolean),
+  /** The setup's own rationale, carried through so the row stands alone. */
+  note: Schema.String,
+});
+export type StrategyCandidate = typeof StrategyCandidate.Type;
+
 export const MarketStructure = Schema.Struct({
   market: ExchangeMarket,
   measuredAt: UnixMillis,
   timeframes: Schema.Array(MomentumTimeframeContext),
   alignment: MomentumAlignment,
+  /** The computed regime verdict — evidence for the classify turn, never permission. */
+  regime: MarketRegime,
   /** Every setup the measurements support, best score first. Often empty. */
   setups: Schema.Array(CandidateSetup),
+  /**
+   * The tournament view of `setups[]`: each candidate joined with its
+   * playbook's cost gate at the current book — see {@link StrategyCandidate}.
+   * Attached by the structure read when it can price the gate; the pure
+   * analysis leaves it absent.
+   */
+  candidates: Schema.optional(Schema.Array(StrategyCandidate)),
 });
 export type MarketStructure = typeof MarketStructure.Type;
 
@@ -449,6 +593,94 @@ function measureRangeStability(candles: ReadonlyArray<MarketCandle>): number | u
 }
 
 /**
+ * How far each swing bound moved between the window's two halves, in USD.
+ *
+ * The half split matches `measureRangeStability`: that function reports
+ * whether the range kept its height, this one reports whether the bounds kept
+ * their place. A range grinding lower holds its height while both drifts go
+ * negative, which is how a "stable" range hides a trend.
+ */
+function measureSwingDrift(
+  candles: ReadonlyArray<MarketCandle>,
+): { readonly highDriftUsd: number; readonly lowDriftUsd: number } | undefined {
+  const half = Math.floor(candles.length / 2);
+  if (half < 2) return undefined;
+  const first = candles.slice(0, half);
+  const second = candles.slice(half);
+  return {
+    highDriftUsd:
+      Math.max(...second.map((bar) => bar.high)) - Math.max(...first.map((bar) => bar.high)),
+    lowDriftUsd:
+      Math.min(...second.map((bar) => bar.low)) - Math.min(...first.map((bar) => bar.low)),
+  };
+}
+
+/** The trailing same-direction run at the end of a pivot price sequence. */
+function trailingRun(prices: ReadonlyArray<number>, direction: "up" | "down"): number {
+  let run = 0;
+  for (let i = prices.length - 1; i > 0; i--) {
+    const step = (prices[i] ?? 0) - (prices[i - 1] ?? 0);
+    if (direction === "up" ? step > 0 : step < 0) run += 1;
+    else break;
+  }
+  return run;
+}
+
+/** The trailing runs of both pivot sequences — see {@link PivotTrend}. */
+function readPivotTrend(
+  candles: ReadonlyArray<MarketCandle>,
+  highPivots: ReadonlyArray<number>,
+  lowPivots: ReadonlyArray<number>,
+): PivotTrend {
+  const highPrices = highPivots.map((index) => candles[index]?.high ?? 0);
+  const lowPrices = lowPivots.map((index) => candles[index]?.low ?? 0);
+  return {
+    consecutiveLowerHighs: trailingRun(highPrices, "down"),
+    consecutiveHigherLows: trailingRun(lowPrices, "up"),
+    consecutiveLowerLows: trailingRun(lowPrices, "down"),
+    consecutiveHigherHighs: trailingRun(highPrices, "up"),
+  };
+}
+
+/** Bars ahead each excursion sample looks — matches `RECENT_DIRECTION_BARS`. */
+const EXCURSION_HORIZON_BARS = 30;
+
+/** Fewest excursion samples before the ratio means anything. */
+const MIN_EXCURSION_SAMPLES = 20;
+
+const median = (values: ReadonlyArray<number>): number => {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? (sorted[mid] ?? 0)
+    : ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
+};
+
+/**
+ * Median favourable up move over median favourable down move.
+ *
+ * Same measurement as `ObservedVolatility.excursionSymmetryRatio`, at one
+ * fixed horizon, so the regime classifier can hold the excursion symmetry the
+ * classify playbook asks about against the rest of the structure read.
+ */
+function measureExcursionSymmetry(candles: ReadonlyArray<MarketCandle>): number | undefined {
+  const ups: Array<number> = [];
+  const downs: Array<number> = [];
+  for (let i = 0; i + EXCURSION_HORIZON_BARS < candles.length; i++) {
+    const from = candles[i];
+    if (from === undefined) continue;
+    const forward = candles.slice(i + 1, i + 1 + EXCURSION_HORIZON_BARS);
+    ups.push(Math.max(0, Math.max(...forward.map((bar) => bar.high)) - from.close));
+    downs.push(Math.max(0, from.close - Math.min(...forward.map((bar) => bar.low))));
+  }
+  if (ups.length < MIN_EXCURSION_SAMPLES) return undefined;
+  const downMedian = median(downs);
+  if (downMedian <= 0) return undefined;
+  return median(ups) / downMedian;
+}
+
+/**
  * Whether the last bar broke a swing, and whether it stayed broken.
  *
  * A break is only a break on the close. A bar whose high went through the swing
@@ -511,8 +743,11 @@ export function analyseTimeframe(
   const swingLowPrice = swingLowIndex === undefined ? undefined : candles[swingLowIndex]?.low;
 
   const directionScore = directionalEfficiency(candles);
+  const recentDirectionScore = directionalEfficiency(candles.slice(-RECENT_DIRECTION_BARS));
   const touchTolerance = atrUsd * TOUCH_TOLERANCE_ATR;
   const rangeStabilityPercent = measureRangeStability(candles);
+  const swingDrift = measureSwingDrift(candles);
+  const excursionSymmetryRatio = measureExcursionSymmetry(candles);
   const breakout = readBreakout(candles, swingHighPrice, swingLowPrice);
 
   return {
@@ -524,6 +759,8 @@ export function analyseTimeframe(
     referencePrice: referencePrice > 0 ? referencePrice : 1,
     directionScore,
     direction: callDirection(directionScore, policy.momentum.directionScoreThreshold),
+    recentDirectionScore,
+    pivotTrend: readPivotTrend(candles, highs, lows),
     atrUsd,
     atrPercent: referencePrice > 0 ? (atrUsd / referencePrice) * 100 : 0,
     ...(ranges.length >= 2 * ATR_LEG_BARS && previousAtr > 0
@@ -551,6 +788,10 @@ export function analyseTimeframe(
         }
       : {}),
     ...(rangeStabilityPercent === undefined ? {} : { rangeStabilityPercent }),
+    ...(swingDrift === undefined
+      ? {}
+      : { swingHighDriftUsd: swingDrift.highDriftUsd, swingLowDriftUsd: swingDrift.lowDriftUsd }),
+    ...(excursionSymmetryRatio === undefined ? {} : { excursionSymmetryRatio }),
     ...(swingHighPrice === undefined
       ? {}
       : { swingHighTouches: countTouches(candles, swingHighPrice, "high", touchTolerance) }),
@@ -614,6 +855,186 @@ function readAlignment(frames: ReadonlyArray<MomentumTimeframeContext>): Momentu
   };
 }
 
+// ---------------------------------------------------------------------------
+// Regime classification
+// ---------------------------------------------------------------------------
+
+/** An ATR expansion below this is noise, not trend evidence. */
+const REGIME_ATR_EXPANSION_TRENDING = 1.1;
+
+/** Excursion symmetry inside [1/band, band] reads as ranging. */
+const REGIME_SYMMETRY_RANGING_BAND = 1.35;
+
+/** Excursion symmetry outside [1/band, band] reads as trending. */
+const REGIME_SYMMETRY_TRENDING_BAND = 1.75;
+
+/** Swing-bound drift material at this many ATRs; both bounds under it is a range holding. */
+const REGIME_DRIFT_MATERIAL_ATR = 0.5;
+
+/** Consecutive same-direction pivots before structure counts as a trend. */
+const REGIME_PIVOT_RUN = 2;
+
+/** One feature's vote: which regime it supports and the measured fact behind it. */
+interface RegimeFact {
+  readonly side: "trending" | "ranging";
+  readonly label: string;
+}
+
+/** Every regime fact one measured timeframe contributes. */
+function readRegimeFacts(
+  frame: MomentumTimeframeContext,
+  policy: TradingPolicy,
+): Array<RegimeFact> {
+  const facts: Array<RegimeFact> = [];
+  const at = frame.interval;
+  const threshold = policy.momentum.directionScoreThreshold;
+
+  if (frame.direction !== "flat") {
+    facts.push({
+      side: "trending",
+      label: `${at} directionScore ${frame.directionScore.toFixed(2)} is decisive`,
+    });
+  } else if (Math.abs(frame.directionScore) <= threshold / 2) {
+    facts.push({
+      side: "ranging",
+      label: `${at} directionScore ${frame.directionScore.toFixed(2)} is chop`,
+    });
+  }
+
+  // The short window turning is trend evidence; a flat short window says
+  // nothing on its own — chop is claimed by the full-window score above.
+  if (Math.abs(frame.recentDirectionScore) >= threshold) {
+    facts.push({
+      side: "trending",
+      label: `${at} recent ${RECENT_DIRECTION_BARS}-bar directionScore ${frame.recentDirectionScore.toFixed(2)} is decisive`,
+    });
+  }
+
+  const expansion = frame.atrExpansionRatio;
+  if (expansion !== undefined && expansion >= REGIME_ATR_EXPANSION_TRENDING) {
+    facts.push({
+      side: "trending",
+      label: `${at} atrExpansionRatio ${expansion.toFixed(2)} is expanding`,
+    });
+  }
+
+  const stability = frame.rangeStabilityPercent;
+  const stabilityLimit = policy.rangeReversion.stabilityPercent;
+  if (stability !== undefined) {
+    if (stability <= stabilityLimit) {
+      facts.push({
+        side: "ranging",
+        label: `${at} range height moved ${stability.toFixed(0)}% across the window (stable)`,
+      });
+    } else if (stability > 2 * stabilityLimit) {
+      facts.push({
+        side: "trending",
+        label: `${at} range height moved ${stability.toFixed(0)}% across the window (not a range)`,
+      });
+    }
+  }
+
+  const symmetry = frame.excursionSymmetryRatio;
+  if (symmetry !== undefined && symmetry > 0) {
+    const band = symmetry > 1 ? symmetry : 1 / symmetry;
+    if (band <= REGIME_SYMMETRY_RANGING_BAND) {
+      facts.push({
+        side: "ranging",
+        label: `${at} excursionSymmetryRatio ${symmetry.toFixed(2)} paid both sides alike`,
+      });
+    } else if (band >= REGIME_SYMMETRY_TRENDING_BAND) {
+      facts.push({
+        side: "trending",
+        label: `${at} excursionSymmetryRatio ${symmetry.toFixed(2)} paid one side`,
+      });
+    }
+  }
+
+  const pivots = frame.pivotTrend;
+  if (
+    pivots.consecutiveHigherHighs >= REGIME_PIVOT_RUN &&
+    pivots.consecutiveHigherLows >= REGIME_PIVOT_RUN
+  ) {
+    facts.push({
+      side: "trending",
+      label: `${at} structure printed ${pivots.consecutiveHigherHighs} higher highs and ${pivots.consecutiveHigherLows} higher lows`,
+    });
+  }
+  if (
+    pivots.consecutiveLowerHighs >= REGIME_PIVOT_RUN &&
+    pivots.consecutiveLowerLows >= REGIME_PIVOT_RUN
+  ) {
+    facts.push({
+      side: "trending",
+      label: `${at} structure printed ${pivots.consecutiveLowerHighs} lower highs and ${pivots.consecutiveLowerLows} lower lows`,
+    });
+  }
+
+  const highDrift = frame.swingHighDriftUsd;
+  const lowDrift = frame.swingLowDriftUsd;
+  if (highDrift !== undefined && lowDrift !== undefined && frame.atrUsd > 0) {
+    const material = REGIME_DRIFT_MATERIAL_ATR * frame.atrUsd;
+    const sameDirection = highDrift * lowDrift > 0;
+    if (sameDirection && Math.abs(highDrift) >= material && Math.abs(lowDrift) >= material) {
+      const way = highDrift > 0 ? "up" : "down";
+      facts.push({
+        side: "trending",
+        label: `${at} both swing bounds drifted ${way} (${highDrift.toFixed(2)} / ${lowDrift.toFixed(2)} USD)`,
+      });
+    } else if (Math.abs(highDrift) < material && Math.abs(lowDrift) < material) {
+      facts.push({
+        side: "ranging",
+        label: `${at} swing bounds held their place between window halves`,
+      });
+    }
+  }
+
+  return facts;
+}
+
+/**
+ * Apply the classify playbook's criteria to the measured timeframes.
+ *
+ * Each measurable feature on each measured timeframe casts one vote. A side
+ * wins only when it has at least two votes and at least twice the other's —
+ * anything closer is a transition, because the turns where the features
+ * disagree are the turns the next regime is being born, and papering over the
+ * disagreement is how the last grind-down was traded as a range. The harness
+ * may overrule the verdict, against the named evidence.
+ */
+export function classifyRegime(
+  frames: ReadonlyArray<MomentumTimeframeContext>,
+  policy: TradingPolicy = ACTIVE_TRADING_POLICY,
+): MarketRegime {
+  const facts = frames
+    .filter((frame) => frame.sufficientData)
+    .flatMap((frame) => readRegimeFacts(frame, policy));
+  const trending = facts.filter((fact) => fact.side === "trending");
+  const ranging = facts.filter((fact) => fact.side === "ranging");
+
+  const conflicts: Array<string> = [];
+  for (const trend of trending) {
+    for (const range of ranging) {
+      conflicts.push(`${trend.label} vs ${range.label}`);
+    }
+  }
+
+  const classification =
+    trending.length >= 2 && trending.length >= 2 * ranging.length
+      ? ("trending" as const)
+      : ranging.length >= 2 && ranging.length >= 2 * trending.length
+        ? ("ranging" as const)
+        : ("transition" as const);
+  const winning =
+    classification === "trending" ? trending : classification === "ranging" ? ranging : facts;
+
+  return {
+    classification,
+    evidence: winning.map((fact) => fact.label),
+    conflicts,
+  };
+}
+
 /**
  * Measure the momentum structure across several timeframes at once.
  *
@@ -639,11 +1060,76 @@ export function analyseMomentum(
     measuredAt: input.measuredAt,
     timeframes,
     alignment: readAlignment(timeframes),
+    regime: classifyRegime(timeframes, policy),
     setups: findCandidateSetups(timeframes, policy),
   };
 }
 
 const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
+
+/**
+ * Deepest a pullback may run, as a percent of the impulse it is undoing,
+ * before a continuation entry is chasing a reversal instead.
+ */
+export const TREND_CONTINUATION_MAX_PULLBACK_PERCENT = 50;
+
+/**
+ * A drift resuming after a shallow pullback — the entry the 2026-08-13 grind
+ * offered over and over while the breakout branch waited for a close that had
+ * already happened bars ago.
+ *
+ * The evidence is the pivot run in the drift's direction, the recent
+ * directional score agreeing with it, and a pullback shallow enough that the
+ * leg is being bought (or sold) rather than reversed. The trigger is a candle
+ * CLOSING back through the pullback's own extreme — the impulse end price —
+ * never a boundary touch: a touch of that level is the pullback finishing,
+ * and only the close says the drift resumed.
+ */
+function readTrendContinuation(
+  frame: MomentumTimeframeContext,
+  policy: TradingPolicy,
+): CandidateSetup | null {
+  const impulse = frame.lastImpulse;
+  const pullbackPercent = frame.pullbackPercentOfImpulse;
+  if (impulse === undefined || pullbackPercent === undefined) return null;
+  if (pullbackPercent <= 0 || pullbackPercent > TREND_CONTINUATION_MAX_PULLBACK_PERCENT) {
+    return null;
+  }
+
+  // The failing levels are the pivots the drift keeps making: higher lows
+  // under an up leg, lower highs over a down leg.
+  const run =
+    impulse.direction === "up"
+      ? frame.pivotTrend.consecutiveHigherLows
+      : frame.pivotTrend.consecutiveLowerHighs;
+  if (run < REGIME_PIVOT_RUN) return null;
+
+  const recent = frame.recentDirectionScore;
+  const recentAgrees = impulse.direction === "up" ? recent > 0 : recent < 0;
+  if (!recentAgrees) return null;
+
+  const threshold = policy.momentum.directionScoreThreshold;
+  const score = clamp01(
+    0.35 * clamp01(run / 4) +
+      0.35 * clamp01(Math.abs(recent) / threshold / 2) +
+      0.3 * (1 - pullbackPercent / TREND_CONTINUATION_MAX_PULLBACK_PERCENT),
+  );
+  return {
+    kind: "trend_continuation",
+    direction: impulse.direction,
+    interval: frame.interval,
+    score,
+    level: impulse.endPrice,
+    // The pullback extreme touching the level is the pullback finishing; only
+    // a close back through it says the drift resumed.
+    closeConfirmed: true,
+    rationale:
+      `${run} consecutive ${impulse.direction === "up" ? "higher lows" : "lower highs"}, ` +
+      `recent ${RECENT_DIRECTION_BARS}-bar directionScore ${recent.toFixed(2)}, ` +
+      `pullback ${pullbackPercent.toFixed(0)}% of the ${impulse.sizeUsd.toFixed(2)} USD impulse; ` +
+      `a candle closing back through ${impulse.endPrice} resumes the drift`,
+  };
+}
 
 /**
  * The setups each timeframe's measurements support.
@@ -705,6 +1191,16 @@ export function findCandidateSetups(
       continue;
     }
 
+    // A drift resuming after a shallow pullback. Checked after the breakout —
+    // a confirmed break already is the continuation, taken at the level — and
+    // before the range branch, because the two claims contradict: a frame with
+    // a live pivot run is not a range holding its bounds.
+    const continuation = readTrendContinuation(frame, policy);
+    if (continuation !== null) {
+      setups.push(continuation);
+      continue;
+    }
+
     // A boundary of a range that has held its height and been tested on both
     // sides. Chop is the requirement here, not a disqualification.
     const position = frame.positionInRangePercent;
@@ -744,4 +1240,83 @@ export function findCandidateSetups(
   }
 
   return [...setups].sort((left, right) => right.score - left.score);
+}
+
+// ---------------------------------------------------------------------------
+// Strategy tournament (plan 27 E1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The move each setup kind claims is on offer, read off its own frame.
+ *
+ * A reversion or ORB is paid out of the range height; a breakout or
+ * continuation is paid out of the leg it is riding. Undefined when the frame
+ * could not measure the figure, which the row reports as an unknown rather
+ * than a zero.
+ */
+function availableMoveUsd(
+  setup: CandidateSetup,
+  frame: MomentumTimeframeContext | undefined,
+): number | undefined {
+  if (frame === undefined) return undefined;
+  if (setup.kind === "range_reversion" || setup.kind === "opening_range_break") {
+    if (frame.swingHighPrice === undefined || frame.swingLowPrice === undefined) return undefined;
+    const height = frame.swingHighPrice - frame.swingLowPrice;
+    return height > 0 ? height : undefined;
+  }
+  return frame.lastImpulse?.sizeUsd;
+}
+
+/** The cost multiple each kind's own playbook gate demands. */
+function requiredCostMultiple(kind: CandidateSetup["kind"], policy: TradingPolicy): number {
+  switch (kind) {
+    case "range_reversion":
+      return policy.rangeReversion.heightCostMultiple;
+    case "opening_range_break":
+      return policy.openingRange.heightCostMultiple;
+    case "momentum_breakout":
+    case "trend_continuation":
+      return policy.momentum.targetCostMultiple;
+  }
+}
+
+/**
+ * Join every scored setup with its playbook's cost gate — the tournament
+ * table the classify turn compares candidates on.
+ *
+ * `cost` is the break-even price move at the current book, from a fresh cost
+ * estimate; pass `null` when none was readable and the rows carry distance
+ * and score but no multiple. Rows keep the `setups[]` order (best score
+ * first). Pure arithmetic: nothing here decides anything.
+ */
+export function compareCandidates(
+  structure: Pick<MarketStructure, "timeframes" | "setups">,
+  cost: { readonly breakEvenPriceMoveUsd: number } | null,
+  policy: TradingPolicy = ACTIVE_TRADING_POLICY,
+): ReadonlyArray<StrategyCandidate> {
+  const frameByInterval = new Map(structure.timeframes.map((frame) => [frame.interval, frame]));
+
+  return structure.setups.map((setup) => {
+    const frame = frameByInterval.get(setup.interval);
+    const move = availableMoveUsd(setup, frame);
+    const required = requiredCostMultiple(setup.kind, policy);
+    const breakEven = cost?.breakEvenPriceMoveUsd;
+    const multiple =
+      move !== undefined && breakEven !== undefined && breakEven > 0 ? move / breakEven : undefined;
+
+    return {
+      strategy: setup.kind,
+      direction: setup.direction,
+      interval: setup.interval,
+      score: setup.score,
+      level: setup.level,
+      closeConfirmed: setup.closeConfirmed,
+      distanceToTriggerUsd: frame === undefined ? 0 : Math.abs(setup.level - frame.referencePrice),
+      ...(move === undefined ? {} : { availableMoveUsd: move }),
+      ...(multiple === undefined ? {} : { costMultiple: multiple }),
+      requiredCostMultiple: required,
+      ...(multiple === undefined ? {} : { clearsCostGate: multiple >= required }),
+      note: setup.rationale,
+    };
+  });
 }

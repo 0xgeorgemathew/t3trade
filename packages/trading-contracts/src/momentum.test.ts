@@ -12,10 +12,13 @@ import type { MarketCandle } from "./market.ts";
 import {
   analyseMomentum,
   analyseTimeframe,
+  classifyRegime,
+  compareCandidates,
   DIRECTION_SCORE_THRESHOLD,
   findPivots,
   MIN_MOMENTUM_BARS,
 } from "./momentum.ts";
+import { ACTIVE_TRADING_POLICY } from "./policy.ts";
 
 /** A bar with a given close and a fixed range around it. */
 const bar = (close: number, spread = 1): MarketCandle => ({
@@ -54,6 +57,190 @@ describe("directionScore", () => {
     // Net travel is one step; total travel is thirty-eight of them.
     assert.ok(Math.abs(frame.directionScore) < DIRECTION_SCORE_THRESHOLD);
     assert.equal(frame.direction, "flat");
+  });
+});
+
+describe("recentDirectionScore", () => {
+  it("turns before the full-window score when a range starts grinding", () => {
+    // Ninety bars of chop, then thirty bars grinding up: the 120-bar score is
+    // still under the threshold while the 30-bar score is already decisive.
+    const candles = [...chop(3_000, 5, 90), ...ramp(3_000, 1, 30)];
+    const frame = analyseTimeframe({ interval: "1m", candles });
+
+    assert.ok(Math.abs(frame.directionScore) < DIRECTION_SCORE_THRESHOLD);
+    assert.ok(frame.recentDirectionScore > DIRECTION_SCORE_THRESHOLD);
+  });
+
+  it("equals the full-window score when the window is shorter than 30 bars", () => {
+    const frame = analyseTimeframe({ interval: "1m", candles: ramp(3_000, 1, 20) });
+    assert.closeTo(frame.recentDirectionScore, frame.directionScore, 1e-9);
+  });
+});
+
+/** A descending zigzag: peaks at 110, 105, 100 and troughs at 95, 90, 85. */
+const descendingZigzag = (): Array<MarketCandle> => [
+  ...ramp(100, 1, 11), // up to 110
+  ...ramp(109, -1, 15), // down to 95
+  ...ramp(96, 1, 10), // up to 105
+  ...ramp(104, -1, 15), // down to 90
+  ...ramp(91, 1, 10), // up to 100
+  ...ramp(99, -1, 15), // down to 85
+  ...ramp(86, 1, 5), // small recovery that confirms the last low pivot
+];
+
+describe("pivotTrend", () => {
+  it("counts the trailing run of lower highs and lower lows", () => {
+    const frame = analyseTimeframe({ interval: "1m", candles: descendingZigzag() });
+
+    // Highs 110 → 105 → 100 and lows 95 → 90 → 85: two lower steps each.
+    assert.equal(frame.pivotTrend.consecutiveLowerHighs, 2);
+    assert.equal(frame.pivotTrend.consecutiveLowerLows, 2);
+    assert.equal(frame.pivotTrend.consecutiveHigherHighs, 0);
+    assert.equal(frame.pivotTrend.consecutiveHigherLows, 0);
+  });
+
+  it("reports all zeros when the window has no runs", () => {
+    const frame = analyseTimeframe({ interval: "1m", candles: chop(3_000, 5, 40) });
+    // Chop peaks print the same high every time; an exact repeat is not a run.
+    assert.equal(frame.pivotTrend.consecutiveLowerHighs, 0);
+    assert.equal(frame.pivotTrend.consecutiveHigherHighs, 0);
+  });
+});
+
+describe("swing drift", () => {
+  it("reads a range grinding lower as drift even while its height holds", () => {
+    // Same ±5 oscillation, ten dollars lower in the second half.
+    const candles = [...chop(3_000, 5, 60), ...chop(2_990, 5, 60)];
+    const frame = analyseTimeframe({ interval: "1m", candles });
+
+    assert.closeTo(frame.swingHighDriftUsd ?? 0, -10, 1e-9);
+    assert.closeTo(frame.swingLowDriftUsd ?? 0, -10, 1e-9);
+    // The height itself never moved — this is what stability alone misses.
+    assert.ok((frame.rangeStabilityPercent ?? 100) < 1);
+  });
+
+  it("is absent when either half is too short to measure", () => {
+    const frame = analyseTimeframe({ interval: "1m", candles: ramp(3_000, 1, 3) });
+    assert.equal(frame.swingHighDriftUsd, undefined);
+    assert.equal(frame.swingLowDriftUsd, undefined);
+  });
+});
+
+describe("regime", () => {
+  it("classifies a straight trend as trending", () => {
+    const structure = analyseMomentum({
+      market: "ETH",
+      measuredAt: 1_000,
+      frames: [
+        { interval: "1m", candles: ramp(3_000, 1, 120) },
+        { interval: "5m", candles: ramp(3_000, 2, 120) },
+      ],
+    });
+
+    assert.equal(structure.regime.classification, "trending");
+    assert.ok(structure.regime.evidence.length >= 2);
+  });
+
+  it("classifies symmetric chop as ranging", () => {
+    const regime = classifyRegime([
+      analyseTimeframe({ interval: "1m", candles: chop(3_000, 5, 120) }),
+    ]);
+
+    assert.equal(regime.classification, "ranging");
+    assert.equal(regime.conflicts.length, 0);
+  });
+
+  it("refuses to call a grind-down a range, and names the conflicts", () => {
+    // Ninety bars of chop, then thirty bars grinding down: the long score
+    // still reads flat while the recent score and the window halves disagree.
+    const candles = [...chop(3_000, 5, 90), ...ramp(3_000, -1, 30)];
+    const regime = classifyRegime([analyseTimeframe({ interval: "1m", candles })]);
+
+    assert.notEqual(regime.classification, "ranging");
+    assert.ok(regime.conflicts.length > 0);
+  });
+
+  it("returns transition with no evidence when nothing was measurable", () => {
+    const regime = classifyRegime([analyseTimeframe({ interval: "1m", candles: [] })]);
+    assert.equal(regime.classification, "transition");
+    assert.deepEqual(regime.evidence, []);
+  });
+});
+
+describe("trend_continuation setup", () => {
+  it("scores a drift resuming after a shallow pullback, close-confirmed at the impulse end", () => {
+    const structure = analyseMomentum({
+      market: "ETH",
+      measuredAt: 1_000,
+      frames: [{ interval: "1m", candles: descendingZigzag() }],
+    });
+
+    const continuation = structure.setups.find((setup) => setup.kind === "trend_continuation");
+    assert.ok(continuation !== undefined);
+    assert.equal(continuation.direction, "down");
+    // The trigger is the pullback's own extreme — the impulse end price (the
+    // last low's bar low, 84) — armed as a candle close, never a touch.
+    assert.closeTo(continuation.level, 84, 1e-9);
+    assert.equal(continuation.closeConfirmed, true);
+    assert.ok(continuation.score > 0);
+  });
+
+  it("offers no continuation when the pullback has run too deep", () => {
+    // Same zigzag, but the recovery retraces most of the last down leg.
+    const candles = [...descendingZigzag(), ...ramp(91, 1, 8)];
+    const structure = analyseMomentum({
+      market: "ETH",
+      measuredAt: 1_000,
+      frames: [{ interval: "1m", candles }],
+    });
+
+    assert.equal(
+      structure.setups.find((setup) => setup.kind === "trend_continuation"),
+      undefined,
+    );
+  });
+});
+
+describe("compareCandidates", () => {
+  const structure = () =>
+    analyseMomentum({
+      market: "ETH",
+      measuredAt: 1_000,
+      frames: [{ interval: "1m", candles: descendingZigzag() }],
+    });
+
+  it("joins each setup with its playbook's cost gate at the given book", () => {
+    const rows = compareCandidates(structure(), { breakEvenPriceMoveUsd: 2 });
+    const row = rows.find((candidate) => candidate.strategy === "trend_continuation");
+
+    assert.ok(row !== undefined);
+    assert.equal(row.direction, "down");
+    // The continuation rides the last impulse: 101 → 84 is 17 USD of move,
+    // 8.5x a 2 USD break-even, against the momentum gate's 2x.
+    assert.closeTo(row.availableMoveUsd ?? 0, 17, 1e-9);
+    assert.closeTo(row.costMultiple ?? 0, 8.5, 1e-9);
+    assert.equal(row.requiredCostMultiple, ACTIVE_TRADING_POLICY.momentum.targetCostMultiple);
+    assert.equal(row.clearsCostGate, true);
+    // The last close is 90 (end of the 86..90 recovery); the trigger is 84.
+    assert.closeTo(row.distanceToTriggerUsd, 6, 1e-9);
+  });
+
+  it("fails the gate when the move cannot pay the multiple", () => {
+    const rows = compareCandidates(structure(), { breakEvenPriceMoveUsd: 10 });
+    const row = rows.find((candidate) => candidate.strategy === "trend_continuation");
+    // 17 / 10 = 1.7, under the 2x the momentum playbook demands.
+    assert.equal(row?.clearsCostGate, false);
+  });
+
+  it("reports unknown costs as absent rather than free", () => {
+    const rows = compareCandidates(structure(), null);
+    const row = rows[0];
+    assert.ok(row !== undefined);
+    assert.equal(row.costMultiple, undefined);
+    assert.equal(row.clearsCostGate, undefined);
+    // Everything that needs no book still answers.
+    assert.ok(row.requiredCostMultiple > 0);
+    assert.ok(row.note.length > 0);
   });
 });
 

@@ -689,15 +689,18 @@ function ArmedHeader({
   readonly nextReassessmentAt: number | null;
 }): ReactNode {
   const countdown = formatReassessmentCountdown(nextReassessmentAt);
+  // The plain-language summary is the headline; the technical thesis is the
+  // fallback for plans published before it existed.
+  const headline = plan?.plainSummary ?? plan?.thesis ?? null;
   return (
     <>
       <span className="inline-flex flex-none items-center gap-1.5 rounded-full border border-armed/40 bg-armed/10 px-2 py-px text-[11px] font-medium text-armed">
         <span>{market}</span>
         <span>Waiting</span>
       </span>
-      {plan?.thesis == null ? null : (
-        <span className="min-w-0 max-w-[36ch] truncate text-foreground" title={plan.thesis}>
-          {plan.thesis}
+      {headline === null ? null : (
+        <span className="min-w-0 max-w-[36ch] truncate text-foreground" title={headline}>
+          {headline}
         </span>
       )}
       {plan?.initialSizeUsd == null ? null : (
@@ -877,6 +880,9 @@ function PlanDisclosure({ plan }: { readonly plan: StrategyPlan }): ReactNode {
         View full plan · v{plan.version} · {plan.modeLabel}
       </summary>
       <div className="mt-2 space-y-1">
+        {plan.plainSummary === null ? null : (
+          <PlanField label="In plain terms" value={plan.plainSummary} />
+        )}
         {plan.thesis === null ? null : <PlanField label="Thesis" value={plan.thesis} />}
         {plan.regime === null ? null : <PlanField label="Regime" value={plan.regime} />}
         {plan.entryTriggers.length === 0 ? null : (
@@ -909,6 +915,16 @@ function PlanDisclosure({ plan }: { readonly plan: StrategyPlan }): ReactNode {
         )}
         {plan.targetRationale === null ? null : (
           <PlanField label="Why this target" value={plan.targetRationale} />
+        )}
+        {plan.alternatives.length === 0 ? null : (
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+            <span className="w-24 flex-none text-muted-foreground">Also considered</span>
+            <ul className="min-w-0 flex-1 list-disc space-y-0.5 pl-4 text-foreground">
+              {plan.alternatives.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </div>
         )}
         {plan.basis === null ? null : (
           <div className="flex flex-wrap gap-x-6 gap-y-1 pt-1 text-muted-foreground">

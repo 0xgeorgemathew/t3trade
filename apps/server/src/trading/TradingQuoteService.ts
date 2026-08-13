@@ -34,6 +34,12 @@ import {
 import type { TradingOrderIntent, TradingOrderSide } from "@t3tools/trading-contracts/execution";
 import type { MomentumOrderPreference } from "@t3tools/trading-contracts/strategy";
 import { evaluateLossBudget } from "@t3tools/trading-contracts/loss-accounting";
+import {
+  analyseMomentum,
+  MOMENTUM_LOOKBACK_BARS,
+  MOMENTUM_TIMEFRAMES,
+} from "@t3tools/trading-contracts/momentum";
+import { stopNoiseFloorUsd } from "@t3tools/trading-contracts/stop-adjustment";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import * as Clock from "effect/Clock";
@@ -315,6 +321,76 @@ export const makeTradingQuoteService = Effect.gen(function* () {
           Effect.orElseSucceed(() => null),
         );
 
+      // Plan 27 C1: snapshot the setup evidence behind this entry, or null.
+      // Measurement, never a gate — a quote with no scored setup behind it is
+      // still cut; the funnel is what reads the difference. The structure is
+      // recomputed here so the snapshot is the server's own read at quote
+      // time, not prose the harness asserted.
+      const setupSnapshot = yield* Effect.gen(function* () {
+        const histories = yield* Effect.all(
+          MOMENTUM_TIMEFRAMES.map((interval) =>
+            gateway
+              .getMarketHistory({
+                // Equal to request.market by the mandate guard above, but
+                // carries the market type the gateway wants.
+                market: mission.market,
+                interval,
+                maxBars: MOMENTUM_LOOKBACK_BARS,
+              })
+              .pipe(Effect.map((history) => ({ interval, candles: history.candles }))),
+          ),
+          { concurrency: "unbounded" },
+        );
+        const structure = analyseMomentum({
+          market: request.market,
+          measuredAt: now,
+          frames: histories,
+        });
+        const wantedDirection = request.side === "buy" ? "up" : "down";
+        const best = structure.setups.find((setup) => setup.direction === wantedDirection);
+        // The primary timeframe's ATR, for the stop noise floor and the
+        // stop-distance record on the eventual closed trade.
+        const primaryFrame = structure.timeframes.find((frame) => frame.sufficientData) ?? null;
+        return {
+          setupKind: best?.kind ?? null,
+          setupScore: best?.score ?? null,
+          regime: structure.regime.classification as string | null,
+          atrUsd: primaryFrame === null ? null : primaryFrame.atrUsd,
+        };
+      }).pipe(
+        // A failed structure read costs the snapshot, never the quote.
+        Effect.catchCause(() =>
+          Effect.succeed({
+            setupKind: null,
+            setupScore: null,
+            regime: null as string | null,
+            atrUsd: null as number | null,
+          }),
+        ),
+      );
+
+      // Plan 27 G2: the same noise floor `trading_adjust_stop` enforces, at
+      // the entry. A stop inside max(2x half-spread, 0.35x ATR) is not
+      // protection, it is a scheduled exit — refuse it with the floor named
+      // rather than let the entry buy a stop-out the doctrine already
+      // forbids. When the ATR read failed the floor is spread-only, which
+      // only ever makes the rule more permissive, never stricter.
+      const halfSpreadUsd = Math.max(0, (bestAsk - bestBid) / 2);
+      const noiseFloorUsd = stopNoiseFloorUsd({
+        halfSpreadUsd,
+        atrUsd: setupSnapshot.atrUsd ?? 0,
+      });
+      const stopDistanceUsd = Math.abs(entryPrice - request.stopPrice);
+      if (stopDistanceUsd < noiseFloorUsd) {
+        return refused(
+          "stop_inside_noise_floor",
+          `the stop at ${request.stopPrice} sits ${stopDistanceUsd.toFixed(2)} USD from the ` +
+            `${entryPrice} entry, inside the ${noiseFloorUsd.toFixed(2)} USD noise floor ` +
+            `(max(2 x ${halfSpreadUsd.toFixed(2)} half-spread, 0.35 x ${(setupSnapshot.atrUsd ?? 0).toFixed(2)} ATR)); ` +
+            "place the stop beyond the level that invalidates the thesis, plus that margin",
+        );
+      }
+
       const quoteId = `qte_${yield* crypto.randomUUIDv4.pipe(Effect.orDie)}`;
       const executable: ExecutableQuote = {
         quoteId,
@@ -348,7 +424,8 @@ export const makeTradingQuoteService = Effect.gen(function* () {
           execution_sequence, market, side, action_type, order_preference,
           size, requested_size, constrained_by, limit_price, stop_price,
           planned_loss_usd, reserved_risk_usd, notional_usd, best_bid, best_ask,
-          round_trip_cost_usd, quoted_at, expires_at
+          round_trip_cost_usd, quoted_at, expires_at,
+          setup_kind_at_entry, setup_score_at_entry, regime_at_entry, atr_usd_at_entry
         ) VALUES (
           ${quoteId}, ${request.missionId}, ${harnessRunId}, ${mission.strategyVersion},
           ${mission.authorityVersion}, ${intent.executionSequence}, ${request.market},
@@ -356,7 +433,9 @@ export const makeTradingQuoteService = Effect.gen(function* () {
           ${sizing.size}, ${sizing.requestedSize}, ${sizing.constrainedBy}, ${limitPrice},
           ${request.stopPrice}, ${sizing.plannedLossAtStopUsd}, ${sizing.reservedRiskUsd},
           ${sizing.notionalUsd}, ${bestBid}, ${bestAsk}, ${executable.estimatedRoundTripCostUsd},
-          ${now}, ${executable.expiresAt}
+          ${now}, ${executable.expiresAt},
+          ${setupSnapshot.setupKind}, ${setupSnapshot.setupScore}, ${setupSnapshot.regime},
+          ${setupSnapshot.atrUsd}
         )
       `;
 

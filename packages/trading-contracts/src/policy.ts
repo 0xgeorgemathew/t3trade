@@ -173,6 +173,91 @@ export const MIN_ENRICHMENT_SAMPLE_RUNS = 50;
  */
 export const ENRICHMENT_REGIME_UNCLEAR_PERCENT = 33;
 
+/**
+ * One closed trade, joined back to the entry that opened it — plan 27 C2/C3.
+ *
+ * `scoredSetupBehindIt` is whether the entry's quote carried a scored setup
+ * snapshot (C1); `regimeAtEntry` is the regime classification in force when
+ * the entry was quoted, or null when no read had been made.
+ */
+export interface EntryGovernanceTrade {
+  readonly scoredSetupBehindIt: boolean;
+  readonly setupKindAtEntry: string | null;
+  readonly regimeAtEntry: string | null;
+  readonly netPnlUsd: number;
+}
+
+export interface EntryGovernanceSplit {
+  readonly trades: number;
+  readonly wins: number;
+  readonly losses: number;
+  readonly netUsd: number;
+}
+
+export interface RegimeLossAttribution {
+  /** The regime classification at entry, or null when none was recorded. */
+  readonly regime: string | null;
+  readonly trades: number;
+  readonly losses: number;
+  readonly netUsd: number;
+}
+
+export interface EntryGovernanceEvidence {
+  /** Trades whose entry had a scored setup behind it. */
+  readonly scored: EntryGovernanceSplit;
+  /** Trades entered with no scored setup — the discipline gap C2 measures. */
+  readonly unscored: EntryGovernanceSplit;
+  /** Losses attributed to the regime read in force at entry — plan 27 C3. */
+  readonly lossesByRegime: ReadonlyArray<RegimeLossAttribution>;
+  readonly reason: string;
+}
+
+const splitOf = (trades: ReadonlyArray<EntryGovernanceTrade>): EntryGovernanceSplit => ({
+  trades: trades.length,
+  wins: trades.filter((trade) => trade.netPnlUsd > 0).length,
+  losses: trades.filter((trade) => trade.netPnlUsd < 0).length,
+  netUsd: Math.round(trades.reduce((sum, trade) => sum + trade.netPnlUsd, 0) * 100) / 100,
+});
+
+/**
+ * The `assessEnrichment` sibling for entries — plan 27 C2/C3.
+ *
+ * Measurement, not a gate: nothing refuses an entry off this. It answers the
+ * two questions the stop-out review could not: do the entries taken WITHOUT a
+ * scored setup behind them actually pay, and which regime read was in force
+ * when the losing ones were taken. A loss column concentrated under one
+ * regime classification is the evidence a doctrine change ships on.
+ */
+export function assessEntryGovernance(
+  trades: ReadonlyArray<EntryGovernanceTrade>,
+): EntryGovernanceEvidence {
+  const scored = splitOf(trades.filter((trade) => trade.scoredSetupBehindIt));
+  const unscored = splitOf(trades.filter((trade) => !trade.scoredSetupBehindIt));
+
+  const regimes = new Map<string | null, Array<EntryGovernanceTrade>>();
+  for (const trade of trades) {
+    const key = trade.regimeAtEntry;
+    const bucket = regimes.get(key);
+    if (bucket === undefined) regimes.set(key, [trade]);
+    else bucket.push(trade);
+  }
+  const lossesByRegime = [...regimes.entries()]
+    .map(([regime, bucket]): RegimeLossAttribution => {
+      const split = splitOf(bucket);
+      return { regime, trades: split.trades, losses: split.losses, netUsd: split.netUsd };
+    })
+    .sort((left, right) => left.netUsd - right.netUsd);
+
+  const reason =
+    trades.length === 0
+      ? "no closed trades joined to an entry record yet — the split has nothing to say"
+      : `${scored.trades} entries had a scored setup behind them (net ${scored.netUsd} USD), ` +
+        `${unscored.trades} did not (net ${unscored.netUsd} USD); ` +
+        `worst regime at entry: ${lossesByRegime[0]?.regime ?? "unrecorded"} at ${lossesByRegime[0]?.netUsd ?? 0} USD net`;
+
+  return { scored, unscored, lossesByRegime, reason };
+}
+
 export function assessEnrichment(tallies: ReadonlyArray<StandDownTally>): EnrichmentEvidence {
   const attributable = new Set([
     "regime_unclear",

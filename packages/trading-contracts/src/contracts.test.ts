@@ -124,6 +124,8 @@ const strategy: TradingPlanState = {
   reentryConditions: [{ description: "Fresh breakout above 3,760" }],
   currentAction: "holding",
   explanation: "Long 0.30 ETH, protected at 3,652.",
+  plainSummary:
+    "ETH has been climbing and just broke above a level it kept failing at. I am long a small position and will sell if it falls back below 3,652, risking about $20 to make $25.",
   updatedAt: 1_753_000_000_000,
 };
 

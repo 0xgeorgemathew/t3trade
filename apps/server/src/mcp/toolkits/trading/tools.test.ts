@@ -264,6 +264,14 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 // is nothing to describe — a close takes no arguments at all — and what their
 // descriptions do buy is the sentence a harness most needs, which is that an
 // exit works in every state an entry does not.
+//
+// Plan 27 spends inside the same envelope rather than growing it: the structure
+// read's description was rewritten tighter to make room for the regime verdict,
+// the new per-timeframe features, and the `candidates[]` tournament table; the
+// publish description pays for `plainSummary` and `alternativesConsidered[]` by
+// dropping sentences the playbooks already carry; and the quote description's
+// noise-floor rule is one sentence because the rule itself lives in
+// `trading_adjust_stop`'s.
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 

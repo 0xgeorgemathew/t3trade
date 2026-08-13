@@ -235,6 +235,7 @@ const publishStrategy = Effect.gen(function* () {
       reentryConditions: [],
       currentAction: "waiting",
       explanation: "wait for the level",
+      plainSummary: "ETH is pushing higher; I plan to buy once it breaks out.",
     },
   });
   assert.equal(published.outcome, "accepted");

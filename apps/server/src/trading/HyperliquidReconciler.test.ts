@@ -54,7 +54,7 @@ const input: ReconcileInput = {
 /** Migrate the shared in-memory db, then truncate the 038 tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 48 });
+  yield* runMigrations({ toMigrationInclusive: 60 });
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM trading_orders`;

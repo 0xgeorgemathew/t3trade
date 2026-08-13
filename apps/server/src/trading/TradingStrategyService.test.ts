@@ -62,6 +62,7 @@ const body = (name: string): PublishTradingPlanBody => ({
   reentryConditions: [],
   currentAction: "waiting",
   explanation: "Waiting for the retest.",
+  plainSummary: "ETH just broke higher; I plan to buy if the breakout level holds on a dip.",
 });
 
 /**

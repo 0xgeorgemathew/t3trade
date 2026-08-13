@@ -21,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import type { TradingCostEstimate } from "@t3tools/trading-contracts/costs";
@@ -30,6 +31,11 @@ import type { ObservedVolatility } from "@t3tools/trading-contracts/volatility";
 
 import { boundStrategyProse } from "./StrategyProse.ts";
 import { TradingCostEstimator } from "./TradingCostEstimator.ts";
+import {
+  LEVEL_GROUP_TOLERANCE_ATR,
+  readLevelHistory,
+  readPreviousStructureRead,
+} from "./TradingLevelHistory.ts";
 
 import type { TradingPlanState } from "./Schemas.ts";
 import type { PersistedWatch } from "./Schemas.ts";
@@ -49,6 +55,10 @@ import { TradingWatchService } from "./TradingWatchService.ts";
 
 /** §12.2 bounds the candles a wakeup carries directly. */
 const WAKEUP_RECENT_CANDLES = 8;
+
+/** Whether a stored structure-read interval is a timeframe the wakeup can echo. */
+const isTradingTimeframe = (value: string): value is TradingTimeframe =>
+  value === "1m" || value === "3m" || value === "5m" || value === "15m" || value === "1h";
 
 /**
  * The holding-period horizons the wakeup carries, rather than the default six.
@@ -539,6 +549,8 @@ const make = Effect.gen(function* () {
   const watches = yield* TradingWatchService;
   const strategies = yield* TradingStrategyService;
   const costs = yield* TradingCostEstimator;
+  // Level memory + prior-read echo (plan 27 B1/B2) are local table reads.
+  const sql = yield* SqlClient.SqlClient;
 
   /**
    * Measure the higher timeframe, or return nothing.
@@ -692,6 +704,52 @@ const make = Effect.gen(function* () {
         { concurrency: "unbounded" },
       );
 
+      // What the levels near the mark have already done to this mission, and
+      // what the previous structure read believed (plan 27 B1/B2). Both are
+      // memory, not fresh market data: either failing costs the field, never
+      // the wake.
+      const levelHistory = yield* readLevelHistory({
+        missionId: mission.id,
+        market: mission.market,
+        markPrice: marketSnapshot.markPrice,
+        toleranceUsd: LEVEL_GROUP_TOLERANCE_ATR * observedVolatility.atrUsd,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      const previousRead = yield* readPreviousStructureRead({
+        missionId: mission.id,
+        market: mission.market,
+        preferredInterval: primaryTimeframe,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      // Plan 27 C2: whether the open position's entry had a scored setup
+      // behind it, read off the consumed quote that opened it. Absent while
+      // flat, and absent (not asserted) when the quote row cannot be read.
+      const enteredWithoutScoredSetup =
+        position.size === 0
+          ? undefined
+          : yield* sql<{ readonly setup_kind_at_entry: string | null }>`
+              SELECT setup_kind_at_entry FROM trading_entry_quotes
+              WHERE mission_id = ${mission.id} AND action_type = 'open'
+                AND consumed_at IS NOT NULL
+              ORDER BY consumed_at DESC
+              LIMIT 1
+            `.pipe(
+              Effect.map((rows) =>
+                rows.length === 0 ? true : rows[0]?.setup_kind_at_entry == null,
+              ),
+              Effect.orElseSucceed(() => undefined),
+            );
+      const previousStructureRead =
+        previousRead === null || !isTradingTimeframe(previousRead.interval)
+          ? undefined
+          : {
+              interval: previousRead.interval,
+              classification: previousRead.classification,
+              ...(previousRead.swing_high === null
+                ? {}
+                : { swingHighUsd: previousRead.swing_high }),
+              ...(previousRead.swing_low === null ? {} : { swingLowUsd: previousRead.swing_low }),
+              readAgeMillis: Math.max(0, occurredAt - previousRead.measured_at),
+            };
+
       const triggeringWatch = yield* resolveTriggeringWatch(input.triggeringWatchId);
 
       // What is still armed, and how far the market has to travel to fire each
@@ -746,6 +804,9 @@ const make = Effect.gen(function* () {
         armedWatches,
         ...(unarmedEntryConditions.length === 0 ? {} : { unarmedEntryConditions }),
         ...(misarmedEntryConditions.length === 0 ? {} : { misarmedEntryConditions }),
+        ...(levelHistory.length === 0 ? {} : { levelHistory }),
+        ...(enteredWithoutScoredSetup === undefined ? {} : { enteredWithoutScoredSetup }),
+        ...(previousStructureRead === undefined ? {} : { previousStructureRead }),
         pendingEvents: [...pendingEvents],
       };
 

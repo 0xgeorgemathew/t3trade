@@ -9,9 +9,11 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import {
+  assessStopPlacement,
   calibrateTargets,
   CALIBRATION_TOLERANCE_POINTS,
   MIN_CALIBRATION_TRADES,
+  MIN_STOP_PLACEMENT_SAMPLE,
   type CalibrationTrade,
 } from "./calibration.ts";
 
@@ -130,5 +132,61 @@ describe("calibrateTargets", () => {
     assert.equal(entry?.observedHitRatePercent, 100);
     assert.equal(entry?.verdict, "as_claimed");
     assert.match(entry?.note ?? "", /claimed no hit rate/);
+  });
+
+  it("carries the stop-placement review beside the target grades", () => {
+    const result = calibrate(many(MIN_CALIBRATION_TRADES, { stopNoiseFloorMultiple: 2 }));
+    assert.equal(result.stopPlacement.measuredTrades, MIN_CALIBRATION_TRADES);
+    assert.equal(result.stopPlacement.stopsInsideNoiseFloorPercent, 0);
+  });
+});
+
+describe("assessStopPlacement", () => {
+  it("counts the stops that sat inside the noise floor at entry", () => {
+    const review = assessStopPlacement([
+      ...many(3, { stopNoiseFloorMultiple: 0.8, netPnlUsd: -5 }),
+      ...many(2, { stopNoiseFloorMultiple: 1.6, netPnlUsd: 4 }),
+    ]);
+
+    assert.equal(review.measuredTrades, 5);
+    assert.equal(review.losingTrades, 3);
+    assert.equal(review.stopsInsideNoiseFloorPercent, 60);
+    // Every loser died inside the floor, so every loss reads as avoidable.
+    assert.equal(review.avoidableStopPercent, 100);
+    assert.match(review.note, /placement is the problem/);
+  });
+
+  it("counts a re-cross of the entry as an avoidable loss even outside the floor", () => {
+    const review = assessStopPlacement([
+      ...many(2, { stopNoiseFloorMultiple: 1.5, netPnlUsd: -5, reEnteredWithinReviewBars: true }),
+      ...many(2, { stopNoiseFloorMultiple: 1.5, netPnlUsd: -5, reEnteredWithinReviewBars: false }),
+      ...many(1, { stopNoiseFloorMultiple: 1.5, netPnlUsd: 3 }),
+    ]);
+
+    assert.equal(review.stopsInsideNoiseFloorPercent, 0);
+    assert.equal(review.avoidableStopPercent, 50);
+  });
+
+  it("withholds the percentages under the minimum sample", () => {
+    const review = assessStopPlacement(
+      many(MIN_STOP_PLACEMENT_SAMPLE - 1, { stopNoiseFloorMultiple: 0.5 }),
+    );
+
+    assert.equal(review.measuredTrades, MIN_STOP_PLACEMENT_SAMPLE - 1);
+    assert.equal(review.stopsInsideNoiseFloorPercent, undefined);
+    assert.equal(review.avoidableStopPercent, undefined);
+    assert.match(review.note, /would be noise/);
+  });
+
+  it("ignores trades whose stop was never measured", () => {
+    const review = assessStopPlacement([
+      ...many(10),
+      ...many(MIN_STOP_PLACEMENT_SAMPLE, { stopNoiseFloorMultiple: 3, netPnlUsd: -1 }),
+    ]);
+
+    // The ten unmeasured trades say nothing about placement either way.
+    assert.equal(review.measuredTrades, MIN_STOP_PLACEMENT_SAMPLE);
+    assert.equal(review.stopsInsideNoiseFloorPercent, 0);
+    assert.equal(review.avoidableStopPercent, 0);
   });
 });

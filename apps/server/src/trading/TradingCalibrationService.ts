@@ -45,6 +45,7 @@ interface TradeRow {
   readonly trough_unrealised_pnl: number;
   readonly net_pnl: number;
   readonly claimed_hit_rate: number | null;
+  readonly stop_noise_floor_multiple: number | null;
 }
 
 const make = Effect.gen(function* () {
@@ -63,6 +64,7 @@ const make = Effect.gen(function* () {
           t.peak_unrealised_pnl,
           t.trough_unrealised_pnl,
           t.net_pnl,
+          t.stop_noise_floor_multiple,
           json_extract(
             v.strategy_json,
             '$.protection.targetProfitBasis.historicalHitRatePercent'
@@ -82,6 +84,11 @@ const make = Effect.gen(function* () {
         troughUnrealisedPnlUsd: row.trough_unrealised_pnl,
         netPnlUsd: row.net_pnl,
         claimedHitRatePercent: row.claimed_hit_rate,
+        stopNoiseFloorMultiple: row.stop_noise_floor_multiple,
+        // Post-close candles are not read here; the avoidable-stop share
+        // grades on the noise floor alone until the cross-mission ledger
+        // (plan 27 Phase H) makes the re-cross measurement worth taking.
+        reEnteredWithinReviewBars: null,
       }));
 
       return calibrateTargets({ missionId: input.missionId, measuredAt: now, trades });

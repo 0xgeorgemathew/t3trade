@@ -317,6 +317,23 @@ export const ClosedTradeReview = Schema.Struct({
   /** The strategy version in force when the position closed, and its target. */
   strategyVersion: Schema.optional(Schema.Number),
   targetProfitUsd: Schema.optional(Schema.Number),
+  /**
+   * Where the stop sat when the entry was quoted — plan 27 G1, measurement
+   * only. All four are read off the entry quote at close time and absent when
+   * the trade has no readable quote behind it (a manual entry, or one from
+   * before the columns existed).
+   */
+  stopPriceAtEntry: Schema.optional(Price),
+  /** |entry − stop|, in USD of price. */
+  stopDistanceUsd: Schema.optional(Schema.Number),
+  /** That distance in ATRs measured at quote time. */
+  stopDistanceAtrMultiple: Schema.optional(Schema.Number),
+  /**
+   * That distance over the noise floor at quote time —
+   * `max(2x half-spread, 0.35x ATR)`. Under 1 the stop sat inside the
+   * market's own noise, which is the stop this measurement exists to count.
+   */
+  stopNoiseFloorMultiple: Schema.optional(Schema.Number),
 });
 export type ClosedTradeReview = typeof ClosedTradeReview.Type;
 
@@ -342,12 +359,18 @@ export function describeClosedTrade(review: ClosedTradeReview): string {
     review.targetProfitUsd === undefined
       ? ""
       : ` Published target was ${usd(review.targetProfitUsd)}.`;
+  const stop =
+    review.stopDistanceAtrMultiple === undefined || review.stopNoiseFloorMultiple === undefined
+      ? ""
+      : ` The stop sat ${review.stopDistanceAtrMultiple.toFixed(2)} ATR from entry` +
+        `${review.stopNoiseFloorMultiple < 1 ? ` — INSIDE the noise floor (${review.stopNoiseFloorMultiple.toFixed(2)}x)` : ` (${review.stopNoiseFloorMultiple.toFixed(1)}x the noise floor)`}.`;
   return (
     `trade_closed: ${review.direction} ${Math.abs(review.sizeEth)} ${review.market} held ${minutes}m,` +
     `${prices} realised ${usd(review.realizedPnlUsd)} less ${usd(review.feesPaidUsd)} of fees = ` +
     `NET ${usd(review.netPnlUsd)}. It was worth ${usd(review.peakUnrealisedPnlUsd)} at its best and ` +
     `${usd(review.worstUnrealisedPnlUsd)} at its worst, so ${usd(review.givebackFromPeakUsd)} of the peak ` +
-    `was given back.${target} Review this before re-entering: did the thesis hold, was the target the ` +
-    `right rung, and did the stop or the give-back do its job?`
+    `was given back.${target}${stop} Review this before re-entering: did the thesis hold, was the target the ` +
+    `right rung, and did the stop or the give-back do its job? Open your reply with two or three plain ` +
+    `sentences a non-trader could follow — what happened, and what you will do next.`
   );
 }

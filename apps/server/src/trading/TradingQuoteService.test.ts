@@ -97,7 +97,7 @@ const harness: TradingHarnessBinding = {
 const seed = (options?: { readonly withOpenRun?: boolean }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 53 });
+    yield* runMigrations({ toMigrationInclusive: 60 });
     yield* sql`DELETE FROM trading_missions`;
     yield* sql`DELETE FROM trading_authority_versions`;
     yield* sql`DELETE FROM trading_harness_runs`;

@@ -333,6 +333,24 @@ export const MomentumProtection = Schema.Struct({
 });
 
 /**
+ * One candidate the tournament considered and did not run — or the one it did.
+ *
+ * Plan 27 E3: the publish carries the field so a declined strategy leaves a
+ * record next to the chosen one, and the UI can render the comparison as a
+ * plain list. `direction: "none"` is the no-trade candidate every tournament
+ * includes.
+ */
+export const ConsideredAlternative = Schema.Struct({
+  /** The playbook or setup kind considered, e.g. "range_reversion". */
+  strategy: TradingText,
+  direction: Schema.Literals(["long", "short", "none"]),
+  verdict: Schema.Literals(["chosen", "viable_not_best", "fails_gates", "no_setup"]),
+  /** One line on expectancy after costs — the arithmetic, not a mood. */
+  reason: TradingText,
+});
+export type ConsideredAlternative = typeof ConsideredAlternative.Type;
+
+/**
  * Every `TradingPlanState` field the harness authors.
  *
  * `version` and `updatedAt` are excluded because the server assigns them on
@@ -372,6 +390,26 @@ export const tradingPlanAuthoredFields = {
 
   /** See `MomentumEntryPlan.explanation` — optional in, always present out. */
   explanation: OmittableProse,
+
+  /**
+   * The plan in plain language — 2-4 sentences a non-trader can follow, no
+   * tool or field names, no scores. It must answer: what is the market doing,
+   * what is planned and in which direction, what triggers it, and roughly
+   * what is risked versus expected.
+   *
+   * Doctrine requires it on every publish (the tool description states the
+   * constraints); the schema decodes an omitted one as `""` so strategies
+   * persisted before the field existed still decode — same trade-off as
+   * `explanation` above.
+   */
+  plainSummary: OmittableProse,
+
+  /**
+   * The tournament's losing candidates, one row each — see
+   * {@link ConsideredAlternative}. Optional: a publish that ran no tournament
+   * (a pure stand-down on unreadable data, say) has nothing to record here.
+   */
+  alternativesConsidered: Schema.optional(Schema.Array(ConsideredAlternative)),
 } as const;
 
 export const TradingPlanState = Schema.Struct({

@@ -40,6 +40,40 @@ export const MIN_CALIBRATION_TRADES = 5;
  */
 export const CALIBRATION_TOLERANCE_POINTS = 20;
 
+/**
+ * Fewest measured stops before the placement percentages are published.
+ *
+ * Same reasoning as `MIN_CALIBRATION_TRADES`, same failure mode: a
+ * percentage over two stops is an anecdote wearing a decimal point.
+ */
+export const MIN_STOP_PLACEMENT_SAMPLE = 5;
+
+/**
+ * How the mission's stops were actually placed, graded — plan 27 G1.
+ *
+ * Measurement, not a rule change: G5 says any widening of stops ships as a
+ * new policy version through replay, and this is the evidence that decision
+ * waits for.
+ */
+export const StopPlacementReview = Schema.Struct({
+  /** Closed trades that carried a measurable stop (noise-floor multiple known). */
+  measuredTrades: Schema.Number,
+  losingTrades: Schema.Number,
+  /**
+   * Share of measured stops that sat INSIDE the noise floor at entry.
+   * Withheld under `MIN_STOP_PLACEMENT_SAMPLE`.
+   */
+  stopsInsideNoiseFloorPercent: Schema.optional(Schema.Number),
+  /**
+   * Share of losing trades whose stop-out looks avoidable: the stop was
+   * inside the noise floor, or price came back through the entry within the
+   * review window when that was measured. Withheld under the same minimum.
+   */
+  avoidableStopPercent: Schema.optional(Schema.Number),
+  note: Schema.String,
+});
+export type StopPlacementReview = typeof StopPlacementReview.Type;
+
 /** How a published target actually performed. */
 export const TargetCalibrationVerdict = Schema.Literals([
   "insufficient_sample",
@@ -89,6 +123,8 @@ export const TargetCalibration = Schema.Struct({
    * rung, or step down to a nearer one.
    */
   recommendation: Schema.String,
+  /** How the stops were placed, over the same trades — see {@link StopPlacementReview}. */
+  stopPlacement: StopPlacementReview,
 });
 export type TargetCalibration = typeof TargetCalibration.Type;
 
@@ -100,6 +136,15 @@ export interface CalibrationTrade {
   readonly troughUnrealisedPnlUsd: number;
   readonly netPnlUsd: number;
   readonly claimedHitRatePercent?: number | null;
+  /** Stop distance over the noise floor at entry; null when not measured. */
+  readonly stopNoiseFloorMultiple?: number | null;
+  /**
+   * Whether price came back through the entry within the review window after
+   * a losing exit. Null when unmeasured — post-close candles need the trade
+   * record to outlive the mission (plan 27 Phase H), so most rows carry null
+   * until that lands.
+   */
+  readonly reEnteredWithinReviewBars?: boolean | null;
 }
 
 const mean = (values: ReadonlyArray<number>): number =>
@@ -215,6 +260,50 @@ export function calibrateTargets(input: {
     ...(overall === undefined ? {} : { overallReachedTargetPercent: overall }),
     meanNetPnlUsd: round1(mean(scored.map((t) => t.netPnlUsd))),
     recommendation: recommend(scored.length, overall, entries),
+    // Stop placement spans EVERY trade with a measured stop, scored or not:
+    // a stop that died to noise is the same lesson whether or not the trade
+    // carried a graded target.
+    stopPlacement: assessStopPlacement(input.trades),
+  };
+}
+
+/**
+ * Grade the mission's stop placement over its closed trades — plan 27 G1.
+ *
+ * Two questions, both about the habit rather than one trade: how often did
+ * the stop sit inside the market's own noise at entry, and how many of the
+ * losses look avoidable — inside the floor, or price back through the entry
+ * within the review window when that was measured. Percentages are withheld
+ * under `MIN_STOP_PLACEMENT_SAMPLE` for the same reason hit rates are.
+ */
+export function assessStopPlacement(trades: ReadonlyArray<CalibrationTrade>): StopPlacementReview {
+  const measured = trades.filter((t) => t.stopNoiseFloorMultiple != null);
+  const losers = measured.filter((t) => t.netPnlUsd < 0);
+  const inside = measured.filter((t) => (t.stopNoiseFloorMultiple as number) < 1);
+  const avoidable = losers.filter(
+    (t) => (t.stopNoiseFloorMultiple as number) < 1 || t.reEnteredWithinReviewBars === true,
+  );
+
+  if (measured.length < MIN_STOP_PLACEMENT_SAMPLE) {
+    return {
+      measuredTrades: measured.length,
+      losingTrades: losers.length,
+      note: `${measured.length} closed trade(s) carry a measured stop — under ${MIN_STOP_PLACEMENT_SAMPLE}, a placement percentage would be noise`,
+    };
+  }
+
+  const insidePercent = round1((inside.length / measured.length) * 100);
+  const avoidablePercent =
+    losers.length === 0 ? 0 : round1((avoidable.length / losers.length) * 100);
+  return {
+    measuredTrades: measured.length,
+    losingTrades: losers.length,
+    stopsInsideNoiseFloorPercent: insidePercent,
+    avoidableStopPercent: avoidablePercent,
+    note:
+      insidePercent > 0
+        ? `${insidePercent}% of measured stops sat inside the noise floor at entry and ${avoidablePercent}% of the losses look avoidable — placement is the problem before the market is`
+        : `no measured stop sat inside the noise floor; ${avoidablePercent}% of losses look avoidable on the evidence recorded so far`,
   };
 }
 

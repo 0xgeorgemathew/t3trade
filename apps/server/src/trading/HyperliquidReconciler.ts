@@ -40,6 +40,7 @@ import {
   type PreviousPositionRow,
 } from "./TradingClosedTradeReview.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
+import { recordLevelEvent } from "./TradingLevelHistory.ts";
 
 /** The reconciler failed at a named stage. */
 export class TradingReconciliationError extends Schema.TaggedErrorClass<TradingReconciliationError>()(
@@ -1035,6 +1036,40 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
         position?.size ?? 0,
         observedAt,
       );
+
+      // Level memory (plan 27 B1): the two facts only the reconciler observes.
+      // The pass that first sees a position where none was is the entry, at
+      // the entry price; the pass that first sees it gone at a net loss is a
+      // stop-out at the exit price — the level a later turn must not re-arm
+      // without saying why. A losing exit is recorded as a stop-out whether
+      // the exchange stop or a close order did it: for level memory, "this
+      // level ended the trade against the thesis" is the fact that matters.
+      const wasFlat = previousPosition === null || previousPosition.size === 0;
+      const entryPrice = position?.entryPrice;
+      if (wasFlat && position !== null && position.size !== 0 && entryPrice != null) {
+        yield* recordLevelEvent({
+          missionId: input.missionId,
+          market: input.market,
+          level: entryPrice,
+          kind: "entered_at",
+          price: entryPrice,
+          occurredAt: observedAt,
+        });
+      }
+      if (
+        closedTrade !== null &&
+        closedTrade.netPnlUsd < 0 &&
+        closedTrade.exitPrice !== undefined
+      ) {
+        yield* recordLevelEvent({
+          missionId: input.missionId,
+          market: input.market,
+          level: closedTrade.exitPrice,
+          kind: "stopped_out_at",
+          price: closedTrade.exitPrice,
+          occurredAt: observedAt,
+        });
+      }
 
       // The periodic backstop runs every five seconds for as long as a position
       // is open, and says the same thing every time. That belongs at debug: the

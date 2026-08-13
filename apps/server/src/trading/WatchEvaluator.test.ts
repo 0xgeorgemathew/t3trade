@@ -104,7 +104,7 @@ const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   // `trading_orders` arrives in 038 (the `order_update` watch reads it) and
   // `peak_unrealised_pnl` in 045 (the `pnl_giveback` watch reads it).
-  yield* runMigrations({ toMigrationInclusive: 52 });
+  yield* runMigrations({ toMigrationInclusive: 60 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
@@ -225,6 +225,7 @@ const seed = (watch: MarketWatch) =>
         reentryConditions: [],
         currentAction: "waiting",
         explanation: "wait for the 5m close above 3000",
+        plainSummary: "ETH is pushing higher; I plan to buy once it breaks out.",
       },
     });
     if (published.outcome !== "accepted") throw new Error("seed publish rejected");

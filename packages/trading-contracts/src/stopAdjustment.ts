@@ -111,6 +111,25 @@ export interface StopAdjustmentPolicyInput {
   readonly adjustmentsThisPosition: number;
 }
 
+/**
+ * The closest a stop may sit to the price it is measured against.
+ *
+ * `max(2x half-spread, 0.35x ATR)`: any closer and the stop is inside the
+ * market's own noise — not protection, a scheduled exit. One function because
+ * two callers enforce it, the adjustment policy and the entry quote, and the
+ * rule drifting between them is exactly the failure a shared constant table
+ * exists to prevent.
+ */
+export function stopNoiseFloorUsd(input: {
+  readonly halfSpreadUsd: number;
+  readonly atrUsd: number;
+}): number {
+  return Math.max(
+    STOP_ADJUSTMENT_LIMITS.noiseFloorHalfSpreadMultiple * Math.max(0, input.halfSpreadUsd),
+    STOP_ADJUSTMENT_LIMITS.noiseFloorAtrMultiple * Math.max(0, input.atrUsd),
+  );
+}
+
 /** The planned loss if the position stopped out at `stopPrice`. */
 export function plannedLossAtStopUsd(input: {
   readonly positionSize: number;
@@ -192,10 +211,10 @@ export function checkStopAdjustment(
   // 5. Never choke the trade: the stop has to sit outside the market's own
   // noise, or it is not protection, it is a scheduled exit.
   const newDistance = Math.abs(input.markPrice - input.newStopPrice);
-  const noiseFloor = Math.max(
-    STOP_ADJUSTMENT_LIMITS.noiseFloorHalfSpreadMultiple * input.halfSpreadUsd,
-    STOP_ADJUSTMENT_LIMITS.noiseFloorAtrMultiple * input.serverAtrUsd,
-  );
+  const noiseFloor = stopNoiseFloorUsd({
+    halfSpreadUsd: input.halfSpreadUsd,
+    atrUsd: input.serverAtrUsd,
+  });
   if (newDistance < noiseFloor - PRICE_EPSILON) return "noise_floor";
 
   // 6. And it may not be dragged more than halfway from entry to target. Past
@@ -251,6 +270,29 @@ export const STOP_PROXIMITY_ATR_MULTIPLE = 1;
  * would already be through the mark — a watch that was true before it was
  * written is not coverage, it is an immediate wake.
  */
+/**
+ * How far toward the planned stop loss the decision wake sits, as a fraction.
+ *
+ * Plan 27 G4: the wake fires at ~70% of the way to the stop, not AT it, so
+ * the turn it buys can still choose — thesis broken (exit better than the
+ * stop), or noise (hold, or tighten legally). The exchange stop stays resting
+ * as the backstop either way.
+ */
+export const STOP_DECISION_WAKE_FRACTION = 0.7;
+
+/**
+ * The unrealised-PnL level to arm the `pnl_below` decision wake at, for a
+ * position whose stop-out would lose `plannedLossAtStopUsd`.
+ *
+ * Null when the stop cannot lose anything — at or past breakeven the losing
+ * side is covered by the ratchet, and a wake at zero would fire on every
+ * flat tick.
+ */
+export function stopDecisionWakePnlUsd(plannedLossAtStopUsd: number): number | null {
+  if (!(plannedLossAtStopUsd > 0)) return null;
+  return -STOP_DECISION_WAKE_FRACTION * plannedLossAtStopUsd;
+}
+
 export function stopProximityWatchLevel(input: {
   readonly positionSize: number;
   readonly stopPrice: number;

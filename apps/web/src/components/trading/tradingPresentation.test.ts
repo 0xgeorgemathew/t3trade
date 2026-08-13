@@ -986,6 +986,52 @@ describe("deriveStrategyPlan", () => {
     expect(deriveStrategyPlan(mission)?.modeLabel).toBe("breakout continuation");
   });
 
+  it("carries the plain summary when one was published, and null otherwise", () => {
+    const withSummary = deriveStrategyPlan({
+      strategyVersion: 1,
+      strategy: { ...strategy, plainSummary: "The market is climbing; I plan to buy a dip." },
+    })!;
+    expect(withSummary.plainSummary).toBe("The market is climbing; I plan to buy a dip.");
+
+    // Pre-plainSummary rows decode the field to "" — the card must fall back
+    // to the technical thesis, not render an empty headline.
+    const withEmpty = deriveStrategyPlan({
+      strategyVersion: 1,
+      strategy: { ...strategy, plainSummary: "  " },
+    })!;
+    expect(withEmpty.plainSummary).toBeNull();
+    expect(deriveStrategyPlan(mission)?.plainSummary).toBeNull();
+  });
+
+  it("renders considered alternatives as display lines and drops malformed rows", () => {
+    const plan = deriveStrategyPlan({
+      strategyVersion: 1,
+      strategy: {
+        ...strategy,
+        alternativesConsidered: [
+          {
+            strategy: "range_reversion",
+            direction: "short",
+            verdict: "fails_gates",
+            reason: "height 1.4x the break-even move",
+          },
+          {
+            strategy: "momentum_breakout",
+            direction: "none",
+            verdict: "no_setup",
+            reason: "no confirmed close",
+          },
+          { reason: "no strategy named" },
+        ],
+      },
+    })!;
+    expect(plan.alternatives).toEqual([
+      "range reversion short — fails gates: height 1.4x the break-even move",
+      "momentum breakout — no setup: no confirmed close",
+    ]);
+    expect(deriveStrategyPlan(mission)?.alternatives).toEqual([]);
+  });
+
   it("flattens entry conditions and abandonment into prose lists", () => {
     const plan = deriveStrategyPlan(mission)!;
     expect(plan.entryTriggers).toEqual(["1m candle closes above 1860", "mark reclaims the ema"]);

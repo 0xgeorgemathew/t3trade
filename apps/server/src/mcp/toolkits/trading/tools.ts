@@ -132,11 +132,12 @@ export const TradingGetMissionTool = Tool.make("trading_get_mission", {
 
 export const TradingPublishPlanTool = Tool.make("trading_publish_plan", {
   description:
-    "Publish the trading plan this mission runs against. " +
-    "`expectedVersion` from trading_get_mission (0 before any publish); stale rejected, accepted increments it. Publishing supersedes the PRIOR version's watches but NOT its resting orders — cancel those with trading_execute actionType `cancel`. " +
-    "`timeframes[0]` is the primary timeframe (name >=1). `protection.targetProfitUsd` + `protection.targetProfitBasis` REQUIRED, basis CHECKED: `(measuredMoveUsd / referencePrice) x positionNotionalUsd` within 5% of `targetProfitUsd`. Target must clear round-trip cost (trading_estimate_costs). A target-wake (runtime arms `pnl_above` at `targetProfitUsd`) is a DECISION POINT, not a close order. " +
-    "`mode`=free-text label. `missionId` optional. A DECLINED ENTRY STILL PUBLISHES with `standDownCode` naming the actual reason; set `insufficientVolatility: true` only for that reason. `targetProfitUsd`=the minimum viable target costs demanded, arithmetic in the rationale, armed conditions for what would change the read. No publish = no thesis, no levels, no wake. " +
-    "WAITING: give each trigger a `conditions[].priceLevel` AND arm it — prose wakes nothing (wakeups flag `unarmedEntryConditions`).",
+    "Publish the plan this mission runs against. " +
+    "`expectedVersion` from trading_get_mission (0 before any publish); stale rejected, accepted increments it. Accepted supersedes the PRIOR version's watches but NOT its resting orders (cancel via trading_execute `cancel`). " +
+    "`timeframes[0]` is the primary timeframe (name >=1). `protection.targetProfitUsd` + `protection.targetProfitBasis` REQUIRED, basis CHECKED: `(measuredMoveUsd / referencePrice) x positionNotionalUsd` within 5% of `targetProfitUsd`. Target must clear round-trip cost (trading_estimate_costs). The target-wake is a DECISION POINT, not a close order. " +
+    "`mode`=free-text label. `missionId` optional. A DECLINED ENTRY STILL PUBLISHES with `standDownCode` naming the actual reason; set `insufficientVolatility: true` only for that reason. `targetProfitUsd`=the minimum viable target the costs demanded. " +
+    "WAITING: give each trigger a `conditions[].priceLevel` AND arm it — prose wakes nothing (wakeups flag `unarmedEntryConditions`). " +
+    "`plainSummary` REQUIRED: 2-4 sentences a non-trader can follow (market, plan + direction, trigger, risk vs reward) — no tool/field names, no scores; it is the user's headline. `alternativesConsidered[]`: `{strategy, direction, verdict, reason}` per declined tournament candidate.",
   parameters: TradingPublishPlanInput,
   success: TradingPublishPlanResult,
   failure: TradingToolRejectedError,
@@ -228,9 +229,10 @@ export const TradingEstimateCostsTool = Tool.make("trading_estimate_costs", {
 
 export const TradingGetMarketStructureTool = Tool.make("trading_get_market_structure", {
   description:
-    "Directional structure across four timeframes (1m, 5m, 15m, 1h default), deterministic arithmetic over real candles. Per timeframe: `directionScore` (net/total travel, [-1,1]; thresholded at 0.15 into `direction`), `atrExpansionRatio` (last 14 bars' ATR / prior 14; >1 expanding), `lastImpulse` (last pivot-to-pivot leg: `sizeUsd`, `ageBars`) with `impulseIsFresh` (ended within 5 bars), `pullbackDepthUsd`/`pullbackPercentOfImpulse`, `distanceToSwingHighUsd`/`distanceToSwingLowUsd` signed from last close. `sufficientData` false under 30 bars. " +
-    "SETUP EVIDENCE, measured not asserted: `positionInRangePercent` (0 floor/100 ceiling); `rangeStabilityPercent` (height moved this % between window halves; under 30 is stable); `swingHighTouches`/`swingLowTouches` (bars within 0.2xATR of the level; 2+ = a tested boundary); `breakout` (`closedBeyond`=a real break, `wickOnly`=through the level and closed back inside, NOT a break). " +
-    "`setups[]` scores those into candidates, best first: `kind`, `direction`, `level` to arm, `score` 0-1, `closeConfirmed` (TRUE=arm a `candle_close`; FALSE, range boundaries=a `price_cross`). Evidence, not permission. `alignment.direction` `mixed` is a TRANSITION to name and arm both sides of, not a veto.",
+    "Directional structure across 1m/5m/15m/1h. Per timeframe: `directionScore` ([-1,1] net/total travel), `recentDirectionScore` (last 30 bars; turns first in a grind), `pivotTrend` (trailing pivot runs; 2+ one way is trend structure), `atrExpansionRatio` (>1 expanding), `lastImpulse`/`impulseIsFresh`; `sufficientData` false under 30 bars. `alignment` says whether the timeframes agree. " +
+    "Also: `positionInRangePercent`, `rangeStabilityPercent` (under 30 stable), `swingHighDriftUsd`/`swingLowDriftUsd` (bounds sliding one way = a grind, not a range), `excursionSymmetryRatio` (~1 paid both sides), touch counts, `breakout` (`closedBeyond` is a break; `wickOnly` is not). " +
+    "`regime` applies the classify playbook: trending/ranging/transition, `evidence[]`, `conflicts[]` (non-empty = a transition beginning); overrule only against the named evidence. " +
+    "`setups[]`: scored candidates, best first — `level` to arm, `closeConfirmed` (TRUE=`candle_close`, FALSE=`price_cross`), kinds incl. `trend_continuation` (close-confirmed at the pullback extreme). `candidates[]` joins each setup with its playbook's cost gate at the live book (`costMultiple` vs `requiredCostMultiple`, `clearsCostGate`, `distanceToTriggerUsd`); absent cost fields mean unknown, not free. Evidence, never permission.",
   parameters: TradingGetMarketStructureInput,
   success: MarketStructure,
   failure: TradingToolRejectedError,
@@ -382,8 +384,9 @@ export const TradingQuoteEntryTool = Tool.make("trading_quote_entry", {
   description:
     "Price and size one entry, then execute it with `trading_execute { quoteId }` — the ONLY thing you need to build an entry. " +
     "You give `market`, `side` (buy=long, sell=short), `stopPrice` (on the LOSING side), and optionally `sizeEth` or `notionalUsd`. The SERVER derives strategyVersion, authorityVersion, the lease-owning run, executionSequence, a crossing `limitPrice` off the live BBO, `szDecimals` precision, `plannedLossAtStopUsd`, and the largest size inside every ceiling — then runs the SAME §16.3 preview `trading_execute` will run. " +
-    "Omit the size and you get the maximum feasible one, which is the honest upper bound to size DOWN from, not the size to trade. Ask for too much and you get a SMALLER quote plus `constrainedBy` (`gross_notional`, `leverage`, `planned_loss_ceiling`, `loss_budget`) rather than a refusal — take it or re-quote. " +
-    "`outcome: refused` carries the preview item that refused it and `feasibleSize`. Quotes expire in 90s and are single-purpose: executing one twice returns the SAME execution (same sequence, same cloid), and an expired one tells you to re-quote. Nothing is reserved or signed by quoting.",
+    "Omit the size and you get the maximum feasible one — an upper bound to size DOWN from, not the size to trade. Too much gets a SMALLER quote plus `constrainedBy` (`gross_notional`, `leverage`, `planned_loss_ceiling`, `loss_budget`) — take it or re-quote. " +
+    "`outcome: refused` carries the preview item that refused it and `feasibleSize`. Quotes expire in 90s and are single-purpose: executing one twice returns the SAME execution (same sequence, same cloid). Nothing is reserved or signed by quoting. " +
+    "`stopPrice` must clear the noise floor — max(2x half-spread, 0.35x ATR), trading_adjust_stop's rule — or the quote refuses (`stop_inside_noise_floor`). Anchor the stop beyond the level that invalidates the thesis.",
   parameters: TradingQuoteEntryInput,
   success: TradingQuoteEntryResult,
   failure: TradingToolRejectedError,
@@ -429,7 +432,7 @@ export const TradingGetPlaybookTool = Tool.make("trading_get_playbook", {
 export const TradingAdjustStopTool = Tool.make("trading_adjust_stop", {
   description:
     "Move the stop on an open position, inside the policy — prefer this over trading_execute `modify_stop`, which is unbounded. Same place-and-confirm-before-cancel path. " +
-    "The server measures the position, the RESTING stop, mark, half-spread and its own ATR (primary timeframe), then checks: risk never past the entry's approved stop (`risk_envelope`); step <= min(0.5xATR, 25% of stop distance) (`step_too_large`); your `observedAtrUsd` within 30% of the server's (`atr_mismatch`); stop outside max(2xhalf-spread, 0.35xATR) (`noise_floor`) and no further than halfway from entry to target (`target_encroachment`); a stop past entry never crosses back (`breakeven_ratchet`); 1 per 3 bars, 8 per position (`adjustment_budget`). Plus `wrong_side`, `no_position`, `no_resting_stop`, `stale_strategy_version`, `market_data_unavailable`, `replacement_failed`. " +
+    "The server measures the position, the RESTING stop, mark, half-spread and its own ATR (primary timeframe), then checks: risk never past the entry's approved stop (`risk_envelope`); step <= min(0.5xATR, 25% of stop distance) (`step_too_large`); your `observedAtrUsd` within 30% of the server's (`atr_mismatch`); stop outside max(2xhalf-spread, 0.35xATR) (`noise_floor` — the same shared rule trading_quote_entry enforces at entry) and no further than halfway from entry to target (`target_encroachment`); a stop past entry never crosses back (`breakeven_ratchet`); 1 per 3 bars, 8 per position (`adjustment_budget`). Plus `wrong_side`, `no_position`, `no_resting_stop`, `stale_strategy_version`, `market_data_unavailable`, `replacement_failed`. " +
     "Refused leaves the resting stop untouched. Adjusted returns `previousStop`, `newStop`, `stopDistanceUsd`, `plannedLossAtStopUsd`, `remainingAdjustments`. The server allocates the execution sequence, authority version, and lease-owning run after the policy accepts.",
   parameters: TradingAdjustStopInput,
   success: TradingAdjustStopResult,

@@ -28,7 +28,7 @@ import {
   type TradingDecisionOutcome,
   type TradingRunFacts,
 } from "@t3tools/trading-contracts/decision";
-import { assessEnrichment } from "@t3tools/trading-contracts/policy";
+import { assessEnrichment, assessEntryGovernance } from "@t3tools/trading-contracts/policy";
 import {
   TRADING_ADJUST_STOP_TOOL,
   TRADING_EXECUTE_TOOL,
@@ -412,6 +412,49 @@ export const readDecisionFunnel = (sql: Sql, input?: { readonly missionId?: stri
  * that question asked of the funnel the runs already write, so the answer comes
  * from the record rather than from an intuition about it.
  */
+/**
+ * Wins and losses split by whether a scored setup was behind the entry, and
+ * losses attributed to the regime read in force at entry — plan 27 C2/C3.
+ *
+ * Each closed trade is joined to the newest consumed `open` quote at or
+ * before the moment the position opened; the quote row carries the C1
+ * snapshot (`setup_kind_at_entry`, `regime_at_entry`). A trade with no
+ * joinable quote counts as unscored with an unrecorded regime — an entry the
+ * governance record cannot explain is exactly what the split exists to count.
+ */
+export const readEntryGovernance = (sql: Sql, input?: { readonly missionId?: string }) =>
+  Effect.gen(function* () {
+    const missionId = input?.missionId ?? null;
+    const rows = yield* sql<{
+      readonly net_pnl: number;
+      readonly setup_kind_at_entry: string | null;
+      readonly regime_at_entry: string | null;
+    }>`
+      SELECT t.net_pnl,
+             q.setup_kind_at_entry,
+             q.regime_at_entry
+      FROM trading_closed_trades t
+      LEFT JOIN trading_entry_quotes q ON q.quote_id = (
+        SELECT q2.quote_id FROM trading_entry_quotes q2
+        WHERE q2.mission_id = t.mission_id
+          AND q2.action_type = 'open'
+          AND q2.consumed_at IS NOT NULL
+          AND q2.consumed_at <= t.opened_at + 60000
+        ORDER BY q2.consumed_at DESC
+        LIMIT 1
+      )
+      WHERE (${missionId} IS NULL OR t.mission_id = ${missionId})
+    `;
+    return assessEntryGovernance(
+      rows.map((row) => ({
+        scoredSetupBehindIt: row.setup_kind_at_entry !== null,
+        setupKindAtEntry: row.setup_kind_at_entry,
+        regimeAtEntry: row.regime_at_entry,
+        netPnlUsd: row.net_pnl,
+      })),
+    );
+  });
+
 export const readEnrichmentEvidence = (sql: Sql, input?: { readonly missionId?: string }) =>
   readDecisionFunnel(sql, input).pipe(
     Effect.map((rows) =>

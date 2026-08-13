@@ -79,6 +79,60 @@ export function describeArmedWatch(persisted: PersistedWatch, markPrice: number)
 }
 
 /**
+ * What one price level has already done to this mission - plan 27 B1.
+ *
+ * Written by the runtime at the seams that observe each fact (watch
+ * registration, the watch evaluator's candle and price sweeps, the fill
+ * reconciler) and surfaced back on the wakeup, bounded, so the level a run is
+ * about to arm carries its own record: how often it was touched, how often a
+ * break at it failed, and whether this mission has already entered or been
+ * stopped out there. Events are grouped into levels with an ATR-scaled
+ * tolerance at read time, so 1899.7 and 1900.2 are one level, not two.
+ */
+export const LevelEventKind = Schema.Literals([
+  "armed",
+  "touched",
+  "wick_rejected",
+  "closed_through",
+  "entered_at",
+  "stopped_out_at",
+]);
+export type LevelEventKind = typeof LevelEventKind.Type;
+
+export const LevelHistoryEntry = Schema.Struct({
+  /** The representative price of the grouped level. */
+  level: Schema.Number,
+  armed: Schema.Number,
+  touched: Schema.Number,
+  /** Bars that traded through the level and closed back inside — failed breaks. */
+  wickRejected: Schema.Number,
+  closedThrough: Schema.Number,
+  entries: Schema.Number,
+  stopOuts: Schema.Number,
+  lastEventKind: LevelEventKind,
+  lastEventAt: UnixMillis,
+});
+export type LevelHistoryEntry = typeof LevelHistoryEntry.Type;
+
+/**
+ * The previous market-structure read, echoed back - plan 27 B2.
+ *
+ * A mission re-derives its regime and its boundaries from scratch every wake,
+ * which is how a boundary quietly redrawn lower on three consecutive reads
+ * looked like three fresh ranges instead of one trend. The echo is the last
+ * `trading_get_market_structure` read this mission made: its regime verdict
+ * and the primary timeframe's swing bounds, with how old that read is.
+ */
+export const PreviousStructureRead = Schema.Struct({
+  interval: TradingTimeframe,
+  classification: Schema.Literals(["trending", "ranging", "transition"]),
+  swingHighUsd: Schema.optional(Schema.Number),
+  swingLowUsd: Schema.optional(Schema.Number),
+  readAgeMillis: Schema.Number,
+});
+export type PreviousStructureRead = typeof PreviousStructureRead.Type;
+
+/**
  * The authoritative mission snapshot a resumed run starts with - spec §12.2.
  *
  * The harness does not receive unbounded market data or a free-form prompt. It
@@ -234,6 +288,32 @@ export const TradingHarnessWakeup = Schema.Struct({
    * declared confirmation matches what is armed.
    */
   misarmedEntryConditions: Schema.optional(Schema.Array(MisarmedEntryCondition)),
+  /**
+   * What the levels near the mark have already done to this mission — plan 27
+   * B1. Bounded to the levels nearest the current mark. Absent when the
+   * mission has no recorded level events yet.
+   *
+   * Read it before arming or entering at a level: two `closedThrough` events
+   * or a `stopOuts` entry at a boundary is the range failing there, recorded,
+   * and re-arming it without saying why is how the same trap is taken twice.
+   */
+  levelHistory: Schema.optional(Schema.Array(LevelHistoryEntry)),
+  /**
+   * True while the open position's entry was quoted with NO scored setup
+   * behind it — plan 27 C2. Present only while a position is open. Not a
+   * verdict on the trade; it is the flag the closing review reads when it
+   * asks whether disciplined entries and undisciplined ones pay differently.
+   */
+  enteredWithoutScoredSetup: Schema.optional(Schema.Boolean),
+  /**
+   * The mission's previous market-structure read — plan 27 B2. Absent until
+   * the mission has called `trading_get_market_structure` once.
+   *
+   * Compare before re-classifying: a boundary re-drawn in the same direction
+   * as the last read, or a regime that was `transition` last read, is memory
+   * the fresh read alone cannot carry.
+   */
+  previousStructureRead: Schema.optional(PreviousStructureRead),
   /**
    * The user's mandate: hard rails, fixed for the life of the mission. Sized
    * from the account value when the mission was created and deliberately not

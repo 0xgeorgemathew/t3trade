@@ -40,7 +40,7 @@ const candleCloseWatch: MarketWatch = {
 /** Shared in-memory database; each test migrates then truncates the trading tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 52 });
+  yield* runMigrations({ toMigrationInclusive: 60 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
@@ -101,6 +101,7 @@ const seedMission = Effect.gen(function* () {
       reentryConditions: [],
       currentAction: "waiting",
       explanation: "wait for the 5m close above 3000",
+      plainSummary: "ETH is pushing higher; I plan to buy once it breaks out.",
     },
   });
   if (published.outcome !== "accepted") {

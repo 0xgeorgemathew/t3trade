@@ -999,6 +999,18 @@ export interface StrategyPlan {
   readonly version: number;
   /** The free-text mode label, humanized for display. */
   readonly modeLabel: string;
+  /**
+   * The plan in plain language — the headline a non-trader reads. Null on
+   * strategies published before the field existed (or decoded to ""); the
+   * card falls back to the technical thesis.
+   */
+  readonly plainSummary: string | null;
+  /**
+   * The tournament's other candidates, one render-ready line each:
+   * "range_reversion short — fails gates: height 1.4x the break-even move".
+   * Empty when the publish recorded none.
+   */
+  readonly alternatives: ReadonlyArray<string>;
   readonly thesis: string | null;
   readonly regime: string | null;
   /** Each entry condition's prose description; empty when none were published. */
@@ -1047,6 +1059,28 @@ export interface StrategyPlan {
  * union, so a structural guard is what reaches `.description` safely. Anything
  * the guard rejects returns null rather than a guess.
  */
+/**
+ * One considered alternative as a display line, or null on a malformed row.
+ *
+ * Structural like {@link readConditionDescription}: the contract type is never
+ * imported, so a row with extra fields still renders and one missing the
+ * basics is dropped rather than guessed at.
+ */
+function readAlternativeLine(alternative: unknown): string | null {
+  if (typeof alternative !== "object" || alternative === null) return null;
+  const row = alternative as {
+    readonly strategy?: unknown;
+    readonly direction?: unknown;
+    readonly verdict?: unknown;
+    readonly reason?: unknown;
+  };
+  if (typeof row.strategy !== "string" || typeof row.reason !== "string") return null;
+  const direction =
+    typeof row.direction === "string" && row.direction !== "none" ? ` ${row.direction}` : "";
+  const verdict = typeof row.verdict === "string" ? ` — ${humanizeLiteral(row.verdict)}` : "";
+  return `${humanizeLiteral(row.strategy)}${direction}${verdict}: ${row.reason}`;
+}
+
 function readConditionDescription(condition: unknown): string | null {
   if (typeof condition !== "object" || condition === null) return null;
   if (!("description" in condition)) return null;
@@ -1066,6 +1100,8 @@ export function deriveStrategyPlan(mission: {
   readonly strategy: {
     readonly mode: string;
     readonly timeframes: ReadonlyArray<string>;
+    readonly plainSummary?: string | undefined;
+    readonly alternativesConsidered?: ReadonlyArray<unknown> | undefined;
     readonly belief: {
       readonly summary: string;
       readonly regime: string;
@@ -1129,9 +1165,15 @@ export function deriveStrategyPlan(mission: {
               : `${basisStruct.historicalHitRatePercent}%`,
         };
 
+  const plainSummary = strategy.plainSummary?.trim() ?? "";
+
   return {
     version: mission.strategyVersion,
     modeLabel: humanizeLiteral(strategy.mode),
+    plainSummary: plainSummary === "" ? null : plainSummary,
+    alternatives: (strategy.alternativesConsidered ?? [])
+      .map(readAlternativeLine)
+      .filter((value): value is string => value !== null),
     thesis: strategy.belief?.summary ?? null,
     regime: strategy.belief?.regime ?? null,
     entryTriggers,

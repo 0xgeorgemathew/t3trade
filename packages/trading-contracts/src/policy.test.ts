@@ -16,6 +16,7 @@ import { PLAYBOOKS } from "./playbook.ts";
 import {
   ACTIVE_TRADING_POLICY,
   assessEnrichment,
+  assessEntryGovernance,
   MIN_ENRICHMENT_SAMPLE_RUNS,
   TRADING_POLICY_V1,
 } from "./policy.ts";
@@ -127,5 +128,55 @@ describe("assessEnrichment", () => {
     expect(verdict.warranted).toBe(false);
     expect(verdict.sampleRuns).toBe(0);
     expect(verdict.reason).toContain(String(MIN_ENRICHMENT_SAMPLE_RUNS));
+  });
+});
+
+describe("assessEntryGovernance", () => {
+  const trade = (input: {
+    readonly scored: boolean;
+    readonly regime: string | null;
+    readonly net: number;
+  }) => ({
+    scoredSetupBehindIt: input.scored,
+    setupKindAtEntry: input.scored ? "range_reversion" : null,
+    regimeAtEntry: input.regime,
+    netPnlUsd: input.net,
+  });
+
+  it("splits wins and losses by whether a scored setup was behind the entry", () => {
+    const evidence = assessEntryGovernance([
+      trade({ scored: true, regime: "ranging", net: 4 }),
+      trade({ scored: true, regime: "ranging", net: -2 }),
+      trade({ scored: false, regime: "transition", net: -6 }),
+      trade({ scored: false, regime: null, net: -3 }),
+    ]);
+
+    expect(evidence.scored).toEqual({ trades: 2, wins: 1, losses: 1, netUsd: 2 });
+    expect(evidence.unscored).toEqual({ trades: 2, wins: 0, losses: 2, netUsd: -9 });
+  });
+
+  it("attributes losses to the regime read in force at entry, worst first", () => {
+    const evidence = assessEntryGovernance([
+      trade({ scored: true, regime: "ranging", net: -10 }),
+      trade({ scored: true, regime: "ranging", net: -5 }),
+      trade({ scored: true, regime: "trending", net: 8 }),
+      trade({ scored: false, regime: null, net: -1 }),
+    ]);
+
+    expect(evidence.lossesByRegime[0]).toEqual({
+      regime: "ranging",
+      trades: 2,
+      losses: 2,
+      netUsd: -15,
+    });
+    expect(evidence.reason).toContain("ranging");
+  });
+
+  it("admits an empty record instead of inventing a split", () => {
+    const evidence = assessEntryGovernance([]);
+    expect(evidence.scored.trades).toBe(0);
+    expect(evidence.unscored.trades).toBe(0);
+    expect(evidence.lossesByRegime).toEqual([]);
+    expect(evidence.reason).toContain("nothing to say");
   });
 });

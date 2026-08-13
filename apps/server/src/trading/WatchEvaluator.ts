@@ -45,6 +45,7 @@ import { type PersistenceSqlError } from "../persistence/Errors.ts";
 import type { PersistedWatch } from "./Schemas.ts";
 import { TradingMarket, TradingTimeframe } from "./Schemas.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
+import { recordLevelEvent } from "./TradingLevelHistory.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
@@ -136,11 +137,15 @@ const field = (data: unknown, key: string): unknown => {
   return (data as Record<string, unknown>)[key];
 };
 
-/** One delivered candle, reduced to the three fields finality and matching need. */
+/** One delivered candle, reduced to the fields finality, matching, and the
+ * level ledger's wick test need. `high`/`low` may be absent on a malformed
+ * frame; the wick test simply stays silent then. */
 interface DeliveredCandle {
   readonly openTime: number;
   readonly closeTime: number;
   readonly close: number;
+  readonly high?: number | undefined;
+  readonly low?: number | undefined;
 }
 
 /**
@@ -154,7 +159,13 @@ const candleFromDelivery = (delivery: WsDelivery): DeliveredCandle | undefined =
   const closeTime = num(field(candle, "T"));
   const close = num(field(candle, "c"));
   if (openTime === undefined || closeTime === undefined || close === undefined) return undefined;
-  return { openTime, closeTime, close };
+  return {
+    openTime,
+    closeTime,
+    close,
+    high: num(field(candle, "h")),
+    low: num(field(candle, "l")),
+  };
 };
 
 const make = Effect.gen(function* () {
@@ -307,6 +318,26 @@ const make = Effect.gen(function* () {
 
       const matched =
         watch.direction === "above" ? candle.close >= watch.price : candle.close <= watch.price;
+
+      // Level memory (plan 27 B1): a final candle either closed through the
+      // armed level, wicked through it and closed back inside (the failed
+      // break both playbooks turn on), or never reached it. The first two are
+      // facts worth remembering at this level; recording them here is what
+      // lets a later turn see "this boundary already broke twice".
+      const wicked =
+        watch.direction === "above"
+          ? candle.high !== undefined && candle.high > watch.price
+          : candle.low !== undefined && candle.low < watch.price;
+      if (matched || wicked) {
+        yield* recordLevelEvent({
+          missionId: tracked.missionId,
+          market: watch.market,
+          level: watch.price,
+          kind: matched ? "closed_through" : "wick_rejected",
+          price: candle.close,
+          occurredAt: candle.closeTime,
+        }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      }
       if (!matched) return;
 
       yield* enqueueFire(
@@ -338,6 +369,17 @@ const make = Effect.gen(function* () {
     const matched =
       watch.direction === "above" ? reference >= watch.price : reference <= watch.price;
     if (!matched) return;
+
+    // Level memory (plan 27 B1): a price-cross firing is the market touching
+    // the armed level. Recorded once — the fire consumes the watch.
+    yield* recordLevelEvent({
+      missionId: tracked.missionId,
+      market: watch.market,
+      level: watch.price,
+      kind: "touched",
+      price: reference,
+      occurredAt: observedAt,
+    }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
 
     yield* enqueueFire(
       tracked,

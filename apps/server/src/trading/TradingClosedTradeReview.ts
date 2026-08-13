@@ -17,6 +17,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import type { ClosedTradeReview } from "@t3tools/trading-contracts/history";
+import { stopNoiseFloorUsd } from "@t3tools/trading-contracts/stop-adjustment";
 
 /**
  * The snapshot row as it stood before the closing pass overwrote it.
@@ -45,6 +46,47 @@ interface StrategyRow {
   readonly strategy_version: number;
   readonly target_profit_usd: number | null;
 }
+
+/** The entry quote that opened the trade — where its stop sat, and against what market. */
+interface EntryQuoteRow {
+  readonly stop_price: number;
+  readonly atr_usd_at_entry: number | null;
+  readonly best_bid: number;
+  readonly best_ask: number;
+}
+
+/**
+ * Stop distance at entry in USD, ATRs, and noise-floor multiples — plan 27 G1.
+ *
+ * All read off the entry quote: the stop the entry was approved with, the ATR
+ * the server measured then, and the spread it was quoted against. Empty when
+ * any leg is missing; a partial measurement would grade the stop against a
+ * floor that was never computed.
+ */
+const measureStopAtEntry = (
+  quote: EntryQuoteRow | undefined,
+  entryPrice: number | null,
+): Partial<
+  Pick<
+    ClosedTradeReview,
+    "stopPriceAtEntry" | "stopDistanceUsd" | "stopDistanceAtrMultiple" | "stopNoiseFloorMultiple"
+  >
+> => {
+  if (quote === undefined || entryPrice === null || entryPrice <= 0) return {};
+  if (!(quote.stop_price > 0)) return {};
+  const distance = Math.abs(entryPrice - quote.stop_price);
+  const atr = quote.atr_usd_at_entry;
+  const floor = stopNoiseFloorUsd({
+    halfSpreadUsd: Math.max(0, (quote.best_ask - quote.best_bid) / 2),
+    atrUsd: atr ?? 0,
+  });
+  return {
+    stopPriceAtEntry: quote.stop_price,
+    stopDistanceUsd: distance,
+    ...(atr !== null && atr > 0 ? { stopDistanceAtrMultiple: distance / atr } : {}),
+    ...(floor > 0 ? { stopNoiseFloorMultiple: distance / floor } : {}),
+  };
+};
 
 /**
  * Build the review, or return null when there is nothing to review.
@@ -84,6 +126,19 @@ export const buildClosedTradeReview = (input: {
       FROM trading_fills
       WHERE mission_id = ${input.missionId} AND market = ${input.market}
         AND traded_at >= ${openedAt} AND side = ${closingSide}
+    `;
+    // The quote that opened this trade: the newest consumed open quote cut at
+    // or shortly before the position was first observed. Same join the entry
+    // governance read uses; a minute of slack covers the gap between consume
+    // and the snapshot pass that observed the fill.
+    const entryQuotes = yield* sql<EntryQuoteRow>`
+      SELECT stop_price, atr_usd_at_entry, best_bid, best_ask
+      FROM trading_entry_quotes
+      WHERE mission_id = ${input.missionId} AND market = ${input.market}
+        AND action_type = 'open' AND consumed_at IS NOT NULL
+        AND consumed_at <= ${openedAt + 60_000}
+      ORDER BY consumed_at DESC
+      LIMIT 1
     `;
     const strategies = yield* sql<StrategyRow>`
       SELECT v.version AS strategy_version,
@@ -127,6 +182,7 @@ export const buildClosedTradeReview = (input: {
       ...(strategy?.target_profit_usd == null
         ? {}
         : { targetProfitUsd: strategy.target_profit_usd }),
+      ...measureStopAtEntry(entryQuotes[0], previous.entry_price),
     } satisfies ClosedTradeReview;
   }).pipe(
     // A review is commentary on a trade that is already over. Failing the whole
@@ -157,7 +213,9 @@ export const persistClosedTradeReview = (
         mission_id, market, opened_at, closed_at, hold_millis, direction, size,
         entry_price, exit_price, realized_pnl, fees_paid, net_pnl,
         peak_unrealised_pnl, trough_unrealised_pnl, giveback_from_peak,
-        fill_count, strategy_version, target_profit_usd
+        fill_count, strategy_version, target_profit_usd,
+        stop_price_at_entry, stop_distance_usd, stop_distance_atr_multiple,
+        stop_noise_floor_multiple
       ) VALUES (
         ${review.missionId}, ${review.market}, ${review.openedAt}, ${review.closedAt},
         ${review.holdMillis}, ${review.direction}, ${review.sizeEth},
@@ -165,7 +223,9 @@ export const persistClosedTradeReview = (
         ${review.realizedPnlUsd}, ${review.feesPaidUsd}, ${review.netPnlUsd},
         ${review.peakUnrealisedPnlUsd}, ${review.worstUnrealisedPnlUsd},
         ${review.givebackFromPeakUsd}, ${review.fillCount},
-        ${review.strategyVersion ?? null}, ${review.targetProfitUsd ?? null}
+        ${review.strategyVersion ?? null}, ${review.targetProfitUsd ?? null},
+        ${review.stopPriceAtEntry ?? null}, ${review.stopDistanceUsd ?? null},
+        ${review.stopDistanceAtrMultiple ?? null}, ${review.stopNoiseFloorMultiple ?? null}
       )
       ON CONFLICT(mission_id, closed_at) DO UPDATE SET
         realized_pnl = ${review.realizedPnlUsd}, fees_paid = ${review.feesPaidUsd},

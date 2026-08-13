@@ -21,7 +21,11 @@ import type { OrchestrationEvent, ThreadId } from "@t3tools/contracts";
 import { CommandId, TradingMissionId } from "@t3tools/contracts";
 import type { TradingMissionStatus, TradingProvider } from "@t3tools/trading-contracts";
 import type { TradingMarket } from "@t3tools/trading-contracts/primitives";
-import { stopProximityWatchLevel } from "@t3tools/trading-contracts/stop-adjustment";
+import {
+  plannedLossAtStopUsd,
+  stopDecisionWakePnlUsd,
+  stopProximityWatchLevel,
+} from "@t3tools/trading-contracts/stop-adjustment";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 import { POC_DEFAULT_TIMEFRAME, TradingTimeframe } from "@t3tools/trading-contracts/strategy";
 import { PENDING_EXECUTION_STATUSES } from "@t3tools/trading-contracts/execution";
@@ -740,7 +744,8 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Arm — or re-level — the stop-proximity watch (plan 24 §5.4).
+   * Arm — or re-level — the stop-proximity watch (plan 24 §5.4) and the
+   * stop-decision wake (plan 27 G4).
    *
    * The stop is the point where the exchange takes the decision. This is the
    * wake one ATR before that, so the decision is still the harness's: tighten
@@ -769,8 +774,9 @@ const make = Effect.gen(function* () {
       const positions = yield* sql<{
         readonly size: number;
         readonly mark_px: number | null;
+        readonly entry_price: number | null;
       }>`
-        SELECT size, mark_px FROM trading_position_snapshots
+        SELECT size, mark_px, entry_price FROM trading_position_snapshots
         WHERE mission_id = ${missionId} AND market = ${market} AND size != 0
       `;
       const position = positions[0];
@@ -798,6 +804,49 @@ const make = Effect.gen(function* () {
         candles: history.candles,
         measuredAt: history.freshness.observedAt,
       });
+
+      // Plan 27 G4: the decision wake at ~70% of the way to the stop, as
+      // unrealised PnL. The price-anchored proximity watch below goes silent
+      // when the stop sits under one ATR away; this one always has a level
+      // while the stop can still lose. One per mission, following the stop
+      // that actually rests.
+      const existingDecision = yield* sql<{ readonly watch_id: string }>`
+        SELECT watch_id FROM trading_watches
+        WHERE mission_id = ${missionId} AND status = 'active' AND armed_reason = 'stop_decision'
+        ORDER BY created_at DESC
+      `;
+      const replacesDecision = existingDecision[0]?.watch_id;
+      const wakePnlUsd =
+        position.entry_price === null
+          ? null
+          : stopDecisionWakePnlUsd(
+              plannedLossAtStopUsd({
+                positionSize: position.size,
+                entryPrice: position.entry_price,
+                stopPrice,
+              }),
+            );
+      if (wakePnlUsd === null) {
+        // A stop at or past breakeven cannot lose; a wake about losing to it
+        // has nothing to ask.
+        if (replacesDecision !== undefined) {
+          yield* watches.cancelWatch({ missionId, watchId: replacesDecision });
+        }
+      } else {
+        const decision = yield* watches.registerWatch({
+          missionId,
+          watch: { type: "pnl_below", market, valueUsd: wakePnlUsd },
+          armedReason: "stop_decision",
+          replacesWatchId: replacesDecision,
+        });
+        yield* Effect.logInfo("trading armed the stop-decision wake", {
+          missionId,
+          watchId: decision.watch.id,
+          stopPrice,
+          valueUsd: wakePnlUsd,
+          replaces: replacesDecision,
+        });
+      }
 
       const level = stopProximityWatchLevel({
         positionSize: position.size,

@@ -169,6 +169,7 @@ const rangeReversionStrategy: TradingPlanState = {
   reentryConditions: [],
   currentAction: "waiting",
   explanation: "Waiting for the floor.",
+  plainSummary: "Price is bouncing inside a band; I buy near the bottom and sell near the top.",
   updatedAt: 1_754_356_376_000,
 };
 

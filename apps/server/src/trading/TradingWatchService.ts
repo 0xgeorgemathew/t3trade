@@ -20,6 +20,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import { TradingMissionNotFoundError } from "./Errors.ts";
+import { recordLevelEvent } from "./TradingLevelHistory.ts";
 import { isActiveMissionStatus } from "./MissionTransitions.ts";
 import { WatchArmedReason } from "@t3tools/trading-contracts/watch";
 import {
@@ -221,6 +222,20 @@ const makeTradingWatchService = Effect.gen(function* () {
           }),
         )
         .pipe(Effect.mapError(sqlFail("register:replace")));
+
+      // Level memory (plan 27 B1): arming a price level is the first fact the
+      // level's history records. Only the two level-carrying watch types have
+      // a level to remember.
+      if (input.watch.type === "price_cross" || input.watch.type === "candle_close") {
+        yield* recordLevelEvent({
+          missionId: input.missionId,
+          market: input.watch.market,
+          level: input.watch.price,
+          kind: "armed",
+          price: input.watch.price,
+          occurredAt: now,
+        }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      }
 
       return {
         watch: {

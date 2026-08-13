@@ -107,6 +107,11 @@ export type PersistedWatchStatus = typeof PersistedWatchStatus.Type;
  * designed moment to decide the stop deliberately — tighten, hold, or exit —
  * before the exchange decides instead.
  *
+ * `stop_decision` means the runtime armed a `pnl_below` watch at ~70% of the
+ * planned loss at the resting stop. A wake from it asks one question — thesis
+ * broken, or noise? The answers are hold, tighten legally, or exit better
+ * than the stop; the exchange stop stays resting as the backstop.
+ *
  * `wake_retry` means this watch is a replacement for one that fired and was
  * consumed by a wake that then failed to reach the harness. The condition it
  * carries is the same one the harness armed; the reason records that the
@@ -117,6 +122,7 @@ export const WatchArmedReason = Schema.Literals([
   "profit_target",
   "wake_retry",
   "stop_proximity",
+  "stop_decision",
 ]);
 export type WatchArmedReason = typeof WatchArmedReason.Type;
 

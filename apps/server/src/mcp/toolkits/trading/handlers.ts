@@ -33,12 +33,14 @@ import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjust
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
 import { allocateExecutionSequence } from "../../../trading/TradingExecutionSequence.ts";
+import { recordStructureRead } from "../../../trading/TradingLevelHistory.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import type { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 import {
   analyseMomentum,
+  compareCandidates,
   MOMENTUM_LOOKBACK_BARS,
   MOMENTUM_TIMEFRAMES,
 } from "@t3tools/trading-contracts/momentum";
@@ -917,7 +919,7 @@ const handlers = {
   trading_get_market_structure: (input) =>
     Effect.gen(function* () {
       // Market data, not mission state: an unbound thread reads it too.
-      yield* resolveReadCall(input.missionId);
+      const { mission } = yield* resolveReadCall(input.missionId);
       const gateway = yield* HyperliquidGateway;
       const intervals = input.intervals ?? MOMENTUM_TIMEFRAMES;
       const maxBars = input.lookbackBars ?? MOMENTUM_LOOKBACK_BARS;
@@ -934,7 +936,7 @@ const handlers = {
         { concurrency: "unbounded" },
       ).pipe(Effect.orDie);
 
-      return analyseMomentum({
+      const structure = analyseMomentum({
         market: input.market,
         // The candles carry their own observation time, so the reading is
         // stamped with when the data was read rather than when this returned.
@@ -944,6 +946,55 @@ const handlers = {
           candles: history.candles,
         })),
       });
+
+      // Prior-read memory (plan 27 B2): keep this read's verdict and swing
+      // bounds per timeframe so the next wakeup can echo what the mission
+      // believed last time. Mission-bound reads only — an unbound thread has
+      // no mission to remember for.
+      if (mission !== null) {
+        yield* Effect.forEach(
+          structure.timeframes.filter((frame) => frame.sufficientData),
+          (frame) =>
+            recordStructureRead({
+              missionId: mission.id,
+              market: input.market,
+              interval: frame.interval,
+              classification: structure.regime.classification,
+              swingHigh: frame.swingHighPrice ?? null,
+              swingLow: frame.swingLowPrice ?? null,
+              measuredAt: structure.measuredAt,
+            }),
+        );
+      }
+
+      // The tournament table (plan 27 E1): each setup joined with its
+      // playbook's cost gate at the current book. The estimate is priced at
+      // the mission's allocated capital — the notional a real entry would be
+      // sized around — and its absence costs the multiples, never the read.
+      const cost =
+        mission === null
+          ? null
+          : yield* Effect.gen(function* () {
+              const missions = yield* TradingMissionService;
+              const masterAddress = yield* missions.getMasterWalletAddress(
+                mission.tradingAccountId,
+              );
+              const estimator = yield* TradingCostEstimator;
+              return yield* estimator.estimate({
+                market: input.market,
+                masterAddress,
+                notionalUsd: mission.authority.allocatedCapitalUsd,
+                fallbackTakerFeeBpsPerSide: mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
+              });
+            }).pipe(Effect.catchCause(() => Effect.succeed(null)));
+
+      return {
+        ...structure,
+        candidates: compareCandidates(
+          structure,
+          cost === null ? null : { breakEvenPriceMoveUsd: cost.breakEvenPriceMoveUsd },
+        ),
+      };
     }),
 
   trading_get_trade_history: (input) =>

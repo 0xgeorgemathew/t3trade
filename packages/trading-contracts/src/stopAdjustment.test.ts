@@ -11,6 +11,9 @@ import {
   checkStopAdjustment,
   plannedLossAtStopUsd,
   STOP_ADJUSTMENT_LIMITS,
+  STOP_DECISION_WAKE_FRACTION,
+  stopDecisionWakePnlUsd,
+  stopNoiseFloorUsd,
   stopProximityWatchLevel,
   type StopAdjustmentPolicyInput,
 } from "./stopAdjustment.ts";
@@ -271,5 +274,31 @@ describe("stopProximityWatchLevel", () => {
     expect(
       stopProximityWatchLevel({ positionSize: 0, stopPrice: 1_880, markPrice: 1_920, atrUsd: 10 }),
     ).toBeNull();
+  });
+});
+
+describe("stopNoiseFloorUsd", () => {
+  it("is the larger of the spread and ATR components", () => {
+    // 2 x 0.25 = 0.5 loses to 0.35 x 10 = 3.5.
+    expect(stopNoiseFloorUsd({ halfSpreadUsd: 0.25, atrUsd: 10 })).toBe(3.5);
+    // A wide book beats a quiet ATR: 2 x 3 = 6 over 0.35 x 2 = 0.7.
+    expect(stopNoiseFloorUsd({ halfSpreadUsd: 3, atrUsd: 2 })).toBe(6);
+  });
+
+  it("survives an unreadable component instead of going negative", () => {
+    expect(stopNoiseFloorUsd({ halfSpreadUsd: -1, atrUsd: 0 })).toBe(0);
+    expect(stopNoiseFloorUsd({ halfSpreadUsd: 0, atrUsd: 10 })).toBe(3.5);
+  });
+});
+
+describe("stopDecisionWakePnlUsd", () => {
+  it("sits ~70% of the way to the planned loss, on the losing side", () => {
+    expect(stopDecisionWakePnlUsd(20)).toBe(-STOP_DECISION_WAKE_FRACTION * 20);
+  });
+
+  it("arms nothing for a stop that cannot lose", () => {
+    // At or past breakeven the ratchet owns the losing side already.
+    expect(stopDecisionWakePnlUsd(0)).toBeNull();
+    expect(stopDecisionWakePnlUsd(-5)).toBeNull();
   });
 });

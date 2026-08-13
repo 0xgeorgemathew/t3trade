@@ -33,7 +33,8 @@ const MISSION = "mission_calibration";
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 47 });
+  // 60 adds the stop-placement columns the read now selects.
+  yield* runMigrations({ toMigrationInclusive: 60 });
   yield* sql`DELETE FROM trading_closed_trades`;
   yield* sql`DELETE FROM momentum_strategy_versions`;
 });

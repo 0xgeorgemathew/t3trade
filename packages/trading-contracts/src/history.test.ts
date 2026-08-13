@@ -67,6 +67,25 @@ describe("describeClosedTrade", () => {
     // And says nothing about a target the trade never had.
     assert.notInclude(describeClosedTrade(review()), "Published target");
   });
+
+  it("grades the stop distance when the entry quote recorded one", () => {
+    const summary = describeClosedTrade(
+      review({ stopDistanceAtrMultiple: 0.9, stopNoiseFloorMultiple: 0.75 }),
+    );
+    assert.include(summary, "0.90 ATR from entry");
+    assert.include(summary, "INSIDE the noise floor (0.75x)");
+
+    const healthy = describeClosedTrade(
+      review({ stopDistanceAtrMultiple: 2.1, stopNoiseFloorMultiple: 3.4 }),
+    );
+    assert.include(healthy, "3.4x the noise floor");
+    // And says nothing on a trade with no measured stop behind it.
+    assert.notInclude(describeClosedTrade(review()), "noise floor");
+  });
+
+  it("asks for a plain-language recap before the technical review", () => {
+    assert.include(describeClosedTrade(review()), "plain sentences a non-trader could follow");
+  });
 });
 
 /** One completed order, with only the fields the pairing reads. */

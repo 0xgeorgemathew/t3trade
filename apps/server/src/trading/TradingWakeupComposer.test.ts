@@ -8,9 +8,12 @@
  * that: the armed-watch list with distances, the thesis's age, and the reason
  * the runtime woke it when the runtime is the one that armed the wake.
  */
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+
+import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 
@@ -226,6 +229,10 @@ const layer = it.layer(
     Layer.provideMerge(stubMissions),
     Layer.provideMerge(stubWatches),
     Layer.provideMerge(stubStrategies),
+    // The level-history and prior-read echoes read local tables; an empty
+    // in-memory database exercises the absent-fields path.
+    Layer.provideMerge(NodeSqliteClient.layerMemory()),
+    Layer.provideMerge(NodeServices.layer),
   ),
 );
 
