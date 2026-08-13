@@ -16,11 +16,20 @@
 import * as NodeFSP from "node:fs/promises";
 
 /** Paths wholly owned by the fork. Keep in sync with the `test:fork`
-    scripts in the root and package `package.json`s. */
+    scripts in the root and package `package.json`s.
+
+    Two of these live inside upstream-owned directories and are only safe
+    here because `test:fork` runs every test that imports them: the trading
+    MCP toolkit is imported by `apps/server/src/mcp` tests, and
+    TradingSessionProfile by the provider adapters' tests, so the server's
+    `test:fork` covers `src/mcp` and `src/provider` whole. Widening this list
+    without widening that glob is how a fork-only change breaks main. */
 const FORK_OWNED = [
   /^packages\/trading-contracts\//,
   /^packages\/hyperliquid\//,
   /^apps\/server\/src\/trading\//,
+  /^apps\/server\/src\/mcp\/toolkits\/trading\//,
+  /^apps\/server\/src\/provider\/TradingSessionProfile\.ts$/,
   /^apps\/web\/src\/components\/trading\//,
   /^apps\/web\/src\/lib\/trading/,
   /^docs\//,
@@ -28,6 +37,13 @@ const FORK_OWNED = [
   /^experiments\//,
   /\.md$/,
 ];
+
+/** Files that look fork-owned by the rules above but are asserted by tests
+    outside the fork's own paths, so they must force the full suite.
+    BASELINE.md is checked against `T3_UPSTREAM_COMMIT` by
+    `packages/shared/src/buildMetadata.test.ts`, which `test:fork` does not
+    run — that pair was found already out of sync once. */
+const NEVER_FORK_ONLY = [/^docs\/upstream\/BASELINE\.md$/];
 
 async function main() {
   const listPath = process.argv[2];
@@ -41,7 +57,9 @@ async function main() {
     .filter((line) => line.length > 0);
 
   const upstreamTouching = changed.filter(
-    (file) => !FORK_OWNED.some((pattern) => pattern.test(file)),
+    (file) =>
+      NEVER_FORK_ONLY.some((pattern) => pattern.test(file)) ||
+      !FORK_OWNED.some((pattern) => pattern.test(file)),
   );
 
   if (changed.length === 0 || upstreamTouching.length > 0) {
