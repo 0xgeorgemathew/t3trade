@@ -3,7 +3,7 @@ import Layout from "../layouts/Layout.astro";
 import { GITHUB_REPOSITORY_URL, UPSTREAM_REPOSITORY_URL } from "../lib/site";
 
 const previewChecks = [
-  { label: "mandate scope · market & side", detail: "within mission" },
+  { label: "mission market & side", detail: "within mission" },
   { label: "leverage ≤ mission cap", detail: "20x ≤ 20x" },
   { label: "gross notional within budget", detail: "reservation ledger" },
   { label: "exchange minimums & tick size", detail: "size, price band" },
@@ -41,14 +41,13 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
       <p class="eyebrow hero-eyebrow">Agentic Trading Environment · alpha · Hyperliquid testnet</p>
 
       <h1 class="hero-title display">
-        Give an agent a market,<br />a budget, and a deadline.
+        Run coding agents on Hyperliquid testnet<br />with enforced risk limits.
       </h1>
 
       <p class="hero-sub">
-        T3 Trade is an <strong>ATE — an Agentic Trading Environment</strong>. The coding
-        agents you already run get a second thing to point at: a live Hyperliquid testnet
-        account, reached through a typed, gated tool surface. The agent reads the market,
-        plans, and explains itself. The environment enforces the rules.
+        T3 Trade is an <strong>Agentic Trading Environment</strong> for Hyperliquid testnet.
+        It gives coding agents typed, restricted tools to read market data, create plans,
+        and propose trades. T3 Trade enforces the mission and risk limits.
       </p>
 
       <div class="hero-actions">
@@ -61,12 +60,12 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
           <svg class="hero-source-arrow" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M8 7h9v9"/></svg>
         </a>
         <p class="hero-release" id="hero-release" hidden>
-          <span id="hero-release-tag"></span> · macOS arm64 · unsigned — right-click →
-          Open on first launch
+          <span id="hero-release-tag"></span> · macOS arm64 · unsigned · right-click and
+          choose Open on first launch
         </p>
         <p class="hero-caution">
-          Alpha software. Places real orders on Hyperliquid <strong>testnet</strong> —
-          there is no mainnet mode.
+          Alpha software. Places real orders on Hyperliquid <strong>testnet</strong>.
+          Mainnet is not supported.
         </p>
       </div>
 
@@ -74,7 +73,7 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
         <figure class="hero-screenshot-frame">
           <img
             src="/t3trade-screenshot.webp"
-            alt="T3 Trade running a BTC momentum mission: the agent's published plan, armed watches, and a live position card with entry, stop, and target"
+            alt="T3 Trade showing a BTC mission with the agent's plan, active price watches, and position details"
             width="2400"
             height="1520"
             loading="eager"
@@ -82,9 +81,8 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
           />
         </figure>
         <figcaption class="hero-preview-caption">
-          A live mission: the agent publishes its plan and belief, arms watches at its stop
-          and target, and the position card tracks entry, stop, and liquidation against the
-          exchange.
+          A live mission showing the agent's plan, active price watches, and position data
+          from the exchange.
         </figcaption>
       </div>
     </div>
@@ -94,36 +92,35 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
   <section id="missions" class="sec-missions">
     <div class="container">
       <div class="section-head">
-        <h2>A mission is a mandate, not a chat.</h2>
+        <h2>Each mission has defined limits.</h2>
         <p>
-          One agent thread, one market, a written strategy, a maximum-loss budget, and an
-          expiry. Everything the agent can do flows from that mandate — nothing outside it
-          is reachable.
+          A mission connects one agent thread to one market with a written strategy, a
+          maximum-loss budget, and an expiry. The agent's trading tools are limited to that
+          mission.
         </p>
       </div>
 
       <div class="mission-grid">
         <div class="tile mission-tile">
-          <div class="mission-tile-label">Wakes on events, not timers</div>
+          <div class="mission-tile-label">Runs when market events occur</div>
           <p>
-            The agent registers watches — a price cross, an unrealised-PnL level, a candle
-            close — and sleeps until one fires. It wakes to a fresh snapshot of the account,
-            position, resting orders, and remaining budget.
+            The agent can register watches for a price cross, an unrealised-PnL level, or a
+            candle close. When a watch fires, the agent receives current account, position,
+            order, and budget data.
           </p>
         </div>
         <div class="tile mission-tile">
-          <div class="mission-tile-label">The exchange is the authority</div>
+          <div class="mission-tile-label">Uses exchange-reported state</div>
           <p>
-            Positions, orders, and fills are always read back from Hyperliquid. The database
-            records what T3 Trade <em>did</em>; the exchange remains the source of what
-            is <em>true</em>.
+            T3 Trade reads positions, orders, and fills from Hyperliquid. Its database stores
+            its own actions, while exchange data remains the source of truth.
           </p>
         </div>
         <div class="tile mission-tile">
-          <div class="mission-tile-label">Budgets are enforced, not suggested</div>
+          <div class="mission-tile-label">Enforces the loss budget</div>
           <p>
-            Loss accounting is pure, property-tested contract code. An exhausted budget blocks
-            new exposure while keeping the stops that protect what's already open.
+            Automated tests cover the loss calculations. An exhausted budget blocks new
+            exposure without removing stops from open positions.
           </p>
         </div>
       </div>
@@ -135,28 +132,25 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     <div class="container checklist-inner">
       <div class="checklist-copy">
         <div class="section-head" style="margin-bottom:0">
-          <h2>Every order earns its way to the signer.</h2>
+          <h2>Every order must pass 17 checks.</h2>
           <p>
-            Before anything is signed, a 17-item deterministic preview runs: mandate,
-            leverage, notional, exchange minimums, the reservation ledger, and a mandatory
-            stop-loss. A failed check is a rejected order — the agent cannot talk its way
-            past it.
+            Before signing, T3 Trade checks the mission, leverage, notional, exchange
+            minimums, risk reservations, and the required stop-loss. Any failed check rejects
+            the order.
           </p>
           <ul class="rail-list">
             <li>
-              <strong>No position stays unprotected.</strong> Every acknowledged increase must
-              have a confirmed exchange-native reduce-only stop resting against it, reconciled
-              against the canonical position size.
+              <strong>Every position requires protection.</strong> Each confirmed position
+              increase must have an exchange-native reduce-only stop sized against the
+              exchange-reported position.
             </li>
             <li>
-              <strong>Submission is idempotent.</strong> A deterministic client order id plus a
-              local idempotency key means a retried request returns the existing record instead
-              of a second order.
+              <strong>Retries do not duplicate orders.</strong> A deterministic client order ID
+              and local idempotency key make retries return the existing order record.
             </li>
             <li>
-              <strong>Controls never need the agent.</strong> Pause, cancel entries, reduce,
-              close, and revoke run deterministically even with the agent's provider process
-              stopped.
+              <strong>Controls work without the agent.</strong> Pause, cancel entries, reduce,
+              close, and revoke still work when the agent provider is stopped.
             </li>
           </ul>
         </div>
@@ -176,11 +170,11 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
                 <span class="preview-check-detail">{check.detail}</span>
               </li>
             ))}
-            <li class="preview-more">… then, and only then, sign &amp; submit</li>
+            <li class="preview-more">Sign and submit only after all checks pass</li>
           </ul>
         </div>
         <div class="controls-strip" aria-label="Deterministic mission controls">
-          <span class="controls-strip-label">Runs without the agent:</span>
+          <span class="controls-strip-label">Works without the agent:</span>
           {controls.map((control) => (
             <span class="control-chip">{control}</span>
           ))}
@@ -193,11 +187,10 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
   <section id="harnesses" class="sec-harness">
     <div class="container">
       <div class="section-head">
-        <h2>The agents you already run.</h2>
+        <h2>Supports five coding-agent CLIs.</h2>
         <p>
-          T3 Trade drives the coding-agent CLIs installed on your machine, with the
-          subscriptions you already pay for. The agent plans and explains; only the harness
-          ever touches the signer key.
+          T3 Trade uses coding-agent CLIs installed and authenticated on your machine. The
+          agent creates and explains the plan. Only T3 Trade accesses the signer key.
         </p>
       </div>
 
@@ -250,7 +243,8 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
             <span class="arming-dot"></span> No signer key
           </span>
           <span class="arming-desc">
-            Read-only. Missions, watches, and plans — nothing is signed or submitted.
+            Read-only. You can use missions, watches, and plans, but orders are not signed or
+            submitted.
           </span>
         </div>
         <div class="arming-divider" aria-hidden="true"></div>
@@ -259,22 +253,20 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
             <span class="arming-dot"></span> Key present
           </span>
           <span class="arming-desc">
-            Live execution on testnet. There is no second flag.
+            Testnet order execution. No additional flag is required.
           </span>
         </div>
       </div>
 
       <div class="arming-copy">
         <div class="section-head" style="margin-bottom:0">
-          <h2>Armed only when you arm it.</h2>
+          <h2>The signer key enables execution.</h2>
           <p>
-            Hyperliquid is a signed-order exchange, so live execution needs a key. T3 Trade
-            doesn't have wallet onboarding yet — for now you provision a
-            single <strong>interim signer key</strong> in one canonical location
-            (<code>~/.t3trade/secrets</code>), and its presence is the arming switch.
-            Without it, the whole environment runs read-only. The key never appears in
-            logs, reports, or the database. Deliberately blunt for the alpha; proper key
-            management is future work.
+            Hyperliquid requires signed orders. T3 Trade does not yet include wallet
+            onboarding, so you provide one <strong>interim signer key</strong> in
+            <code>~/.t3trade/secrets</code>. With the key, T3 Trade can place testnet orders.
+            Without it, T3 Trade is read-only. The key does not appear in logs, reports, or
+            the database. Expanded key management is not yet available.
           </p>
         </div>
       </div>
@@ -285,26 +277,26 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
   <section id="state" class="sec-state">
     <div class="container">
       <div class="section-head">
-        <h2>What it is, and what it isn't.</h2>
-        <p>The interesting claims are about containment, not alpha.</p>
+        <h2>Current capabilities and limits.</h2>
+        <p>T3 Trade is built for supervised, budgeted testnet experiments.</p>
       </div>
       <div class="state-grid">
         <div class="tile state-card">
           <div class="state-card-label state-card-label--is">Today</div>
           <ul>
-            <li>Scoped, budgeted perp-futures missions on Hyperliquid testnet</li>
-            <li>Deterministic order preview, mandatory stops, idempotent submission</li>
-            <li>Operator controls that work with the agent stopped</li>
-            <li>Web app + macOS (Apple Silicon) desktop build; other platforms from source</li>
+            <li>Hyperliquid testnet missions with defined scope and loss budgets</li>
+            <li>17-check order previews, required stops, and idempotent submission</li>
+            <li>Controls that work without the agent running</li>
+            <li>Web app and Apple Silicon macOS build; other platforms run from source</li>
           </ul>
         </div>
         <div class="tile state-card">
           <div class="state-card-label state-card-label--isnt">Not today</div>
           <ul>
-            <li>No mainnet mode — testnet only, by design</li>
-            <li>No strategy library, no signals, no promised returns</li>
-            <li>No wallet onboarding — one interim signer key you provision yourself</li>
-            <li>No unattended operation against real funds, and no mobile app</li>
+            <li>No mainnet support</li>
+            <li>No strategies, signals, or return guarantees</li>
+            <li>No wallet onboarding; you provide one interim signer key</li>
+            <li>No unattended use with real funds or mobile app</li>
           </ul>
         </div>
       </div>
@@ -316,13 +308,13 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     <div class="container">
       <div class="section-head" style="margin-bottom:0">
         <div class="eyebrow" style="margin-bottom:14px">Open source</div>
-        <h2>A fork with a paper trail.</h2>
+        <h2>Open-source and documented.</h2>
         <p>
           T3 Trade is an MIT-licensed fork
           of <a class="inline-link" href={UPSTREAM_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">T3 Code</a> by
-          Ping Labs. The trading surface lives in a handful of clearly-bounded packages;
-          everything else stays close to upstream, and every intentional divergence is
-          recorded in a patch ledger.
+          Ping Labs. Trading features are contained in dedicated packages. The rest of the
+          code stays close to upstream, and each intentional difference is recorded in a
+          patch ledger.
         </p>
         <div class="open-actions">
           <a class="btn btn-primary" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">
@@ -341,8 +333,8 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     <div class="container cta-inner">
       <h2 class="display cta-title">Run a mission on testnet.</h2>
       <p class="cta-sub">
-        Download the alpha, fund a testnet account, write a mandate, and watch the
-        harness hold the line.
+        Download the alpha, fund a testnet account, define a mission, and review the agent's
+        actions.
       </p>
       <div class="cta-actions">
         <a id="cta-download-btn" class="btn btn-primary btn-lg" href="https://github.com/0xgeorgemathew/t3trade/releases">
@@ -351,9 +343,9 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
         <a class="btn btn-ghost btn-lg" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">Run from source</a>
       </div>
       <p class="cta-note">
-        Apple Silicon only, and the build is unsigned — right-click the app and choose Open
-        on first launch. Windows, Linux, and Intel Macs run from source; older builds and
-        checksums live on the <a href="https://github.com/0xgeorgemathew/t3trade/releases" target="_blank" rel="noopener noreferrer">releases page</a>.
+        The desktop build supports Apple Silicon and is unsigned. Right-click the app and
+        choose Open on first launch. Run from source on Windows, Linux, and Intel Macs.
+        Older builds and checksums are on the <a href="https://github.com/0xgeorgemathew/t3trade/releases" target="_blank" rel="noopener noreferrer">releases page</a>.
       </p>
     </div>
   </section>
