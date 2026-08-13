@@ -79,7 +79,8 @@
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
-    "test": "vp test run"
+    "test": "vp test run",
+    "test:fork": "vp test run"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",

@@ -9,7 +9,8 @@
     "build": "vp build",
     "preview": "vp preview",
     "typecheck": "tsgo --noEmit",
-    "test": "vp test run --passWithNoTests --project unit"
+    "test": "vp test run --passWithNoTests --project unit",
+    "test:fork": "vp test run --passWithNoTests --project unit src/components/trading src/lib/trading"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",
