@@ -4,4 +4,4 @@
     T3_UPSTREAM_COMMIT against BASELINE.md's pinned SHA — update both
     together on every sync. */
 export const T3_FORK_NAME = "T3 Trade" as const;
-export const T3_UPSTREAM_COMMIT = "a8e05cbb92633a1351529f2bc402071f615e5051" as const;
+export const T3_UPSTREAM_COMMIT = "3b72d17cbca691f0b64e6d4a10c9e349f42873a5" as const;
