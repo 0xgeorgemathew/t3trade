@@ -25,7 +25,10 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { watchCoverageFloorMillis } from "@t3tools/trading-contracts/watch";
+import {
+  watchCoverageFloorMillis,
+  watchSanityBackstopMillis,
+} from "@t3tools/trading-contracts/watch";
 
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
@@ -267,7 +270,7 @@ layer("run settlement: the armed-coverage floor", (it) => {
     }),
   );
 
-  it.effect("does not arm anything when levels are already armed on both sides", () =>
+  it.effect("arms only the slow sanity backstop when both sides are already covered", () =>
     Effect.gen(function* () {
       yield* seed;
       yield* holdPosition(0.05, 1_850);
@@ -296,9 +299,46 @@ layer("run settlement: the armed-coverage floor", (it) => {
 
       yield* runOneTurn;
 
+      // Both price levels survive, plus one reassessment — but far out: a
+      // covered position gets a thesis-drift check, not a 3-bar metronome.
       const active = yield* activeWatches;
-      assert.equal(active.length, 2);
-      assert.isFalse(active.some((w) => w.watch.type === "scheduled_reassessment"));
+      assert.equal(active.length, 3);
+      const reassessment = active.find((w) => w.watch.type === "scheduled_reassessment");
+      assert.isDefined(reassessment);
+      if (reassessment?.watch.type !== "scheduled_reassessment") return;
+      const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      const tight = watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: true });
+      assert.isAbove(reassessment.watch.runAt, now + tight);
+      assert.isAtMost(reassessment.watch.runAt, now + watchSanityBackstopMillis("1m") + 1_000);
+    }),
+  );
+
+  it.effect("treats a PnL target over a confirmed stop as covered on both sides", () =>
+    // The observed mission's shape: a short with a target `pnl_above` armed and
+    // a reduce-only stop resting. Both directions are heard, so the only thing
+    // the floor should add is the slow thesis-drift check.
+    Effect.gen(function* () {
+      yield* seed;
+      yield* holdPosition(-0.05, 1_850);
+
+      const watches = yield* TradingWatchService;
+      yield* watches.registerWatch({
+        missionId: MISSION,
+        watch: { type: "pnl_above", market: "ETH", valueUsd: 5 },
+      });
+
+      yield* runOneTurn;
+
+      const active = yield* activeWatches;
+      const reassessments = active.filter((w) => w.watch.type === "scheduled_reassessment");
+      assert.equal(reassessments.length, 1);
+      const scheduled = reassessments[0]!.watch;
+      if (scheduled.type !== "scheduled_reassessment") return;
+      const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      assert.isAbove(
+        scheduled.runAt,
+        now + watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: true }),
+      );
     }),
   );
 
@@ -332,15 +372,24 @@ layer("run settlement: the armed-coverage floor", (it) => {
     }),
   );
 
-  it.effect("leaves a flat mission with no thesis alone", () =>
-    // Nothing has been published, so there is nothing to come back to. A
-    // create, a publish, or a user control moves this mission on.
+  it.effect("arms a reassessment for a flat mission that published nothing", () =>
+    // The stand-down case. A turn that read the market and declined to enter
+    // has reached a conclusion, and this used to be treated as "nothing to come
+    // back to": no watch, no schedule, dormant until the operator typed. The
+    // floor runs on the default timeframe, because no strategy named one.
     Effect.gen(function* () {
       yield* seed;
       yield* runOneTurn;
 
       const active = yield* activeWatches;
-      assert.deepEqual(active, []);
+      assert.equal(active.length, 1);
+      const watch = active[0]!.watch;
+      assert.equal(watch.type, "scheduled_reassessment");
+      assert.equal(active[0]!.armedReason, "staleness_floor");
+      if (watch.type !== "scheduled_reassessment") return;
+      const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      const flatFloor = watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: false });
+      assert.isAtMost(watch.runAt, now + flatFloor + 1_000);
     }),
   );
 

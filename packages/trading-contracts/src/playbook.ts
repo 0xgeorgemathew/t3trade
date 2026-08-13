@@ -14,7 +14,19 @@
  * @module TradingPlaybook
  */
 import { Schema } from "effect";
+import { ACTIVE_TRADING_POLICY } from "./policy.ts";
 import { TradingText } from "./primitives.ts";
+
+/**
+ * The thresholds this doctrine states, read from the version in force.
+ *
+ * Every number below used to be typed into the prose by hand next to the same
+ * number typed into `momentum.ts` and `costs.ts`. Two of them — the session
+ * cutoff and the losing-streak cooldown — existed ONLY here, which made them
+ * rules with no definition anywhere a change could be reviewed against.
+ */
+const policy = ACTIVE_TRADING_POLICY;
+const [shortestSessionMinutes, longestSessionMinutes] = policy.session.plannedMinutes;
 
 /**
  * The one procedure each playbook exposes.
@@ -78,10 +90,12 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
     procedure: [
       "Take `observedVolatility` and trading_get_market_structure and decide which of two markets you are in. TRENDING: the excursion quantiles are asymmetric (favourableUp and favourableDown differ materially at the same horizon), `directionScore` is away from zero, `atrExpansionRatio` is above 1, and the mark sits near a window extreme. RANGING: `excursionSymmetryRatio` is near 1, the swing range has been stable across the window, `directionScore` is near zero, and `positionInRangePercent` is near 50.",
       "State the classification and the evidence for it in `belief.regime` before choosing a mode. Trending takes the momentum procedure; ranging takes the range scalp.",
+      "trading_get_market_structure now does the assembling for you: `setups[]` is every setup its own measurements support, best score first, each with the `level` to arm and `closeConfirmed` saying which watch type evaluates it. An empty `setups[]` on a turn where the market reads clean is real evidence of no edge; a scored setup you decline is a decision to state your reason for. Read it as evidence, not as permission — the entry gates below still have to clear.",
+      "THE REGIME PICKS THE PLAYBOOK, NOT THE INSTRUCTION. A user instruction naming momentum is a directive to trade this market with momentum-style entries when they exist — it is not an order to sit out every other regime. When the read says ranging, run the range scalp at the measured boundaries and say that is what you are doing and why; publishing the same momentum stand-down at every reassessment while a tradeable range oscillates in front of you is not caution, it is refusing the trade that is there in favour of the one that is not.",
     ],
     gates: [],
     standDownIf: [
-      "If the two readings disagree, you are not in a regime you can trade — say so and wait.",
+      "IF THE TWO READINGS DISAGREE, YOU ARE IN A TRANSITION — SAY WHICH WAY AND WHAT WOULD SETTLE IT, then trade the read that is measurable or wait on a named level. Disagreement is not an automatic veto: a market leaving a range has an expanding ATR and an asymmetric excursion profile before its `directionScore` catches up, and a trend rolling over has the reverse, so the turns where the two readings differ are precisely the turns where the next move begins. Name the transition in `belief.regime`, publish the level that confirms each side, and arm both. What IS a stand-down is a read you cannot ground at all — `sufficientData` false, or a stale market read — and that is `blocked_by_data`, not `no_setup`.",
       "One trap in that read: `positionInRangePercent` is regime evidence only on the turn you classify from. Once you have called a range and armed a boundary watch, the wake that watch brings you arrives BY DESIGN with the mark on an edge — that is the entry you asked for, not the market turning trending underneath you. On a boundary wake the standing classification holds unless the quantiles have gone asymmetric or the swing range has moved; re-read those two, not where the mark is.",
     ],
   },
@@ -90,13 +104,24 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
     whenItApplies:
       "RANGE SCALP, published as mode `range_reversion`, when the regime read says ranging.",
     procedure: [
-      "Identify the range from the 120-bar swing structure — `swingHighUsd` and `swingLowUsd` are the measured boundaries and `swingRangeUsd` the height, so read them rather than re-deriving them; confirm the market has turned at each of them more than once, and read the typical time a crossing takes off `horizons[]` — the 30- and 60-bar entries are there so an hour-scale oscillation is visible on 1m, and the shortest hold whose `favourableUpUsd.p50` approaches the range height is roughly how long a crossing takes. That hold is `expectedHoldBars` in the basis.",
-      "Enter only at a boundary, never mid-range — `positionInRangePercent` says where you are, and an entry taken between 20 and 80 is mid-range no matter how the setup reads. Arm a watch at the range high (for a short) or the range low (for a long) and let the wake bring you the entry rather than paying up in the middle, where the move you are being paid for is already half spent.",
+      "Identify the range from the 120-bar swing structure — `swingHighUsd` and `swingLowUsd` are the measured boundaries and `swingRangeUsd` the height, so read them rather than re-deriving them; confirm the market has turned at each of them at least " +
+        policy.rangeReversion.minBoundaryTouches +
+        " times (`swingHighTouches` and `swingLowTouches` count it, and `rangeStabilityPercent` says whether the range held its height across the window — under " +
+        policy.rangeReversion.stabilityPercent +
+        " is stable), and read the typical time a crossing takes off `horizons[]` — the 30- and 60-bar entries are there so an hour-scale oscillation is visible on 1m, and the shortest hold whose `favourableUpUsd.p50` approaches the range height is roughly how long a crossing takes. That hold is `expectedHoldBars` in the basis.",
+      'Arm the boundary as a `price_cross` with `confirmation: "touch"`. Here the price IS the trigger: the boundary rarely gets touched twice and waiting a whole bar for a close gives back most of the crossing you are being paid for. This is the one place a close-confirmed watch is the wrong instrument, and the wakeup will flag it as misarmed if you use one.',
+      "Enter only at a boundary, never mid-range — `positionInRangePercent` on the structure read says where you are, and an entry taken between " +
+        policy.rangeReversion.edgePercent +
+        " and " +
+        (100 - policy.rangeReversion.edgePercent) +
+        " is mid-range no matter how the setup reads. Arm a watch at the range high (for a short) or the range low (for a long) and let the wake bring you the entry rather than paying up in the middle, where the move you are being paid for is already half spent.",
       "Target 60-70% of the range height, not the whole crossing — the boundary rarely gets touched and you are not there to pick the last dollar. Publish that DISCOUNTED capture as `measuredMoveUsd` in the basis, with the full range height named in the rationale; a basis carrying the full range as the measured move is claiming a move you are not trying to take. The basis is required here exactly as it is for a momentum trade and the same arithmetic check runs on it — `measurement` is `swing_range`, `measuredMoveUsd` is the discounted capture, and `targetProfitUsd` has to equal that move over the reference price times the notional or the publish is rejected.",
       "In a range, bias to a quick exit. On entry arm `pnl_above` at the conservative rung and `pnl_below` at the level that says the range broke rather than held. On a profit-target wake in a range regime the DEFAULT IS TO BANK: ranges mean-revert, so extension is the trend play and taking it here gives the capture back. Extend only if the regime just reclassified as trending, and say so.",
     ],
     gates: [
-      "Then check the range is worth trading: call trading_estimate_costs fresh at the size you intend, and require range height >= 2.2x `breakEvenPriceMoveUsd`.",
+      "Then check the range is worth trading: call trading_estimate_costs fresh at the size you intend, and require range height >= " +
+        policy.rangeReversion.heightCostMultiple +
+        "x `breakEvenPriceMoveUsd`.",
     ],
     standDownIf: [
       "If it is not, stand down and show the arithmetic — the height, the break-even move, and the multiple you got.",
@@ -110,9 +135,13 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
       "Measure TWO timeframes before you set one: the thesis timeframe you trade and one higher timeframe (15m or 1h). A 1m window alone, even out to its 60-bar horizon, cannot tell you whether the structure supports the move you are asking for.",
       "Discount for where you are entering. The excursion quantiles measure the move from a flat bar close; a momentum entry happens after the impulse has already begun, so subtract roughly half the impulse already travelled before calling the rest yours. Call trading_get_market_structure for that number — `lastImpulse.sizeUsd` is the leg to discount against, `ageBars` says whether it is still running, and the swing distances cap where the target can sit.",
       "Publish the derivation in `protection.targetProfitBasis` — it is required, and the publish checks that the target actually follows from it: the measurement, the lookback, the holding period, the resulting percentage price move, and the USD PnL it is worth on the position notional. Put the whole ladder — conservative, base, extension — in `protection.targetProfitRationale`, and set `targetProfitUsd` to the CONSERVATIVE rung, the one you would genuinely bank.",
+      'ARM A BREAKOUT AS A `candle_close`, NOT A `price_cross`. A break is only a break on the close — `breakout.closedBeyond` says whether the last bar made one and `breakout.wickOnly` says it wicked through and closed back inside. A `price_cross` armed at a breakout level wakes you on exactly the wick that fails, and the turn it costs concludes nothing happened. Publish the condition with `confirmation: "close"` and register a `candle_close` watch on your thesis timeframe at that level; the wakeup flags the mismatch as `misarmedEntryConditions` when they disagree.',
+      "A BREAK OF YOUR OWN ARMED LEVEL IS THE SIGNAL — TAKE IT OR RETIRE THE LEVEL. When a `price_cross` wake fires at a level your published plan named as the trigger, the entry check is the break itself: a candle on your thesis timeframe closing through the level with the ATR expanding. Do not demand full multi-timeframe alignment on that wake — alignment is measured over 120-bar windows and mathematically CANNOT have turned by the time a fresh break is one candle old; requiring it means never taking the breakout you armed for. The higher timeframe's job here is narrower: it vetoes the entry only when it points the OPPOSITE way with conviction, not when it is flat. If the break fails your entry check (a wick through the level that closes back inside), say so — and if the same level has now failed twice, move it or stand the mission down explicitly rather than re-arming the identical trap a third time.",
     ],
     gates: [
-      "Then check the target against its cost. Call trading_estimate_costs at your size — it prices the round trip from the fee rate this wallet pays and the live book — and hold the target against the `minimumViableTargetUsd` it reports. A target that does not clear TWICE the round-trip cost is not a trade; it is a fee donation with variance.",
+      "Then check the target against its cost. Call trading_estimate_costs at your size — it prices the round trip from the fee rate this wallet pays and the live book — and hold the target against the `minimumViableTargetUsd` it reports. A target that does not clear " +
+        policy.momentum.targetCostMultiple +
+        "x the round-trip cost is not a trade; it is a fee donation with variance.",
     ],
     standDownIf: [
       "If the observed fluctuation does not support a target worth taking after costs, say so and stand down rather than inventing one.",
@@ -124,12 +153,16 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
       "OPENING RANGE (ORB), forward-looking placeholder the plan authorises for a later session type. Stand-alone: do not run alongside the momentum or range_reversion playbooks in the same turn.",
     procedure: [
       "Define the opening range from the first 15-20 minutes of the session (1m candles, 15 to 20 bars). `swingHighUsd` and `swingLowUsd` over that window are the boundaries; the range height is the move an ORB targets.",
-      "Require the range to have been tested: at least two touches of each boundary inside the formation window before an edge break counts as a break rather than noise.",
-      "Enter only on a CONFIRMED break: a 1m candle must CLOSE beyond a boundary, not merely trade through it. A wick that prints back inside the range by the close is not a break.",
+      "Require the range to have been tested: `swingHighTouches` and `swingLowTouches` must each be at least " +
+        policy.openingRange.minBoundaryTouches +
+        " before an edge break counts as a break rather than noise. Both are counted for you on the structure read.",
+      'Enter only on a CONFIRMED break: `breakout.closedBeyond` true, not `breakout.wickOnly`. Arm the boundary as a `candle_close` watch and publish the condition with `confirmation: "close"` — a `price_cross` here wakes you on the wick that fails.',
       "Stop at the opposite edge of the opening range; target one range height in the break direction. Publish the same basis the other modes do — `measurement` `swing_range`, `measuredMoveUsd` the range height, the arithmetic checked at publish.",
     ],
     gates: [
-      "Range height must clear the round-trip move the way the range scalp's does: call trading_estimate_costs at the size you intend and require height >= 2.2x `breakEvenPriceMoveUsd`.",
+      "Range height must clear the round-trip move the way the range scalp's does: call trading_estimate_costs at the size you intend and require height >= " +
+        policy.openingRange.heightCostMultiple +
+        "x `breakEvenPriceMoveUsd`.",
     ],
     standDownIf: [
       "If the opening range height is below the break-even move, stand down and show the arithmetic — a range too small to pay its costs is not an ORB, it is noise.",
@@ -140,8 +173,21 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
     whenItApplies:
       "BOTH MODES, whichever one the regime put you in — these hold on every turn regardless of mode.",
     procedure: [
-      "READ YOUR OWN SCORECARD AT EVERY SCHEDULED REASSESSMENT. Call trading_get_trade_history and read `roundTrips` — each completed trade flat to flat, with its direction, entry and exit price, hold, gross, fees and net — against the theses you published. The check that decides whether to keep going is `summary.recentFeeShareOfGrossPercent`: fees as a share of the gross your last three trips produced. Above 50 the trades are working and the costs are taking the result, which means the range is too small for the size you are trading. Do one of three things and say which: widen the target to a further rung, drop the fee-tier assumption and re-run trading_estimate_costs at the rate you are ACTUALLY paying, or stand down until a bigger range appears. Do not take a fourth scalp at the same size on the same range.",
-      "SESSION BUDGET. Plan the mission as 1-2 hours. Take no new entry in the final 15 minutes, and be flat before the session ends — close rather than hand a position to nobody. After three consecutive scalps that end net negative, stop entering for 30 minutes, then re-read the regime from scratch; three losses in a row usually mean the range you were trading is gone, not that the next one will pay.",
+      "STANDING DOWN IS A PLAN — PUBLISH IT. Every assessment turn ends with trading_publish_plan, including the turns that decline to trade. A stand-down publishes `standDownCode` with the actual reason (`insufficient_volatility`, `costs_exceed_target`, `regime_unclear`, `data_unavailable`, or `tool_call_failed`), `mode` naming the stand-down, `protection.targetProfitUsd` set to the minimum viable target the costs demanded (the honest number the market would have to offer, not one you would trade), and the arithmetic in the rationale — the round-trip cost, the break-even move, and the multiple you got. Set `targetProfitBasis.insufficientVolatility` true only when volatility is the reason. Carry the price levels that would change the read in `entryPlan.conditions[]`, each armed with the watch type its confirmation requires. A turn that ends with no published plan leaves the mission with no thesis to come back to and no levels to be woken on: it goes quiet until you are typed at. The refusal to enter is a decision worth recording, and this is where it gets recorded.",
+      "READ YOUR OWN SCORECARD AT EVERY SCHEDULED REASSESSMENT. Call trading_get_trade_history and read `roundTrips` — each completed trade flat to flat, with its direction, entry and exit price, hold, gross, fees and net — against the theses you published. The check that decides whether to keep going is `summary.recentFeeShareOfGrossPercent`: fees as a share of the gross your last three trips produced. Above " +
+        policy.session.feeShareOfGrossWarningPercent +
+        " the trades are working and the costs are taking the result, which means the range is too small for the size you are trading. Do one of three things and say which: widen the target to a further rung, drop the fee-tier assumption and re-run trading_estimate_costs at the rate you are ACTUALLY paying, or stand down until a bigger range appears. Do not take a fourth scalp at the same size on the same range.",
+      "SESSION BUDGET. Plan the mission as " +
+        shortestSessionMinutes / 60 +
+        "-" +
+        longestSessionMinutes / 60 +
+        " hours. Take no new entry in the final " +
+        policy.session.noNewEntryFinalMinutes +
+        " minutes, and be flat before the session ends — close rather than hand a position to nobody. After " +
+        policy.session.consecutiveLossesBeforeCooldown +
+        " consecutive scalps that end net negative, stop entering for " +
+        policy.session.cooldownMinutes +
+        " minutes, then re-read the regime from scratch; that many losses in a row usually mean the range you were trading is gone, not that the next one will pay.",
       "When a profit-target wake decides to extend rather than bank, arm a `pnl_giveback` watch beneath the peak before ending the turn. Extending without one bets the whole open profit on the next leg.",
       "When a position closes you are woken one more time with a review of it — how long it was held, what it realised net of fees, what it was worth at its best and its worst. Spend that turn on it: call trading_get_trade_history and trading_get_target_calibration, say plainly whether the thesis held and whether the target was the right rung, and let that decide whether to re-enter. Do not re-enter in the same turn you close.",
       "Calibration is the one thing that can tell you your own habit is wrong. If it reports your targets as `optimistic`, read the next one off a nearer rung before blaming the market; if `conservative`, extend more often at the target wake instead of banking every one.",

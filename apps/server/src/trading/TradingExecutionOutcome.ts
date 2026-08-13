@@ -19,6 +19,7 @@
  */
 import type { TradingOrderResult, TradingRequestEntryResult } from "@t3tools/trading-contracts";
 import { evaluateLossBudget } from "@t3tools/trading-contracts/loss-accounting";
+import { classifyFailureMessage } from "@t3tools/trading-contracts/recovery";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -28,6 +29,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { TradingBudgetReader } from "./TradingBudgetReader.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
+import { TradingExecutionReceipts } from "./TradingExecutionReceipts.ts";
 import { executionRefusedKey, executionSettledKey } from "./ExecutionRefusal.ts";
 
 /**
@@ -39,7 +41,19 @@ import { executionRefusedKey, executionSettledKey } from "./ExecutionRefusal.ts"
  * flight", not a guess about which way it went.
  */
 const OUTCOME_DEADLINE_MS = 20_000;
-const POLL_INTERVAL_MS = 250;
+
+/**
+ * The one poll left, and why there is one.
+ *
+ * The receipt latch is the normal path: the reactor opens it the moment the
+ * request is settled, and the wait ends in microseconds rather than at the next
+ * quarter-second tick. What the latch cannot cover is a settle that happened in
+ * another process, or before this waiter existed at all — the signal is
+ * in-memory, the record is durable, and only the record is truth. So a slow
+ * sweep runs underneath: rare enough to cost nothing, frequent enough that a
+ * missed signal is a delay rather than a wrong answer.
+ */
+const FALLBACK_SWEEP_MS = 2_000;
 
 export interface AwaitOutcomeInput {
   readonly missionId: string;
@@ -88,6 +102,7 @@ const REDUCING_ACTIONS = new Set(["reduce", "close"]);
 
 const make = Effect.gen(function* () {
   const inbox = yield* TradingEventInbox;
+  const receipts = yield* TradingExecutionReceipts;
   const budgetReader = yield* TradingBudgetReader;
   const gateway = yield* HyperliquidGateway;
   const sql = yield* SqlClient.SqlClient;
@@ -155,6 +170,16 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => null),
     );
 
+  /**
+   * The loss budget, or an admission that it could not be read.
+   *
+   * `null` is the whole point of the return type. This used to answer a failed
+   * read with `{ remaining: 0, exhausted: true }` — "conservative", except that
+   * `exhausted` is the word §16.4 uses for a mission that must stop trading,
+   * and a harness told its budget is exhausted stops trading. A read that
+   * failed says nothing about the budget, and saying nothing is what the caller
+   * now reports.
+   */
   const readBudget = (input: AwaitOutcomeInput) =>
     Effect.gen(function* () {
       const feeBps = yield* gateway.getTakerFeeRateBps(input.masterAddress as `0x${string}`).pipe(
@@ -175,82 +200,148 @@ const make = Effect.gen(function* () {
         exhausted: budget.exhausted,
       };
     }).pipe(
-      // A budget read that fails must not turn a real outcome into an error.
-      // Reporting the ceiling as spent is the conservative direction.
-      Effect.catchCause(() => Effect.succeed({ remainingCumulativeLossUsd: 0, exhausted: true })),
+      // A budget read that fails must not turn a real outcome into an error,
+      // and must not be reported as a verdict about the budget either.
+      Effect.catchCause(() => Effect.succeed(null)),
     );
+
+  /**
+   * The budget as the wire contract carries it, plus the sentence that says so
+   * when it could not be read.
+   *
+   * The contract's `budget` is not optional, so an unreadable budget has to
+   * carry numbers. It carries the ones that assert nothing — a full remainder
+   * is not claimed, and `exhausted` is not claimed either — and `detail` says
+   * outright that these are unknown, which is the field the harness reads.
+   */
+  const reportBudget = (
+    budget: { remainingCumulativeLossUsd: number; exhausted: boolean } | null,
+  ) => budget ?? { remainingCumulativeLossUsd: 0, exhausted: false };
+
+  const BUDGET_UNREADABLE =
+    "the loss budget could not be read, so the budget in this result is unknown, not exhausted — " +
+    "read trading_get_mission before sizing anything on it";
+
+  const withBudget = (
+    detail: string,
+    budget: { remainingCumulativeLossUsd: number; exhausted: boolean } | null,
+  ): string => (budget === null ? `${detail}; ${BUDGET_UNREADABLE}` : detail);
 
   const decodeOrderResults = (json: string): ReadonlyArray<TradingOrderResult> =>
     decodeOrderResultsJson(json) as ReadonlyArray<TradingOrderResult>;
 
-  const awaitOutcome: TradingExecutionOutcomeShape["awaitOutcome"] = (input) =>
+  /**
+   * The durable answer to "what happened to this request", or null if there is
+   * not one yet. Three places to look, because three things can settle a
+   * request: a written record, a deterministic action's receipt, and a refusal
+   * recorded before anything was signed.
+   */
+  const readSettledOutcome = (input: AwaitOutcomeInput) =>
     Effect.gen(function* () {
-      const deadline = OUTCOME_DEADLINE_MS / POLL_INTERVAL_MS;
+      const record = yield* findRecord(input.missionId, input.executionSequence);
+      if (record !== null && REPORTABLE_STATUSES.has(record.status)) {
+        const reducing = REDUCING_ACTIONS.has(record.action_type);
+        const avgFillPrice = yield* readAvgFillPrice(input.missionId, record.cloid);
+        const budget = yield* readBudget(input);
+        return {
+          executionId: record.execution_id,
+          // The record's own word for what happened. Reporting a cancelled
+          // or failed execution as `accepted` told the harness it held a
+          // resting order it did not have.
+          status: record.status as "accepted" | "filled" | "cancelled" | "rejected" | "failed",
+          cloid: record.cloid,
+          orderResults: decodeOrderResults(record.order_results_json),
+          budget: reportBudget(budget),
+          detail: withBudget(record.status, budget),
+          ...(reducing ? { remainingSize: yield* readRemainingSize(input.missionId) } : {}),
+          // The limit the server placed, so the harness can see the crossing
+          // bound its IOC was priced with rather than the one it asked for.
+          limitPrice: record.limit_price,
+          ...(avgFillPrice === null ? {} : { avgFillPrice }),
+        } satisfies TradingRequestEntryResult;
+      }
 
-      for (let attempt = 0; attempt < deadline; attempt++) {
-        const record = yield* findRecord(input.missionId, input.executionSequence);
-        if (record !== null && REPORTABLE_STATUSES.has(record.status)) {
-          const reducing = REDUCING_ACTIONS.has(record.action_type);
-          const avgFillPrice = yield* readAvgFillPrice(input.missionId, record.cloid);
+      // A `cancel` or a `modify_stop` writes no record; the reactor records
+      // what it did in the inbox instead.
+      if (DETERMINISTIC_ACTIONS.has(input.actionType)) {
+        const settled = yield* findSettlement(input.missionId, input.executionSequence);
+        if (settled !== null) {
+          const budget = yield* readBudget(input);
           return {
-            executionId: record.execution_id,
-            // The record's own word for what happened. Reporting a cancelled
-            // or failed execution as `accepted` told the harness it held a
-            // resting order it did not have.
-            status: record.status as "accepted" | "filled" | "cancelled" | "rejected" | "failed",
-            cloid: record.cloid,
-            orderResults: decodeOrderResults(record.order_results_json),
-            budget: yield* readBudget(input),
-            detail: record.status,
-            ...(reducing ? { remainingSize: yield* readRemainingSize(input.missionId) } : {}),
-            // The limit the server placed, so the harness can see the crossing
-            // bound its IOC was priced with rather than the one it asked for.
-            limitPrice: record.limit_price,
-            ...(avgFillPrice === null ? {} : { avgFillPrice }),
-          };
-        }
-
-        // A `cancel` or a `modify_stop` writes no record; the reactor records
-        // what it did in the inbox instead.
-        if (DETERMINISTIC_ACTIONS.has(input.actionType)) {
-          const settled = yield* findSettlement(input.missionId, input.executionSequence);
-          if (settled !== null) {
-            return {
-              status: "succeeded" as const,
-              cloid: "",
-              orderResults: [],
-              budget: yield* readBudget(input),
-              detail: settled.summary,
-            };
-          }
-        }
-
-        const refusal = yield* findRefusal(input.missionId, input.executionSequence);
-        if (refusal !== null) {
-          // Refused before signing: no record, no nonce spent, no order. The
-          // record and cloid fields are left off rather than blanked — there is
-          // no execution to name, and a blank id is not a valid `TradingId`.
-          return {
-            status: "rejected" as const,
+            status: "succeeded" as const,
             cloid: "",
             orderResults: [],
-            budget: yield* readBudget(input),
-            detail: refusal.summary,
-          };
+            budget: reportBudget(budget),
+            detail: withBudget(settled.summary, budget),
+          } satisfies TradingRequestEntryResult;
         }
+      }
 
-        yield* Effect.sleep(`${POLL_INTERVAL_MS} millis`);
+      const refusal = yield* findRefusal(input.missionId, input.executionSequence);
+      if (refusal !== null) {
+        // Refused before signing: no record, no nonce spent, no order. The
+        // record and cloid fields are left off rather than blanked — there is
+        // no execution to name, and a blank id is not a valid `TradingId`.
+        const budget = yield* readBudget(input);
+        return {
+          status: "rejected" as const,
+          cloid: "",
+          orderResults: [],
+          budget: reportBudget(budget),
+          detail: withBudget(refusal.summary, budget),
+          // No nonce was spent, so this one CAN be retried when the failure
+          // says so — the refusal was recorded as a sentence, and the tag and
+          // reason inside it are what decide.
+          recovery: classifyFailureMessage(refusal.summary),
+        } satisfies TradingRequestEntryResult;
+      }
+
+      return null;
+    });
+
+  const awaitOutcome: TradingExecutionOutcomeShape["awaitOutcome"] = (input) =>
+    Effect.gen(function* () {
+      // The reactor commonly finishes before this waiter starts, so look once
+      // before waiting on a signal that has already been sent.
+      const settled = yield* readSettledOutcome(input);
+      if (settled !== null) return settled;
+
+      const sweeps = Math.ceil(OUTCOME_DEADLINE_MS / FALLBACK_SWEEP_MS);
+      for (let sweep = 0; sweep < sweeps; sweep++) {
+        // Block on the reactor's own signal rather than re-asking the database.
+        // A `false` here means no signal arrived within the sweep, which is not
+        // an answer — the record still is, so it is read either way.
+        yield* receipts.awaitSettled({
+          missionId: input.missionId,
+          executionSequence: input.executionSequence,
+          timeoutMillis: FALLBACK_SWEEP_MS,
+        });
+        const answer = yield* readSettledOutcome(input);
+        if (answer !== null) return answer;
       }
 
       // Still in flight. "submitted" is the one status that says exactly that,
       // and the detail keeps the harness from reading it as a fill.
+      const budget = yield* readBudget(input);
       return {
         status: "submitted" as const,
         cloid: "",
         orderResults: [],
-        budget: yield* readBudget(input),
-        detail:
+        budget: reportBudget(budget),
+        detail: withBudget(
           "The request is still being executed. Read the position and open orders before assuming it filled.",
+          budget,
+        ),
+        // The one case that must never be retryable. A submission whose outcome
+        // is unknown may already be resting or filled at the exchange; sending
+        // it again is how one intended order becomes two real ones. The answer
+        // is to read what is actually there.
+        recovery: {
+          retryable: false,
+          action: "read_state" as const,
+          retryAfterMillis: 0,
+          reason: "outcome_unknown",
+        },
       };
     });
 

@@ -3,15 +3,19 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   CHART_VIEWBOX_HEIGHT,
   DOMAIN_PADDING_RATIO,
+  FUTURE_GUTTER_RATIO,
   GUTTER_LABEL_MIN_SEPARATION,
   MAX_DRAWN_CONDITIONS,
+  MAX_DRAWN_PAST_MARKERS,
   MIN_CANDLES_FOR_SVG,
   PLOT_WIDTH,
   computeChartGeometry,
   deriveEntryFillAtMillis,
   deriveProgressToTarget,
   deriveTargetPrice,
+  findLevelAtPrice,
   layoutGutterLabels,
+  selectVisibleCandles,
 } from "./missionChartGeometry";
 
 // ---------------------------------------------------------------------------
@@ -680,5 +684,433 @@ describe("computeChartGeometry gutter tags", () => {
 
     expect(geometry.gutterTags.some((tag) => tag.kind === "entry")).toBe(true);
     expect(geometry.gutterTags.find((tag) => tag.kind === "mark")?.mergedPrice).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// wall-clock axis
+// ---------------------------------------------------------------------------
+//
+// Without `nowMillis` the axis ends at the last candle, which means the chart
+// only moves when a bar closes — on a 1m series, once every sixty seconds, and
+// frozen in between. It also puts the mark dot exactly on the final candle at
+// the frame's right edge, where a series sliding leftward has nothing to slide
+// away from. Both are corrected by passing a clock, and NEITHER may change for
+// a caller that does not pass one: the review chart draws a closed window where
+// a wall-clock axis would be actively wrong.
+
+describe("computeChartGeometry — wall-clock axis", () => {
+  const candles = fiveWalkingCandles();
+  const lastOpenTime = candles[candles.length - 1]!.openTime;
+
+  const base = {
+    candles,
+    entryPrice: null,
+    stopPrice: null,
+    targetPrice: null,
+    liquidationPrice: null,
+    entryTime: null,
+    markPrice: 104,
+  } as const;
+
+  it("leaves the axis on the last candle without a clock", () => {
+    const geometry = computeChartGeometry(base);
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.nowX).toBe(PLOT_WIDTH);
+    expect(geometry.timeEnd).toBe(lastOpenTime);
+    expect(geometry.xForTime(lastOpenTime)).toBeCloseTo(PLOT_WIDTH, 6);
+    expect(geometry.markPoint?.x).toBe(PLOT_WIDTH);
+    // No clock, no forming bar: the mark sits on the last candle, so the
+    // segment between them would have zero length.
+    expect(geometry.livePoints).toEqual([]);
+  });
+
+  it("ends the axis at now and reserves the future gutter with a clock", () => {
+    const now = lastOpenTime + 30_000;
+    const geometry = computeChartGeometry({ ...base, nowMillis: now });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.timeEnd).toBe(now);
+    expect(geometry.nowX).toBeCloseTo(PLOT_WIDTH * (1 - FUTURE_GUTTER_RATIO), 6);
+    expect(geometry.xForTime(now)).toBeCloseTo(geometry.nowX, 6);
+    expect(geometry.markPoint?.x).toBeCloseTo(geometry.nowX, 6);
+    // The last candle is now behind the mark rather than under it.
+    expect(geometry.xForTime(lastOpenTime)).toBeLessThan(geometry.nowX);
+  });
+
+  it("slides the series left as the clock advances", () => {
+    const early = computeChartGeometry({ ...base, nowMillis: lastOpenTime + 10_000 });
+    const later = computeChartGeometry({ ...base, nowMillis: lastOpenTime + 40_000 });
+    if (early === null || later === null) throw new Error("expected geometry");
+
+    // Same bar, later clock → further left. This is the drift; the candle feed
+    // has not moved at all between these two frames.
+    expect(later.xForTime(lastOpenTime)).toBeLessThan(early.xForTime(lastOpenTime));
+  });
+
+  it("draws the forming bar from the last close to the mark", () => {
+    const now = lastOpenTime + 30_000;
+    const geometry = computeChartGeometry({ ...base, nowMillis: now });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.livePoints).toHaveLength(2);
+    const [from, to] = geometry.livePoints;
+    expect(from!.x).toBeCloseTo(geometry.xForTime(lastOpenTime), 6);
+    expect(to!.x).toBeCloseTo(geometry.nowX, 6);
+    expect(to!.y).toBeCloseTo(geometry.markPoint!.y, 6);
+  });
+
+  // A browser clock behind the server's candle stamps would otherwise run the
+  // axis backwards and put the last bar past the right edge.
+  it("trusts the candles over a clock that lags them", () => {
+    const geometry = computeChartGeometry({ ...base, nowMillis: lastOpenTime - 60_000 });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.timeEnd).toBe(lastOpenTime);
+    expect(geometry.xForTime(lastOpenTime)).toBeCloseTo(geometry.nowX, 6);
+  });
+});
+
+describe("computeChartGeometry — time markers", () => {
+  const candles = fiveWalkingCandles();
+  const firstOpenTime = candles[0]!.openTime;
+  const lastOpenTime = candles[candles.length - 1]!.openTime;
+  const now = lastOpenTime + 30_000;
+
+  const base = {
+    candles,
+    entryPrice: null,
+    stopPrice: null,
+    targetPrice: null,
+    liquidationPrice: null,
+    entryTime: null,
+    markPrice: 104,
+    nowMillis: now,
+  } as const;
+
+  it("places a future marker in the gutter, right of now", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      timeMarkers: [{ key: "reassess", label: "reassess", at: now + 60_000 }],
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    const marker = geometry.timeMarkers[0]!;
+    expect(marker.x).toBeGreaterThan(geometry.nowX);
+    expect(marker.x).toBeLessThanOrEqual(PLOT_WIDTH);
+    expect(marker.overdue).toBe(false);
+  });
+
+  // A reassessment further out than the gutter reaches still belongs on screen:
+  // pinned at the far edge says "beyond this frame", drawing it off-canvas says
+  // nothing at all.
+  it("pins a distant marker at the plot edge rather than dropping it", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      timeMarkers: [{ key: "reassess", label: "reassess", at: now + 86_400_000 }],
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.timeMarkers[0]!.x).toBe(PLOT_WIDTH);
+  });
+
+  it("marks a passed reassessment as overdue", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      timeMarkers: [{ key: "reassess", label: "reassess", at: now - 10_000 }],
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.timeMarkers[0]!.overdue).toBe(true);
+    // Clamped forward to now: an overdue event is not in the past of the axis,
+    // it is the next thing that should happen.
+    expect(geometry.timeMarkers[0]!.x).toBeCloseTo(geometry.nowX, 6);
+  });
+
+  // The rug of past events. An event before the window's first candle has no
+  // honest x — the same rule the fill markers already follow.
+  it("places past events inside the drawn window and drops the ones before it", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      pastMarkers: [
+        { key: "recent", kind: "wake", at: now - 30_000, cause: "scheduled_reassessment" },
+        { key: "ancient", kind: "wake", at: firstOpenTime - 60_000 },
+      ],
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.pastMarkers.map((marker) => marker.key)).toEqual(["recent"]);
+    expect(geometry.pastMarkers[0]!.x).toBeGreaterThan(0);
+    expect(geometry.pastMarkers[0]!.x).toBeLessThanOrEqual(geometry.nowX);
+    expect(geometry.pastMarkers[0]!.cause).toBe("scheduled_reassessment");
+  });
+
+  // Newest-first in, so the cap has to drop the OLDEST — a rug trimmed from the
+  // front would stop before the events that just happened.
+  it("caps the rug at the newest events", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      pastMarkers: Array.from({ length: MAX_DRAWN_PAST_MARKERS + 5 }, (_unused, index) => ({
+        key: `w${index}`,
+        kind: "wake",
+        at: now - index * 1_000,
+      })),
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.pastMarkers).toHaveLength(MAX_DRAWN_PAST_MARKERS);
+    expect(geometry.pastMarkers[0]!.key).toBe("w0");
+  });
+
+  it("carries the marker's tone through, defaulting to planned", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      timeMarkers: [
+        { key: "floor", label: "", at: now + 60_000, tone: "auto" as const },
+        { key: "reassess", label: "reassess", at: now + 120_000 },
+      ],
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.timeMarkers.map((marker) => marker.tone)).toEqual(["auto", "planned"]);
+  });
+
+  it("ignores markers without a clock to place them against", () => {
+    const geometry = computeChartGeometry({
+      candles,
+      entryPrice: null,
+      stopPrice: null,
+      targetPrice: null,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: 104,
+      timeMarkers: [{ key: "reassess", label: "reassess", at: lastOpenTime + 60_000 }],
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.timeMarkers).toEqual([]);
+  });
+});
+
+describe("computeChartGeometry — fill markers", () => {
+  const candles = fiveWalkingCandles();
+  const timeStart = candles[0]!.openTime;
+  const lastOpenTime = candles[candles.length - 1]!.openTime;
+
+  const base = {
+    candles,
+    entryPrice: null,
+    stopPrice: null,
+    targetPrice: null,
+    liquidationPrice: null,
+    entryTime: null,
+    markPrice: 104,
+  } as const;
+
+  it("places a fill at its own time and price", () => {
+    const at = timeStart + 120_000;
+    const geometry = computeChartGeometry({
+      ...base,
+      fills: [{ key: "a", at, price: 102, kind: "open" }],
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    const point = geometry.fillPoints[0]!;
+    expect(point.key).toBe("a");
+    expect(point.x).toBeCloseTo(geometry.xForTime(at), 6);
+    expect(point.y).toBeCloseTo(geometry.yForPrice(102), 6);
+    expect(point.kind).toBe("open");
+  });
+
+  // A closed position's two fills outlive the position row itself, which is the
+  // whole reason they are drawn: the chart is the session's record.
+  it("keeps both ends of a position that has already closed", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      fills: [
+        { key: "in", at: timeStart + 60_000, price: 101, kind: "open" },
+        { key: "out", at: timeStart + 180_000, price: 103, kind: "close_profit" },
+      ],
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.fillPoints.map((p) => p.key)).toEqual(["in", "out"]);
+    expect(geometry.fillPoints[0]!.x).toBeLessThan(geometry.fillPoints[1]!.x);
+  });
+
+  // Placing it at x=0 would claim it happened at the window's first candle.
+  it("drops a fill older than the window rather than pinning it left", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      fills: [{ key: "ancient", at: timeStart - 600_000, price: 101, kind: "open" }],
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.fillPoints).toEqual([]);
+  });
+
+  it("clamps a fill price outside the domain into the frame", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      fills: [{ key: "spike", at: lastOpenTime, price: 10_000, kind: "close_loss" }],
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    const point = geometry.fillPoints[0]!;
+    expect(point.y).toBe(0);
+    expect(point.price).toBe(10_000);
+  });
+
+  it("pins a fill newer than the axis at now", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      nowMillis: lastOpenTime + 30_000,
+      fills: [{ key: "just-now", at: lastOpenTime + 120_000, price: 104, kind: "open" }],
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.fillPoints[0]!.x).toBeCloseTo(geometry.nowX, 6);
+  });
+
+  it("draws no markers when none are passed", () => {
+    const geometry = computeChartGeometry(base);
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.fillPoints).toEqual([]);
+  });
+});
+
+describe("computeChartGeometry — pending order", () => {
+  const candles = fiveWalkingCandles();
+
+  const base = {
+    candles,
+    entryPrice: null,
+    stopPrice: null,
+    targetPrice: null,
+    liquidationPrice: null,
+    entryTime: null,
+    markPrice: 104,
+  } as const;
+
+  it("draws a resting buy as its own level kind", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      pendingOrder: { price: 101.5, side: "buy" },
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    const level = geometry.levels.find((l) => l.kind === "pending_buy");
+    expect(level?.price).toBe(101.5);
+    expect(level?.inFrame).toBe(true);
+  });
+
+  it("draws a resting sell as its own level kind", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      pendingOrder: { price: 103.5, side: "sell" },
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.levels.some((l) => l.kind === "pending_sell")).toBe(true);
+  });
+
+  it("gives the resting order a gutter tag", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      pendingOrder: { price: 101.5, side: "buy" },
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.gutterTags.some((tag) => tag.kind === "pending_buy")).toBe(true);
+  });
+
+  // The order is a price the market is expected to reach, so a window that
+  // excluded it would hide the very thing about to happen.
+  it("anchors the y-domain on the resting order's price", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      pendingOrder: { price: 97, side: "buy" },
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.domainMin).toBeLessThan(97);
+  });
+
+  it("draws no pending level when there is no resting order", () => {
+    const geometry = computeChartGeometry({ ...base, pendingOrder: null });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.levels.some((l) => l.kind.startsWith("pending"))).toBe(false);
+  });
+});
+
+describe("selectVisibleCandles", () => {
+  const series = Array.from({ length: 120 }, (_, i) => ({
+    openTime: 1_700_000_000_000 + i * 60_000,
+    close: 100 + i,
+  }));
+
+  it("draws the plain tail when nothing older has to stay in frame", () => {
+    const visible = selectVisibleCandles(series, 60, null);
+    expect(visible).toHaveLength(60);
+    expect(visible[0]!.openTime).toBe(series[60]!.openTime);
+  });
+
+  // The fill markers are the session's record; a window that cropped them would
+  // be the same as not drawing them.
+  it("widens the window to keep an older fill visible", () => {
+    const oldFill = series[10]!.openTime;
+    const visible = selectVisibleCandles(series, 60, oldFill);
+
+    expect(visible.length).toBeGreaterThan(60);
+    expect(visible[0]!.openTime).toBeLessThanOrEqual(oldFill);
+  });
+
+  it("never narrows the window for a recent fill", () => {
+    const recent = series[110]!.openTime;
+    expect(selectVisibleCandles(series, 60, recent)).toHaveLength(60);
+  });
+
+  it("gives back everything it has when the fill predates the series", () => {
+    const visible = selectVisibleCandles(series, 60, series[0]!.openTime - 600_000);
+    expect(visible).toHaveLength(series.length);
+  });
+
+  it("keeps the tail when the fill is newer than every bar", () => {
+    const visible = selectVisibleCandles(series, 60, series[119]!.openTime + 600_000);
+    expect(visible).toHaveLength(60);
+  });
+});
+
+describe("findLevelAtPrice", () => {
+  /** Three drawn levels, of the kinds a mission actually carries at once. */
+  const levels = [
+    { kind: "entry" as const, price: 1900, y: 80, inFrame: true, offScale: null },
+    { kind: "stop" as const, price: 1908.5, y: 20, inFrame: true, offScale: null },
+    { kind: "target" as const, price: 1885, y: 150, inFrame: true, offScale: null },
+  ];
+
+  it("returns the level a pill's price names", () => {
+    expect(findLevelAtPrice(levels, 1908.5)?.kind).toBe("stop");
+  });
+
+  it("tolerates the float drift of a price derived twice", () => {
+    expect(findLevelAtPrice(levels, 1908.5 + 1e-9)?.kind).toBe("stop");
+  });
+
+  it("returns null for a price the chart draws no level at", () => {
+    expect(findLevelAtPrice(levels, 1899)).toBeNull();
+  });
+
+  it("does not snap a near miss to the closest level", () => {
+    // A cent away is a different price, and lighting up the stop here would
+    // point the operator at a level they did not click.
+    expect(findLevelAtPrice(levels, 1908.51)).toBeNull();
+  });
+
+  it("returns null when nothing is drawn at all", () => {
+    expect(findLevelAtPrice([], 1900)).toBeNull();
   });
 });

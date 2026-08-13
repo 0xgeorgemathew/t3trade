@@ -43,6 +43,9 @@ export type SettleThreadInput = CommandInput<"thread.settle">;
 export type UnsettleThreadInput = CommandInput<"thread.unsettle">;
 export type SnoozeThreadInput = CommandInput<"thread.snooze">;
 export type UnsnoozeThreadInput = CommandInput<"thread.unsnooze">;
+export type PinThreadInput = CommandInput<"thread.pin">;
+export type UnpinThreadInput = CommandInput<"thread.unpin">;
+export type ReorderPinnedThreadInput = CommandInput<"thread.pin.reorder">;
 export type UpdateThreadMetadataInput = CommandInput<"thread.meta.update">;
 export type SetThreadRuntimeModeInput = CommandInput<"thread.runtime-mode.set">;
 export type SetThreadInteractionModeInput = CommandInput<"thread.interaction-mode.set">;
@@ -201,6 +204,36 @@ export const unsnoozeThread: (input: UnsnoozeThreadInput) => CommandEffect = Eff
   });
 });
 
+export const pinThread: (input: PinThreadInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.pinThread",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "thread.pin",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const unpinThread: (input: UnpinThreadInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.unpinThread",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "thread.unpin",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const reorderPinnedThread: (input: ReorderPinnedThreadInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.reorderPinnedThread",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "thread.pin.reorder",
+    commandId: yield* commandId(input),
+  });
+});
+
 export const updateThreadMetadata: (input: UpdateThreadMetadataInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.updateThreadMetadata",
 )(function* (input) {
@@ -324,6 +357,8 @@ export interface TradingMissionCreateInput {
   readonly instruction: string;
   /** Omit to have the server size the mandate from the live account value. */
   readonly allocatedCapitalUsd?: number;
+  /** The market the mission is mandated to trade. Omit for the default (ETH). */
+  readonly market?: "ETH" | "BTC";
 }
 
 export const tradingMissionCreate: (input: TradingMissionCreateInput) => CommandEffect = Effect.fn(
@@ -343,6 +378,7 @@ export const tradingMissionCreate: (input: TradingMissionCreateInput) => Command
     ...(input.allocatedCapitalUsd === undefined
       ? {}
       : { allocatedCapitalUsd: input.allocatedCapitalUsd }),
+    ...(input.market === undefined ? {} : { market: input.market }),
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
   });

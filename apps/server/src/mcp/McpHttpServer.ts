@@ -7,7 +7,8 @@ import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
-import { AiError, McpSchema, McpServer, Tool, Toolkit } from "effect/unstable/ai";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { AiError, McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import packageJson from "../../package.json" with { type: "json" };
@@ -26,6 +27,7 @@ import {
 } from "./toolkits/preview/tools.ts";
 import { TradingToolkitHandlersLive } from "./toolkits/trading/handlers.ts";
 import { TradingToolkit } from "./toolkits/trading/tools.ts";
+import * as TradingRunTelemetry from "../trading/TradingRunTelemetry.ts";
 
 const unauthorized = HttpServerResponse.jsonUnsafe(
   {
@@ -234,6 +236,22 @@ const toolErrorResult = (message: string) =>
     content: [{ type: "text", text: message }],
   });
 
+/** In-band tool outcomes that mean the requested operation did not succeed. */
+const isRejectedToolResult = (result: McpSchema.CallToolResult): boolean => {
+  if (result.isError === true) return true;
+  const content = result.structuredContent;
+  if (content === undefined) return false;
+  const outcome = content["outcome"];
+  const status = content["status"];
+  return (
+    outcome === "rejected" ||
+    outcome === "refused" ||
+    status === "rejected" ||
+    status === "refused" ||
+    status === "failed"
+  );
+};
+
 /**
  * Register a toolkit with argument coercion at the boundary.
  *
@@ -257,6 +275,10 @@ const registerToolkitLenient = Effect.fnUntraced(function* <Tools extends Record
   const registry = yield* McpServer.McpServer;
   const built = yield* toolkit;
   const services = yield* Effect.context();
+  // The decision funnel's tool-call hook. This boundary is the only place that
+  // sees every trading tool call with its outcome, which is what makes "the
+  // model never called execute" distinguishable from "the call failed".
+  const sql = yield* SqlClient.SqlClient;
   for (const tool of Object.values(built.tools)) {
     const annotations = tool.annotations;
     const toolMeta = Context.getOrUndefined(annotations, Tool.Meta);
@@ -281,51 +303,79 @@ const registerToolkitLenient = Effect.fnUntraced(function* <Tools extends Record
       }),
       annotations,
       handle: (payload: unknown) =>
-        built
-          .handle(
-            tool.name,
-            // Coercion returns `unknown`; the toolkit's handle expects the
-            // tool's decoded input type. The cast mirrors the upstream
-            // registration, which receives `payload: any` — coercion only
-            // rewrites values that satisfy the schema, so validation below is
-            // unchanged.
-            coerceToolArguments(inputSchema, payload) as never,
-          )
-          .pipe(
-            Stream.unwrap,
-            Stream.run(Sink.last()),
-            Effect.flatMap(Effect.fromOption),
-            Effect.provideContext(services),
-            Effect.map(
-              (result) =>
-                new McpSchema.CallToolResult({
-                  isError: false,
-                  structuredContent:
-                    typeof result.encodedResult === "object"
-                      ? (result.encodedResult as Record<string, unknown>)
-                      : undefined,
-                  content: [{ type: "text", text: JSON.stringify(result.encodedResult) }],
-                }),
-            ),
-            Effect.tapCause(Effect.logError),
-            Effect.catch((error: unknown) => {
-              if (AiError.isAiError(error)) {
-                const reason = error.reason;
-                return Effect.succeed(
-                  reason._tag === "ToolParameterValidationError"
-                    ? toolErrorResult(reason.message)
-                    : toolErrorResult(INTERNAL_TOOL_ERROR_MESSAGE),
-                );
-              }
-              if (isDeclaredFailure(error)) {
-                const message =
-                  error instanceof Error ? error.message : INTERNAL_TOOL_ERROR_MESSAGE;
-                return Effect.succeed(toolErrorResult(message));
-              }
-              return Effect.succeed(toolErrorResult(INTERNAL_TOOL_ERROR_MESSAGE));
-            }),
-            Effect.catchDefect(() => Effect.succeed(toolErrorResult(INTERNAL_TOOL_ERROR_MESSAGE))),
-          ),
+        Effect.withFiber((fiber) => {
+          const invocation = Context.getOrUndefined(
+            fiber.context,
+            McpInvocationContext.McpInvocationContext,
+          );
+          return built
+            .handle(
+              tool.name,
+              // Coercion returns `unknown`; the toolkit's handle expects the
+              // tool's decoded input type. The cast mirrors the upstream
+              // registration, which receives `payload: any` — coercion only
+              // rewrites values that satisfy the schema, so validation below is
+              // unchanged.
+              coerceToolArguments(inputSchema, payload) as never,
+            )
+            .pipe(
+              Stream.unwrap,
+              Stream.run(Sink.last()),
+              Effect.flatMap(Effect.fromOption),
+              Effect.provideContext(services),
+              Effect.map(
+                (result) =>
+                  new McpSchema.CallToolResult({
+                    isError: false,
+                    structuredContent:
+                      typeof result.encodedResult === "object"
+                        ? (result.encodedResult as Record<string, unknown>)
+                        : undefined,
+                    content: [{ type: "text", text: JSON.stringify(result.encodedResult) }],
+                  }),
+              ),
+              Effect.tapCause(Effect.logError),
+              Effect.catch((error: unknown) => {
+                if (AiError.isAiError(error)) {
+                  const reason = error.reason;
+                  return Effect.succeed(
+                    reason._tag === "ToolParameterValidationError"
+                      ? toolErrorResult(reason.message)
+                      : toolErrorResult(INTERNAL_TOOL_ERROR_MESSAGE),
+                  );
+                }
+                if (isDeclaredFailure(error)) {
+                  const message =
+                    error instanceof Error ? error.message : INTERNAL_TOOL_ERROR_MESSAGE;
+                  return Effect.succeed(toolErrorResult(message));
+                }
+                return Effect.succeed(toolErrorResult(INTERNAL_TOOL_ERROR_MESSAGE));
+              }),
+              Effect.catchDefect(() =>
+                Effect.succeed(toolErrorResult(INTERNAL_TOOL_ERROR_MESSAGE)),
+              ),
+              // Every call is now a `CallToolResult`, error or not — the one
+              // place that knows both the tool name and what the agent was told.
+              Effect.tap((result) =>
+                invocation === undefined
+                  ? Effect.void
+                  : TradingRunTelemetry.recordToolCall(sql, {
+                      threadId: invocation.threadId,
+                      tool: tool.name,
+                      ok: result.isError !== true,
+                      accepted: !isRejectedToolResult(result),
+                      ...(result.isError === true
+                        ? {
+                            errorMessage:
+                              result.content[0]?.type === "text"
+                                ? result.content[0].text
+                                : JSON.stringify(result.structuredContent ?? {}),
+                          }
+                        : {}),
+                    }).pipe(Effect.catchCause(() => Effect.void)),
+              ),
+            );
+        }),
     });
   }
 });
@@ -338,6 +388,7 @@ const McpTransportLive = McpServer.layerHttp({
   name: "T3 Trade",
   version: packageJson.version,
   path: "/mcp",
+  protocols: [McpProtocol.v2025_06_18],
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
 export const layer = Layer.mergeAll(

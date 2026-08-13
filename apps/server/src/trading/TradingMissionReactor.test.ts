@@ -15,7 +15,7 @@ import {
   ThreadId,
   TradingMissionId,
 } from "@t3tools/contracts";
-import { POC_DEFAULT_INSTRUCTION } from "@t3tools/trading-contracts/strategy";
+import { POC_STANDING_INSTRUCTION } from "@t3tools/trading-contracts/strategy";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -24,6 +24,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../config.ts";
 import { OrchestrationProjectionPipelineLive } from "../orchestration/Layers/ProjectionPipeline.ts";
+import * as ThreadBackgroundLiveness from "../orchestration/ThreadBackgroundLiveness.ts";
+import * as ThreadPlanProgress from "../orchestration/ThreadPlanProgress.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationEngineLive } from "../orchestration/Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "../orchestration/Layers/ProjectionSnapshotQuery.ts";
@@ -69,6 +71,10 @@ const TestLayer = TradingMissionReactorLive.pipe(
   // the honest stand-in: the lookup finds nothing and the binding falls back.
   Layer.provideMerge(makeProviderRegistryLayer()),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-reactor-" })),
+  // Upstream's projection pipeline reads per-thread background liveness and
+  // plan progress; every stack that builds it has to supply them.
+  Layer.provideMerge(ThreadBackgroundLiveness.layer),
+  Layer.provideMerge(ThreadPlanProgress.layer),
   Layer.provideMerge(SqlitePersistenceMemory),
   Layer.provideMerge(NodeServices.layer),
 );
@@ -369,7 +375,14 @@ it.layer(TestLayer)("auto-mission on the first message", (it) => {
       const projection = yield* TradingMissionProjection;
       const mission = yield* projection.getByThreadId(labThread).pipe(Effect.orDie);
       assert.ok(Option.isSome(mission), "the first message should have created a mission");
-      assert.equal(mission.value.instruction, "Scalp ETH on the 1m and tell me before you enter.");
+      // The message is the mandate and comes first; the standing operating note
+      // is appended behind it. Before this the note was resolved and then never
+      // read, so the documented default reached no mission at all.
+      assert.ok(
+        mission.value.instruction.startsWith("Scalp ETH on the 1m and tell me before you enter."),
+        "the mandate is the user's own words, unaltered and first",
+      );
+      assert.include(mission.value.instruction, POC_STANDING_INSTRUCTION);
     }).pipe(Effect.scoped),
   );
 
@@ -813,6 +826,8 @@ it.live("asks the coordinator for a run when a watch fires", () =>
       Layer.provideMerge(
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-watchfired-" }),
       ),
+      Layer.provideMerge(ThreadBackgroundLiveness.layer),
+      Layer.provideMerge(ThreadPlanProgress.layer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -896,6 +911,8 @@ it.live("reconciles before resuming a paused mission", () =>
       Layer.provideMerge(
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-resumereconcile-" }),
       ),
+      Layer.provideMerge(ThreadBackgroundLiveness.layer),
+      Layer.provideMerge(ThreadPlanProgress.layer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -989,6 +1006,8 @@ it.live("sizes a mission with no stated capital from the live account value", ()
       // the honest stand-in: the lookup finds nothing and the binding falls back.
       Layer.provideMerge(makeProviderRegistryLayer()),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-capital-" })),
+      Layer.provideMerge(ThreadBackgroundLiveness.layer),
+      Layer.provideMerge(ThreadPlanProgress.layer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -1083,6 +1102,8 @@ it.live(
         Layer.provideMerge(
           ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-protection-" }),
         ),
+        Layer.provideMerge(ThreadBackgroundLiveness.layer),
+        Layer.provideMerge(ThreadPlanProgress.layer),
         Layer.provideMerge(SqlitePersistenceMemory),
         Layer.provideMerge(NodeServices.layer),
       );

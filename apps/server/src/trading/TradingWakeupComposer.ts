@@ -36,6 +36,9 @@ import type { PersistedWatch } from "./Schemas.ts";
 import type { TradingMission } from "./Schemas.ts";
 import {
   describeArmedWatch,
+  findMisarmedEntryConditions,
+  findUnarmedEntryConditions,
+  isWaitingLikeAction,
   TradingDomainEventSummary,
   TradingHarnessWakeup,
   type TradingHarnessRunCause,
@@ -70,6 +73,9 @@ export const MAX_WAKEUP_CHARS = 5_000;
 /** Longest any single prose field survives in the wakeup projection. */
 const WAKEUP_PROSE_CHARS = 280;
 
+/** The harder per-field clip the `strategy_digest` trim rung applies. */
+const WAKEUP_DIGEST_PROSE_CHARS = 120;
+
 /** Longest any published condition/evidence list survives in the projection. */
 const WAKEUP_LIST_ENTRIES = 6;
 
@@ -79,8 +85,6 @@ const WAKEUP_ARMED_WATCHES = 12;
 
 /** Bars `recentCandles` falls back to once the cheaper rungs are exhausted. */
 const WAKEUP_TRIMMED_CANDLES = 4;
-
-const HARD_TRUNCATION_MARKER = "\n[truncated: wakeup exceeded budget — call trading_get_mission]";
 
 /**
  * The second timeframe every wakeup measures, given the mission's first.
@@ -163,7 +167,7 @@ const RENDER_SKIP_KEYS: ReadonlySet<string> = new Set([
  * dominating the payload. The form is readable as prose and parses back to the
  * same shape, so the schema round-trip stays meaningful.
  */
-const isFlatRecord = (value: unknown): boolean =>
+const isPrimitiveRecord = (value: unknown): boolean =>
   value !== null &&
   typeof value === "object" &&
   !Array.isArray(value) &&
@@ -172,11 +176,34 @@ const isFlatRecord = (value: unknown): boolean =>
       !RENDER_SKIP_KEYS.has(k) && (v === null || v === undefined || typeof v !== "object"),
   );
 
+// A record still folds onto one line when its values nest one level of
+// primitive-only records — a quantile block like `favourableUpUsd={p25=7 p50=20
+// p75=33}` reads fine inline, and the multi-line form was a third of the
+// volatility section's bulk.
+const isFlatRecord = (value: unknown): boolean =>
+  value !== null &&
+  typeof value === "object" &&
+  !Array.isArray(value) &&
+  Object.entries(value as Record<string, unknown>).every(
+    ([k, v]) =>
+      !RENDER_SKIP_KEYS.has(k) &&
+      (v === null || v === undefined || typeof v !== "object" || isPrimitiveRecord(v)),
+  );
+
 const renderFlatRecord = (value: Record<string, unknown>, indent: number): string => {
   const pad = "  ".repeat(indent);
+  const renderPrimitiveRecord = (record: Record<string, unknown>): string =>
+    Object.entries(record)
+      .filter(([, v]) => v !== null && v !== undefined)
+      .map(([k, v]) => `${k}=${String(v)}`)
+      .join(" ");
   const pairs = Object.entries(value)
     .filter(([k, v]) => !RENDER_SKIP_KEYS.has(k) && v !== null && v !== undefined)
-    .map(([k, v]) => `${k}=${String(v)}`);
+    .map(([k, v]) =>
+      typeof v === "object"
+        ? `${k}={${renderPrimitiveRecord(v as Record<string, unknown>)}}`
+        : `${k}=${String(v)}`,
+    );
   return `${pad}${pairs.join(" ")}`;
 };
 
@@ -226,8 +253,8 @@ const renderValue = (value: unknown, indent: number): string[] => {
  * Exported so the contract test can assert the rendered length stays under the
  * context budget without re-implementing the renderer.
  */
-export const renderWakeup = (wakeup: TradingHarnessWakeup): string => {
-  const rounded = roundWakeupFloats(wakeup);
+const renderWakeupProjection = (projection: Record<string, unknown>): string => {
+  const rounded = roundWakeupFloats(projection);
   const lines: string[] = ["trading-harness-wakeup"];
   const top = rounded as Record<string, unknown>;
   for (const [key, value] of Object.entries(top)) {
@@ -240,6 +267,9 @@ export const renderWakeup = (wakeup: TradingHarnessWakeup): string => {
   lines.push("mandate-and-authority: call trading_get_mission");
   return lines.join("\n");
 };
+
+export const renderWakeup = (wakeup: TradingHarnessWakeup): string =>
+  renderWakeupProjection(wakeup as unknown as Record<string, unknown>);
 
 /**
  * Keep the first `WAKEUP_LIST_ENTRIES` entries, and say how many were dropped.
@@ -294,18 +324,29 @@ const boundStrategyLists = (strategy: TradingPlanState): TradingPlanState => ({
  * lists it decides from, and the live market data it cannot re-derive from a
  * tool call goes last.
  */
+/**
+ * The hardest strategy projection: prose clipped to a line each and the
+ * evidence list replaced by a pointer. The persisted plan is untouched and one
+ * `trading_get_mission` call away.
+ */
+const digestStrategy = (strategy: TradingPlanState): TradingPlanState => {
+  const bounded: TradingPlanState = {
+    ...strategy,
+    ...boundStrategyProse(strategy, WAKEUP_DIGEST_PROSE_CHARS).strategy,
+  };
+  return {
+    ...bounded,
+    belief: {
+      ...bounded.belief,
+      evidence: ["(clipped — call trading_get_mission for the full plan)"],
+    },
+  };
+};
+
 const TRIM_LADDER: ReadonlyArray<{
   readonly name: string;
   readonly apply: (wakeup: TradingHarnessWakeup) => TradingHarnessWakeup;
 }> = [
-  {
-    name: "strategy_prose",
-    apply: (wakeup) => ({ ...wakeup, activeStrategy: boundWakeupProse(wakeup.activeStrategy) }),
-  },
-  {
-    name: "strategy_lists",
-    apply: (wakeup) => ({ ...wakeup, activeStrategy: boundStrategyLists(wakeup.activeStrategy) }),
-  },
   {
     name: "events_and_watches",
     apply: (wakeup) => ({
@@ -323,6 +364,10 @@ const TRIM_LADDER: ReadonlyArray<{
         candles: wakeup.recentCandles.candles.slice(-WAKEUP_TRIMMED_CANDLES),
       },
     }),
+  },
+  {
+    name: "strategy_digest",
+    apply: (wakeup) => ({ ...wakeup, activeStrategy: digestStrategy(wakeup.activeStrategy) }),
   },
 ];
 
@@ -344,7 +389,14 @@ export const renderBoundedWakeup = (
   readonly steps: ReadonlyArray<string>;
   readonly untrimmedChars: number;
 } => {
-  let current = wakeup;
+  // Prose and list bounding used to be the first two trim rungs, but in
+  // practice every real plan tripped them: the "full" rendering never survived
+  // to a provider anyway, so it is now the baseline projection rather than a
+  // logged trim step. The full text stays one trading_get_mission call away.
+  let current: TradingHarnessWakeup = {
+    ...wakeup,
+    activeStrategy: boundStrategyLists(boundWakeupProse(wakeup.activeStrategy)),
+  };
   let text = renderWakeup(current);
   const untrimmedChars = text.length;
   const steps: string[] = [];
@@ -357,14 +409,66 @@ export const renderBoundedWakeup = (
   }
   if (text.length <= MAX_WAKEUP_CHARS) return { text, steps, untrimmedChars };
 
-  // Last resort. The run still gets its market and position facts (they render
-  // first) and is told the rest is one tool call away.
-  steps.push("hard_truncation");
-  return {
-    text: `${text.slice(0, MAX_WAKEUP_CHARS - HARD_TRUNCATION_MARKER.length)}${HARD_TRUNCATION_MARKER}`,
-    steps,
-    untrimmedChars,
-  };
+  // Last resort is still structural: keep complete decision-critical fields
+  // and replace re-readable sections with pointers. Never cut the final string
+  // mid-field — a truncated price, condition, or JSON-shaped record is worse
+  // than an explicit omission.
+  steps.push("essential_projection");
+  const essential = renderWakeupProjection({
+    kind: current.kind,
+    missionId: current.missionId,
+    harnessRunId: current.harnessRunId,
+    cause: current.cause,
+    occurredAt: current.occurredAt,
+    triggeringWatch: current.triggeringWatch,
+    wakeReason: current.wakeReason,
+    userMessage: current.userMessage,
+    marketSnapshot: current.marketSnapshot,
+    accountSnapshot: current.accountSnapshot,
+    position: current.position,
+    recentCandles: {
+      ...current.recentCandles,
+      candles: current.recentCandles.candles.slice(-2),
+    },
+    observedVolatility: current.observedVolatility,
+    positionCosts: current.positionCosts,
+    strategy: {
+      version: current.activeStrategy.version,
+      mode: current.activeStrategy.mode,
+      direction: current.activeStrategy.direction,
+      timeframes: current.activeStrategy.timeframes,
+      currentAction: current.activeStrategy.currentAction,
+      standDownCode: current.activeStrategy.standDownCode,
+      entryConditions: current.activeStrategy.entryPlan.conditions.slice(0, 3),
+      protection: current.activeStrategy.protection,
+    },
+    armedWatches: current.armedWatches.slice(0, 6),
+    unarmedEntryConditions: current.unarmedEntryConditions,
+    misarmedEntryConditions: current.misarmedEntryConditions,
+    pendingEvents: current.pendingEvents.slice(-3),
+    omitted:
+      "call trading_get_mission for the full strategy, authority, watches, and pending state",
+  });
+  if (essential.length <= MAX_WAKEUP_CHARS) {
+    return { text: essential, steps, untrimmedChars };
+  }
+
+  steps.push("minimal_projection");
+  const minimal = renderWakeupProjection({
+    kind: current.kind,
+    missionId: current.missionId,
+    harnessRunId: current.harnessRunId,
+    cause: current.cause,
+    occurredAt: current.occurredAt,
+    market: current.marketSnapshot.market,
+    markPrice: current.marketSnapshot.markPrice,
+    position: current.position,
+    triggeringWatch: current.triggeringWatch,
+    pendingEvents: current.pendingEvents.slice(-1),
+    omitted:
+      "wakeup exceeded the context budget; call trading_get_mission and fresh market tools before deciding",
+  });
+  return { text: minimal, steps, untrimmedChars };
 };
 
 /**
@@ -601,6 +705,24 @@ const make = Effect.gen(function* () {
         .filter((persisted) => persisted.status === "active")
         .map((persisted) => describeArmedWatch(persisted, marketSnapshot.markPrice));
 
+      // Flat and waiting: the entry levels the plan names, that nothing is armed
+      // at. The runtime reports the gap and never closes it — a watch predicate
+      // comes from `MarketWatch`, never from a condition's prose.
+      const unarmedEntryConditions =
+        position.size === 0 && isWaitingLikeAction(activeStrategy.currentAction)
+          ? findUnarmedEntryConditions({
+              conditions: activeStrategy.entryPlan.conditions,
+              watches: armed,
+            })
+          : [];
+
+      // The other half of the same read: a level that IS armed, with a watch
+      // that cannot evaluate the confirmation the condition declared.
+      const misarmedEntryConditions = findMisarmedEntryConditions({
+        conditions: activeStrategy.entryPlan.conditions,
+        watches: armed,
+      });
+
       const wakeup: TradingHarnessWakeup = {
         kind: "trading-harness-wakeup",
         missionId: mission.id,
@@ -622,6 +744,8 @@ const make = Effect.gen(function* () {
         activeStrategy,
         strategyAgeMillis: Math.max(0, occurredAt - activeStrategy.updatedAt),
         armedWatches,
+        ...(unarmedEntryConditions.length === 0 ? {} : { unarmedEntryConditions }),
+        ...(misarmedEntryConditions.length === 0 ? {} : { misarmedEntryConditions }),
         pendingEvents: [...pendingEvents],
       };
 

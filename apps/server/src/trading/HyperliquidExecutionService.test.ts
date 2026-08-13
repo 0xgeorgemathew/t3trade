@@ -251,6 +251,7 @@ const previewContext = {
   currentAuthorityVersion: 1,
   expectedAuthorityVersion: 1,
   activeHarnessRunId: "run_1",
+  requestingHarnessRunId: "run_1",
   approvedExecutionWalletAddress: SIGNER_ADDR,
   bbo,
   accountObservedAt: 1_000,

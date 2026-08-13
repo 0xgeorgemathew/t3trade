@@ -17,6 +17,7 @@
  */
 import { Schema } from "effect";
 import { MarketCandle, MarketCandleInterval } from "./market.ts";
+import { ACTIVE_TRADING_POLICY, type TradingPolicy } from "./policy.ts";
 import { ExchangeMarket, Price, UnixMillis } from "./primitives.ts";
 
 /** The timeframes the momentum read covers, fastest first. */
@@ -52,8 +53,11 @@ export const SWING_PIVOT_BARS = 3;
  * Below this the window spent most of its travel undoing itself, which is
  * chop — and "chop" is a more useful answer than a direction with a small
  * number attached.
+ *
+ * Policy, not physics: read from the version in force so a calibrated value
+ * reaches this arithmetic and the playbook prose in the same change.
  */
-export const DIRECTION_SCORE_THRESHOLD = 0.15;
+export const DIRECTION_SCORE_THRESHOLD = ACTIVE_TRADING_POLICY.momentum.directionScoreThreshold;
 
 export const MomentumDirection = Schema.Literals(["up", "down", "flat"]);
 export type MomentumDirection = typeof MomentumDirection.Type;
@@ -79,6 +83,55 @@ export const MomentumImpulse = Schema.Struct({
   ageBars: Schema.Number,
 });
 export type MomentumImpulse = typeof MomentumImpulse.Type;
+
+/**
+ * Whether the last close actually went through a level, or only wicked at it.
+ *
+ * The distinction the momentum and ORB playbooks both turn on: "a 1m candle
+ * must CLOSE beyond a boundary, not merely trade through it". It was doctrine
+ * with no measurement behind it, so a harness had to eyeball candles to apply
+ * it. `wickOnly` is the failed break stated as a fact.
+ */
+export const StructureBreakout = Schema.Struct({
+  direction: Schema.Literals(["up", "down"]),
+  /** The swing the break is measured against. */
+  level: Price,
+  /** The last close is beyond the level. This is a break. */
+  closedBeyond: Schema.Boolean,
+  /** The bar traded through the level and closed back inside. This is not. */
+  wickOnly: Schema.Boolean,
+});
+export type StructureBreakout = typeof StructureBreakout.Type;
+
+/**
+ * A setup the arithmetic can see, scored, with the level it lives at.
+ *
+ * Not a recommendation and not a permission — nothing in the runtime reads
+ * these. It is the same evidence the playbooks ask the harness to assemble by
+ * hand out of six other fields, assembled once and consistently, so that "there
+ * was no setup" and "there was a setup and I did not see it" stop looking
+ * identical in the decision funnel.
+ */
+export const CandidateSetup = Schema.Struct({
+  kind: Schema.Literals(["momentum_breakout", "range_reversion", "opening_range_break"]),
+  direction: Schema.Literals(["up", "down"]),
+  interval: MarketCandleInterval,
+  /** 0 to 1. Every component that feeds it is named in `rationale`. */
+  score: Schema.Number,
+  /** The price the setup triggers at — the level to arm a watch on. */
+  level: Price,
+  /**
+   * Whether the trigger is only true on a bar close.
+   *
+   * A breakout is: a wick through the level is not the setup. A range touch is
+   * not: the boundary is the price, and waiting for the close gives back the
+   * edge. This is what decides whether the watch to arm is a `candle_close` or
+   * a `price_cross`.
+   */
+  closeConfirmed: Schema.Boolean,
+  rationale: Schema.String,
+});
+export type CandidateSetup = typeof CandidateSetup.Type;
 
 /** What one timeframe says about direction, expansion, and structure. */
 export const MomentumTimeframeContext = Schema.Struct({
@@ -124,6 +177,39 @@ export const MomentumTimeframeContext = Schema.Struct({
    */
   distanceToSwingHighUsd: Schema.optional(Schema.Number),
   distanceToSwingLowUsd: Schema.optional(Schema.Number),
+  /**
+   * Where the last close sits between the window's swing low (0) and swing
+   * high (100). Near 50 is mid-range; near an extreme is a boundary.
+   */
+  positionInRangePercent: Schema.optional(Schema.Number),
+  /**
+   * How much the swing range moved between the window's first and second half,
+   * as a percentage of the first half's height.
+   *
+   * The measurement behind "the swing range has been stable across the
+   * window" — the classify playbook's evidence for a range, which until now the
+   * harness had to assert rather than read. Low is stable. Absent when either
+   * half has no pivots to measure.
+   */
+  rangeStabilityPercent: Schema.optional(Schema.Number),
+  /**
+   * Bars whose high (or low) came within a fifth of an ATR of the swing.
+   *
+   * "Confirm the market has turned at each boundary more than once" and the
+   * ORB's "at least two touches of each boundary", as counts. One touch is a
+   * level price happened to reach; three is a level it keeps failing at.
+   */
+  swingHighTouches: Schema.optional(Schema.Number),
+  swingLowTouches: Schema.optional(Schema.Number),
+  breakout: Schema.optional(StructureBreakout),
+  /**
+   * The last impulse ended within `IMPULSE_FRESH_BARS` bars.
+   *
+   * "A momentum entry taken twenty bars after the impulse finished is not a
+   * momentum entry" — `lastImpulse.ageBars` already said so, and this is the
+   * threshold applied so two harnesses cannot pick two different ones.
+   */
+  impulseIsFresh: Schema.optional(Schema.Boolean),
 });
 export type MomentumTimeframeContext = typeof MomentumTimeframeContext.Type;
 
@@ -144,6 +230,8 @@ export const MarketStructure = Schema.Struct({
   measuredAt: UnixMillis,
   timeframes: Schema.Array(MomentumTimeframeContext),
   alignment: MomentumAlignment,
+  /** Every setup the measurements support, best score first. Often empty. */
+  setups: Schema.Array(CandidateSetup),
 });
 export type MarketStructure = typeof MarketStructure.Type;
 
@@ -193,9 +281,9 @@ const directionalEfficiency = (candles: ReadonlyArray<MarketCandle>): number => 
   return travelled === 0 ? 0 : net / travelled;
 };
 
-const callDirection = (score: number): MomentumDirection => {
-  if (score >= DIRECTION_SCORE_THRESHOLD) return "up";
-  if (score <= -DIRECTION_SCORE_THRESHOLD) return "down";
+const callDirection = (score: number, threshold: number): MomentumDirection => {
+  if (score >= threshold) return "up";
+  if (score <= -threshold) return "down";
   return "flat";
 };
 
@@ -314,11 +402,98 @@ function measurePullback(
   };
 }
 
+/**
+ * How near a bar has to come to a swing to count as having touched it.
+ *
+ * A fifth of an ATR: close enough that the market plainly reacted to the level,
+ * far enough that an exact-tick match is not required — real touches rarely
+ * print the same price twice.
+ */
+const TOUCH_TOLERANCE_ATR = 0.2;
+
+/** Bars an impulse may be old and still be the one a momentum entry is on. */
+export const IMPULSE_FRESH_BARS = 5;
+
+/** Bars whose high (or low) came within `tolerance` of `level`. */
+function countTouches(
+  candles: ReadonlyArray<MarketCandle>,
+  level: number,
+  kind: "high" | "low",
+  tolerance: number,
+): number {
+  let touches = 0;
+  for (const bar of candles) {
+    const distance = kind === "high" ? level - bar.high : bar.low - level;
+    if (distance <= tolerance && distance >= -tolerance) touches += 1;
+  }
+  return touches;
+}
+
+/**
+ * How much the swing range moved between the window's two halves.
+ *
+ * Each half is measured by its own high-to-low travel, which needs no pivots
+ * and so still answers on a window too short to hold four of them. Zero means
+ * the range is exactly as tall as it was; the classify playbook's "stable swing
+ * range" is a small number here.
+ */
+function measureRangeStability(candles: ReadonlyArray<MarketCandle>): number | undefined {
+  const half = Math.floor(candles.length / 2);
+  if (half < 2) return undefined;
+  const spanOf = (bars: ReadonlyArray<MarketCandle>) =>
+    Math.max(...bars.map((bar) => bar.high)) - Math.min(...bars.map((bar) => bar.low));
+  const first = spanOf(candles.slice(0, half));
+  const second = spanOf(candles.slice(half));
+  if (first <= 0) return undefined;
+  return (Math.abs(second - first) / first) * 100;
+}
+
+/**
+ * Whether the last bar broke a swing, and whether it stayed broken.
+ *
+ * A break is only a break on the close. A bar whose high went through the swing
+ * and whose close came back inside is the failed break both playbooks name, and
+ * it is reported as one rather than as no break at all.
+ */
+function readBreakout(
+  candles: ReadonlyArray<MarketCandle>,
+  swingHigh: number | undefined,
+  swingLow: number | undefined,
+): StructureBreakout | undefined {
+  const bar = candles[candles.length - 1];
+  if (bar === undefined) return undefined;
+
+  if (swingHigh !== undefined && (bar.close > swingHigh || bar.high > swingHigh)) {
+    return {
+      direction: "up",
+      level: swingHigh,
+      closedBeyond: bar.close > swingHigh,
+      wickOnly: bar.high > swingHigh && bar.close <= swingHigh,
+    };
+  }
+  if (swingLow !== undefined && (bar.close < swingLow || bar.low < swingLow)) {
+    return {
+      direction: "down",
+      level: swingLow,
+      closedBeyond: bar.close < swingLow,
+      wickOnly: bar.low < swingLow && bar.close >= swingLow,
+    };
+  }
+  return undefined;
+}
+
 /** Measure one timeframe. Pure arithmetic over the bars it is handed. */
-export function analyseTimeframe(input: {
-  readonly interval: MarketCandleInterval;
-  readonly candles: ReadonlyArray<MarketCandle>;
-}): MomentumTimeframeContext {
+export function analyseTimeframe(
+  input: {
+    readonly interval: MarketCandleInterval;
+    readonly candles: ReadonlyArray<MarketCandle>;
+  },
+  /**
+   * The thresholds to read with. Defaults to the version in force; a replay
+   * passes a candidate so the same bars can be re-read under other numbers.
+   */
+  policy: TradingPolicy = ACTIVE_TRADING_POLICY,
+): MomentumTimeframeContext {
   const { candles, interval } = input;
   const referencePrice = candles[candles.length - 1]?.close ?? 0;
   const ranges = trueRanges(candles);
@@ -336,6 +511,9 @@ export function analyseTimeframe(input: {
   const swingLowPrice = swingLowIndex === undefined ? undefined : candles[swingLowIndex]?.low;
 
   const directionScore = directionalEfficiency(candles);
+  const touchTolerance = atrUsd * TOUCH_TOLERANCE_ATR;
+  const rangeStabilityPercent = measureRangeStability(candles);
+  const breakout = readBreakout(candles, swingHighPrice, swingLowPrice);
 
   return {
     interval,
@@ -345,7 +523,7 @@ export function analyseTimeframe(input: {
     // is already reported as insufficient.
     referencePrice: referencePrice > 0 ? referencePrice : 1,
     directionScore,
-    direction: callDirection(directionScore),
+    direction: callDirection(directionScore, policy.momentum.directionScoreThreshold),
     atrUsd,
     atrPercent: referencePrice > 0 ? (atrUsd / referencePrice) * 100 : 0,
     ...(ranges.length >= 2 * ATR_LEG_BARS && previousAtr > 0
@@ -364,6 +542,23 @@ export function analyseTimeframe(input: {
     ...(swingLowPrice === undefined
       ? {}
       : { swingLowPrice, distanceToSwingLowUsd: referencePrice - swingLowPrice }),
+    ...(swingHighPrice !== undefined &&
+    swingLowPrice !== undefined &&
+    swingHighPrice > swingLowPrice
+      ? {
+          positionInRangePercent:
+            ((referencePrice - swingLowPrice) / (swingHighPrice - swingLowPrice)) * 100,
+        }
+      : {}),
+    ...(rangeStabilityPercent === undefined ? {} : { rangeStabilityPercent }),
+    ...(swingHighPrice === undefined
+      ? {}
+      : { swingHighTouches: countTouches(candles, swingHighPrice, "high", touchTolerance) }),
+    ...(swingLowPrice === undefined
+      ? {}
+      : { swingLowTouches: countTouches(candles, swingLowPrice, "low", touchTolerance) }),
+    ...(breakout === undefined ? {} : { breakout }),
+    ...(found === null ? {} : { impulseIsFresh: found.impulse.ageBars <= IMPULSE_FRESH_BARS }),
   };
 }
 
@@ -399,7 +594,7 @@ function readAlignment(frames: ReadonlyArray<MomentumTimeframeContext>): Momentu
       measuredTimeframes: measured.length,
       note:
         ups === 0
-          ? `all ${measured.length} measured timeframes are chopping — no directional edge to trade`
+          ? `all ${measured.length} measured timeframes are chopping — no directional edge; a stable swing range here is a range_reversion regime, not a wait`
           : `${ups} timeframes point up and ${downs} point down — the timeframes contradict each other`,
     };
   }
@@ -427,19 +622,126 @@ function readAlignment(frames: ReadonlyArray<MomentumTimeframeContext>): Momentu
  * still returned, with `sufficientData: false`, so the harness can see what was
  * missing rather than receive a shorter list than it asked for.
  */
-export function analyseMomentum(input: {
-  readonly market: string;
-  readonly measuredAt: number;
-  readonly frames: ReadonlyArray<{
-    readonly interval: MarketCandleInterval;
-    readonly candles: ReadonlyArray<MarketCandle>;
-  }>;
-}): MarketStructure {
-  const timeframes = input.frames.map(analyseTimeframe);
+export function analyseMomentum(
+  input: {
+    readonly market: string;
+    readonly measuredAt: number;
+    readonly frames: ReadonlyArray<{
+      readonly interval: MarketCandleInterval;
+      readonly candles: ReadonlyArray<MarketCandle>;
+    }>;
+  },
+  policy: TradingPolicy = ACTIVE_TRADING_POLICY,
+): MarketStructure {
+  const timeframes = input.frames.map((frame) => analyseTimeframe(frame, policy));
   return {
     market: input.market,
     measuredAt: input.measuredAt,
     timeframes,
     alignment: readAlignment(timeframes),
+    setups: findCandidateSetups(timeframes, policy),
   };
+}
+
+const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
+
+/**
+ * The setups each timeframe's measurements support.
+ *
+ * Three shapes, each with the conditions its playbook already states, applied
+ * as arithmetic rather than as prose the harness re-derives every turn. A
+ * timeframe with insufficient data contributes nothing.
+ */
+export function findCandidateSetups(
+  frames: ReadonlyArray<MomentumTimeframeContext>,
+  policy: TradingPolicy = ACTIVE_TRADING_POLICY,
+): ReadonlyArray<CandidateSetup> {
+  const setups: Array<CandidateSetup> = [];
+  const edgePercent = policy.rangeReversion.edgePercent;
+  const stabilityLimit = policy.rangeReversion.stabilityPercent;
+  const minTouches = policy.rangeReversion.minBoundaryTouches;
+
+  for (const frame of frames) {
+    if (!frame.sufficientData) continue;
+    const expansion = frame.atrExpansionRatio ?? 1;
+
+    // A break of a swing, confirmed on the close. A wick through the level is
+    // deliberately not a setup: it is the failure this measurement exists to
+    // separate out.
+    const breakout = frame.breakout;
+    if (breakout !== undefined && breakout.closedBeyond) {
+      const aligned =
+        (breakout.direction === "up" && frame.directionScore > 0) ||
+        (breakout.direction === "down" && frame.directionScore < 0);
+      // The armed breakout's own close is allowed to lead the slower
+      // direction score (the playbook states that exception explicitly), but
+      // contracting ATR is not a breakout entry. This structural gate is
+      // shared by the live setup read and replay.
+      if (expansion <= 1) continue;
+      const touches =
+        (breakout.direction === "up" ? frame.swingHighTouches : frame.swingLowTouches) ?? 0;
+      const openingRangeTested =
+        (frame.swingHighTouches ?? 0) >= policy.openingRange.minBoundaryTouches &&
+        (frame.swingLowTouches ?? 0) >= policy.openingRange.minBoundaryTouches;
+      const score = clamp01(
+        0.4 *
+          clamp01(Math.abs(frame.directionScore) / policy.momentum.directionScoreThreshold / 2) +
+          0.3 * clamp01(expansion - 1) +
+          0.2 * (frame.impulseIsFresh === true ? 1 : 0) +
+          0.1 * (aligned ? 1 : 0),
+      );
+      setups.push({
+        kind: openingRangeTested ? "opening_range_break" : "momentum_breakout",
+        direction: breakout.direction,
+        interval: frame.interval,
+        score,
+        level: breakout.level,
+        closeConfirmed: true,
+        rationale:
+          `close ${breakout.direction === "up" ? "above" : "below"} ${breakout.level} with ` +
+          `directionScore ${frame.directionScore.toFixed(2)}, atrExpansionRatio ${expansion.toFixed(2)}, ` +
+          `${touches} prior touches, impulse ${frame.impulseIsFresh === true ? "fresh" : "stale"}`,
+      });
+      continue;
+    }
+
+    // A boundary of a range that has held its height and been tested on both
+    // sides. Chop is the requirement here, not a disqualification.
+    const position = frame.positionInRangePercent;
+    const stability = frame.rangeStabilityPercent;
+    if (
+      position === undefined ||
+      stability === undefined ||
+      stability > stabilityLimit ||
+      frame.direction !== "flat" ||
+      (frame.swingHighTouches ?? 0) < minTouches ||
+      (frame.swingLowTouches ?? 0) < minTouches
+    ) {
+      continue;
+    }
+
+    const atLow = position <= edgePercent;
+    const atHigh = position >= 100 - edgePercent;
+    if (!atLow && !atHigh) continue;
+
+    const level = (atLow ? frame.swingLowPrice : frame.swingHighPrice) ?? frame.referencePrice;
+    setups.push({
+      kind: "range_reversion",
+      // Long off the floor, short off the ceiling.
+      direction: atLow ? "up" : "down",
+      interval: frame.interval,
+      score: clamp01(
+        0.6 * (1 - stability / stabilityLimit) + 0.4 * (1 - Math.abs(50 - position) / 50),
+      ),
+      level,
+      // The boundary is the price. Waiting for a close gives back the edge the
+      // range is paying for.
+      closeConfirmed: false,
+      rationale:
+        `${position.toFixed(0)}% into a range whose height moved ${stability.toFixed(0)}% across the window, ` +
+        `tested ${frame.swingLowTouches}x low and ${frame.swingHighTouches}x high`,
+    });
+  }
+
+  return [...setups].sort((left, right) => right.score - left.score);
 }

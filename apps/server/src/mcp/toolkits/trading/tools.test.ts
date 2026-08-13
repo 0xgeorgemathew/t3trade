@@ -1,6 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import {
   TRADING_CANCEL_WATCH_TOOL,
+  TRADING_ADJUST_STOP_TOOL,
   TRADING_ESTIMATE_COSTS_TOOL,
   TRADING_EXECUTE_TOOL,
   TRADING_GET_MARKET_STRUCTURE_TOOL,
@@ -20,6 +21,12 @@ import {
   TRADING_REGISTER_WATCH_TOOL,
   TRADING_RESOLVE_MARKET_TOOL,
 } from "@t3tools/trading-contracts/tools";
+import { TRADING_QUOTE_ENTRY_TOOL } from "@t3tools/trading-contracts/quote";
+import {
+  TRADING_CANCEL_ORDER_TOOL,
+  TRADING_CLOSE_POSITION_TOOL,
+  TRADING_REDUCE_POSITION_TOOL,
+} from "@t3tools/trading-contracts/exit";
 import * as Context from "effect/Context";
 import { Tool } from "effect/unstable/ai";
 
@@ -48,9 +55,14 @@ it("exposes the §14.3 mission tools, the §14.2 read tools, and the §14.4 watc
       TRADING_GET_OPEN_ORDERS_TOOL,
       TRADING_GET_PLAYBOOK_TOOL,
       TRADING_REGISTER_WATCH_TOOL,
+      TRADING_QUOTE_ENTRY_TOOL,
       TRADING_EXECUTE_TOOL,
+      TRADING_CLOSE_POSITION_TOOL,
+      TRADING_REDUCE_POSITION_TOOL,
+      TRADING_CANCEL_ORDER_TOOL,
       TRADING_LIST_WATCHES_TOOL,
       TRADING_CANCEL_WATCH_TOOL,
+      TRADING_ADJUST_STOP_TOOL,
     ].sort(),
   );
 });
@@ -77,6 +89,16 @@ it("exports provider-compatible object schemas the harness can fill in", () => {
       `${tool.name} must take an explicit missionId`,
     ).toBeDefined();
   }
+});
+
+it("advertises only the server-owned quote form for execution", () => {
+  const schema = Tool.getJsonSchema(TradingToolkit.tools[TRADING_EXECUTE_TOOL]) as {
+    readonly properties?: Readonly<Record<string, unknown>>;
+    readonly required?: ReadonlyArray<string>;
+  };
+
+  expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["missionId", "quoteId"]);
+  expect(schema.required).toContain("quoteId");
 });
 
 // The publish description states the publish contract (versioning, what a
@@ -171,6 +193,24 @@ it("tells the harness how to move a level rather than add one", () => {
   expect(register).toContain("ADDITION");
 });
 
+// The bounded stop tool is only safe because the harness can read WHY a move
+// was refused and correct it. A description that names the tool without naming
+// the rules leaves it guessing, and a guessing agent retries the same refusal.
+it("names the bounds trading_adjust_stop actually enforces", () => {
+  const adjust = TradingToolkit.tools[TRADING_ADJUST_STOP_TOOL].description ?? "";
+  // Where it sits relative to the unbounded primitive.
+  expect(adjust).toContain("trading_execute");
+  // The five policy rules, in the codes the result reports them under.
+  expect(adjust).toContain("risk_envelope");
+  expect(adjust).toContain("step_too_large");
+  expect(adjust).toContain("atr_mismatch");
+  expect(adjust).toContain("noise_floor");
+  expect(adjust).toContain("breakeven_ratchet");
+  expect(adjust).toContain("adjustment_budget");
+  // A refusal costs nothing, which is what makes trying one safe.
+  expect(adjust).toContain("Refused leaves the resting stop untouched");
+});
+
 it("marks reading as safe and publishing as non-idempotent", () => {
   const annotations = (tool: Tool.Any) => ({
     readonly: Context.get(tool.annotations, Tool.Readonly),
@@ -196,16 +236,41 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 // A description says what the tool returns and what each field means — not when
 // to call it, what to conclude, or another tool's contract. Keep the whole
 // toolkit on a budget so a verbose description cannot quietly creep back in:
-// no single description over 1,300 chars, the total under 10,000, and the tool
-// count pinned at 19 (T6 added the playbook read; this guards against a
-// regression).
+// no single description over 1,300 chars, the total under 11,400, and the tool
+// count pinned at 20.
+//
+// The total was 10,000 while there were 19 tools. Plan 24's
+// `trading_adjust_stop` is the 20th, and it pays for itself: the eight refusal
+// codes it enumerates are the tool's actual contract, and an agent that cannot
+// read them tries the same refused move again. The per-tool cap is unchanged —
+// that is the rule that actually stops verbosity; the total only tracks how
+// many tools there are.
+//
+// Plan 25 bought the last 200: `trading_publish_plan` now states that a
+// declined entry still publishes (a turn that stood down silently left the
+// mission with no thesis and no watches, so nothing woke it again), and
+// `trading_estimate_costs` asks for rates to be quoted with their units — an
+// operator read "4.5" as $4.50 and there was nothing in the tool to prevent it.
+// Steps 3 and 4 of the viability plan bought the next 1,800. `trading_quote_entry`
+// is the 21st tool, and it exists because the eight fields it derives were eight
+// ways for a correct read of the market to die on the way to an order — its own
+// description pays part of itself back by shortening `trading_execute`'s entry
+// half. `trading_get_market_structure` gained the setup evidence that used to be
+// prose in the playbooks: the touch counts, the range stability, and the
+// close-versus-wick distinction every breakout rule already turned on.
+//
+// Step 5 adds the last three: `trading_close_position`, `trading_reduce_position`
+// and `trading_cancel_order`. They are cheap to describe precisely because there
+// is nothing to describe — a close takes no arguments at all — and what their
+// descriptions do buy is the sentence a harness most needs, which is that an
+// exit works in every state an entry does not.
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 
-  expect(tools.length, "expected exactly 19 trading tools").toBe(19);
+  expect(tools.length, "expected exactly 24 trading tools").toBe(24);
 
   const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
-  expect(total, "total description chars must stay under 10,000").toBeLessThan(10_000);
+  expect(total, "total description chars must stay under 15,000").toBeLessThan(15_000);
 
   for (const tool of tools) {
     const len = (tool.description ?? "").length;

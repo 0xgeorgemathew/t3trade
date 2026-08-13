@@ -82,6 +82,7 @@ const goodCtx = (now: number, overrides: Partial<PreviewContext> = {}): PreviewC
   currentAuthorityVersion: 1,
   expectedAuthorityVersion: 1,
   activeHarnessRunId: "run_1",
+  requestingHarnessRunId: "run_1",
   approvedExecutionWalletAddress: "0xapproved",
   bbo: freshBbo(now),
   accountObservedAt: now,
@@ -100,6 +101,24 @@ const goodCtx = (now: number, overrides: Partial<PreviewContext> = {}): PreviewC
   nowMs: now,
   ...overrides,
 });
+
+/** An open long of 0.3 ETH entered at 3,700, as the budget snapshot sees it. */
+const openLong = (size = 0.3) => ({
+  missionId: "mission_1",
+  direction: "long" as const,
+  size,
+  weightedEntryPrice: 3_700,
+  stopPrice: 3_650,
+  paidFeesUsd: 0,
+  estimatedExitFeeUsd: 0,
+  stopSlippageReserveUsd: 0,
+});
+
+/** The context an exit is actually previewed in: something is open. */
+const holdingCtx = (now: number, size = 0.3): PreviewContext =>
+  goodCtx(now, {
+    budget: { ...goodCtx(now).budget, openPositions: [openLong(size)] as never },
+  });
 
 const rejectionItem = (intent: TradingOrderIntent, ctx: PreviewContext) =>
   previewOrder(intent, ctx).pipe(
@@ -171,6 +190,16 @@ describe("previewOrder — §16.3 checklist", () => {
     }),
   );
 
+  it.effect("item 5: rejects when another harness run owns the lease", () =>
+    Effect.gen(function* () {
+      const item = yield* rejectionItem(
+        goodIntent(),
+        goodCtx(now, { activeHarnessRunId: "run_2", requestingHarnessRunId: "run_1" }),
+      );
+      expect(item).toBe("harness_run_owns_lease");
+    }),
+  );
+
   it.effect("item 6: rejects a disallowed direction (direction_permitted)", () =>
     Effect.gen(function* () {
       const item = yield* rejectionItem(
@@ -185,13 +214,9 @@ describe("previewOrder — §16.3 checklist", () => {
     }),
   );
 
-  it.effect("item 7: rejects a non-ETH market (market_is_eth)", () =>
+  it.effect("item 7: rejects an intent for a market the mission is not mandated to", () =>
     Effect.gen(function* () {
-      // The intent type pins market to "ETH"; cast to simulate a bad value.
-      const item = yield* rejectionItem(
-        goodIntent({ market: "BTC" as unknown as "ETH" }),
-        goodCtx(now),
-      );
+      const item = yield* rejectionItem(goodIntent({ market: "BTC" }), goodCtx(now));
       expect(item).toBe("market_is_eth");
     }),
   );
@@ -388,7 +413,7 @@ describe("previewOrder — §16.3 checklist", () => {
       // plans no new loss.
       const preview = yield* previewOrder(
         goodIntent({ actionType: "close", side: "sell", stop: undefined, reduceOnly: true }),
-        goodCtx(now),
+        holdingCtx(now),
       );
       expect(preview.intent.stop).toBeUndefined();
       // Only the fee + slippage components remain; no planned loss.
@@ -407,7 +432,7 @@ describe("previewOrder — §16.3 checklist", () => {
           reduceOnly: true,
           stop: { stopPrice: 3_700, plannedLossAtStopUsd: 12 },
         }),
-        goodCtx(now),
+        holdingCtx(now),
       );
       expect(preview.intent.actionType).toBe("close");
     }),
@@ -417,18 +442,6 @@ describe("previewOrder — §16.3 checklist", () => {
 // ---------------------------------------------------------------------------
 // Position management through the authority (§14.5, authority flags)
 // ---------------------------------------------------------------------------
-
-/** An open long of 0.3 ETH entered at 3,700, as the budget snapshot sees it. */
-const openLong = (size = 0.3) => ({
-  missionId: "mission_1",
-  direction: "long" as const,
-  size,
-  weightedEntryPrice: 3_700,
-  stopPrice: 3_650,
-  paidFeesUsd: 0,
-  estimatedExitFeeUsd: 0,
-  stopSlippageReserveUsd: 0,
-});
 
 const withAuthority = (now: number, overrides: Record<string, unknown>, openPositions: unknown[]) =>
   goodCtx(now, {
@@ -537,6 +550,190 @@ describe("position management authority", () => {
         withAuthority(now, { allowDirectionReversal: false }, [openLong()]),
       );
       expect(preview.intent.actionType).toBe("close");
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The exit path (step 5) — an exit stays reachable under every entry restriction
+// ---------------------------------------------------------------------------
+
+/** The exit intent the guard builds: canonical side, canonical size, no stop. */
+const exitIntent = (overrides: Partial<TradingOrderIntent> = {}): TradingOrderIntent =>
+  goodIntent({
+    actionType: "close",
+    side: "sell",
+    size: 0.3,
+    stop: undefined,
+    reduceOnly: true,
+    ...overrides,
+  });
+
+describe("exits under entry restrictions", () => {
+  const now = 1_700_000_000_000;
+
+  it.effect("closes a position on a mission whose entries are switched off", () =>
+    Effect.gen(function* () {
+      const preview = yield* previewOrder(
+        exitIntent(),
+        goodCtx(now, {
+          mission: goodMission({
+            control: {
+              entriesAllowed: false,
+              reentryAllowed: false,
+              pauseAfterPositionClose: true,
+            },
+          }),
+          budget: { ...goodCtx(now).budget, openPositions: [openLong()] as never },
+        }),
+      );
+      expect(preview.intent.actionType).toBe("close");
+    }),
+  );
+
+  it.effect("closes a position on a mission blocked for cumulative loss", () =>
+    Effect.gen(function* () {
+      // The state an exit matters most in. §16.3 item 1 admits only
+      // executing/position_open, and running it over an exit meant a mission
+      // blocked for losing too much could not be flattened.
+      const preview = yield* previewOrder(
+        exitIntent(),
+        goodCtx(now, {
+          mission: goodMission({ status: "blocked", blockedReason: "cumulative_loss_limit" }),
+          budget: { ...goodCtx(now).budget, openPositions: [openLong()] as never },
+        }),
+      );
+      expect(preview.intent.actionType).toBe("close");
+    }),
+  );
+
+  it.effect("closes a position with the loss budget fully spent", () =>
+    Effect.gen(function* () {
+      const preview = yield* previewOrder(
+        exitIntent(),
+        goodCtx(now, {
+          budget: {
+            ...goodCtx(now).budget,
+            closedPnlUsd: -100,
+            openPositions: [openLong()] as never,
+          },
+        }),
+      );
+      expect(preview.intent.actionType).toBe("close");
+    }),
+  );
+
+  it.effect("closes a long under a long-only authority", () =>
+    Effect.gen(function* () {
+      // The sell that closes a long is not a short, and an authority that
+      // permits only longs must not be read as forbidding the way out of one.
+      const preview = yield* previewOrder(
+        exitIntent(),
+        withAuthority(now, { allowedDirections: ["long"] }, [openLong()]),
+      );
+      expect(preview.intent.side).toBe("sell");
+    }),
+  );
+
+  it.effect("closes a dust position the exchange minimum would have stranded", () =>
+    Effect.gen(function* () {
+      // 0.001 ETH at 3,750 is $3.75 — under the $10 minimum. Applied to an exit
+      // that check refuses the only action that removes the position.
+      const preview = yield* previewOrder(
+        exitIntent({ size: 0.001 }),
+        goodCtx(now, {
+          budget: { ...goodCtx(now).budget, openPositions: [openLong(0.001)] as never },
+        }),
+      );
+      expect(preview.intent.size).toBe(0.001);
+    }),
+  );
+
+  it.effect("refuses an exit when there is no position to exit", () =>
+    Effect.gen(function* () {
+      const rejection = yield* previewOrder(exitIntent(), goodCtx(now)).pipe(Effect.flip);
+      expect(rejection.item).toBe("position_exists");
+    }),
+  );
+
+  it.effect("still refuses an exit on a revoked mission", () =>
+    Effect.gen(function* () {
+      const rejection = yield* previewOrder(
+        exitIntent(),
+        goodCtx(now, {
+          mission: goodMission({ status: "revoked" }),
+          budget: { ...goodCtx(now).budget, openPositions: [openLong()] as never },
+        }),
+      ).pipe(Effect.flip);
+      expect(rejection.item).toBe("mission_active");
+    }),
+  );
+
+  it.effect("still refuses an exit against stale market data", () =>
+    Effect.gen(function* () {
+      // Relaxing the entry rules for exits does not relax the rules about
+      // executing one correctly: a price this old cannot size a crossing limit.
+      const rejection = yield* previewOrder(
+        exitIntent(),
+        goodCtx(now, {
+          bbo: freshBbo(now - 5_000),
+          budget: { ...goodCtx(now).budget, openPositions: [openLong()] as never },
+        }),
+      ).pipe(Effect.flip);
+      expect(rejection.item).toBe("account_and_bbo_fresh");
+    }),
+  );
+
+  it.effect("an entry still runs every one of the 17 checks", () =>
+    Effect.gen(function* () {
+      // The exit list is chosen by action type, so the entry path must be
+      // untouched by it — including the two items exits drop first.
+      const entriesOff = yield* rejectionItem(
+        goodIntent(),
+        goodCtx(now, {
+          mission: goodMission({
+            control: {
+              entriesAllowed: false,
+              reentryAllowed: true,
+              pauseAfterPositionClose: false,
+            },
+          }),
+        }),
+      );
+      expect(entriesOff).toBe("entries_allowed");
+
+      const tooSmall = yield* rejectionItem(goodIntent({ size: 0.001 }), goodCtx(now));
+      expect(tooSmall).toBe("exchange_minimum_met");
+    }),
+  );
+});
+
+describe("the budget gate measures the whole reservation", () => {
+  const now = 1_700_000_000_000;
+
+  it.effect("refuses an entry whose round-trip cost does not fit the remainder", () =>
+    Effect.gen(function* () {
+      // Planned loss $12 fits in the $12.50 remaining; the reservation does
+      // not — 0.05 ETH at 3,750 costs another $0.66 in fees and stop-slippage
+      // reserve, which is the money the old gate did not count.
+      const rejection = yield* previewOrder(
+        goodIntent(),
+        goodCtx(now, { budget: { ...goodCtx(now).budget, closedPnlUsd: -87.5 } }),
+      ).pipe(Effect.flip);
+
+      expect(rejection.item).toBe("reservations_plus_proposed_within_budget");
+      expect(rejection.detail).toContain("round-trip cost");
+    }),
+  );
+
+  it.effect("admits the same entry when the whole reservation fits", () =>
+    Effect.gen(function* () {
+      const preview = yield* previewOrder(
+        goodIntent(),
+        goodCtx(now, { budget: { ...goodCtx(now).budget, closedPnlUsd: -80 } }),
+      );
+      // What the gate tested is exactly what gets reserved.
+      expect(preview.reservedRiskUsd).toBeCloseTo(12.65625, 5);
     }),
   );
 });

@@ -37,6 +37,7 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
+import { clearSessionProfile, setSessionProfile } from "../SessionProfile.ts";
 import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
@@ -357,6 +358,30 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         effort: "high",
         serviceTier: "priority",
       });
+    }),
+  );
+
+  it.effect("carries the trading decision contract on a trading thread's turn", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("sess-trading");
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+      setSessionProfile({ threadId, kind: "trading" });
+
+      yield* Effect.ignore(adapter.sendTurn({ threadId, input: "wakeup", attachments: [] }));
+
+      const sent = runtime.sendTurnImpl.mock.calls[0]?.[0]?.input ?? "";
+      NodeAssert.ok(sent.includes("trading_publish_plan"));
+      NodeAssert.ok(sent.includes("blocked_by_data"));
+      NodeAssert.ok(sent.endsWith("wakeup"));
+      clearSessionProfile(threadId);
     }),
   );
 

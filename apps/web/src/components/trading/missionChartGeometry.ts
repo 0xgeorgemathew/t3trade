@@ -11,7 +11,7 @@
 // rules — is there to frame that shape, and the geometry below computes those
 // frames from the projection alone (never from UI state).
 
-import { readFillLifecycle } from "./tradingPresentation";
+import { readFillLifecycle, type ChartFillKind, type ChartFillMarker } from "./tradingPresentation";
 
 /** ViewBox units reserved at the right edge for price tags. */
 export const LABEL_GUTTER_WIDTH = 120;
@@ -49,6 +49,19 @@ export const GUTTER_LABEL_MERGE_DISTANCE = 6;
 /** How many armed condition levels the chart draws before it says "+N more". */
 export const MAX_DRAWN_CONDITIONS = 4;
 
+/**
+ * The share of the plot held empty to the right of "now", as a fraction.
+ *
+ * Only used when the caller passes `nowMillis` (the live panel does; the
+ * post-mortem review chart does not — a closed trade has no future). Two things
+ * need this space. The mark dot was pinned hard against the frame edge, where
+ * a series sliding leftward is invisible because there is nothing for it to
+ * slide away from. And a scheduled reassessment is a point in time *ahead* of
+ * the last candle, so without a future there is nowhere on the x axis to draw
+ * it.
+ */
+export const FUTURE_GUTTER_RATIO = 0.12;
+
 /** A point in viewBox space. */
 export interface ChartPoint {
   readonly x: number;
@@ -69,7 +82,9 @@ export type ChartLevelKind =
   | "target"
   | "liquidation"
   | "condition_above"
-  | "condition_below";
+  | "condition_below"
+  | "pending_buy"
+  | "pending_sell";
 
 /** A horizontal price level drawn across the plot. */
 export interface ChartLevel {
@@ -91,11 +106,45 @@ export interface ChartLevel {
   readonly met?: boolean;
 }
 
+/**
+ * The drawn level at a given price, or null when the chart draws none there.
+ *
+ * This is what turns a click on an "Up next" pill into a highlight: the pill
+ * carries the price, the chart carries the levels, and this is the join. The
+ * pill's price and the level's price come from the same projection field but
+ * travel through different arithmetic — a PnL watch is divided back into a
+ * price on both paths — so they are compared with a relative tolerance rather
+ * than for equality.
+ *
+ * Nothing is snapped to a merely *nearest* level: the strip can name a level
+ * the chart's domain does not reach, and lighting up the closest rule instead
+ * would point the operator at the wrong price.
+ */
+export function findLevelAtPrice(
+  levels: ReadonlyArray<ChartLevel>,
+  price: number,
+): ChartLevel | null {
+  const tolerance = Math.max(Math.abs(price), 1) * 1e-6;
+  for (const level of levels) {
+    if (Math.abs(level.price - price) <= tolerance) return level;
+  }
+  return null;
+}
+
 /** One armed price condition the chart draws as a level. */
 export interface ChartCondition {
   readonly price: number;
   readonly direction: "above" | "below";
   readonly met: boolean;
+}
+
+/** One placed fill: where on the plot the mission traded, and what it was. */
+export interface ChartFillPoint {
+  readonly key: string;
+  readonly x: number;
+  readonly y: number;
+  readonly price: number;
+  readonly kind: ChartFillKind;
 }
 
 /**
@@ -134,21 +183,95 @@ export interface ChartGeometry {
   readonly domainMax: number;
   /** Epoch millis of the first candle's openTime. */
   readonly timeStart: number;
-  /** Epoch millis of the last candle's openTime. */
+  /** Epoch millis mapped to {@link nowX} — `nowMillis`, or the last candle. */
   readonly timeEnd: number;
+  /**
+   * The x of "now": where the mark sits and the future gutter begins.
+   *
+   * Equal to `plotWidth` unless the caller passed `nowMillis`, which is what
+   * keeps the review chart's geometry byte-identical to what it was.
+   */
+  readonly nowX: number;
   readonly xForTime: (t: number) => number;
   readonly yForPrice: (p: number) => number;
   /** Closes before the entry time — the flat part of the line. */
   readonly preEntryPoints: ReadonlyArray<ChartPoint>;
   /** Closes from entry time onward — the held part of the line. */
   readonly postEntryPoints: ReadonlyArray<ChartPoint>;
+  /**
+   * The forming bar: last close → the live mark. Two points, or empty.
+   *
+   * This is the only part of the chart that moves between candle closes, and
+   * on a 1m series that is 59 seconds out of every 60. Without it the mark dot
+   * floats unattached in the future gutter and the line just stops short of it.
+   */
+  readonly livePoints: ReadonlyArray<ChartPoint>;
   readonly levels: ReadonlyArray<ChartLevel>;
-  /** Pinned at the right edge of the plot area; null when markPrice is null. */
+  /**
+   * Every fill that falls inside the drawn window, placed on the axis.
+   *
+   * The chart's record of the session's activity: each open and each close the
+   * mission has made, at the price and moment it happened. Fills older than the
+   * first candle are dropped rather than pinned to the left edge — a marker at
+   * a time it did not happen is worse than no marker.
+   */
+  readonly fillPoints: ReadonlyArray<ChartFillPoint>;
+  /** Pinned at {@link nowX}; null when markPrice is null. */
   readonly markPoint: ChartPoint | null;
   /** Every right-gutter price tag, already resolved against collisions. */
   readonly gutterTags: ReadonlyArray<GutterTag>;
+  /** Scheduled future events, placed on the x axis in the future gutter. */
+  readonly timeMarkers: ReadonlyArray<ChartTimeMarker>;
+  /** Events that already happened, placed inside the drawn window. */
+  readonly pastMarkers: ReadonlyArray<ChartPastMarker>;
   /** Armed conditions the chart did not draw, so the panel can say how many. */
   readonly droppedConditions: number;
+}
+
+/** A future moment the plan is committed to, drawn as a vertical rule. */
+export interface ChartTimeMarker {
+  readonly key: string;
+  readonly label: string;
+  /** Epoch millis the marker sits at. */
+  readonly at: number;
+  /** ViewBox x, clamped into the future gutter. */
+  readonly x: number;
+  /** True when the moment has passed but the event has not fired yet. */
+  readonly overdue: boolean;
+  /**
+   * Who put this moment on the axis: the runtime's staleness floor (`auto`) or
+   * the plan itself. Carried through untouched — the geometry has no opinion on
+   * it, the renderer draws the two differently. Defaults to `planned` so a
+   * caller that does not distinguish them gets the pre-existing treatment.
+   */
+  readonly tone: ChartTimeMarkerTone;
+}
+
+/** @see ChartTimeMarker.tone */
+export type ChartTimeMarkerTone = "auto" | "planned";
+
+/** How many past ticks the axis holds before it stops drawing them. */
+export const MAX_DRAWN_PAST_MARKERS = 20;
+
+/**
+ * Something that already happened, placed on the time axis — plan 24 §4.2.
+ *
+ * The mirror of {@link ChartTimeMarker}: that one stands in the future gutter
+ * for a moment the plan is committed to, this one stands in the drawn window
+ * for a moment that has been. A wake, a publish, a stop move — the chart is
+ * then a record of the mission's turns and not only of its price.
+ */
+export interface ChartPastMarker {
+  readonly key: string;
+  readonly kind: string;
+  /** Epoch millis the event happened at. */
+  readonly at: number;
+  /** ViewBox x, inside the drawn window. */
+  readonly x: number;
+  /** A wake's cause, for colour-coding by trigger class. */
+  readonly cause?: string;
+  /** True when the run this marker stands for did not complete. */
+  readonly failed?: boolean;
 }
 
 /** Input shape for {@link computeChartGeometry}. */
@@ -175,6 +298,53 @@ export interface ComputeChartGeometryInput {
    * `droppedConditions` for the panel to report as text.
    */
   readonly conditions?: ReadonlyArray<ChartCondition>;
+  /**
+   * The mission's fills, drawn as markers on the axis.
+   *
+   * This is how a closed position stays on the chart: its open and its close are
+   * two points in the series, and they remain there after the position itself is
+   * gone. Only the ones inside the drawn window survive `computeChartGeometry`.
+   */
+  readonly fills?: ReadonlyArray<ChartFillMarker>;
+  /**
+   * An order the agent has committed to but the book has not filled — the
+   * "I will enter long at X" the plan just announced, as a level rather than as
+   * a sentence somewhere else on the screen.
+   */
+  readonly pendingOrder?: { readonly price: number; readonly side: "buy" | "sell" } | null;
+  /**
+   * Wall-clock now, in epoch millis. Turns the x axis into a clock.
+   *
+   * Omitted, the axis ends at the last candle's openTime — which means the
+   * chart only moves when a bar closes, so a 1m series is frozen for 59 seconds
+   * at a time and the mark dot sits on top of the final candle. Supplied, the
+   * axis ends at `now`, the series slides continuously, and the space between
+   * the last close and the mark is the bar currently forming.
+   *
+   * The review chart must NOT pass this: its window is closed, and its "mark"
+   * is an exit that happened, not a price that is moving.
+   */
+  readonly nowMillis?: number;
+  /** Future moments to mark on the axis. Ignored without `nowMillis`. */
+  readonly timeMarkers?: ReadonlyArray<{
+    readonly key: string;
+    readonly label: string;
+    readonly at: number;
+    readonly tone?: ChartTimeMarkerTone;
+  }>;
+  /**
+   * Moments that have already happened, newest-first as the projection sends
+   * them. Placed inside the drawn window; anything older than the first candle
+   * is dropped rather than pinned to the left edge, for the same reason an old
+   * fill is.
+   */
+  readonly pastMarkers?: ReadonlyArray<{
+    readonly key: string;
+    readonly kind: string;
+    readonly at: number;
+    readonly cause?: string | undefined;
+    readonly failed?: boolean | undefined;
+  }>;
 }
 
 /**
@@ -239,6 +409,34 @@ export function deriveEntryFillAtMillis(
     }
   }
   return newest;
+}
+
+/**
+ * The tail of a fetched series to draw, widened to keep a moment in frame.
+ *
+ * The live chart draws fewer bars than it fetches, for resolution. That crops
+ * history, and history is where the session's earlier fills are — an entry from
+ * ninety minutes ago would fall off a sixty-bar window and take its marker with
+ * it, which is precisely the record the markers exist to keep. So the window
+ * starts at `VISIBLE_BARS` and widens, up to everything fetched, until the
+ * earliest moment that must stay visible is inside it.
+ *
+ * `earliestNeeded` of null (no fills yet) leaves the plain tail.
+ */
+export function selectVisibleCandles<T extends { readonly openTime: number }>(
+  candles: ReadonlyArray<T>,
+  visibleBars: number,
+  earliestNeeded: number | null,
+): ReadonlyArray<T> {
+  const tailStart = Math.max(0, candles.length - visibleBars);
+  if (earliestNeeded === null) return candles.slice(tailStart);
+
+  // The bar the moment falls in, minus one for a little approach context.
+  let index = candles.findIndex((candle) => candle.openTime >= earliestNeeded);
+  if (index < 0) index = candles.length - 1;
+  const wanted = Math.max(0, index - 1);
+
+  return candles.slice(Math.min(tailStart, wanted));
 }
 
 /** Hold a value inside `[min, max]`. */
@@ -359,9 +557,13 @@ const GUTTER_PRIORITY: Record<ChartLevelKind | "mark", number> = {
   entry: 1,
   stop: 2,
   target: 3,
-  liquidation: 4,
-  condition_above: 5,
-  condition_below: 5,
+  // A pending order outranks the conditions: it is the one level something is
+  // already committed to, rather than a level that would cause a decision.
+  pending_buy: 4,
+  pending_sell: 4,
+  liquidation: 5,
+  condition_above: 6,
+  condition_below: 6,
 };
 
 /**
@@ -432,6 +634,7 @@ function buildLevels(input: {
   readonly targetPrice: number | null;
   readonly liquidationPrice: number | null;
   readonly conditions: ReadonlyArray<ChartCondition>;
+  readonly pendingOrder: { readonly price: number; readonly side: "buy" | "sell" } | null;
 }): ChartLevel[] {
   const levels: ChartLevel[] = [];
 
@@ -473,6 +676,13 @@ function buildLevels(input: {
       condition.direction === "above" ? "condition_above" : "condition_below",
       condition.price,
       condition.met,
+    );
+  }
+
+  if (input.pendingOrder !== null) {
+    pushLevel(
+      input.pendingOrder.side === "buy" ? "pending_buy" : "pending_sell",
+      input.pendingOrder.price,
     );
   }
 
@@ -521,11 +731,15 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
   );
 
   // --- y-domain: candle range ∪ the levels near enough to it, padded. ------
+  const pendingOrder = input.pendingOrder ?? null;
   const anchors = collectDomainAnchors(candles, [
     ...(entryPrice === null ? [] : [entryPrice]),
     ...(stopPrice === null ? [] : [stopPrice]),
     ...(targetPrice === null ? [] : [targetPrice]),
     ...conditions.map((condition) => condition.price),
+    // A resting order sits at a price the market is expected to reach, so it is
+    // an anchor on the same terms as the levels above it.
+    ...(pendingOrder === null ? [] : [pendingOrder.price]),
   ]);
   let rawMin = anchors[0]!;
   let rawMax = anchors[0]!;
@@ -546,14 +760,23 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
   const domainMax = rawMax + pad;
   const paddedSpan = domainMax - domainMin;
 
-  // --- x-domain: first candle openTime .. last candle openTime. ------------
+  // --- x-domain: first candle openTime .. now (or the last candle). --------
+  //
+  // `nowX` is where the axis's end lands. With a clock it stops short of the
+  // plot's right edge, leaving the future gutter empty; without one it is the
+  // right edge, which is the behaviour the review chart depends on.
   const timeStart = candles[0]!.openTime;
-  const timeEnd = candles[candles.length - 1]!.openTime;
+  const lastCandleTime = candles[candles.length - 1]!.openTime;
+  const hasClock = input.nowMillis !== undefined;
+  // A clock behind the last bar would run the axis backwards. Trust the data
+  // over the browser's clock when they disagree.
+  const timeEnd = hasClock ? Math.max(input.nowMillis!, lastCandleTime) : lastCandleTime;
+  const nowX = hasClock ? PLOT_WIDTH * (1 - FUTURE_GUTTER_RATIO) : PLOT_WIDTH;
   const timeSpan = timeEnd - timeStart;
 
   const xForTime = (t: number): number => {
     if (timeSpan <= 0) return 0;
-    return ((t - timeStart) / timeSpan) * PLOT_WIDTH;
+    return ((t - timeStart) / timeSpan) * nowX;
   };
 
   // Inverted: higher price → smaller y → top of SVG.
@@ -595,7 +818,24 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     targetPrice,
     liquidationPrice,
     conditions,
+    pendingOrder,
   });
+
+  // --- fills: the session's activity, placed on the axis. ------------------
+  // A fill before the window's first candle has no honest x, so it is dropped;
+  // one after `timeEnd` (a fill landing between the mission poll and the clock
+  // tick) is pinned at now. The y is clamped for the same reason the mark's is.
+  const fillPoints: ChartFillPoint[] = [];
+  for (const fill of input.fills ?? []) {
+    if (fill.at < timeStart) continue;
+    fillPoints.push({
+      key: fill.key,
+      x: clamp(xForTime(fill.at), 0, nowX),
+      y: clamp(yForPrice(fill.price), 0, CHART_VIEWBOX_HEIGHT),
+      price: fill.price,
+      kind: fill.kind,
+    });
+  }
 
   // --- mark point: pinned at the right edge of the plot. -------------------
   //
@@ -606,8 +846,51 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
   // true price, so a pinned dot means "off the top/bottom of this frame".
   const markPoint: ChartPoint | null =
     markPrice !== null
-      ? { x: PLOT_WIDTH, y: clamp(yForPrice(markPrice), 0, CHART_VIEWBOX_HEIGHT) }
+      ? { x: nowX, y: clamp(yForPrice(markPrice), 0, CHART_VIEWBOX_HEIGHT) }
       : null;
+
+  // --- the forming bar: last close → the mark. -----------------------------
+  // Only with a clock: without one the mark sits exactly on the last candle
+  // and this segment would have zero length.
+  const lastPoint =
+    postEntryPoints[postEntryPoints.length - 1] ??
+    preEntryPoints[preEntryPoints.length - 1] ??
+    null;
+  const livePoints: ReadonlyArray<ChartPoint> =
+    hasClock && markPoint !== null && lastPoint !== null ? [lastPoint, markPoint] : [];
+
+  // --- future markers, placed in the gutter to the right of now. -----------
+  const timeMarkers: ChartTimeMarker[] = hasClock
+    ? (input.timeMarkers ?? []).map((marker) => ({
+        key: marker.key,
+        label: marker.label,
+        at: marker.at,
+        // Clamped to the plot's right edge: a reassessment further out than
+        // the gutter reaches still belongs on screen, pinned at the far edge,
+        // rather than drawn off-canvas or silently dropped.
+        x: clamp(xForTime(marker.at), nowX, PLOT_WIDTH),
+        overdue: marker.at <= timeEnd,
+        tone: marker.tone ?? "planned",
+      }))
+    : [];
+
+  // --- past markers: the mission's own turns, on the same axis. ------------
+  // Only the ones inside the drawn window: an event before the first candle has
+  // no honest x, and the cap keeps a mission that woke two hundred times from
+  // fencing its own price line in. Newest-first in, so the cap drops the oldest.
+  const pastMarkers: ChartPastMarker[] = [];
+  for (const marker of input.pastMarkers ?? []) {
+    if (pastMarkers.length >= MAX_DRAWN_PAST_MARKERS) break;
+    if (marker.at < timeStart || marker.at > timeEnd) continue;
+    pastMarkers.push({
+      key: marker.key,
+      kind: marker.kind,
+      at: marker.at,
+      x: clamp(xForTime(marker.at), 0, nowX),
+      ...(marker.cause === undefined ? {} : { cause: marker.cause }),
+      ...(marker.failed === undefined ? {} : { failed: marker.failed }),
+    });
+  }
 
   return {
     viewBoxWidth: CHART_VIEWBOX_WIDTH,
@@ -618,13 +901,18 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     domainMax,
     timeStart,
     timeEnd,
+    nowX,
     xForTime,
     yForPrice,
     preEntryPoints,
     postEntryPoints,
+    livePoints,
     levels,
+    fillPoints,
     markPoint,
     gutterTags: buildGutterTags(levels, markPoint, markPrice),
+    timeMarkers,
+    pastMarkers,
     droppedConditions,
   };
 }

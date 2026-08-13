@@ -17,6 +17,7 @@
  */
 import {
   MarketWatch,
+  TradingMarket,
   TradingPlanState,
   PersistedWatch,
   PersistedWatchStatus,
@@ -40,6 +41,10 @@ import {
 
 export const TradingMissionId = Schema.String.pipe(Schema.brand("TradingMissionId"));
 export type TradingMissionId = typeof TradingMissionId.Type;
+
+// Re-exported so orchestration.ts can type the composer's per-thread market
+// choice without importing the trading spec package directly.
+export { TradingMarket };
 
 // -- execution read-model views (PROMPT-04 Step 10) --------------------------
 
@@ -82,8 +87,8 @@ export const TradingFillView = Schema.Struct({
    * "Long > Short". Absent on fills recorded before this was carried.
    *
    * The receipt needs it because `side` alone does not say what happened — a
-   * sell opens a short and closes a long — and the receipt list is capped at
-   * three orders, so the UI cannot recover it by walking the position itself.
+   * sell opens a short and closes a long — and the position snapshot carries
+   * only the current exposure, so the UI cannot recover it by walking back.
    */
   direction: Schema.optional(Schema.String),
   tradedAt: IsoDateTime,
@@ -157,9 +162,9 @@ export type TradingMarketChartView = typeof TradingMarketChartView.Type;
 /**
  * The completion summary card's figures (§14.7 risk chrome).
  *
- * Aggregated across ALL of the mission's fills, not the three the receipt list
- * shows: a summary that only counted recent fills would understate a mission
- * that traded more than three times.
+ * Aggregated across ALL of the mission's fills, not the capped set the receipt
+ * list carries: a summary that only counted recent fills would understate a
+ * mission that traded more times than the cap.
  */
 export const TradingMissionResultView = Schema.Struct({
   /** Realised PnL the exchange attributed to this mission's fills. */
@@ -172,6 +177,32 @@ export const TradingMissionResultView = Schema.Struct({
   lastFillAt: Schema.NullOr(IsoDateTime),
 });
 export type TradingMissionResultView = typeof TradingMissionResultView.Type;
+
+/**
+ * One thing that already happened to the mission — plan 24 §4.2.
+ *
+ * The rest of the read model is current state: the watches armed now, the
+ * position held now, the stop resting now. None of it can say that the stop
+ * walked up behind a winner in four steps, or that the last five wakes were all
+ * the staleness floor rearming itself. Those facts sit in three different domain
+ * tables, and this is the one array that spares every client the join.
+ *
+ * Bounded server-side: history grows without limit and this rides a 3s poll.
+ */
+export const TradingMissionTimelineEntry = Schema.Struct({
+  at: IsoDateTime,
+  kind: Schema.Literals(["wake", "stop_adjusted", "strategy_published"]),
+  /** Already-composed prose, so the client renders rather than interprets. */
+  label: TrimmedNonEmptyString,
+  /** The price the event happened at, where it had one — a stop step's new stop. */
+  priceLevel: Schema.optional(Schema.Number),
+  /**
+   * A wake's run cause, verbatim, for colour-coding by trigger class. Absent on
+   * every other kind.
+   */
+  cause: Schema.optional(TrimmedNonEmptyString),
+});
+export type TradingMissionTimelineEntry = typeof TradingMissionTimelineEntry.Type;
 
 // -- read model --------------------------------------------------------------
 
@@ -230,6 +261,12 @@ export const OrchestrationTradingMission = Schema.Struct({
   leverage: Schema.optional(Schema.Number),
   /** Realised result across every fill, for the completion summary card. */
   result: TradingMissionResultView,
+  /**
+   * What has already happened, newest first and bounded — plan 24 §4.2.
+   *
+   * Empty for a mission that has not woken, published, or moved a stop yet.
+   */
+  missionTimeline: Schema.Array(TradingMissionTimelineEntry),
 
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -254,6 +291,8 @@ export const TradingMissionCreateCommand = Schema.Struct({
   instruction: TrimmedNonEmptyString,
   /** Omit to have the server resolve the mandate from the live account value. */
   allocatedCapitalUsd: Schema.optional(Schema.Number),
+  /** The market the mission is mandated to trade. Omit for the default (ETH). */
+  market: Schema.optional(TradingMarket),
   createdAt: IsoDateTime,
 });
 
@@ -427,6 +466,26 @@ export const TradingExecutionRequestedCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * The stop on an open position was moved by the bounded policy tool - plan 24 §5.
+ *
+ * Only an *accepted* adjustment raises this: a refusal is agent feedback and
+ * leaves the resting stop exactly where it was. Carrying both prices is what
+ * lets the timeline and the chart draw the step rather than only the level.
+ */
+export const TradingMissionStopAdjustedCommand = Schema.Struct({
+  type: Schema.Literal("trading.mission.stop-adjusted"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  missionId: TradingMissionId,
+  market: TrimmedNonEmptyString,
+  previousStopPrice: Schema.Number,
+  newStopPrice: Schema.Number,
+  /** Why the harness said it was moving the stop. Recorded, never trusted. */
+  justification: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
 export const InternalTradingCommand = Schema.Union([
   TradingMissionStatusSetCommand,
   TradingMissionStrategyPublishedCommand,
@@ -434,6 +493,7 @@ export const InternalTradingCommand = Schema.Union([
   TradingMissionWatchCancelledCommand,
   TradingMissionWatchFiredCommand,
   TradingMissionRunStartedCommand,
+  TradingMissionStopAdjustedCommand,
   TradingExecutionRequestedCommand,
 ]);
 export type InternalTradingCommand = typeof InternalTradingCommand.Type;
@@ -458,6 +518,8 @@ export const TradingMissionCreateRequestedPayload = Schema.Struct({
    * was created without one.
    */
   allocatedCapitalUsd: Schema.optional(Schema.Number),
+  /** The market the mission is mandated to trade. Absent means the default (ETH). */
+  market: Schema.optional(TradingMarket),
   requestedAt: IsoDateTime,
 });
 
@@ -536,6 +598,16 @@ export const TradingMissionRunStartedPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+export const TradingMissionStopAdjustedPayload = Schema.Struct({
+  missionId: TradingMissionId,
+  threadId: ThreadId,
+  market: TrimmedNonEmptyString,
+  previousStopPrice: Schema.Number,
+  newStopPrice: Schema.Number,
+  justification: TrimmedNonEmptyString,
+  updatedAt: IsoDateTime,
+});
+
 /**
  * A harness asked the reactor to execute an order. The reactor runs the §17.2
  * write side (preview → submit → reconcile); this event is the question, the
@@ -560,5 +632,6 @@ export const TRADING_EVENT_TYPES = [
   "trading.mission-watch-cancelled",
   "trading.mission-watch-fired",
   "trading.mission-run-started",
+  "trading.mission-stop-adjusted",
   "trading.execution-requested",
 ] as const;

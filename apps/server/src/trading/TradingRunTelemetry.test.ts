@@ -1,0 +1,321 @@
+// @effect-diagnostics preferSchemaOverJson:off - fixture rows are raw JSON columns, read and written as text.
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { assert, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+
+import { runMigrations } from "../persistence/Migrations.ts";
+import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import {
+  readDecisionFunnel,
+  readEnrichmentEvidence,
+  recordExchangeOutcome,
+  recordExecutionRefusal,
+  recordToolCall,
+  settleRunDecision,
+} from "./TradingRunTelemetry.ts";
+
+const layer = it.layer(Layer.provideMerge(NodeSqliteClient.layerMemory(), NodeServices.layer));
+
+const THREAD = "thread_1";
+const MISSION = "mission_1";
+
+const harnessJson = JSON.stringify({
+  provider: "claude",
+  providerInstanceId: "instance_1",
+  threadId: THREAD,
+  model: "claude-opus-5",
+  status: "available",
+});
+
+/**
+ * A mission with one open run, and optionally the plan it published. The rest
+ * of the trading tables are irrelevant to the funnel, so nothing else is seeded.
+ */
+const seed = (input?: { readonly plan?: Record<string, unknown> }) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: 53 });
+    yield* sql`DELETE FROM trading_missions`;
+    yield* sql`DELETE FROM trading_harness_runs`;
+    yield* sql`DELETE FROM momentum_strategy_versions`;
+
+    const strategyVersion = input?.plan === undefined ? 0 : 1;
+    yield* sql`
+      INSERT INTO trading_missions (
+        mission_id, user_id, trading_account_id, instruction, market, strategy_family,
+        harness_json, status, control_json, authority_version, strategy_version, version,
+        created_at, updated_at
+      ) VALUES (
+        ${MISSION}, 'local', 'acct_1', 'Trade ETH', 'ETH', 'momentum',
+        ${harnessJson}, 'analysing', '{}', 3, ${strategyVersion}, 1, 1000, 1000
+      )
+    `;
+    if (input?.plan !== undefined) {
+      yield* sql`
+        INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+        VALUES (${MISSION}, 1, ${JSON.stringify(input.plan)}, 1000)
+      `;
+    }
+    yield* sql`
+      INSERT INTO trading_harness_runs (run_id, mission_id, cause, status, started_at, created_at)
+      VALUES ('run_1', ${MISSION}, 'scheduled_reassessment', 'starting', 1000, 1000)
+    `;
+  });
+
+const readRun = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<Record<string, unknown>>`
+    SELECT * FROM trading_harness_runs WHERE run_id = 'run_1'
+  `;
+  return rows[0]!;
+});
+
+const standDownPlan = {
+  mode: "stand_down",
+  standDownCode: "insufficient_volatility",
+  entryPlan: { conditions: [] },
+  protection: { targetProfitBasis: { insufficientVolatility: true } },
+};
+
+const waitingPlan = {
+  mode: "breakout_continuation",
+  entryPlan: { conditions: [{ priceLevel: 2_000 }] },
+  protection: { targetProfitBasis: { insufficientVolatility: false } },
+};
+
+const costStandDownPlan = {
+  ...standDownPlan,
+  standDownCode: "costs_exceed_target",
+};
+
+layer("TradingRunTelemetry", (it) => {
+  it.effect("records the tools a run called, and the first one that failed", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed();
+
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_get_mission", ok: true });
+      yield* recordToolCall(sql, {
+        threadId: THREAD,
+        tool: "trading_get_market_snapshot",
+        ok: false,
+        errorMessage: "market data unavailable\nstack",
+      });
+      yield* recordToolCall(sql, {
+        threadId: THREAD,
+        tool: "trading_estimate_costs",
+        ok: false,
+        errorMessage: "no book",
+      });
+
+      const run = yield* readRun;
+      assert.deepStrictEqual(JSON.parse(String(run["tools_called_json"])), [
+        "trading_get_mission",
+        "trading_get_market_snapshot",
+        "trading_estimate_costs",
+      ]);
+      assert.strictEqual(run["tool_error_count"], 2);
+      assert.strictEqual(
+        run["first_tool_error"],
+        "trading_get_market_snapshot: market data unavailable",
+      );
+      assert.strictEqual(run["published_plan"], 0);
+      assert.strictEqual(run["execute_attempted"], 0);
+    }),
+  );
+
+  it.effect("drops a tool call that belongs to no open run", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed();
+      yield* sql`UPDATE trading_harness_runs SET status = 'completed' WHERE run_id = 'run_1'`;
+
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_get_mission", ok: true });
+
+      const run = yield* readRun;
+      assert.strictEqual(run["tools_called_json"], null);
+    }),
+  );
+
+  it.effect("does not count an in-band rejected publish as published or as a transport error", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      yield* recordToolCall(sql, {
+        threadId: THREAD,
+        tool: "trading_publish_plan",
+        ok: true,
+        accepted: false,
+      });
+
+      const run = yield* readRun;
+      assert.strictEqual(run["published_plan"], 0);
+      assert.strictEqual(run["tool_error_count"], 0);
+    }),
+  );
+
+  it.effect("settles a published stand-down as no_setup", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed({ plan: standDownPlan });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
+
+      yield* settleRunDecision(sql, { runId: "run_1", completedAt: 4_000 });
+
+      const run = yield* readRun;
+      assert.strictEqual(run["outcome"], "no_setup");
+      assert.strictEqual(run["stand_down_code"], "insufficient_volatility");
+      assert.strictEqual(run["provider"], "claude");
+      assert.strictEqual(run["model"], "claude-opus-5");
+      assert.strictEqual(run["market"], "ETH");
+      assert.strictEqual(run["playbook"], "stand_down");
+      assert.strictEqual(run["authority_version"], 3);
+      assert.strictEqual(run["latency_ms"], 3_000);
+    }),
+  );
+
+  it.effect("records the accepted publish's explicit stand-down code", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed({ plan: costStandDownPlan });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
+
+      yield* settleRunDecision(sql, { runId: "run_1", completedAt: 4_000 });
+      const run = yield* readRun;
+      assert.strictEqual(run["outcome"], "no_setup");
+      assert.strictEqual(run["stand_down_code"], "costs_exceed_target");
+    }),
+  );
+
+  it.effect("settles a published thesis with armed levels as waiting_with_setup", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed({ plan: waitingPlan });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
+
+      yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
+
+      const run = yield* readRun;
+      assert.strictEqual(run["outcome"], "waiting_with_setup");
+      assert.strictEqual(run["stand_down_code"], "awaiting_trigger");
+    }),
+  );
+
+  it.effect("separates a failed read from a turn that simply published nothing", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed();
+      yield* recordToolCall(sql, {
+        threadId: THREAD,
+        tool: "trading_get_market_snapshot",
+        ok: false,
+        errorMessage: "internal server error",
+      });
+
+      yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
+      assert.strictEqual((yield* readRun)["outcome"], "blocked_by_data");
+
+      yield* seed();
+      yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
+      const silent = yield* readRun;
+      assert.strictEqual(silent["outcome"], "no_decision");
+      assert.strictEqual(silent["stand_down_code"], "not_published");
+    }),
+  );
+
+  it.effect("settles a refused attempt as execution_refused, and a filled one as entered", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed({ plan: waitingPlan });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_execute", ok: true });
+      yield* recordExecutionRefusal(sql, {
+        missionId: MISSION,
+        reason: "planned_loss_within_per_position_ceiling refused",
+      });
+
+      yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
+      const refused = yield* readRun;
+      assert.strictEqual(refused["outcome"], "execution_refused");
+      assert.strictEqual(refused["stand_down_code"], "preview_refused");
+      assert.strictEqual(refused["execute_attempted"], 1);
+
+      yield* seed({ plan: waitingPlan });
+      yield* recordExchangeOutcome(sql, { missionId: MISSION, action: "open", status: "filled" });
+      yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
+      assert.strictEqual((yield* readRun)["outcome"], "entered");
+
+      yield* seed({ plan: waitingPlan });
+      yield* recordExchangeOutcome(sql, {
+        missionId: MISSION,
+        action: "close",
+        status: "succeeded",
+      });
+      yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
+      assert.strictEqual((yield* readRun)["outcome"], "managed_position");
+
+      yield* seed({ plan: waitingPlan });
+      yield* recordExchangeOutcome(sql, {
+        missionId: MISSION,
+        action: "open",
+        status: "rejected",
+      });
+      yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
+      const exchangeRejected = yield* readRun;
+      assert.strictEqual(exchangeRejected["outcome"], "execution_refused");
+      assert.strictEqual(exchangeRejected["stand_down_code"], "exchange_rejected");
+    }),
+  );
+
+  it.effect("settles exactly once per run", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed({ plan: standDownPlan });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
+      yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
+
+      // A second release must not rewrite the decision the first one recorded.
+      yield* recordExchangeOutcome(sql, { missionId: MISSION, action: "open", status: "filled" });
+      yield* settleRunDecision(sql, { runId: "run_1", completedAt: 9_000 });
+
+      const run = yield* readRun;
+      assert.strictEqual(run["outcome"], "no_setup");
+      assert.strictEqual(run["latency_ms"], 1_000);
+    }),
+  );
+
+  it.effect("reports the funnel grouped by outcome and provider", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed({ plan: standDownPlan });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
+      yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
+
+      const funnel = yield* readDecisionFunnel(sql, { missionId: MISSION });
+      assert.strictEqual(funnel.length, 1);
+      assert.strictEqual(funnel[0]?.outcome, "no_setup");
+      assert.strictEqual(funnel[0]?.provider, "claude");
+      assert.strictEqual(funnel[0]?.runs, 1);
+      assert.strictEqual(funnel[0]?.publishes, 1);
+      assert.strictEqual(funnel[0]?.executeAttempts, 0);
+    }),
+  );
+
+  // Step 7 authorises volume, open interest, and funding features only if the
+  // stand-down record shows they are what is limiting decisions. One run is not
+  // that record, and the answer has to say so rather than reading as a no.
+  it.effect("answers the enrichment question from the record, not from a hunch", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed({ plan: standDownPlan });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
+      yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
+
+      const evidence = yield* readEnrichmentEvidence(sql, { missionId: MISSION });
+      assert.strictEqual(evidence.warranted, false);
+      assert.strictEqual(evidence.sampleRuns, 1);
+      assert.include(evidence.reason, "anecdote");
+    }),
+  );
+});

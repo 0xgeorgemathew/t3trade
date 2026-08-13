@@ -1,30 +1,25 @@
 /**
  * The trading pills in the composer footer.
  *
- * A mission-bound thread carries three facts the user needs while typing: where
- * the order would go, what the mandate allows it to risk, and whether entries
- * are permitted at all. They sit beside the harness picker because that is
- * where the composer already answers "what will happen when I press send".
+ * A mission-bound thread carries two facts the user needs while typing: where
+ * the order would go, and whether entries are permitted at all. They sit beside
+ * the harness picker because that is where the composer already answers "what
+ * will happen when I press send".
  *
- * All three are read-only. Editing the mandate means an authority patch, which
+ * Both are read-only. Editing the mandate means an authority patch, which
  * the spec puts in a later phase; a pill that appeared editable and silently
  * did nothing would be worse than one that plainly reports.
  *
  * @module MissionComposerControls
  */
 import type { OrchestrationTradingMission } from "@t3tools/contracts";
-import { CircleDollarSignIcon, ShieldIcon, ZapIcon, type LucideIcon } from "lucide-react";
+import { CircleDollarSignIcon, ZapIcon, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { ComposerControl, ComposerControlIcon } from "../chat/ComposerControl";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Separator } from "../ui/separator";
-import {
-  describeEntryPermission,
-  describeMandate,
-  describeTradingAccount,
-  formatUsd,
-} from "./tradingPresentation";
+import { describeEntryPermission, describeTradingAccount } from "./tradingPresentation";
 
 /** A read-only composer pill that explains itself when pressed. */
 function MissionPill({
@@ -68,7 +63,7 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 export function MissionComposerControls({ mission }: { mission: OrchestrationTradingMission }) {
-  const { authority, control } = mission;
+  const { control } = mission;
 
   return (
     <>
@@ -83,23 +78,6 @@ export function MissionComposerControls({ mission }: { mission: OrchestrationTra
         <Row label="Market" value={mission.market} />
         <p className="text-xs text-muted-foreground">
           Orders from this thread are placed on this account only.
-        </p>
-      </MissionPill>
-
-      <MissionPill icon={ShieldIcon} label={describeMandate(authority)} title="Mandate">
-        <Row label="Allocated capital" value={formatUsd(authority.allocatedCapitalUsd)} />
-        <Row label="Maximum gross notional" value={formatUsd(authority.maximumGrossNotionalUsd)} />
-        <Row label="Maximum leverage" value={`${authority.maximumLeverage}x`} />
-        <Row
-          label="Maximum cumulative loss"
-          value={formatUsd(authority.maximumCumulativeLossUsd)}
-        />
-        <Row
-          label="Risk per position"
-          value={formatUsd(authority.maximumPlannedRiskPerPositionUsd)}
-        />
-        <p className="text-xs text-muted-foreground">
-          The mandate is set when the mission is created and is read-only here.
         </p>
       </MissionPill>
 

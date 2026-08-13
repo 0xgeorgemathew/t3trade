@@ -12,20 +12,27 @@ import {
   type TradingGetMissionResult,
   type TradingRequestEntryInput,
 } from "@t3tools/trading-contracts/tools";
+import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
+import { classifyFailure, type FailureRecovery } from "@t3tools/trading-contracts/recovery";
 import { CommandId, ThreadId, TradingMissionId } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 
 import type { TradingMission } from "../../../trading/Schemas.ts";
 import type { PersistedWatch } from "../../../trading/Schemas.ts";
 import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
+import { TradingExitService } from "../../../trading/TradingExitService.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
+import { TradingQuoteService } from "../../../trading/TradingQuoteService.ts";
+import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
+import { allocateExecutionSequence } from "../../../trading/TradingExecutionSequence.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import type { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
@@ -364,12 +371,76 @@ const announceWatchCancelled = Effect.fn("TradingToolkit.announceWatchCancelled"
 );
 
 /**
+ * Put an accepted stop move on the WS push path.
+ *
+ * Only accepted ones: a refusal is agent feedback about a stop that never
+ * moved, and announcing it would draw a step on the chart for something that
+ * did not happen.
+ */
+const announceStopAdjusted = Effect.fn("TradingToolkit.announceStopAdjusted")(function* (input: {
+  readonly threadId: string;
+  readonly missionId: string;
+  readonly market: string;
+  readonly previousStopPrice: number;
+  readonly newStopPrice: number;
+  readonly justification: string;
+}) {
+  const engine = yield* OrchestrationEngineService;
+  const crypto = yield* Crypto.Crypto;
+  const commandId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+  const createdAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+
+  yield* engine
+    .dispatch({
+      type: "trading.mission.stop-adjusted",
+      commandId: CommandId.make(commandId),
+      threadId: ThreadId.make(input.threadId),
+      missionId: TradingMissionId.make(input.missionId),
+      market: input.market,
+      previousStopPrice: input.previousStopPrice,
+      newStopPrice: input.newStopPrice,
+      justification: input.justification,
+      createdAt,
+    })
+    // The stop is already resting on the exchange; failing to announce it costs
+    // the UI a refresh, not the protection.
+    .pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("could not announce a stop adjustment to the orchestration engine", {
+          missionId: input.missionId,
+          cause,
+        }),
+      ),
+    );
+});
+
+/**
+ * What a refused quote consumption means for the next move.
+ *
+ * A stale price wants a new price; everything else wants the harness to look at
+ * what is actually true before deciding again. None of the four is retryable —
+ * repeating a call with the same dead quote id produces the same refusal.
+ */
+const classifyQuoteRefusal = (reason: string): FailureRecovery =>
+  reason === "quote_expired"
+    ? { retryable: false, action: "re_quote", retryAfterMillis: 0, reason }
+    : { retryable: false, action: "read_state", retryAfterMillis: 0, reason };
+
+/** An execution whose intent and versions are already settled. */
+interface ResolvedExecuteInput {
+  readonly missionId?: string | undefined;
+  readonly intent: TradingOrderIntent;
+  readonly expectedAuthorityVersion: number;
+  readonly activeHarnessRunId: string;
+}
+
+/**
  * Submit one execution intent and wait for what actually happened to it.
  *
  * Shared by `trading_execute` and its older alias `trading_request_entry` —
  * one implementation, so the two names can never drift into two behaviours.
  */
-const executeIntent = (input: TradingRequestEntryInput) =>
+const executeIntent = (input: ResolvedExecuteInput) =>
   Effect.gen(function* () {
     const { threadId, mission } = yield* resolveBoundCall(input.missionId);
     const engine = yield* OrchestrationEngineService;
@@ -407,6 +478,110 @@ const executeIntent = (input: TradingRequestEntryInput) =>
       fallbackTakerFeeBpsPerSide: mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
       masterAddress,
     });
+  });
+
+/**
+ * The two ways an execution can be named, resolved to one.
+ *
+ * A `quoteId` is turned back into the intent the server itself built for it —
+ * including the execution sequence, which is what makes a repeated execute
+ * idempotent: the same sequence derives the same cloid, so the exchange sees
+ * one order however many times the harness asks.
+ */
+const executeFromQuoteOrIntent = (input: TradingRequestEntryInput) =>
+  Effect.gen(function* () {
+    if (input.quoteId !== undefined) {
+      const { mission } = yield* resolveBoundCall(input.missionId);
+      const quotes = yield* TradingQuoteService;
+      const consumed = yield* quotes.consume({ quoteId: input.quoteId, missionId: mission.id });
+      if (consumed.outcome === "refused") {
+        return {
+          status: "rejected" as const,
+          cloid: "",
+          orderResults: [],
+          budget: { remainingCumulativeLossUsd: 0, exhausted: false },
+          detail: `${consumed.reason}: ${consumed.detail}`,
+          // A quote that aged out wants a fresh one; a lease that moved on
+          // wants the mission read. Neither is worth retrying unchanged, and
+          // saying so is what stops the harness from doing it anyway.
+          recovery: classifyQuoteRefusal(consumed.reason),
+        };
+      }
+      return yield* executeIntent({
+        missionId: mission.id,
+        intent: consumed.intent,
+        expectedAuthorityVersion: consumed.expectedAuthorityVersion,
+        activeHarnessRunId: consumed.activeHarnessRunId,
+      });
+    }
+
+    return {
+      status: "rejected" as const,
+      cloid: "",
+      orderResults: [],
+      budget: { remainingCumulativeLossUsd: 0, exhausted: false },
+      detail:
+        "full intents are no longer executable because their sequence, authority version, and lease identity are caller-owned; use trading_quote_entry + trading_execute { quoteId } for entries, or the dedicated close/reduce/cancel/adjust-stop tool",
+      recovery: {
+        retryable: false,
+        action: "read_state" as const,
+        retryAfterMillis: 0,
+        reason: "legacy_intent_disabled",
+      },
+    };
+  });
+
+/**
+ * Run one exit: size it from the canonical position, then execute it.
+ *
+ * The three exit tools do not go through `trading_execute` because the thing
+ * that makes them worth having is that they cannot be called wrongly. There is
+ * no intent to hand-build, so there is no side to get backwards, no size to
+ * exceed the position, no version to be stale, and no sequence to collide. What
+ * the server cannot derive — nothing is held, no order was named — comes back
+ * as a refusal in the same result shape, so a harness reads one outcome type
+ * for every write it makes.
+ */
+const executeExit = (request: {
+  readonly missionId: string | undefined;
+  readonly kind: "close" | "reduce" | "cancel";
+  readonly market?: string | undefined;
+  readonly sizeEth?: number | undefined;
+  readonly fraction?: number | undefined;
+  readonly cloid?: string | undefined;
+}) =>
+  Effect.gen(function* () {
+    const { mission } = yield* resolveBoundCall(request.missionId);
+    const exits = yield* TradingExitService;
+    const prepared = yield* exits.prepare({ ...request, missionId: mission.id });
+
+    if (prepared.outcome === "refused") {
+      return {
+        status: "rejected" as const,
+        cloid: "",
+        orderResults: [],
+        budget: { remainingCumulativeLossUsd: 0, exhausted: false },
+        detail: `${prepared.reason}: ${prepared.detail}`,
+        recovery: classifyFailure({ reason: prepared.reason }),
+      };
+    }
+
+    const executed = yield* executeIntent({
+      missionId: mission.id,
+      intent: prepared.intent,
+      expectedAuthorityVersion: prepared.expectedAuthorityVersion,
+      activeHarnessRunId: prepared.activeHarnessRunId,
+    });
+
+    // A size the server changed — clamped, or promoted past the dust threshold
+    // — has to travel with the outcome, or the harness sizes its next decision
+    // against the number it asked for rather than the one that went out.
+    if (prepared.note === null) return executed;
+    return {
+      ...executed,
+      detail:
+        executed.detail === undefined ? prepared.note : `${executed.detail}; ${prepared.note}`,
+    };
   });
 
 const handlers = {
@@ -463,7 +638,170 @@ const handlers = {
       return published;
     }),
 
-  trading_execute: (input) => executeIntent(input),
+  /**
+   * Price, size, and pre-check one entry, then hand back a token.
+   *
+   * Everything `trading_execute` used to demand of the harness is derived here
+   * from state the server owns; the harness supplies only what it can actually
+   * see — a side, a stop, and how much it wants on.
+   */
+  trading_quote_entry: (input) =>
+    Effect.gen(function* () {
+      const { mission } = yield* resolveBoundCall(input.missionId);
+      const quotes = yield* TradingQuoteService;
+      return yield* quotes.quote({
+        missionId: mission.id,
+        market: input.market,
+        side: input.side,
+        stopPrice: input.stopPrice,
+        sizeEth: input.sizeEth,
+        notionalUsd: input.notionalUsd,
+        actionType: input.actionType,
+        orderPreference: input.orderPreference,
+      });
+    }),
+
+  trading_execute: (input) => executeFromQuoteOrIntent(input),
+
+  /**
+   * Flatten the whole position. Takes a market and nothing else.
+   *
+   * See `executeExit` for why the three exit tools go through their own path
+   * rather than through `trading_execute`'s intent.
+   */
+  trading_close_position: (input) =>
+    executeExit({ missionId: input.missionId, kind: "close", market: input.market }),
+
+  trading_reduce_position: (input) =>
+    executeExit({
+      missionId: input.missionId,
+      kind: "reduce",
+      market: input.market,
+      sizeEth: input.sizeEth,
+      fraction: input.fraction,
+    }),
+
+  trading_cancel_order: (input) =>
+    executeExit({ missionId: input.missionId, kind: "cancel", cloid: input.cloid }),
+
+  /**
+   * The bounded stop move (plan 24 §5).
+   *
+   * Two steps and no third: the policy decides, and an approved decision goes
+   * out as an ordinary `modify_stop` intent. Nothing here re-implements the
+   * replacement — the confirm-before-cancel sequence, the §17.5 escalation and
+   * the execution record are the same ones `trading_execute` produces.
+   */
+  trading_adjust_stop: (input) =>
+    Effect.gen(function* () {
+      const { threadId, mission } = yield* resolveBoundCall(input.missionId);
+      const adjustments = yield* TradingStopAdjustmentService;
+      const decision = yield* adjustments
+        .evaluate({
+          missionId: mission.id,
+          market: input.market,
+          newStopPrice: input.newStopPrice,
+          observedAtrUsd: input.observedAtrUsd,
+          expectedVersion: input.expectedVersion,
+        })
+        .pipe(Effect.orDie);
+
+      if (decision.outcome === "refused") {
+        yield* Effect.logInfo("trading stop adjustment refused", {
+          missionId: mission.id,
+          refusalCode: decision.refusalCode,
+          detail: decision.detail,
+        });
+        return {
+          status: "refused" as const,
+          refusalCode: decision.refusalCode,
+          previousStop: decision.previousStop,
+          newStop: decision.newStop,
+          detail: decision.detail,
+        };
+      }
+
+      const sql = yield* SqlClient.SqlClient;
+      const activeRuns = yield* sql<{ readonly run_id: string }>`
+          SELECT run_id FROM trading_harness_runs
+          WHERE mission_id = ${mission.id} AND status NOT IN ('completed', 'failed')
+          ORDER BY started_at DESC
+          LIMIT 1
+        `.pipe(Effect.orDie);
+      const activeHarnessRunId = activeRuns[0]?.run_id;
+      if (activeHarnessRunId === undefined) {
+        return {
+          status: "refused" as const,
+          refusalCode: "replacement_failed" as const,
+          previousStop: decision.previousStop,
+          newStop: decision.newStop,
+          detail: "no harness run currently owns the decision lease",
+        };
+      }
+      const executionSequence = yield* allocateExecutionSequence(sql, mission.id).pipe(
+        Effect.orDie,
+      );
+
+      const executed = yield* executeIntent({
+        missionId: mission.id,
+        intent: {
+          missionId: mission.id,
+          strategyVersion: input.expectedVersion,
+          executionSequence,
+          actionType: "modify_stop",
+          market: input.market,
+          // A stop reduces, so it rests on the side that closes the position.
+          side: decision.positionSize > 0 ? "sell" : "buy",
+          size: Math.abs(decision.positionSize),
+          orderPreference: "resting_limit",
+          limitPrice: input.newStopPrice,
+          stop: {
+            stopPrice: input.newStopPrice,
+            plannedLossAtStopUsd: decision.plannedLossAtStopUsd,
+          },
+          reduceOnly: true,
+        },
+        expectedAuthorityVersion: mission.authorityVersion,
+        activeHarnessRunId,
+      });
+
+      if (executed.status !== "succeeded") {
+        return {
+          status: "refused" as const,
+          refusalCode: "replacement_failed" as const,
+          previousStop: decision.previousStop,
+          newStop: decision.newStop,
+          detail: executed.detail ?? `the replacement ended ${executed.status}`,
+        };
+      }
+
+      yield* adjustments
+        .record({
+          missionId: mission.id,
+          market: input.market,
+          previousStopPrice: decision.previousStop,
+          newStopPrice: decision.newStop,
+          justification: input.justification,
+        })
+        .pipe(Effect.orDie);
+      yield* announceStopAdjusted({
+        threadId,
+        missionId: mission.id,
+        market: input.market,
+        previousStopPrice: decision.previousStop,
+        newStopPrice: decision.newStop,
+        justification: input.justification,
+      });
+
+      return {
+        status: "adjusted" as const,
+        previousStop: decision.previousStop,
+        newStop: decision.newStop,
+        stopDistanceUsd: decision.stopDistanceUsd,
+        plannedLossAtStopUsd: decision.plannedLossAtStopUsd,
+        remainingAdjustments: decision.remainingAdjustments,
+      };
+    }),
 
   // -- §14.2 read-only market-data tools -------------------------------------
   //
@@ -538,19 +876,42 @@ const handlers = {
     Effect.gen(function* () {
       // The fee rate is per-wallet, so this one needs the bound mission: both
       // to resolve the master address and to read the authority's fallback rate.
-      const { mission } = yield* resolveBoundCall(input.missionId);
+      const { mission, threadId } = yield* resolveBoundCall(input.missionId);
       const missions = yield* TradingMissionService;
       const masterAddress = yield* missions
         .getMasterWalletAddress(mission.tradingAccountId)
         .pipe(Effect.orDie);
       const estimator = yield* TradingCostEstimator;
-      return yield* estimator.estimate({
-        market: input.market,
-        masterAddress,
-        sizeEth: input.sizeEth,
-        notionalUsd: input.notionalUsd,
-        fallbackTakerFeeBpsPerSide: mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
-      });
+      return yield* estimator
+        .estimate({
+          market: input.market,
+          masterAddress,
+          sizeEth: input.sizeEth,
+          notionalUsd: input.notionalUsd,
+          fallbackTakerFeeBpsPerSide: mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
+        })
+        .pipe(
+          // The mark and the book are what the estimate is made of. Without
+          // them there is no lower bound worth reporting, so this refuses in
+          // the harness's own vocabulary rather than dying as a defect — a
+          // refused call is retried, an opaque crash is not.
+          Effect.catchTag("TradingCostDataUnavailableError", (error) =>
+            Effect.logInfo("trading tool call rejected", {
+              reason: "market_data_unavailable",
+              threadId,
+              market: error.market,
+              cause: String(error.cause),
+            }).pipe(
+              Effect.andThen(
+                new TradingToolRejectedError({
+                  reason: "market_data_unavailable",
+                  threadId,
+                  ...(input.missionId === undefined ? {} : { missionId: input.missionId }),
+                }),
+              ),
+            ),
+          ),
+        );
     }),
 
   trading_get_market_structure: (input) =>

@@ -36,3 +36,9 @@ node_modules/
 *.log
 .env*
 !.env.example
+
+# local working files, not part of the product tree
+.claude/
+.plans/
+artifacts/reports/
+artifacts/t3-trade-report/

@@ -56,6 +56,7 @@ import type {
   ResolvedMarket,
 } from "@t3tools/trading-contracts/market";
 import type { AgentOpenOrder } from "@t3tools/trading-contracts/account-snapshot";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -69,6 +70,8 @@ import * as Stream from "effect/Stream";
 import { ServerConfig, deriveServerPaths } from "../src/config.ts";
 import { OrchestrationEngineLive } from "../src/orchestration/Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "../src/orchestration/Layers/ProjectionPipeline.ts";
+import * as ThreadBackgroundLiveness from "../src/orchestration/ThreadBackgroundLiveness.ts";
+import * as ThreadPlanProgress from "../src/orchestration/ThreadPlanProgress.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "../src/orchestration/Layers/ProjectionSnapshotQuery.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../src/persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../src/persistence/Layers/OrchestrationEventStore.ts";
@@ -138,8 +141,14 @@ const NOW = "2026-08-01T00:00:00.000Z";
 // --- recording fake exchange ------------------------------------------------
 interface RecordingExchange {
   submitted: SignedAction[];
+  positionSize: number;
+  filledAt: number | null;
 }
-const recordingExchange: RecordingExchange = { submitted: [] };
+const recordingExchange: RecordingExchange = {
+  submitted: [],
+  positionSize: 0,
+  filledAt: null,
+};
 
 /**
  * The real `/exchange` order response: rows nested under `response.data`,
@@ -203,16 +212,32 @@ const recordProtectiveLegs = (signed: SignedAction): void => {
   }
 };
 
+/** Apply the filled entry leg to the fake's canonical account state. */
+const recordFilledEntry = (signed: SignedAction, filledAt: number): void => {
+  const orders = (signed.action as { orders?: ReadonlyArray<unknown> }).orders ?? [];
+  const entry = orders.find((leg) => {
+    const order = leg as { r?: boolean; t?: { trigger?: unknown } };
+    return order.r !== true && order.t?.trigger === undefined;
+  }) as { b?: boolean; s?: string } | undefined;
+  if (entry === undefined) return;
+
+  const size = Number(entry.s ?? 0);
+  recordingExchange.positionSize += entry.b === true ? size : -size;
+  recordingExchange.filledAt = filledAt;
+};
+
 const recordingExchangeLayer = Layer.succeed(HyperliquidExchangeClient, {
   submit: (signed: SignedAction) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
+      const filledAt = yield* Clock.currentTimeMillis;
       recordingExchange.submitted.push(signed);
+      recordFilledEntry(signed, filledAt);
       recordProtectiveLegs(signed);
       return OK_FILLED;
     }),
 } as unknown as HyperliquidExchangeClient["Service"]);
 
-// --- fake gateway: ETH market + fresh BBO + a filled position ---------------
+// --- fake gateway: ETH market + fresh BBO + exchange-owned position state ---
 const ethMarket = {
   symbol: "ETH",
   assetIndex: 1,
@@ -250,22 +275,26 @@ const fakeGatewayLayer = Layer.succeed(HyperliquidGateway, {
   getMarketSnapshot: (() => Effect.die("not used")) as never,
   getMarketHistory: (() => Effect.die("not used")) as never,
   getAccountSnapshot: () =>
-    Effect.succeed({
+    Effect.sync(() => ({
       masterAddress: MASTER_ADDR,
+      accountValue: 100,
       marginSummary: { accountValue: "100", totalMarginUsed: "1500" },
       withdrawable: "0",
-      positions: [
-        {
-          market: "ETH",
-          size: 0.5,
-          entryPrice: 3001,
-          unrealisedPnl: 0,
-          cumulativeFunding: "0",
-          marginUsed: "1500",
-          liquidationPx: undefined,
-        },
-      ],
-    }),
+      positions:
+        recordingExchange.positionSize === 0
+          ? []
+          : [
+              {
+                market: "ETH",
+                size: recordingExchange.positionSize,
+                entryPrice: 3001,
+                unrealisedPnl: 0,
+                cumulativeFunding: "0",
+                marginUsed: "1500",
+                liquidationPx: undefined,
+              },
+            ],
+    })),
   getPosition: (() => Effect.die("not used")) as never,
   getOpenOrders: () => Effect.sync(() => restingProtection),
   getTakerFeeRateBps: () => Effect.succeed({ feeBps: 4.5, observedAt: 1_000 }),
@@ -303,19 +332,23 @@ const fakeInfoClientLayer = Layer.succeed(HyperliquidInfoClient, {
     }),
   openOrders: () => Effect.succeed([]),
   userFills: () =>
-    Effect.succeed([
-      {
-        coin: "ETH",
-        side: "B",
-        px: "3001",
-        sz: "0.5",
-        time: 1_000,
-        fee: "0.07",
-        oid: 999,
-        cloid: undefined,
-        hash: "0xtestfillreach",
-      },
-    ]),
+    Effect.sync(() =>
+      recordingExchange.filledAt === null
+        ? []
+        : [
+            {
+              coin: "ETH",
+              side: "B",
+              px: "3001",
+              sz: "0.5",
+              time: recordingExchange.filledAt,
+              fee: "0.07",
+              oid: 999,
+              cloid: undefined,
+              hash: "0xtestfillreach",
+            },
+          ],
+    ),
   userFees: () => Effect.succeed({ userCrossRate: "0.00045" }),
 } as unknown as HyperliquidInfoClient["Service"]);
 
@@ -338,6 +371,7 @@ const fakeWebSocketLayer = Layer.succeed(HyperliquidWebSocketClient, {
 // (mirroring runtimeLayer.ts, swapping the HTTP clients for the recording
 // fakes). This does not modify runtimeLayer.ts; it composes the same live
 // service layers around a faked foundation.
+import { TradingExecutionReceiptsLive } from "../src/trading/TradingExecutionReceipts.ts";
 import { TradingMissionServiceLive } from "../src/trading/TradingMissionService.ts";
 import { TradingStrategyServiceLive } from "../src/trading/TradingStrategyService.ts";
 import { TradingWatchServiceLive } from "../src/trading/TradingWatchService.ts";
@@ -376,6 +410,9 @@ const tradingFoundationWithFakes = Layer.mergeAll(
   fakeGatewayLayer,
   fakeInfoClientLayer,
   fakeWebSocketLayer,
+  // The reactor opens an execution latch; the outcome service waits on it. One
+  // instance, as in runtimeLayer.ts, or the two never meet.
+  TradingExecutionReceiptsLive,
   HyperliquidNonceCoordinatorLive(),
   NodeCrypto.layer,
 );
@@ -457,6 +494,11 @@ function buildLayer(workspaceDir: string, rootDir: string, dbPath: string) {
     // finds nothing and the binding falls back.
     Layer.provideMerge(makeProviderRegistryLayer()),
     Layer.provideMerge(ServerConfig.layerTest(workspaceDir, rootDir)),
+    // Upstream's projection pipeline now reads per-thread background liveness
+    // and plan progress, so every layer stack that builds it has to supply
+    // them — including the fork's own integration harnesses.
+    Layer.provideMerge(ThreadBackgroundLiveness.layer),
+    Layer.provideMerge(ThreadPlanProgress.layer),
     Layer.provideMerge(makeSqlitePersistenceLive(dbPath)),
     Layer.provideMerge(NodeServices.layer),
   );
@@ -703,6 +745,9 @@ it.live(
                   //    commandId generation; the command shape is identical — see
                   //    handlers.ts trading_request_entry.)
                   recordingExchange.submitted.length = 0;
+                  recordingExchange.positionSize = 0;
+                  recordingExchange.filledAt = null;
+                  restingProtection.length = 0;
                   yield* engine.dispatch({
                     type: "trading.execution.requested",
                     commandId: commandId("exec-request"),

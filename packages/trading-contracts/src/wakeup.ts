@@ -18,7 +18,12 @@ import { TradingHarnessRunCause } from "./mission.ts";
 import { TradingId, TradingText, UnixMillis } from "./primitives.ts";
 import { TradingPlanState, TradingTimeframe } from "./strategy.ts";
 import { ObservedVolatility } from "./volatility.ts";
-import { PersistedWatch, WatchArmedReason } from "./watch.ts";
+import {
+  MisarmedEntryCondition,
+  PersistedWatch,
+  UnarmedEntryCondition,
+  WatchArmedReason,
+} from "./watch.ts";
 
 /**
  * A coalesced inbox event as a resumed run sees it - spec §18.1.
@@ -192,20 +197,43 @@ export const TradingHarnessWakeup = Schema.Struct({
    * it. Absent when the cost read failed; `degraded` marks a partial one.
    */
   positionCosts: Schema.optional(TradingCostEstimate),
-  activeStrategy: TradingPlanState,
-  /**
-   * How long ago the active strategy was published, in milliseconds.
-   *
-   * A thesis has a shelf life and the harness cannot read one from a version
-   * number. This is the number that says "you wrote this forty minutes ago on a
-   * 1m chart" without a second tool call.
-   */
-  strategyAgeMillis: Schema.Number,
   /**
    * Every watch still armed for this mission, with the distance from the
    * current mark for the two types that carry a level.
+   *
+   * Declared (and therefore rendered) BEFORE `activeStrategy`: when a wakeup
+   * exceeds its budget the renderer truncates from the tail, and the armed
+   * levels are the one thing a woken run cannot re-derive from
+   * `trading_get_mission` prose. The strategy echo is the re-readable part, so
+   * it takes the truncation risk instead.
    */
   armedWatches: Schema.Array(WakeupArmedWatch),
+  /**
+   * Entry conditions the published plan names a price level for, while the
+   * mission is flat, with no watch armed at that level.
+   *
+   * Waiting is a decision with content, and the content has to be armed to mean
+   * anything: a plan that says "come back if price reaches 1899" and arms
+   * nothing there is waiting blind between backstop wakes. The runtime never
+   * arms these itself — predicates come from `MarketWatch`, not from prose — so
+   * this is the gap, handed back to the run that can close it with one
+   * `trading_register_watch`. Absent while a position is open, and empty when
+   * every named level is armed.
+   */
+  unarmedEntryConditions: Schema.optional(Schema.Array(UnarmedEntryCondition)),
+  /**
+   * Entry conditions armed with a watch that cannot evaluate the evidence they
+   * declared — a close-confirmed breakout armed as a `price_cross`, or a range
+   * touch armed as a `candle_close`.
+   *
+   * The first is why a mission gets woken by the wick that fails: the level was
+   * crossed, the candle closed back inside, and the turn spent on it could only
+   * conclude nothing happened. The runtime does not re-arm these itself; it
+   * reports the mismatch so the next turn can move the watch with one
+   * `trading_register_watch` carrying `replacesWatchId`. Empty when every
+   * declared confirmation matches what is armed.
+   */
+  misarmedEntryConditions: Schema.optional(Schema.Array(MisarmedEntryCondition)),
   /**
    * The user's mandate: hard rails, fixed for the life of the mission. Sized
    * from the account value when the mission was created and deliberately not
@@ -218,6 +246,15 @@ export const TradingHarnessWakeup = Schema.Struct({
    */
   authority: Schema.optional(TradingAuthority),
   pendingEvents: Schema.Array(TradingDomainEventSummary),
+  activeStrategy: TradingPlanState,
+  /**
+   * How long ago the active strategy was published, in milliseconds.
+   *
+   * A thesis has a shelf life and the harness cannot read one from a version
+   * number. This is the number that says "you wrote this forty minutes ago on a
+   * 1m chart" without a second tool call.
+   */
+  strategyAgeMillis: Schema.Number,
   instruction: Schema.optional(TradingText),
   /**
    * The timeframe to work on unless the instruction names another. Published on

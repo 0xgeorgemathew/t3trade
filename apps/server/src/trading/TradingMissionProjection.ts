@@ -14,6 +14,7 @@
  * @module TradingMissionProjection
  */
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -22,7 +23,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ThreadId, TradingMissionId } from "@t3tools/contracts";
-import type { OrchestrationTradingMission } from "@t3tools/contracts";
+import type { OrchestrationTradingMission, TradingMissionTimelineEntry } from "@t3tools/contracts";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import {
@@ -33,6 +34,7 @@ import {
   TradingMissionBlockedReason,
   TradingMissionControl,
   TradingMissionStatus,
+  WatchArmedReason,
 } from "./Schemas.ts";
 
 export interface TradingMissionProjectionShape {
@@ -76,6 +78,7 @@ const decodeMarketWatchJson = Schema.decodeUnknownSync(
 const decodeStatus = Schema.decodeUnknownSync(TradingMissionStatus);
 const decodeBlockedReason = Schema.decodeUnknownSync(TradingMissionBlockedReason);
 const decodeWatchStatus = Schema.decodeUnknownSync(PersistedWatch.fields.status);
+const decodeArmedReason = Schema.decodeUnknownSync(WatchArmedReason);
 
 /**
  * Decode one mission's persisted strategy, degrading to "no strategy" when the
@@ -93,6 +96,11 @@ const decodeWatchStatus = Schema.decodeUnknownSync(PersistedWatch.fields.status)
  */
 const loggedUndecodableStrategies = new Set<string>();
 
+/** A persisted strategy row that no longer decodes against the current schema. */
+class UndecodableStrategyError extends Data.TaggedError("UndecodableStrategyError")<{
+  readonly cause: unknown;
+}> {}
+
 const readStrategy = (row: {
   readonly mission_id: string;
   readonly strategy_json: string | null;
@@ -104,9 +112,9 @@ const readStrategy = (row: {
   }
   return Effect.try({
     try: () => decodeStrategyJson(strategyJson),
-    catch: (cause) => cause,
+    catch: (cause) => new UndecodableStrategyError({ cause }),
   }).pipe(
-    Effect.catch((cause) => {
+    Effect.catch(({ cause }) => {
       const key = `${row.mission_id}:${row.strategy_version}`;
       if (loggedUndecodableStrategies.has(key)) {
         return Effect.succeed(null);
@@ -184,9 +192,10 @@ interface FillRow {
 /**
  * The mission's realised result, aggregated across every fill.
  *
- * Separate from `recentFills` because the receipt list is capped at three: a
- * completion summary built from that cap would understate any mission that
- * traded more than three times.
+ * Separate from `recentFills` because that list is capped at all: a completion
+ * summary built from a capped list would understate any mission that traded
+ * more times than the cap. It is also grouped by order there, so its row count
+ * is orders, not fills.
  */
 interface MissionResultRow {
   readonly realized_pnl: number | null;
@@ -222,6 +231,95 @@ interface ExecutionSurfaces {
   readonly result: MissionResultRow;
 }
 
+/**
+ * How many history entries the mission view carries — plan 24 §4.2.
+ *
+ * The three sources grow for as long as the mission lives and this rides a 3s
+ * poll, so the cap is the payload guard. Fifty is a few hours of a busy 1m
+ * mission: enough that the chart's past axis and the thread's wake rows are
+ * never short, far below anything that would matter on the wire.
+ */
+export const MISSION_TIMELINE_LIMIT = 50;
+
+/** A harness run, as the timeline reads it. */
+interface HarnessRunRow {
+  readonly run_id: string;
+  readonly cause: string;
+  readonly status: string;
+  readonly started_at: number | null;
+  readonly created_at: number;
+}
+
+/** A confirmed stop move (migration 050). */
+interface StopAdjustmentRow {
+  readonly new_stop_price: number;
+  readonly justification: string;
+  readonly adjusted_at: number;
+}
+
+/** A strategy publish. */
+interface StrategyVersionRow {
+  readonly version: number;
+  readonly created_at: number;
+}
+
+/**
+ * Merge the three history sources into one bounded, newest-first list.
+ *
+ * Pure, and separate from the queries, because the merge is where the rules
+ * actually live: which moment each row is filed under, what it reads as, and
+ * which entries survive the cap. Each source is queried with its own limit, so
+ * a mission that woke two hundred times cannot crowd its four stop steps out of
+ * the array before the sort has run.
+ */
+export function buildMissionTimeline(input: {
+  readonly wakes: ReadonlyArray<HarnessRunRow>;
+  readonly stopAdjustments: ReadonlyArray<StopAdjustmentRow>;
+  readonly publishes: ReadonlyArray<StrategyVersionRow>;
+}): ReadonlyArray<TradingMissionTimelineEntry> {
+  const entries: Array<TradingMissionTimelineEntry & { readonly atMillis: number }> = [];
+
+  for (const wake of input.wakes) {
+    // A queued run that never started is filed under when it was created: the
+    // question the axis answers is when the mission was woken, not when a
+    // provider got round to it.
+    const atMillis = wake.started_at ?? wake.created_at;
+    entries.push({
+      atMillis,
+      at: toIso(atMillis),
+      kind: "wake",
+      // A failed run is the one wake worth reading twice — it is a turn the
+      // mission was owed and did not get.
+      label: wake.status === "failed" ? `${wake.cause} (failed)` : wake.cause,
+      cause: wake.cause,
+    });
+  }
+
+  for (const adjustment of input.stopAdjustments) {
+    entries.push({
+      atMillis: adjustment.adjusted_at,
+      at: toIso(adjustment.adjusted_at),
+      kind: "stop_adjusted",
+      label: adjustment.justification,
+      priceLevel: adjustment.new_stop_price,
+    });
+  }
+
+  for (const publish of input.publishes) {
+    entries.push({
+      atMillis: publish.created_at,
+      at: toIso(publish.created_at),
+      kind: "strategy_published",
+      label: `v${publish.version}`,
+    });
+  }
+
+  return entries
+    .sort((a, b) => b.atMillis - a.atMillis)
+    .slice(0, MISSION_TIMELINE_LIMIT)
+    .map(({ atMillis: _atMillis, ...entry }) => entry);
+}
+
 const EMPTY_RESULT: MissionResultRow = {
   realized_pnl: 0,
   fees_paid: 0,
@@ -241,6 +339,7 @@ const toMission = (
   row: ProjectionRow,
   exec: ExecutionSurfaces,
   strategy: TradingPlanState | null,
+  missionTimeline: ReadonlyArray<TradingMissionTimelineEntry>,
 ): OrchestrationTradingMission =>
   ({
     id: TradingMissionId.make(row.mission_id),
@@ -315,6 +414,7 @@ const toMission = (
     // position-level: it outlives the position, and the mission's receipts are
     // read after it has closed.
     leverage: exec.position?.leverage ?? undefined,
+    missionTimeline,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }) satisfies OrchestrationTradingMission;
@@ -370,13 +470,14 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         readonly strategy_version: number;
         readonly watch_json: string;
         readonly status: string;
+        readonly armed_reason: string | null;
         readonly created_at: number;
         readonly updated_at: number;
         readonly last_observed_value: number | null;
         readonly last_evaluated_at: number | null;
       }>`
-        SELECT watch_id, mission_id, strategy_version, watch_json, status, created_at, updated_at,
-               last_observed_value, last_evaluated_at
+        SELECT watch_id, mission_id, strategy_version, watch_json, status, armed_reason,
+               created_at, updated_at, last_observed_value, last_evaluated_at
         FROM trading_watches
         WHERE mission_id = ${input.missionId}
         ORDER BY created_at DESC, watch_id DESC
@@ -399,9 +500,14 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         strategyVersion: row.strategy_version,
         watch: decodeMarketWatchJson(row.watch_json),
         status: decodeWatchStatus(row.status),
+        // The web's provenance chips ("auto", "target", "stop") read this; a
+        // mapping that drops it renders every watch as harness-armed.
+        ...(row.armed_reason === null ? {} : { armedReason: decodeArmedReason(row.armed_reason) }),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
-        ...(row.last_observed_value === null
+        // Guarded on BOTH columns: `lastEvaluatedAt` is typed non-null when
+        // present, so a half-written pair must encode as absent, not as null.
+        ...(row.last_observed_value === null || row.last_evaluated_at === null
           ? {}
           : {
               lastObservedValue: row.last_observed_value,
@@ -471,11 +577,17 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       `.pipe(Effect.mapError(sqlFail("execution")));
       const inFlightExecution = execRows[0] ?? null;
 
-      // The three most recent orders, newest first — each one the sum of its own
-      // partial fills. The average price is size-weighted, because the plain
-      // mean of a dozen slices is not the price the order got. Capped at 3 to
-      // match the receipt list the thread card renders, so the projection and
-      // the UI agree on the count rather than the UI truncating silently.
+      // The mission's orders, newest first — each one the sum of its own partial
+      // fills. The average price is size-weighted, because the plain mean of a
+      // dozen slices is not the price the order got.
+      //
+      // The cap was 3, to match a receipt list the thread rendered as three
+      // cards. The receipts are single rows now and the thread shows all of
+      // them, because a session that opened and closed twice before the trade
+      // on screen has to be readable — and the chart plots the same fills as
+      // markers, so a truncated list would silently truncate the chart too. The
+      // limit that remains is a payload guard on a 3s poll, not a display
+      // choice: it is far above any real mission's order count.
       const recentFills = yield* sql<FillRow>`
         SELECT
           MIN(cloid) AS cloid,
@@ -490,7 +602,7 @@ const makeTradingMissionProjection = Effect.gen(function* () {
           MAX(traded_at) AS traded_at
         FROM trading_fills WHERE mission_id = ${missionId}
         GROUP BY order_id, market, side
-        ORDER BY MAX(traded_at) DESC LIMIT 3
+        ORDER BY MAX(traded_at) DESC LIMIT 50
       `.pipe(Effect.mapError(sqlFail("fills")));
 
       // The realised result across EVERY fill, for the completion summary.
@@ -517,6 +629,37 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       return { inFlightExecution, recentFills, position, result } satisfies ExecutionSurfaces;
     });
 
+  /**
+   * The mission's history, joined at read time from the three tables that keep
+   * it — the same shape as `readExecutionSurfaces`, and for the same reason:
+   * the projection row is current state, and rebuilding it must never depend on
+   * history having been copied into it.
+   */
+  const readMissionTimeline = (
+    missionId: string,
+  ): Effect.Effect<ReadonlyArray<TradingMissionTimelineEntry>, PersistenceSqlError> =>
+    Effect.gen(function* () {
+      const wakes = yield* sql<HarnessRunRow>`
+        SELECT run_id, cause, status, started_at, created_at
+        FROM trading_harness_runs WHERE mission_id = ${missionId}
+        ORDER BY created_at DESC LIMIT ${MISSION_TIMELINE_LIMIT}
+      `.pipe(Effect.mapError(sqlFail("timeline:wakes")));
+
+      const stopAdjustments = yield* sql<StopAdjustmentRow>`
+        SELECT new_stop_price, justification, adjusted_at
+        FROM trading_stop_adjustments WHERE mission_id = ${missionId}
+        ORDER BY adjusted_at DESC LIMIT ${MISSION_TIMELINE_LIMIT}
+      `.pipe(Effect.mapError(sqlFail("timeline:stops")));
+
+      const publishes = yield* sql<StrategyVersionRow>`
+        SELECT version, created_at
+        FROM momentum_strategy_versions WHERE mission_id = ${missionId}
+        ORDER BY created_at DESC LIMIT ${MISSION_TIMELINE_LIMIT}
+      `.pipe(Effect.mapError(sqlFail("timeline:publishes")));
+
+      return buildMissionTimeline({ wakes, stopAdjustments, publishes });
+    });
+
   const getByThreadId: TradingMissionProjectionShape["getByThreadId"] = (threadId) =>
     Effect.gen(function* () {
       const rows = yield* sql<ProjectionRow>`
@@ -526,7 +669,8 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       if (row === undefined) return Option.none();
       const exec = yield* readExecutionSurfaces(row.mission_id);
       const strategy = yield* readStrategy(row);
-      return Option.some(toMission(row, exec, strategy));
+      const timeline = yield* readMissionTimeline(row.mission_id);
+      return Option.some(toMission(row, exec, strategy, timeline));
     });
 
   const list: TradingMissionProjectionShape["list"] = () =>
@@ -537,8 +681,12 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       const missions = yield* Effect.all(
         rows.map((row) =>
           Effect.map(
-            Effect.all([readExecutionSurfaces(row.mission_id), readStrategy(row)]),
-            ([exec, strategy]) => toMission(row, exec, strategy),
+            Effect.all([
+              readExecutionSurfaces(row.mission_id),
+              readStrategy(row),
+              readMissionTimeline(row.mission_id),
+            ]),
+            ([exec, strategy, timeline]) => toMission(row, exec, strategy, timeline),
           ),
         ),
         { concurrency: "unbounded" },

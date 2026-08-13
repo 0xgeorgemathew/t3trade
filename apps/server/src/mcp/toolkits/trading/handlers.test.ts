@@ -96,7 +96,7 @@ const strategyBody = (name: string): PublishTradingPlanBody => ({
  * depending on the negotiated session, so read the JSON-RPC envelope out of
  * whichever came back.
  */
-const decodeJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const parseJsonRpc = (body: string): { readonly result?: any; readonly error?: any } => {
   const payload = body.includes("data:")
@@ -106,7 +106,16 @@ const parseJsonRpc = (body: string): { readonly result?: any; readonly error?: a
         .map((line) => line.slice("data:".length).trim())
         .at(-1) ?? "{}")
     : body;
-  return decodeJson(payload) as { readonly result?: any; readonly error?: any };
+  try {
+    return decodeJson(payload) as { readonly result?: any; readonly error?: any };
+  } catch (e) {
+    // eslint-disable-next-line
+    require("node:fs").appendFileSync(
+      "/tmp/mcp-body.txt",
+      "BODY<<<" + body + ">>>\nPAYLOAD<<<" + payload + ">>>\n",
+    );
+    throw e;
+  }
 };
 
 /**
@@ -202,7 +211,7 @@ const withMcpServer = <A, E>(
         `.pipe(Effect.asVoid, Effect.orDie);
       const httpClient = yield* HttpClient.HttpClient;
 
-      yield* runMigrations({ toMigrationInclusive: 49 }).pipe(Effect.provide(built), Effect.orDie);
+      yield* runMigrations({ toMigrationInclusive: 52 }).pipe(Effect.provide(built), Effect.orDie);
       yield* missions
         .createMission({
           missionId: MISSION_ID,
@@ -242,7 +251,15 @@ const withMcpServer = <A, E>(
           expect(initialize.status).toBe(200);
 
           const response = yield* httpClient.post("/mcp", {
-            headers: { accept, authorization, "mcp-session-id": sessionId! },
+            headers: {
+              accept,
+              authorization,
+              "mcp-session-id": sessionId!,
+              // 2025-06-18 requires every post-initialize request to name the
+              // negotiated protocol version; without it the transport rejects
+              // the call before it reaches a handler.
+              "mcp-protocol-version": "2025-06-18",
+            },
             body: HttpBody.jsonUnsafe({
               jsonrpc: "2.0",
               id: 2,
@@ -624,6 +641,92 @@ it.effect("decodes a prose-string exit condition and round-trips it as the objec
       assert.deepStrictEqual(exitConditions[0], {
         description: "Exit if a finalized 1m candle closes back above 1865.9.",
       });
+    }),
+  ),
+);
+
+it.effect("refuses to quote an entry outside a turn that owns the decision lease", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      // No harness run has been opened for this mission, so nothing owns the
+      // lease — the check preview item 5 was named for, made real by reading
+      // the table the lease actually lives in rather than trusting an argument.
+      const quoted = yield* callTool(BOUND_THREAD, "trading_quote_entry", {
+        market: "ETH",
+        side: "buy",
+        stopPrice: 3_100,
+        sizeEth: 0.1,
+      });
+
+      assert.equal(quoted.result.isError, false);
+      assert.equal(quoted.result.structuredContent.outcome, "refused");
+      assert.equal(quoted.result.structuredContent.reason, "harness_run_owns_lease");
+    }),
+  ),
+);
+
+it.effect("tells an execute carrying an unknown quote to go and get one", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      const executed = yield* callTool(BOUND_THREAD, "trading_execute", {
+        quoteId: "qte_never_issued",
+      });
+
+      assert.equal(executed.result.isError, false);
+      assert.equal(executed.result.structuredContent.status, "rejected");
+      assert.include(executed.result.structuredContent.detail, "quote_not_found");
+      assert.include(executed.result.structuredContent.detail, "trading_quote_entry");
+    }),
+  ),
+);
+
+it.effect("refuses an execute that names neither a quote nor a full intent", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      const executed = yield* callTool(BOUND_THREAD, "trading_execute", {});
+
+      assert.equal(executed.result.isError, true);
+      assert.include(executed.result.content[0]?.text ?? "", "quoteId");
+    }),
+  ),
+);
+
+it.effect("closes a position with a call carrying no arguments at all", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      // The whole point of the exit tools: there is nothing to get wrong. This
+      // mission has no lease, so the refusal is about the turn — not about a
+      // side, a size, a version, or a sequence the caller failed to supply.
+      const closed = yield* callTool(BOUND_THREAD, "trading_close_position", {});
+
+      assert.equal(closed.result.isError, false);
+      assert.equal(closed.result.structuredContent.status, "rejected");
+      assert.include(closed.result.structuredContent.detail, "harness_run_owns_lease");
+      // And the harness is told what to do about it rather than left to guess.
+      assert.equal(closed.result.structuredContent.recovery.retryable, false);
+    }),
+  ),
+);
+
+it.effect("refuses a reduce that names neither a size nor a fraction", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      const reduced = yield* callTool(BOUND_THREAD, "trading_reduce_position", {});
+
+      assert.equal(reduced.result.isError, true);
+      assert.include(reduced.result.content[0]?.text ?? "", "exactly one");
+    }),
+  ),
+);
+
+it.effect("refuses a cancel that names no resting order", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      const cancelled = yield* callTool(BOUND_THREAD, "trading_cancel_order", { cloid: "" });
+
+      assert.equal(cancelled.result.isError, false);
+      assert.equal(cancelled.result.structuredContent.status, "rejected");
+      assert.include(cancelled.result.structuredContent.detail, "no_target_named");
     }),
   ),
 );

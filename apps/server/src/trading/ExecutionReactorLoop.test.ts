@@ -251,6 +251,7 @@ const recordingMissionsLayer = Layer.succeed(TradingMissionService, {
       return {} as never;
     })) as never,
   getMissionVersion: (() => Effect.succeed(1)) as never,
+  getMission: (() => Effect.succeed({ market: "ETH" })) as never,
 } as unknown as TradingMissionService["Service"]);
 
 // Shared suite layer: real execution service + real reconciler over the fakes,
@@ -338,6 +339,7 @@ const previewContext = {
   currentAuthorityVersion: 1,
   expectedAuthorityVersion: 1,
   activeHarnessRunId: "run_1",
+  requestingHarnessRunId: "run_1",
   approvedExecutionWalletAddress: SIGNER_ADDR,
   bbo,
   accountObservedAt: 1_000,

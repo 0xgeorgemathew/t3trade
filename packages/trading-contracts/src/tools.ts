@@ -33,8 +33,10 @@ import type { TradingTradeHistory } from "./history.ts";
 import type { TargetCalibration } from "./calibration.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./mission.ts";
-import { TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
+import { Price, TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
+import { StopAdjustmentJustification, StopAdjustmentRefusalCode } from "./stopAdjustment.ts";
 import { TradingOrderIntent } from "./execution.ts";
+import { FailureRecovery } from "./recovery.ts";
 import { tradingPlanAuthoredFields, TradingPlanState, ProfitTargetBasis } from "./strategy.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
 import { Playbook, TradingPlaybookName } from "./playbook.ts";
@@ -57,6 +59,7 @@ export const TRADING_GET_ACCOUNT_STATE_TOOL = "trading_get_account_state";
 export const TRADING_GET_POSITION_TOOL = "trading_get_position";
 export const TRADING_GET_OPEN_ORDERS_TOOL = "trading_get_open_orders";
 export const TRADING_GET_PLAYBOOK_TOOL = "trading_get_playbook";
+export const TRADING_ADJUST_STOP_TOOL = "trading_adjust_stop";
 /**
  * The whole position lifecycle, not just entries.
  *
@@ -81,8 +84,9 @@ export const TRADING_REQUEST_ENTRY_TOOL = "trading_request_entry";
  * These are distinct from `trading_publish_plan`'s in-band
  * `outcome: "rejected"`, which reports a *published* result the harness can
  * retry against. A `TradingToolRejectedError` means the call never reached the
- * mission: the credential did not carry the capability, or the calling thread
- * is not the thread an active mission is bound to (§10.2).
+ * mission: the credential did not carry the capability, the calling thread is
+ * not the thread an active mission is bound to (§10.2), or the market read the
+ * answer is made of could not be taken.
  *
  * Fork-owned: the spec names the tools and their payloads but does not publish
  * a tool-level failure type.
@@ -92,6 +96,9 @@ export const TradingToolRejectionReason = Schema.Literals([
   "thread_not_bound_to_mission",
   "mission_not_bound_to_thread",
   "mission_not_found",
+  /** A required exchange read failed. The tool has nothing to answer with, and
+      saying so is better than the opaque crash a defect produces. */
+  "market_data_unavailable",
 ]);
 export type TradingToolRejectionReason = typeof TradingToolRejectionReason.Type;
 
@@ -301,12 +308,41 @@ const missionBound = {
   missionId: Schema.optional(TradingId),
 } as const;
 
+/**
+ * One execution, named either by a server-cut quote or by a hand-built intent.
+ *
+ * `quoteId` is the whole call for an entry: `trading_quote_entry` already
+ * derived the strategy version, the authority version, the lease-owning run,
+ * the sequence, the crossing limit price, and a size inside every ceiling, so
+ * repeating them here is four more chances to be refused for a reason that has
+ * nothing to do with the market.
+ *
+ * The legacy intent fields remain decodable so old clients receive a precise
+ * migration refusal instead of a schema error. They are no longer executable:
+ * every live action uses a quote or its dedicated server-owned tool.
+ */
 export const TradingRequestEntryInput = Schema.Struct({
   ...missionBound,
-  intent: TradingOrderIntent,
-  expectedAuthorityVersion: Schema.Number,
-  activeHarnessRunId: TradingId,
-});
+  /** A quote from `trading_quote_entry`. Supplies every field below. */
+  quoteId: Schema.optional(TradingId),
+  intent: Schema.optional(TradingOrderIntent),
+  expectedAuthorityVersion: Schema.optional(Schema.Number),
+  activeHarnessRunId: Schema.optional(TradingId),
+}).check(
+  Schema.makeFilter((input) => {
+    const quoteForm = input.quoteId !== undefined;
+    const intentFields = [
+      input.intent,
+      input.expectedAuthorityVersion,
+      input.activeHarnessRunId,
+    ].filter((value) => value !== undefined).length;
+    if (quoteForm && intentFields > 0) return "quoteId cannot be combined with a full intent.";
+    if (!quoteForm && intentFields !== 3) {
+      return "Give quoteId alone, or all legacy intent fields together.";
+    }
+    return true;
+  }),
+);
 export type TradingRequestEntryInput = typeof TradingRequestEntryInput.Type;
 
 export const TradingRequestEntryResult = Schema.Struct({
@@ -382,15 +418,105 @@ export const TradingRequestEntryResult = Schema.Struct({
    * closed at — the limit above is only the bound it could not cross.
    */
   avgFillPrice: Schema.optional(Schema.Number),
+  /**
+   * Whether this outcome is worth trying again, and what to do if it is not.
+   *
+   * Every failure used to arrive as the same thing — a turn that did not trade
+   * — so a rate-limited read and an authority that forbids the direction were
+   * indistinguishable, and standing down was the only response available to
+   * both. This says which one happened. `retryable` is never true for anything
+   * that spent a nonce: an unknown submission is settled by reading state, not
+   * by sending it again.
+   */
+  recovery: Schema.optional(FailureRecovery),
 });
 export type TradingRequestEntryResult = typeof TradingRequestEntryResult.Type;
 
 // `trading_execute` is the same call under the name that describes it. The
 // aliases are exported separately so a caller reads the name it is using.
-export const TradingExecuteInput = TradingRequestEntryInput;
-export type TradingExecuteInput = TradingRequestEntryInput;
+/**
+ * The live execution tool's intentionally tiny input.
+ *
+ * `TradingRequestEntryInput` remains above as a decoder for callers on the old
+ * wire shape, but advertising those fields to a harness invites it to choose a
+ * form the server must refuse. The published tool accepts only the token whose
+ * server-owned intent has already cleared preview.
+ */
+export const TradingExecuteInput = Schema.Struct({
+  ...missionBound,
+  quoteId: TradingId,
+});
+export type TradingExecuteInput = typeof TradingExecuteInput.Type;
 export const TradingExecuteResult = TradingRequestEntryResult;
 export type TradingExecuteResult = TradingRequestEntryResult;
+
+// -- trading_adjust_stop (plan 24 §5.2) --------------------------------------
+
+/**
+ * The refusals that are about the mission rather than the policy.
+ *
+ * `checkStopAdjustment` answers "is this move within the rules"; these are the
+ * cases where the question could not be asked at all — nothing to adjust, no
+ * price to measure against, or a harness reasoning against a superseded plan.
+ */
+export const TradingAdjustStopRefusalContext = Schema.Literals([
+  "no_position",
+  "no_resting_stop",
+  "stale_strategy_version",
+  "market_data_unavailable",
+  /** The policy passed but the exchange replacement did not confirm. */
+  "replacement_failed",
+]);
+export type TradingAdjustStopRefusalContext = typeof TradingAdjustStopRefusalContext.Type;
+
+/**
+ * Move the stop on an open position, inside the policy.
+ *
+ * The same `replaceProtection` path `trading_execute` `modify_stop` takes, with
+ * `checkStopAdjustment`'s rules in front of it: the risk envelope the entry was
+ * approved with, a per-call step cap measured in ATR, a noise floor, the
+ * breakeven ratchet, and a rate limit. Everything the server needs to check
+ * those it measures itself; `observedAtrUsd` is the agent's own number, kept
+ * only so a stop derived from stale data can be refused rather than placed.
+ */
+export const TradingAdjustStopInput = Schema.Struct({
+  ...missionBound,
+  market: TradingMarket,
+  newStopPrice: Price,
+  justification: StopAdjustmentJustification,
+  /** The ATR the agent measured this turn; cross-checked against the server's. */
+  observedAtrUsd: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** The strategy version the harness believes is current; stale is rejected. */
+  expectedVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  // Execution identity is allocated from current server state after the
+  // adjustment policy accepts; the harness supplies none of it.
+});
+export type TradingAdjustStopInput = typeof TradingAdjustStopInput.Type;
+
+export const TradingAdjustStopResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("adjusted"),
+    previousStop: Schema.Number,
+    newStop: Schema.Number,
+    /** Distance from the current mark to the new stop. */
+    stopDistanceUsd: Schema.Number,
+    /** What the position now loses if it stops out. */
+    plannedLossAtStopUsd: Schema.Number,
+    /** Adjustments left on this position before the budget refuses. */
+    remainingAdjustments: Schema.Number,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("refused"),
+    refusalCode: Schema.Union([StopAdjustmentRefusalCode, TradingAdjustStopRefusalContext]),
+    /** The stop still resting, unchanged. */
+    previousStop: Schema.Number,
+    /** What was asked for, so the harness can see the two numbers together. */
+    newStop: Schema.Number,
+    /** Which bound was hit, in the numbers the rule is expressed in. */
+    detail: Schema.String,
+  }),
+]);
+export type TradingAdjustStopResult = typeof TradingAdjustStopResult.Type;
 
 export const TradingResolveMarketInput = Schema.Struct({
   ...missionBound,

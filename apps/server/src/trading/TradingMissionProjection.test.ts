@@ -13,7 +13,8 @@
  * In-memory sqlite + migrations, following TradingBudgetReader.test.ts.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -28,6 +29,8 @@ import { TradingPlanState } from "@t3tools/trading-contracts/strategy";
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import {
+  buildMissionTimeline,
+  MISSION_TIMELINE_LIMIT,
   TradingMissionProjection,
   TradingMissionProjectionLive,
 } from "./TradingMissionProjection.ts";
@@ -52,6 +55,12 @@ const seedMission = Effect.gen(function* () {
   yield* runMigrations({});
   yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM projection_trading_missions`;
+  // The §4.2 history tables too: two tests in one layer share a database, and a
+  // timeline that carried the previous test's wakes would pass for the wrong
+  // reason.
+  yield* sql`DELETE FROM trading_harness_runs`;
+  yield* sql`DELETE FROM trading_stop_adjustments`;
+  yield* sql`DELETE FROM momentum_strategy_versions`;
   yield* sql`
     INSERT INTO projection_trading_missions (
       mission_id, thread_id, user_id, trading_account_id, instruction, market,
@@ -409,6 +418,144 @@ layer("TradingMissionProjection fill receipts", (it) => {
       assert.closeTo(close1!.avgFillPrice, 1879.8784142212, 1e-6);
       assert.closeTo(close1!.feeUsd, 0.899407, 1e-9);
       assert.closeTo(close1!.closedPnl, -1.453957, 1e-9);
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Plan 24 §4.2 — the bounded history the read model carries
+// ---------------------------------------------------------------------------
+
+/** The ISO string the projection writes for an epoch-millis moment. */
+const toIsoMillis = (millis: number): string => DateTime.formatIso(DateTime.makeUnsafe(millis));
+
+describe("buildMissionTimeline", () => {
+  const wake = (over: {
+    readonly runId: string;
+    readonly cause: string;
+    readonly status?: string;
+    readonly startedAt?: number | null;
+    readonly createdAt: number;
+  }) => ({
+    run_id: over.runId,
+    cause: over.cause,
+    status: over.status ?? "completed",
+    started_at: over.startedAt === undefined ? over.createdAt : over.startedAt,
+    created_at: over.createdAt,
+  });
+
+  it("merges the three sources newest-first", () => {
+    const timeline = buildMissionTimeline({
+      wakes: [wake({ runId: "r1", cause: "scheduled_reassessment", createdAt: 1_000 })],
+      stopAdjustments: [
+        { new_stop_price: 1908.5, justification: "trail_peak", adjusted_at: 3_000 },
+      ],
+      publishes: [{ version: 8, created_at: 2_000 }],
+    });
+
+    assert.deepEqual(
+      timeline.map((entry) => entry.kind),
+      ["stop_adjusted", "strategy_published", "wake"],
+    );
+    assert.equal(timeline[0]?.priceLevel, 1908.5);
+    assert.equal(timeline[0]?.label, "trail_peak");
+    assert.equal(timeline[1]?.label, "v8");
+    assert.equal(timeline[2]?.cause, "scheduled_reassessment");
+  });
+
+  // A run the mission was owed and did not get is the one wake worth reading
+  // twice, so the label says so rather than leaving it to look like any other.
+  it("names a failed run in its label but keeps the raw cause", () => {
+    const timeline = buildMissionTimeline({
+      wakes: [
+        wake({ runId: "r1", cause: "market_watch_triggered", status: "failed", createdAt: 1_000 }),
+      ],
+      stopAdjustments: [],
+      publishes: [],
+    });
+
+    assert.equal(timeline[0]?.label, "market_watch_triggered (failed)");
+    assert.equal(timeline[0]?.cause, "market_watch_triggered");
+  });
+
+  // "When was the mission woken" is the question the axis answers, so a run
+  // still queued is filed under its creation rather than dropped for having no
+  // start time.
+  it("files a run that never started under when it was created", () => {
+    const timeline = buildMissionTimeline({
+      wakes: [
+        wake({
+          runId: "r1",
+          cause: "user_message",
+          status: "queued",
+          startedAt: null,
+          createdAt: 7_000,
+        }),
+      ],
+      stopAdjustments: [],
+      publishes: [],
+    });
+
+    assert.equal(timeline.length, 1);
+    assert.equal(timeline[0]?.at, "1970-01-01T00:00:07.000Z");
+  });
+
+  // The cap is a payload guard, and it has to fall on the OLDEST entries: a
+  // trimmed-from-the-front list would hand the UI history that stops before
+  // what just happened.
+  it("keeps the newest entries when the cap bites", () => {
+    const wakes = Array.from({ length: MISSION_TIMELINE_LIMIT + 10 }, (_unused, index) =>
+      wake({ runId: `r${index}`, cause: "scheduled_reassessment", createdAt: index * 1_000 }),
+    );
+    const timeline = buildMissionTimeline({ wakes, stopAdjustments: [], publishes: [] });
+
+    assert.equal(timeline.length, MISSION_TIMELINE_LIMIT);
+    assert.equal(timeline[0]?.at, toIsoMillis((MISSION_TIMELINE_LIMIT + 9) * 1_000));
+    assert.equal(timeline[timeline.length - 1]?.at, toIsoMillis(10 * 1_000));
+  });
+
+  it("is empty for a mission that has done nothing yet", () => {
+    assert.deepEqual(buildMissionTimeline({ wakes: [], stopAdjustments: [], publishes: [] }), []);
+  });
+});
+
+layer("TradingMissionProjection timeline", (it) => {
+  it.effect("joins the history tables at read time", () =>
+    Effect.gen(function* () {
+      yield* seedMission;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO trading_harness_runs (run_id, mission_id, cause, status, started_at, completed_at, created_at)
+        VALUES ('run_1', ${MISSION_ID}, 'scheduled_reassessment', 'completed', 1000, 2000, 1000)
+      `;
+      yield* sql`
+        INSERT INTO trading_stop_adjustments (
+          adjustment_id, mission_id, market, previous_stop_price, new_stop_price, justification, adjusted_at
+        ) VALUES ('adj_1', ${MISSION_ID}, 'ETH', 1912, 1908.5, 'trail_peak', 3000)
+      `;
+      yield* sql`
+        INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+        VALUES (${MISSION_ID}, 8, ${encodeStrategy(rangeReversionStrategy)}, 2000)
+      `;
+
+      const projection = yield* TradingMissionProjection;
+      const mission = yield* projection.getByThreadId(THREAD_ID);
+      assert.isTrue(Option.isSome(mission));
+
+      assert.deepEqual(
+        Option.getOrThrow(mission).missionTimeline.map((entry) => entry.kind),
+        ["stop_adjusted", "strategy_published", "wake"],
+      );
+    }),
+  );
+
+  it.effect("is empty for a mission with no history", () =>
+    Effect.gen(function* () {
+      yield* seedMission;
+      const projection = yield* TradingMissionProjection;
+      const mission = yield* projection.getByThreadId(THREAD_ID);
+      assert.isTrue(Option.isSome(mission));
+      assert.deepEqual(Option.getOrThrow(mission).missionTimeline, []);
     }),
   );
 });

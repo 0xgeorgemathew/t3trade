@@ -31,6 +31,7 @@ import {
   EvmAddress,
   TradingAuthority,
   TradingHarnessBinding,
+  TradingMarket,
   TradingMasterWallet,
   TradingMission,
   TradingMissionBlockedReason,
@@ -45,6 +46,8 @@ export const CreateTradingMissionInput = Schema.Struct({
   tradingAccountId: Schema.String,
   instruction: Schema.String,
   allocatedCapitalUsd: Schema.Number,
+  /** The market the mission is mandated to trade. Absent means the default (ETH). */
+  market: Schema.optional(TradingMarket),
   harness: TradingHarnessBinding,
 });
 export type CreateTradingMissionInput = typeof CreateTradingMissionInput.Type;
@@ -287,7 +290,9 @@ const toMission = (row: MissionRow, authorityJson: string): TradingMission => ({
   userId: row.user_id,
   tradingAccountId: row.trading_account_id,
   instruction: row.instruction,
-  market: "ETH",
+  // Rows written before the market column carried a real choice all say "ETH";
+  // anything unrecognised falls back rather than failing the whole hydrate.
+  market: row.market === "BTC" ? "BTC" : "ETH",
   strategyFamily: "momentum",
   harness: decodeHarnessJson(row.harness_json),
   authority: decodeAuthorityJson(authorityJson),
@@ -498,7 +503,7 @@ const makeTradingMissionService = Effect.gen(function* () {
           created_at, updated_at
         ) VALUES (
           ${input.missionId}, ${input.userId}, ${input.tradingAccountId},
-          ${input.instruction}, 'ETH', 'momentum',
+          ${input.instruction}, ${input.market ?? "ETH"}, 'momentum',
           ${encodeHarnessJson(input.harness)}, 'initializing', NULL,
           ${encodeControlJson(control)}, 1, 0, 1, NULL, ${now}, ${now}
         )

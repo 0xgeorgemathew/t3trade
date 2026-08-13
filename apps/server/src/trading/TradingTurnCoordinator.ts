@@ -51,6 +51,7 @@ import {
   isDeafWhileHoldingPosition,
   readWatchCoverage,
   watchCoverageFloorMillis,
+  watchSanityBackstopMillis,
 } from "@t3tools/trading-contracts/watch";
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -64,6 +65,7 @@ import {
   TradingHarnessRunCause,
 } from "./Schemas.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
+import { settleRunDecision } from "./TradingRunTelemetry.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
 import { TradingWakeupComposer } from "./TradingWakeupComposer.ts";
@@ -126,9 +128,13 @@ export class TradingTurnCoordinator extends Context.Service<
 const sqlFail = (operation: string) => toPersistenceSqlError(`TradingTurnCoordinator.${operation}`);
 
 /**
- * The `mission_created` bootstrap message: the resumed turn's first job is to
- * author a strategy, so it carries just the mission instruction rather than the
- * full snapshot (which requires an active strategy).
+ * The strategy-less wakeup message: the resumed turn's first job is to author a
+ * strategy, so it carries just the mission instruction rather than the full
+ * snapshot (which requires an active strategy).
+ *
+ * `mission_created` is the ordinary case, but a mission that ended its first
+ * turn without publishing — a stand-down that never became a plan — is woken
+ * on this same shape by its staleness floor or by the operator typing.
  */
 const BootstrapWakeup = Schema.Struct({
   kind: Schema.Literal("trading-harness-wakeup"),
@@ -140,8 +146,44 @@ const BootstrapWakeup = Schema.Struct({
   /** Matches `TradingHarnessWakeup.defaultTimeframe`, so the very first turn
       authors its strategy on the same candle every later turn wakes on. */
   defaultTimeframe: Schema.String,
+  /** The operator's text, on a `user_message` wake. Without this the message
+      that caused the wake never reaches the turn it caused. */
+  userMessage: Schema.optional(Schema.String),
+  /** Set on any wake after the first: this mission has already taken a turn and
+      still has no plan. Standing down is a plan too — publish one. */
+  publishOverdue: Schema.optional(Schema.Literal(true)),
+  firstTurnContract: Schema.optional(Schema.String),
 });
 const encodeBootstrapText = Schema.encodeSync(Schema.fromJsonString(BootstrapWakeup));
+
+/**
+ * The one thing every strategy-less turn owes: a published plan. A turn that
+ * looks at the market and declines to trade has reached a conclusion, and a
+ * conclusion the mission does not record leaves it with no thesis to come back
+ * to, no armed levels, and nothing for the operator's panel to show.
+ */
+const FIRST_TURN_CONTRACT =
+  "End this turn with trading_publish_plan, whatever you decide. If the costs " +
+  "or the market do not justify entering, publish the stand-down: " +
+  "targetProfitBasis.insufficientVolatility true, the arithmetic in rationale, " +
+  "protection.targetProfitUsd set to the minimum viable target the costs " +
+  "demand, and entryPlan.conditions carrying the price levels that would change " +
+  "the read. A declined entry is a plan, not a missing one.";
+
+/**
+ * Causes that may wake a mission with no published strategy. Each of these
+ * originates with the mission or its operator rather than with an armed level,
+ * so there is a turn worth running even though there is no thesis to snapshot.
+ */
+const CAUSES_ALLOWED_WITHOUT_STRATEGY: ReadonlySet<TradingHarnessRunCause> = new Set([
+  "mission_created",
+  "scheduled_reassessment",
+  "user_message",
+]);
+
+const PUBLISH_OVERDUE_NOTE =
+  "This mission has already taken a turn and still has no published plan. " +
+  "Publish one now — including the stand-down shape if the read has not changed.";
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -208,6 +250,18 @@ const make = Effect.gen(function* () {
       SET status = ${status}, completed_at = ${now}
       WHERE run_id = ${runId} AND status NOT IN ('completed', 'failed')
     `.pipe(Effect.mapError(sqlFail("completeRun")));
+
+    // Close the run's decision as the lease is released, so every completed run
+    // carries exactly one terminal outcome. A telemetry failure must never hold
+    // a lease open or fail a settlement: it is logged and dropped.
+    yield* settleRunDecision(sql, { runId, completedAt: now }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("TradingTurnCoordinator: could not settle the run decision", {
+          runId,
+          cause: String(cause),
+        }),
+      ),
+    );
   });
 
   /**
@@ -375,10 +429,13 @@ const make = Effect.gen(function* () {
    *  1. While holding a position with a live strategy, arm a `pnl_above` watch
    *     at the strategy's declared profit target — the win worth banking. This
    *     runs in addition to the coverage logic, before it.
-   *  2. The coverage floor: if the run left levels armed on both sides of the
-   *     mark, or a reassessment due inside the window, nothing happens.
-   *     Otherwise one reassessment is registered so the mission gets at least
-   *     one more turn. The floor scales with the strategy's primary timeframe.
+   *  2. The coverage floor: if the run left nothing that can fire on one of the
+   *     two sides the mark can move — a price level, a PnL line, or a confirmed
+   *     exchange stop — a reassessment is registered at the tight floor so the
+   *     mission gets at least one more turn. A mission that *is* covered gets
+   *     the slow sanity backstop instead, because it will be woken by a real
+   *     event and a three-bar metronome only buys turns that conclude "hold".
+   *     Both intervals scale with the strategy's primary timeframe.
    *
    * It never blocks the settlement. The lease is already released by the time
    * this runs, and a mission that could not be given a watch is still better
@@ -394,8 +451,12 @@ const make = Effect.gen(function* () {
       const mission = yield* missions.getMission(missionId);
       if (!isActiveMissionStatus(mission.status)) return;
 
-      const rows = yield* sql<{ readonly size: number; readonly mark_px: number | null }>`
-        SELECT size, mark_px FROM trading_position_snapshots
+      const rows = yield* sql<{
+        readonly size: number;
+        readonly mark_px: number | null;
+        readonly protected_size: number | null;
+      }>`
+        SELECT size, mark_px, protected_size FROM trading_position_snapshots
         WHERE mission_id = ${missionId} AND size != 0
       `.pipe(Effect.mapError(sqlFail("ensureNotDeaf:position")));
 
@@ -412,10 +473,13 @@ const make = Effect.gen(function* () {
       // silent mission is indistinguishable from a working one.
       if (position === undefined) {
         if (!isOperativeMissionStatus(mission.status)) return;
-        // No thesis: nothing to come back to. The mission is between strategies
-        // and something else — a create, a publish, a user control — will move
-        // it on.
-        if (strategyOption._tag === "None") return;
+        // A mission with no thesis gets the floor too. It used to return here,
+        // on the reasoning that there was nothing to come back to — but a turn
+        // that looked at the market and declined to enter has plenty to come
+        // back to, and skipping the floor left it dormant until the operator
+        // typed. The floor runs on the default timeframe in that case, and the
+        // wake it arms takes the bootstrap path (check 7) asking for the
+        // publish the turn owes.
         const flatFloor = watchCoverageFloorMillis({
           timeframe: primaryTimeframe,
           holdingPosition: false,
@@ -427,7 +491,12 @@ const make = Effect.gen(function* () {
           missionId,
           nowMillis: now,
           floorMillis: flatFloor,
-          detail: { missionStatus: mission.status, flat: true, primaryTimeframe },
+          detail: {
+            missionStatus: mission.status,
+            flat: true,
+            primaryTimeframe,
+            hasStrategy: strategyOption._tag === "Some",
+          },
         });
         return;
       }
@@ -460,15 +529,32 @@ const make = Effect.gen(function* () {
               markPrice,
               nowMillis: now,
               floorMillis: holdingFloor,
+              positionSize: position.size,
+              protectedSize: position.protected_size ?? 0,
             });
 
-      if (!isDeafWhileHoldingPosition(coverage)) return;
+      if (isDeafWhileHoldingPosition(coverage)) {
+        yield* armStalenessFloor({
+          missionId,
+          nowMillis: now,
+          floorMillis: holdingFloor,
+          detail: { positionSize: position.size, coverage, primaryTimeframe },
+        });
+        return;
+      }
+
+      // Covered on both sides. The mission will be woken by a real event, so the
+      // only thing left to schedule is the slow look at whether the thesis still
+      // holds — not the three-bar metronome the deaf case needs.
+      const sanityFloor = watchSanityBackstopMillis(primaryTimeframe);
+      if (hasReassessmentWithin({ watches: armed, nowMillis: now, floorMillis: sanityFloor }))
+        return;
 
       yield* armStalenessFloor({
         missionId,
         nowMillis: now,
-        floorMillis: holdingFloor,
-        detail: { positionSize: position.size, coverage, primaryTimeframe },
+        floorMillis: sanityFloor,
+        detail: { positionSize: position.size, coverage, primaryTimeframe, sanityBackstop: true },
       });
     }).pipe(
       Effect.catchCause((cause) =>
@@ -529,8 +615,11 @@ const make = Effect.gen(function* () {
       // round-trip here is the struct the composer already decoded.
       text = composed.text;
     } else {
-      // mission_created bootstrap: no strategy yet. The resumed turn's first
-      // job is to author one.
+      // No strategy yet. Ordinarily this is the `mission_created` bootstrap and
+      // the resumed turn's first job is to author one — but a mission that
+      // finished a turn without publishing is woken on this same shape by its
+      // staleness floor or by the operator, and is told the publish is overdue.
+      const publishOverdue = input.cause !== "mission_created";
       text = encodeBootstrapText({
         kind: "trading-harness-wakeup",
         bootstrap: true,
@@ -539,6 +628,11 @@ const make = Effect.gen(function* () {
         cause: input.cause,
         instruction: mission.instruction,
         defaultTimeframe: POC_DEFAULT_TIMEFRAME,
+        ...(input.userMessage !== undefined ? { userMessage: input.userMessage } : {}),
+        ...(publishOverdue ? { publishOverdue: true as const } : {}),
+        firstTurnContract: publishOverdue
+          ? `${PUBLISH_OVERDUE_NOTE} ${FIRST_TURN_CONTRACT}`
+          : FIRST_TURN_CONTRACT,
       });
     }
 
@@ -665,11 +759,15 @@ const make = Effect.gen(function* () {
       const pendingEvents = yield* inbox.claimPending(input.missionId);
 
       // §12.3 check 7: The latest strategy and authority versions are loaded.
-      // A `mission_created` first run is the only cause that may proceed without
-      // a published strategy (the first turn authors one); any other cause is
-      // blocked here so the wakeup's required `activeStrategy` is always present.
+      // A cause that can only have come from the mission itself may proceed
+      // without a published strategy and takes the bootstrap wakeup: the first
+      // run authors a plan, and a scheduled reassessment or an operator message
+      // on a mission that never published one asks it to finish that job. A
+      // watch-fired cause still requires a strategy — nothing could have armed
+      // the watch without one — so the wakeup's `activeStrategy` is present
+      // wherever it is required.
       const currentStrategy = yield* strategies.getCurrentStrategy(input.missionId);
-      if (currentStrategy._tag === "None" && input.cause !== "mission_created") {
+      if (currentStrategy._tag === "None" && !CAUSES_ALLOWED_WITHOUT_STRATEGY.has(input.cause)) {
         yield* completeRun(runId, "failed");
         return { status: "blocked", reason: "no_active_strategy" } as const;
       }

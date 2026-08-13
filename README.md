@@ -90,17 +90,21 @@ vp i
 pnpm dev
 ```
 
-You also need at least one coding-agent provider installed and authenticated —
-Claude Code, Codex, Cursor, Grok Build, or OpenCode. See the
-[provider guides](./docs/providers/codex.md).
+You also need at least one coding-agent provider installed and authenticated:
+
+- Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
+- Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
+- Cursor: install [Cursor CLI](https://cursor.com/cli) and run `agent login`
+- Grok Build: install [Grok Build CLI](https://x.ai/cli) and run `grok login`
+- OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
 
 ## Documentation
 
-- [Getting started](./docs/getting-started/quick-start.md)
+- [Install and first run](./docs/user/install.md)
 - [Trading execution and reconciliation](./docs/architecture/trading-execution.md)
-- [Architecture overview](./docs/architecture/overview.md)
+- [Architecture overview](./docs/internals/overview.md)
 - [Upstream baseline and sync runbook](./docs/upstream/SYNC_RUNBOOK.md)
-- [Reference](./docs/reference/encyclopedia.md)
+- [Glossary](./docs/internals/glossary.md)
 
 ## Upstream
 

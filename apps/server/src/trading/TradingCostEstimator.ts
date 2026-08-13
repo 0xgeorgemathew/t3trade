@@ -11,6 +11,9 @@
  * A failed fee read degrades the estimate rather than failing it: the fallback
  * rate is the same one the preview would have used, and an agent that gets no
  * answer at all goes back to guessing, which is the failure this exists to fix.
+ * A failed mark or book read has no such fallback, and fails typed
+ * ({@link TradingCostDataUnavailableError}) so the tool boundary can refuse in
+ * terms the harness can read.
  *
  * @module TradingCostEstimator
  */
@@ -32,10 +35,24 @@ export interface EstimateCostsInput {
   readonly fallbackTakerFeeBpsPerSide: number;
 }
 
+/**
+ * The mark and the book could not be read, so there is no round trip to price.
+ *
+ * These two reads used to be `.orDie`: a transient gateway failure became a
+ * defect, and the harness saw an opaque tool-call crash where it should have
+ * seen a refusal it could act on. The fee read is different — it has a
+ * fallback, so it degrades rather than fails.
+ */
+export interface TradingCostDataUnavailableError {
+  readonly _tag: "TradingCostDataUnavailableError";
+  readonly market: string;
+  readonly cause: unknown;
+}
+
 export interface TradingCostEstimatorShape {
   readonly estimate: (
     input: EstimateCostsInput,
-  ) => Effect.Effect<TradingCostEstimate, never, HyperliquidGateway>;
+  ) => Effect.Effect<TradingCostEstimate, TradingCostDataUnavailableError, HyperliquidGateway>;
 }
 
 export class TradingCostEstimator extends Context.Service<
@@ -51,7 +68,15 @@ const make = Effect.gen(function* () {
       const [snapshot, book] = yield* Effect.all(
         [gateway.getMarketSnapshot(input.market), gateway.getOrderBook(input.market)],
         { concurrency: "unbounded" },
-      ).pipe(Effect.orDie);
+      ).pipe(
+        Effect.mapError(
+          (cause): TradingCostDataUnavailableError => ({
+            _tag: "TradingCostDataUnavailableError",
+            market: input.market,
+            cause,
+          }),
+        ),
+      );
 
       // `userFees` is a network read that can fail on its own; the rest of the
       // estimate is still worth having when it does.

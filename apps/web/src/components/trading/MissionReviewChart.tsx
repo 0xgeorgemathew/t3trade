@@ -18,7 +18,7 @@ import { useTradingMarketChart } from "~/lib/tradingMarketChartState";
 import { Skeleton } from "../ui/skeleton";
 
 import { MissionPriceChart } from "./MissionPriceChart";
-import { deriveReviewMarkers } from "./tradingPresentation";
+import { deriveChartFillMarkers, deriveReviewMarkers } from "./tradingPresentation";
 
 /** Matches the live panel's chart height so the two surfaces read as one. */
 const CHART_HEIGHT_CLASS = "h-[168px] w-full";
@@ -96,6 +96,10 @@ export function MissionReviewChart(props: MissionReviewChartProps) {
     [firstFillAt, lastFillAt],
   );
   const markers = useMemo(() => deriveReviewMarkers(recentFills), [recentFills]);
+  // Every fill, not just the entry and the exit: a mission that scaled in twice
+  // and out three times is a different trade from one that went in and out once,
+  // and the post-mortem is exactly where that difference is worth seeing.
+  const fillMarkers = useMemo(() => deriveChartFillMarkers({ recentFills }), [recentFills]);
   const interval = window === undefined ? "1m" : intervalForSpan(window.endTime - window.startTime);
 
   const chart = useTradingMarketChart(environmentId, market, interval, {
@@ -127,6 +131,7 @@ export function MissionReviewChart(props: MissionReviewChartProps) {
       entryTime={firstFillAt === null ? null : Date.parse(firstFillAt)}
       markPrice={markers.exitPrice}
       markMotion="static"
+      fills={fillMarkers}
       pnlSign={pnlSign}
       className={CHART_HEIGHT_CLASS}
     />

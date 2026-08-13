@@ -23,8 +23,10 @@ import { TradingHarnessRun, TradingMission } from "./mission.ts";
 import { AgentConditionInput, TradingPlanState } from "./strategy.ts";
 import {
   TradingGetMissionResult,
+  TradingExecuteInput,
   TradingPublishPlanInput,
   TradingPublishPlanResult,
+  TradingRequestEntryInput,
 } from "./tools.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
 import {
@@ -47,6 +49,8 @@ const decodeHarnessRun = Schema.decodeUnknownSync(TradingHarnessRun);
 const decodePublishInput = Schema.decodeUnknownSync(TradingPublishPlanInput);
 const decodePublishResult = Schema.decodeUnknownSync(TradingPublishPlanResult);
 const decodeGetMissionResult = Schema.decodeUnknownSync(TradingGetMissionResult);
+const decodeRequestEntry = Schema.decodeUnknownSync(TradingRequestEntryInput);
+const decodeExecute = Schema.decodeUnknownSync(TradingExecuteInput);
 const decodeResolvedMarket = Schema.decodeUnknownSync(ResolvedMarket);
 const decodeAgentMarketSnapshot = Schema.decodeUnknownSync(AgentMarketSnapshot);
 const decodeMarketHistoryRequest = Schema.decodeUnknownSync(MarketHistoryRequest);
@@ -372,6 +376,55 @@ describe("§14.3 mission tool contracts", () => {
       })(),
     });
     expect(decoded.missionId).toBeUndefined();
+  });
+
+  it("does not accept competing execution forms", () => {
+    const intent = {
+      missionId: "mission_1",
+      strategyVersion: 1,
+      executionSequence: 1,
+      actionType: "open",
+      market: "ETH",
+      side: "buy",
+      size: 0.1,
+      orderPreference: "marketable_ioc",
+      limitPrice: 2_000,
+      stop: { stopPrice: 1_990, plannedLossAtStopUsd: 1 },
+      reduceOnly: false,
+    };
+    expect(() =>
+      decodeRequestEntry({
+        quoteId: "quote_1",
+        intent,
+        expectedAuthorityVersion: 1,
+        activeHarnessRunId: "run_1",
+      }),
+    ).toThrow();
+    expect(() => decodeRequestEntry({ intent })).toThrow();
+    expect(decodeRequestEntry({ quoteId: "quote_1" }).quoteId).toBe("quote_1");
+  });
+
+  it("publishes quote identity as the only live execution form", () => {
+    expect(decodeExecute({ quoteId: "quote_1" }).quoteId).toBe("quote_1");
+    expect(() =>
+      decodeExecute({
+        intent: {
+          missionId: "mission_1",
+          strategyVersion: 1,
+          executionSequence: 1,
+          actionType: "open",
+          market: "ETH",
+          side: "buy",
+          size: 0.1,
+          orderPreference: "marketable_ioc",
+          limitPrice: 2_000,
+          stop: { stopPrice: 1_990, plannedLossAtStopUsd: 1 },
+          reduceOnly: false,
+        },
+        expectedAuthorityVersion: 1,
+        activeHarnessRunId: "run_1",
+      }),
+    ).toThrow();
   });
 
   it("decodes a prose-string condition into the object shape", () => {
@@ -757,6 +810,7 @@ describe("subpath exports", () => {
         "./execution",
         "./loss-accounting",
         "./protection",
+        "./stop-adjustment",
         "./wakeup",
         "./volatility",
         "./costs",
@@ -764,6 +818,12 @@ describe("subpath exports", () => {
         "./history",
         "./calibration",
         "./playbook",
+        "./decision",
+        "./quote",
+        "./exit",
+        "./recovery",
+        "./policy",
+        "./replay",
       ].sort(),
     );
 

@@ -10,9 +10,11 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import {
+  findUnarmedEntryConditions,
   isDeafWhileHoldingPosition,
   readWatchCoverage,
   watchCoverageFloorMillis,
+  watchSanityBackstopMillis,
   WATCH_COVERAGE_FLOOR_MILLIS,
   type MarketWatch,
   type PersistedWatch,
@@ -112,6 +114,60 @@ describe("readWatchCoverage", () => {
   });
 });
 
+describe("readWatchCoverage with PnL watches and a confirmed stop", () => {
+  const target = armed({ type: "pnl_above", market: "ETH", valueUsd: 5 });
+  const lossLine = armed({ type: "pnl_below", market: "ETH", valueUsd: -6 });
+  const giveback = armed({ type: "pnl_giveback", market: "ETH", drawdownUsd: 3 });
+
+  const coverageFor = (
+    watches: ReadonlyArray<PersistedWatch>,
+    position: { readonly positionSize: number; readonly protectedSize?: number },
+  ) => readWatchCoverage({ watches, markPrice: MARK, nowMillis: NOW, ...position });
+
+  it("reads a long's target as upside and its loss line as downside", () => {
+    const coverage = coverageFor([target, lossLine], { positionSize: 0.5 });
+    assert.isTrue(coverage.coversUpside);
+    assert.isTrue(coverage.coversDownside);
+    assert.isFalse(isDeafWhileHoldingPosition(coverage));
+  });
+
+  it("mirrors the sides for a short", () => {
+    // The observed mission: a short with a target above and protection below.
+    const coverage = coverageFor([target, giveback], { positionSize: -0.0053 });
+    assert.isTrue(coverage.coversDownside);
+    assert.isTrue(coverage.coversUpside);
+    assert.isFalse(isDeafWhileHoldingPosition(coverage));
+  });
+
+  it("covers no side when the position direction is unknown", () => {
+    const coverage = coverageFor([target, lossLine], { positionSize: 0 });
+    assert.isFalse(coverage.coversUpside);
+    assert.isFalse(coverage.coversDownside);
+  });
+
+  it("counts a fully confirmed stop as losing-side coverage", () => {
+    const coverage = coverageFor([target], { positionSize: -0.0053, protectedSize: 0.0053 });
+    assert.isTrue(coverage.coversDownside); // the target, on a short
+    assert.isTrue(coverage.coversUpside); // the resting stop, on a short
+    assert.isFalse(isDeafWhileHoldingPosition(coverage));
+  });
+
+  it("does not count a partial stop", () => {
+    const coverage = coverageFor([target], { positionSize: 1, protectedSize: 0.4 });
+    assert.isTrue(coverage.coversUpside);
+    assert.isFalse(coverage.coversDownside);
+    assert.isTrue(isDeafWhileHoldingPosition(coverage));
+  });
+
+  it("ignores PnL watches that are no longer active", () => {
+    const coverage = coverageFor([{ ...target, status: "consumed" }, lossLine], {
+      positionSize: 0.5,
+    });
+    assert.isFalse(coverage.coversUpside);
+    assert.isTrue(coverage.coversDownside);
+  });
+});
+
 describe("isDeafWhileHoldingPosition", () => {
   it("calls a mission with no watches at all deaf", () => {
     assert.isTrue(isDeafWhileHoldingPosition(coverageOf([])));
@@ -125,6 +181,81 @@ describe("isDeafWhileHoldingPosition", () => {
       armed({ type: "scheduled_reassessment", runAt: NOW + 60_000 }),
     ]);
     assert.isFalse(isDeafWhileHoldingPosition(coverage));
+  });
+});
+
+describe("findUnarmedEntryConditions", () => {
+  const armedAt = (price: number) =>
+    armed({ type: "price_cross", market: "ETH", priceSource: "mark", direction: "below", price });
+
+  it("reports a named level with nothing armed at it", () => {
+    const unarmed = findUnarmedEntryConditions({
+      conditions: [{ description: "enter on a reclaim of 1899", priceLevel: 1_899 }],
+      watches: [],
+    });
+    assert.deepEqual(unarmed, [{ description: "enter on a reclaim of 1899", priceLevel: 1_899 }]);
+  });
+
+  it("treats a watch within 10 bps of the hint as armed", () => {
+    // 1899 against a watch at 1899.1 is the same decision, rounded.
+    const unarmed = findUnarmedEntryConditions({
+      conditions: [{ description: "reclaim", priceLevel: 1_899 }],
+      watches: [armedAt(1_899.1)],
+    });
+    assert.deepEqual(unarmed, []);
+  });
+
+  it("does not accept a watch at an unrelated level", () => {
+    const unarmed = findUnarmedEntryConditions({
+      conditions: [{ description: "reclaim", priceLevel: 1_899 }],
+      watches: [armedAt(1_830)],
+    });
+    assert.equal(unarmed.length, 1);
+  });
+
+  it("ignores conditions with no price hint — there is nothing to arm against", () => {
+    const unarmed = findUnarmedEntryConditions({
+      conditions: [{ description: "wait for funding to flip" }],
+      watches: [],
+    });
+    assert.deepEqual(unarmed, []);
+  });
+
+  it("ignores watches that are no longer active", () => {
+    const unarmed = findUnarmedEntryConditions({
+      conditions: [{ description: "reclaim", priceLevel: 1_899 }],
+      watches: [{ ...armedAt(1_899), status: "triggered" }],
+    });
+    assert.equal(unarmed.length, 1);
+  });
+
+  it("keeps the timeframe hint when the plan published one", () => {
+    const unarmed = findUnarmedEntryConditions({
+      conditions: [{ description: "reclaim", priceLevel: 1_899, timeframe: "5m" }],
+      watches: [],
+    });
+    assert.equal(unarmed[0]?.timeframe, "5m");
+  });
+});
+
+describe("watchSanityBackstopMillis", () => {
+  const MINUTE = 60_000;
+
+  it("stretches a 1m holder from 3 minutes to 30", () => {
+    assert.equal(watchSanityBackstopMillis("1m"), 30 * MINUTE);
+  });
+
+  it("clamps a 5m holder to the 2-hour cap rather than 150 minutes", () => {
+    assert.equal(watchSanityBackstopMillis("5m"), 120 * MINUTE);
+  });
+
+  it("is always well beyond the tight floor it replaces", () => {
+    for (const timeframe of ["1m", "3m", "5m", "15m", "1h"] as const) {
+      assert.isAbove(
+        watchSanityBackstopMillis(timeframe),
+        watchCoverageFloorMillis({ timeframe, holdingPosition: true }),
+      );
+    }
   });
 });
 
