@@ -1,9 +1,14 @@
 name: Deploy T3 Connect relay
 
 on:
-  push:
-    branches:
-      - main
+  # On-demand only. This fork explores the relay rather than running it as a
+  # production service, and an unattended deploy on every push to main would
+  # reconcile live Cloudflare zones, Hyperdrive, and Postgres migrations.
+  # Restore the `push` trigger below once the relay is a supported deployment.
+  # push:
+  #   branches:
+  #     - main
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -1,16 +1,20 @@
 name: PR Vouch
 
 on:
-  pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
-  issue_comment:
-    types: [created]
-  push:
-    branches:
-      - main
-    paths:
-      - .github/VOUCHED.td
-      - .github/workflows/pr-vouch.yml
+  # Upstream community tooling: marks PR authors trusted/unvouched against
+  # .github/VOUCHED.td. This fork takes no external contributions, so every run
+  # just relabels its own PRs.
+  # pull_request_target:
+  #   types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
+  # issue_comment:
+  #   types: [created]
+  # push:
+  #   branches:
+  #     - main
+  #   paths:
+  #     - .github/VOUCHED.td
+  #     - .github/workflows/pr-vouch.yml
+  workflow_dispatch:
 
 permissions:
   contents: read
