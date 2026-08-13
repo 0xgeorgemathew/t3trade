@@ -55,8 +55,8 @@ export const LOCAL_TRADING_ACCOUNT_ID = "local-hyperliquid-testnet";
  * Upsert the local account row from the interim signer.
  *
  * The address is refreshed on every start: swapping the key in
- * `.t3/secrets/` should move the account the missions read, not leave a stale
- * address pointing at the previous wallet.
+ * `~/.t3trade/secrets/` should move the account the missions read, not leave
+ * a stale address pointing at the previous wallet.
  */
 export const ensureLocalTradingAccount: Effect.Effect<
   Option.Option<string>,

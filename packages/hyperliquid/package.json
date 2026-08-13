@@ -20,6 +20,10 @@
       "types": "./src/wire.ts",
       "import": "./src/wire.ts"
     },
+    "./KeyLocation": {
+      "types": "./src/KeyLocation.ts",
+      "import": "./src/KeyLocation.ts"
+    },
     "./InfoClient": {
       "types": "./src/InfoClient.ts",
       "import": "./src/InfoClient.ts"

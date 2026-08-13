@@ -16,6 +16,16 @@
  *                                       mismatch is rejected). When unset, the
  *                                       address is derived from the key.
  *
+ * When the env var is unset, the key is read from the ONE canonical file
+ * shared by every T3 Trade instance on the machine (dev server, worktree,
+ * packaged desktop app):
+ *
+ *   `~/.t3trade/secrets/hyperliquid-interim-signer-key.bin`
+ *
+ * (base dir overridable via `T3TRADE_HOME` — see @t3tools/hyperliquid/KeyLocation).
+ * Under vitest the file source is disabled: a test arms the gate only via the
+ * explicit env var, never by inheriting the developer's real key.
+ *
  * When the key is absent the signer resolves to `Option.none()` and every
  * signable action is rejected with `interim_signer_not_configured`. This is
  * deliberate: this is the only code path that spends testnet capital, so the
@@ -30,7 +40,7 @@
 import { Context, Effect, Option, Schema } from "effect";
 import * as Layer from "effect/Layer";
 import { addressFromPrivateKey } from "@t3tools/hyperliquid/Signing";
-import { ServerConfig } from "../config.ts";
+import { INTERIM_SIGNER_SECRET_NAME, t3tradeSecretsDir } from "@t3tools/hyperliquid/KeyLocation";
 
 /** The secret file could not be read — absent, unreadable, or wrong perms. */
 export class SecretFileReadError extends Schema.TaggedErrorClass<SecretFileReadError>()(
@@ -94,8 +104,7 @@ export class InterimSignerConfig extends Context.Service<
 const HEX_PRIV_RE = /^0x[0-9a-fA-F]{64}$/;
 const HEX_ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
 
-/** The well-known secret filename under the state dir's `secrets/` folder. */
-export const INTERIM_SIGNER_SECRET_NAME = "hyperliquid-interim-signer-key";
+export { INTERIM_SIGNER_SECRET_NAME };
 
 function hexToBytes(hex: string): Uint8Array {
   const clean = hex.slice(2);
@@ -161,8 +170,8 @@ export const resolveInterimSignerFromEnv = (
 /**
  * Resolve the interim signer from the well-known secret file, returning
  * `Option.none()` when the file is absent. Used as a fallback when the env
- * var is unset so a dev server in a worktree picks up the key written to
- * `.t3/secrets/` without an explicit env export.
+ * var is unset so every instance picks up the key written to the canonical
+ * `~/.t3trade/secrets/` without an explicit env export.
  *
  * `readFile` is injected so this stays pure and testable.
  */
@@ -203,13 +212,19 @@ export const resolveInterimSigner = (
     );
   });
 
-/** Live layer reading from `process.env`, then the well-known secret file. */
-export const InterimSignerConfigLive = Layer.effect(
-  InterimSignerConfig,
-  Effect.gen(function* () {
-    const { secretsDir } = yield* ServerConfig;
-    return InterimSignerConfig.of({
-      resolve: resolveInterimSigner(process.env, readFileText, secretsDir),
-    });
+/**
+ * Live layer reading from `process.env`, then the canonical secret file at
+ * `~/.t3trade/secrets/` (see KeyLocation).
+ *
+ * Under vitest (`VITEST` set) the file source is skipped entirely so no test
+ * run ambiently arms live execution with the developer's real key; a test
+ * that wants an armed gate must set `T3_TRADES_INTERIM_SIGNER_KEY` itself.
+ */
+export const InterimSignerConfigLive = Layer.sync(InterimSignerConfig, () =>
+  InterimSignerConfig.of({
+    resolve:
+      process.env.VITEST !== undefined
+        ? resolveInterimSignerFromEnv(process.env)
+        : resolveInterimSigner(process.env, readFileText, t3tradeSecretsDir()),
   }),
 );
