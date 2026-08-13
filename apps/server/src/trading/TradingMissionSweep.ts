@@ -1,21 +1,15 @@
 /**
- * TradingMissionSweep - the boot-time purge of missions that are over.
+ * TradingMissionSweep - the boot-time purge of missions with no thread left.
  *
- * A settled mission is deleted the moment it settles (see
- * `TradingMissionReactor.deleteWhenTerminalAndFlat`), but that rule only
- * applies from the release that introduced it. Databases in the field already
- * hold every mission ever created: the wall of dead rows on the Trading
- * Settings page, plus missions whose thread was deleted out from under them and
- * which nothing will ever settle.
+ * Settled missions are kept (plan 27 H1): a terminal row is the permanent
+ * record of what was traded, and deleting it destroyed exactly the data the
+ * stop-placement and calibration measurements need. What still goes is the
+ * orphan — a mission whose thread was deleted out from under it. Nothing can
+ * wake it, nothing can settle it, no surface can ever show it, and a
+ * non-terminal orphan holds the one active-mission slot.
  *
- * Two categories go, both at boot, both only while flat:
- * - permanently terminal missions (`revoked` / `completed`);
- * - non-terminal missions with no surviving thread — nothing can wake them,
- *   nothing can settle them, and they hold the one active-mission slot.
- *
- * Kept rather than made a one-off migration because it is idempotent and cheap:
- * on a clean database it finds nothing, and it is the backstop for any path
- * that fails to delete at settle time.
+ * Runs at boot, only while flat. Kept rather than made a one-off migration
+ * because it is idempotent and cheap: on a clean database it finds nothing.
  *
  * @module TradingMissionSweep
  */

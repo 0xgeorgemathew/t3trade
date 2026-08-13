@@ -4,6 +4,8 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   MISSION_STATUS_LABELS,
   deriveCompletionSummary,
+  deriveMissionHistoryRow,
+  settledMissions,
   deriveReviewMarkers,
   deriveMissionStrip,
   deriveRejectedOrder,
@@ -752,8 +754,8 @@ describe("isLiveMission", () => {
 describe("visibleMissions", () => {
   const mission = (id: string, status: TradingMissionStatus) => ({ id, status });
 
-  // A settled mission is deleted server-side; until the projection catches up,
-  // this is what keeps it off every surface.
+  // Settled missions survive server-side now (plan 27 H1); this filter is what
+  // keeps the workspace cards to the missions that can still act.
   it("keeps the live missions and nothing else", () => {
     const visible = visibleMissions([
       mission("revoked-newest", "revoked"),
@@ -776,6 +778,65 @@ describe("visibleMissions", () => {
 
   it("has nothing to show before the first mission exists", () => {
     expect(visibleMissions([])).toEqual([]);
+  });
+});
+
+describe("mission history (plan 27 H3)", () => {
+  const mission = (id: string, status: TradingMissionStatus) => ({ id, status });
+
+  it("settledMissions is the complement of visibleMissions", () => {
+    const all = [
+      mission("revoked-newest", "revoked"),
+      mission("live", "position_open"),
+      mission("completed-oldest", "completed"),
+    ];
+    expect(settledMissions(all).map((m) => m.id)).toEqual(["revoked-newest", "completed-oldest"]);
+  });
+
+  const settledMission = {
+    id: "mission_h3",
+    threadId: "thread_h3",
+    market: "ETH",
+    status: "completed" as TradingMissionStatus,
+    strategy: { direction: "long" },
+    result: {
+      realizedPnlUsd: 25,
+      feesPaidUsd: 2,
+      fillCount: 4,
+      firstFillAt: "2026-08-13T06:00:00.000Z",
+      lastFillAt: "2026-08-13T06:45:00.000Z",
+    },
+    updatedAt: "2026-08-13T07:00:00.000Z",
+  };
+
+  it("compresses a settled mission to one ledger line", () => {
+    const row = deriveMissionHistoryRow(settledMission);
+    expect(row.market).toBe("ETH");
+    expect(row.direction).toBe("long");
+    expect(row.statusLabel).toBe(MISSION_STATUS_LABELS.completed);
+    // §16.2: fees netted exactly once.
+    expect(row.netUsd).toBe(23);
+    expect(row.netLabel).toBe("+$23.00");
+    expect(row.feesLabel).toBe("$2");
+    expect(row.durationLabel).toBe("45m 0s");
+    expect(row.settledAtIso).toBe("2026-08-13T07:00:00.000Z");
+  });
+
+  it("omits direction and duration a mission never had", () => {
+    const row = deriveMissionHistoryRow({
+      ...settledMission,
+      strategy: null,
+      result: {
+        realizedPnlUsd: 0,
+        feesPaidUsd: 0,
+        fillCount: 1,
+        firstFillAt: "2026-08-13T06:00:00.000Z",
+        lastFillAt: "2026-08-13T06:00:00.000Z",
+      },
+    });
+    expect(row.direction).toBeNull();
+    // One fill is not a round trip, so no traded duration is claimed.
+    expect(row.durationLabel).toBeNull();
   });
 });
 

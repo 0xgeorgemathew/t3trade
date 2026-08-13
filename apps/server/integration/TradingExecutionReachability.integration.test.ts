@@ -729,6 +729,8 @@ it.live(
                       reentryConditions: [{ description: "Fresh breakout above 3,100" }],
                       currentAction: "entering",
                       explanation: "Long ETH momentum, protected at 2,950.",
+                      plainSummary:
+                        "ETH is trending up; I am buying and will sell if it drops to 2,950.",
                     },
                   });
                   assert.equal(published.outcome, "accepted", "strategy publish must be accepted");

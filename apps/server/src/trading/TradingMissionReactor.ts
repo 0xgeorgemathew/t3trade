@@ -331,38 +331,9 @@ const make = Effect.gen(function* () {
     // deliberately not terminal here.
     if (updated.status === "revoked" || updated.status === "completed") {
       yield* Effect.sync(() => clearSessionProfile(input.threadId));
-      // Every permanent terminal ends the same way, including an incumbent
-      // revoked by a new thread taking the slot.
-      yield* deleteWhenTerminalAndFlat(input.missionId);
     }
     return true;
   });
-
-  /**
-   * A mission that has reached a permanent terminal status is finished, and a
-   * finished mission is deleted rather than kept.
-   *
-   * Every settled mission used to live forever, which is the wall of dead rows
-   * on the Trading Settings page and the reason a stuck mission could still be
-   * found by a projection read weeks later. Deleting is safe only once the
-   * position is gone: a row removed while exposure is open would strand real
-   * money with no record of who opened it. When the close could not flatten
-   * (exchange unreachable), the revoked row stays and the flat sweep below
-   * finishes the job when the position finally clears.
-   */
-  const deleteWhenTerminalAndFlat = Effect.fn("TradingMissionReactor.deleteTerminalMission")(
-    function* (missionId: TradingMissionId) {
-      if (yield* holdsPosition(missionId)) {
-        // Debug, not warning: the deferred-deletion sweep re-checks every few
-        // seconds, and the settle path warns once on its own behalf.
-        yield* Effect.logDebug("mission deletion deferred: position not flat", { missionId });
-        return false;
-      }
-      yield* missions.deleteMission(missionId);
-      yield* Effect.logInfo("deleted a terminal mission", { missionId });
-      return true;
-    },
-  );
 
   /**
    * The driver kind that runs one configured provider instance, or null when
@@ -580,16 +551,6 @@ const make = Effect.gen(function* () {
         yield* announceStatus({ missionId, threadId, status });
         if (status === "revoked" || status === "completed") {
           yield* Effect.sync(() => clearSessionProfile(threadId));
-          // `closeAndRevoke` flattens before it revokes, so this normally
-          // deletes here. When the exchange was unreachable the position is
-          // still open, and `deleteFlatTerminalMissions` finishes it later.
-          const deleted = yield* deleteWhenTerminalAndFlat(missionId);
-          if (!deleted) {
-            yield* Effect.logWarning("settle deferred mission deletion: position not flat", {
-              missionId,
-              threadId,
-            });
-          }
         }
       }
       return;
@@ -735,11 +696,10 @@ const make = Effect.gen(function* () {
 
     yield* announceStatus({ missionId, threadId, status: updated.status });
 
-    // A user's Revoke ends the mission the same way a settle does, so it ends
-    // the same way: the thread is released and the row is deleted once flat.
+    // A user's Revoke ends the mission the same way a settle does: the thread
+    // is released, and the row stays as the mission's permanent record.
     if (updated.status === "revoked" || updated.status === "completed") {
       yield* Effect.sync(() => clearSessionProfile(threadId));
-      yield* deleteWhenTerminalAndFlat(missionId);
     }
   });
 
@@ -1772,32 +1732,10 @@ const make = Effect.gen(function* () {
     yield* coordinator.requestRun({ missionId, cause: "order_updated" }).pipe(Effect.ignore);
   });
 
-  /**
-   * Finish the deletions a settle could not.
-   *
-   * A mission revoked while the exchange was unreachable keeps its row and its
-   * position banner until the position is actually gone. The reconciler is what
-   * eventually notices, and this is the pass that acts on it — otherwise the
-   * only terminal missions that ever got deleted would be the ones that settled
-   * cleanly, which is exactly the case that needed no help.
-   */
-  const deleteFlatTerminalMissions = Effect.fn("TradingMissionReactor.deleteFlatTerminal")(
-    function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const rows = yield* sql<{ readonly mission_id: string }>`
-        SELECT mission_id FROM trading_missions WHERE status IN ('revoked', 'completed')
-      `;
-      for (const row of rows) {
-        yield* deleteWhenTerminalAndFlat(TradingMissionId.make(row.mission_id));
-      }
-    },
-  );
-
   yield* Effect.gen(function* () {
     while (true) {
       yield* Effect.sleep("5 seconds");
       yield* settleFlatPosition().pipe(Effect.catchCause(() => Effect.void));
-      yield* deleteFlatTerminalMissions().pipe(Effect.catchCause(() => Effect.void));
       yield* guardProtection().pipe(
         Effect.catchCause((cause) =>
           Cause.hasInterruptsOnly(cause)

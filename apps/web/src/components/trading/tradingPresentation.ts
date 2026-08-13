@@ -874,13 +874,12 @@ export function isMissionComplete(status: TradingMissionStatus): boolean {
 }
 
 /**
- * The missions worth a card in the workspace: the live ones.
+ * The missions worth a full card in the workspace: the live ones.
  *
- * A finished mission is deleted server-side once it is flat, so in practice
- * nothing is filtered here — the projection stops carrying it within a poll
- * tick. This stays as the client's own guarantee that a settled mission is not
- * shown, for the window between the terminal status landing and the row going
- * away.
+ * Finished missions survive in the projection now (plan 27 H1 stopped
+ * deleting them at settle), so this filter is what keeps the workspace to the
+ * missions that can still act. The finished ones render in the history list
+ * instead — see {@link settledMissions}.
  *
  * Input order is the projection's: newest first.
  */
@@ -888,6 +887,75 @@ export function visibleMissions<T extends { readonly status: TradingMissionStatu
   missions: ReadonlyArray<T>,
 ): ReadonlyArray<T> {
   return missions.filter((mission) => !isMissionComplete(mission.status));
+}
+
+/** The finished missions, newest first: the history list's input. */
+export function settledMissions<T extends { readonly status: TradingMissionStatus }>(
+  missions: ReadonlyArray<T>,
+): ReadonlyArray<T> {
+  return missions.filter((mission) => isMissionComplete(mission.status));
+}
+
+/** One line of the mission history list, everything already formatted. */
+export interface MissionHistoryRow {
+  readonly missionId: string;
+  readonly threadId: string;
+  readonly market: string;
+  /** "long" / "short" / "both" from the published plan; null when none was. */
+  readonly direction: string | null;
+  readonly statusLabel: string;
+  readonly netUsd: number;
+  readonly netLabel: string;
+  readonly feesLabel: string;
+  readonly fillCount: number;
+  /** First fill to last fill; null for a mission that never traded twice. */
+  readonly durationLabel: string | null;
+  /** When the mission reached its terminal status (the row's last write). */
+  readonly settledAtIso: string;
+}
+
+/**
+ * A settled mission compressed to the line the history list shows.
+ *
+ * The full record — fills, review chart, plan — lives on the mission's
+ * thread; this row exists to find that thread and to make the ledger scan
+ * well: market, direction, what it netted, what it cost, how long it traded.
+ */
+export function deriveMissionHistoryRow(mission: {
+  readonly id: string;
+  readonly threadId: string;
+  readonly market: string;
+  readonly status: TradingMissionStatus;
+  readonly strategy: { readonly direction: string } | null;
+  readonly result: {
+    readonly realizedPnlUsd: number;
+    readonly feesPaidUsd: number;
+    readonly fillCount: number;
+    readonly firstFillAt: string | null;
+    readonly lastFillAt: string | null;
+  };
+  readonly updatedAt: string;
+}): MissionHistoryRow {
+  const net = mission.result.realizedPnlUsd - mission.result.feesPaidUsd;
+  const tradedMillis =
+    mission.result.firstFillAt === null ||
+    mission.result.lastFillAt === null ||
+    mission.result.fillCount < 2
+      ? null
+      : Date.parse(mission.result.lastFillAt) - Date.parse(mission.result.firstFillAt);
+  return {
+    missionId: mission.id,
+    threadId: mission.threadId,
+    market: mission.market,
+    direction: mission.strategy === null ? null : humanizeLiteral(mission.strategy.direction),
+    statusLabel: MISSION_STATUS_LABELS[mission.status],
+    netUsd: net,
+    netLabel: formatSignedUsd(net),
+    feesLabel: formatUsd(mission.result.feesPaidUsd),
+    fillCount: mission.result.fillCount,
+    durationLabel: tradedMillis === null || tradedMillis < 0 ? null : formatDuration(tradedMillis),
+    settledAtIso: mission.updatedAt,
+  };
 }
 
 export function deriveCompletionSummary(mission: {
@@ -1919,8 +1987,7 @@ export function formatDuration(millis: number): string {
  *
  * `revoked` and `completed` are terminal: the server's create guard looks only
  * for a mission outside those two, so a thread whose only mission is terminal
- * is free again. A terminal mission is also deleted once it is flat, so this
- * mostly answers for the window between the two.
+ * is free again — the terminal row itself stays as history (plan 27 H1).
  */
 export function isLiveMission(status: string): boolean {
   return status !== "revoked" && status !== "completed";

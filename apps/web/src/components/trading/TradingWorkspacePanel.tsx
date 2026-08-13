@@ -1,17 +1,21 @@
-import type { EnvironmentId, OrchestrationTradingMission } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import type { EnvironmentId, OrchestrationTradingMission, ThreadId } from "@t3tools/contracts";
 import { pocRiskPolicyDefaults } from "@t3tools/trading-contracts/authority";
 import type { ProfitTargetBasis } from "@t3tools/trading-contracts/strategy";
-import { RefreshCwIcon, TrendingUpIcon } from "lucide-react";
-import { useMemo } from "react";
+import { useRouter } from "@tanstack/react-router";
+import { HistoryIcon, RefreshCwIcon, TrendingUpIcon } from "lucide-react";
+import { useMemo, useState } from "react";
 
 import { useTradingMissions } from "../../lib/tradingMissionsState";
 import { useProjects } from "../../state/entities";
+import { buildThreadRouteParams } from "../../threadRoutes";
 import { SettingsPageContainer, SettingsSection } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
 import { MissionStalenessBanner } from "./MissionStalenessBanner";
 import { MissionStripBar } from "./MissionStripBar";
 import { useMissionControls, type MissionControls } from "./useMissionControls";
 import {
+  deriveMissionHistoryRow,
   deriveMissionPhases,
   derivePausedExposure,
   describeWatch,
@@ -21,6 +25,7 @@ import {
   hyperliquidTradeUrl,
   isLiveMission,
   MISSION_STATUS_LABELS,
+  settledMissions,
   shouldShowMissionStrip,
   visibleMissions,
 } from "./tradingPresentation";
@@ -449,7 +454,90 @@ function TradingWorkspaceForEnvironment({ environmentId }: { environmentId: Envi
       {visibleMissions(missions).map((mission) => (
         <MissionWithControls key={mission.id} mission={mission} environmentId={environmentId} />
       ))}
+
+      <MissionHistorySection missions={missions} environmentId={environmentId} />
     </SettingsPageContainer>
+  );
+}
+
+/** How many history rows show before "Show more" has to be pressed. */
+const HISTORY_PAGE_SIZE = 10;
+
+/**
+ * Past missions, one line each — plan 27 H3.
+ *
+ * Settled missions survive in the projection now (H1 stopped deleting them),
+ * and this is the presentation answer to the wall of dead rows that motivated
+ * the deletion: collapsed to a line per mission, paginated, each opening the
+ * thread that holds the full record — fills, review chart, plan.
+ */
+function MissionHistorySection({
+  missions,
+  environmentId,
+}: {
+  missions: ReadonlyArray<OrchestrationTradingMission>;
+  environmentId: EnvironmentId;
+}) {
+  const router = useRouter();
+  const [shownCount, setShownCount] = useState(HISTORY_PAGE_SIZE);
+  const settled = settledMissions(missions);
+  if (settled.length === 0) return null;
+
+  const rows = settled.slice(0, shownCount).map(deriveMissionHistoryRow);
+  const openThread = (threadId: string) =>
+    void router.navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId as ThreadId)),
+    });
+
+  return (
+    <SettingsSection title="Mission history" icon={<HistoryIcon className="size-4" />}>
+      <ul className="divide-y divide-border/50">
+        {rows.map((row) => (
+          <li key={row.missionId}>
+            <button
+              type="button"
+              onClick={() => openThread(row.threadId)}
+              className="flex w-full flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-2 text-left text-sm hover:bg-accent/50 sm:px-4"
+            >
+              <span className="font-medium text-foreground">{row.market}</span>
+              {row.direction !== null ? (
+                <span className="text-muted-foreground">{row.direction}</span>
+              ) : null}
+              <span
+                className={
+                  "font-medium tabular-nums " + (row.netUsd >= 0 ? "text-profit" : "text-loss")
+                }
+              >
+                {row.netLabel} net
+              </span>
+              <span className="tabular-nums text-muted-foreground">{row.feesLabel} fees</span>
+              {row.durationLabel !== null ? (
+                <span className="tabular-nums text-muted-foreground">
+                  traded {row.durationLabel}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">no round trip</span>
+              )}
+              <span className="ml-auto text-xs text-muted-foreground">
+                {row.statusLabel} · {new Date(row.settledAtIso).toLocaleDateString()}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {settled.length > shownCount ? (
+        <div className="px-3 py-2 sm:px-4">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShownCount((count) => count + HISTORY_PAGE_SIZE)}
+          >
+            Show more ({settled.length - shownCount} older)
+          </Button>
+        </div>
+      ) : null}
+    </SettingsSection>
   );
 }
 

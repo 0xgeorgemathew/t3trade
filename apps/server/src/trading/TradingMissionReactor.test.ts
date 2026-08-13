@@ -512,8 +512,9 @@ const recordFill = Effect.gen(function* () {
 /**
  * The last status the reactor announced for the test mission.
  *
- * Settle now deletes the mission once it is flat, so the terminal status is no
- * longer readable from the projection — the announced event is where it lives.
+ * The projection also carries the terminal status now that settled rows
+ * survive (plan 27 H1); the announced event is checked as well because it is
+ * what the workspace reacts to.
  */
 const lastAnnouncedStatus = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -526,7 +527,8 @@ const lastAnnouncedStatus = Effect.gen(function* () {
   return rows[0]?.status ?? null;
 });
 
-/** How many mission rows survive. Settle deletes them; nothing else should. */
+/** How many mission rows survive. Settle keeps them (plan 27 H1): the
+    terminal row is the permanent record of what was traded. */
 const missionRowCount = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ readonly c: number }>`SELECT COUNT(*) AS c FROM trading_missions`;
@@ -549,7 +551,7 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
   // Settle is the way out of a mission. A thread the user has finished with
   // must not keep an authority that wakes, trades, and holds the one active
   // slot the next thread needs.
-  it.effect("revokes and then deletes the mission bound to the settled thread", () =>
+  it.effect("revokes the mission bound to the settled thread and keeps its row", () =>
     Effect.gen(function* () {
       yield* started;
       yield* createQuietMission;
@@ -557,11 +559,12 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
       yield* settleThread(THREAD_ID);
 
       assert.equal(yield* lastAnnouncedStatus, "revoked");
-      // A settled mission is gone, not archived: every row it wrote goes with
-      // it, and it disappears from every surface within one poll tick.
-      assert.equal(yield* missionRowCount, 0);
+      // A settled mission is archived, not erased (plan 27 H1): the row stays
+      // as the record of what was traded, projected with its terminal status.
+      assert.equal(yield* missionRowCount, 1);
       const projected = yield* projectedMission;
-      assert.ok(Option.isNone(projected));
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.status, "revoked");
     }).pipe(Effect.scoped),
   );
 
@@ -578,7 +581,10 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
       yield* settleThread(THREAD_ID);
 
       assert.equal(yield* lastAnnouncedStatus, "completed");
-      assert.equal(yield* missionRowCount, 0);
+      assert.equal(yield* missionRowCount, 1);
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.status, "completed");
     }).pipe(Effect.scoped),
   );
 
@@ -595,7 +601,7 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
       yield* settleThread(THREAD_ID);
 
       assert.equal(yield* lastAnnouncedStatus, "revoked");
-      assert.equal(yield* missionRowCount, 0);
+      assert.equal(yield* missionRowCount, 1);
     }).pipe(Effect.scoped),
   );
 
@@ -631,10 +637,10 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  // `findMissionByThreadId` returns only a still-authoritative mission, and the
-  // row is gone by the second call anyway, so the second settle has nothing to
-  // act on. Settle is a bulk action in the sidebar and must stay a silent
-  // no-op the second time.
+  // `findMissionByThreadId` returns only a still-authoritative mission, so the
+  // second settle has nothing to act on even though the revoked row survives.
+  // Settle is a bulk action in the sidebar and must stay a silent no-op the
+  // second time.
   it.effect("is a no-op when the mission is already revoked", () =>
     Effect.gen(function* () {
       yield* started;
@@ -644,7 +650,7 @@ it.layer(TestLayer)("settling a mission-bound thread", (it) => {
       yield* settleThread(THREAD_ID);
 
       assert.equal(yield* lastAnnouncedStatus, "revoked");
-      assert.equal(yield* missionRowCount, 0);
+      assert.equal(yield* missionRowCount, 1);
     }).pipe(Effect.scoped),
   );
 });
@@ -729,7 +735,7 @@ it.layer(TestLayer)("trading mission reactor", (it) => {
   it.effect("§16.4: permits revocation while a mission is blocked", () =>
     // §16.4 item 4: revocation is explicitly permitted while blocked, so the
     // user can wind the mission down without first clearing the block. It ends
-    // the same way a settle does — announced revoked, then deleted once flat.
+    // the same way a settle does — announced revoked, row kept as the record.
     Effect.gen(function* () {
       yield* started;
       yield* createMission;
@@ -738,8 +744,10 @@ it.layer(TestLayer)("trading mission reactor", (it) => {
       yield* control("trading.mission.revoke");
 
       assert.equal(yield* lastAnnouncedStatus, "revoked");
-      assert.equal(yield* missionRowCount, 0);
-      assert.ok(Option.isNone(yield* projectedMission));
+      assert.equal(yield* missionRowCount, 1);
+      const projected = yield* projectedMission;
+      assert.ok(Option.isSome(projected));
+      assert.equal(projected.value.status, "revoked");
     }),
   );
 

@@ -13,7 +13,7 @@
 //   planning  no strategy yet          → chart + schedule, "Analysing the market…"
 //   armed     strategy, flat, watching → chart + condition levels + plan summary
 //   live      position open            → the same, plus P&L and the held figures
-//   complete  mission finished         → the net result, until the row is deleted
+//   complete  mission finished         → the net result, kept for good (plan 27 H1)
 //
 // It is the same pane of glass as the composer it sits on — same surface tint,
 // blur, saturation and hairline outline — because two stacked surfaces with
@@ -352,8 +352,9 @@ export function MissionLivePanel({
   // --- complete: the result, one line. --------------------------------------
   // The full review — the post-mortem chart and the fee/PnL breakdown — is the
   // completion summary card in the timeline. Repeating it here would put two
-  // charts of the same finished trade on one screen for the few seconds before
-  // the mission row is deleted.
+  // charts of the same finished trade on one screen. The row survives settle
+  // now (plan 27 H1), so this one-liner is the settled thread's permanent
+  // trading surface above the composer.
   if (state === "complete") {
     const net = mission.result.realizedPnlUsd - mission.result.feesPaidUsd;
     return (

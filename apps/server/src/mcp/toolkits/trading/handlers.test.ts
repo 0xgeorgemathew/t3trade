@@ -89,6 +89,8 @@ const strategyBody = (name: string): PublishTradingPlanBody => ({
   reentryConditions: [],
   currentAction: "waiting",
   explanation: "Momentum continuation on the overnight range break.",
+  plainSummary:
+    "ETH broke above its overnight range; I plan to buy the breakout and sell if it falls back in.",
 });
 
 /**

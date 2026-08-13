@@ -379,8 +379,9 @@ layer("TradingMissionService", (it) => {
     }),
   );
 
-  // A settled mission is gone, not archived. Every table keyed to it goes with
-  // it — including its closed trades, which is the accepted data loss.
+  // Deletion still exists for orphans — missions whose thread is gone — and it
+  // takes every table keyed to the mission with it. Settled missions with a
+  // surviving thread are never deleted any more (plan 27 H1).
   it.effect("deletes every row keyed to the mission", () =>
     Effect.gen(function* () {
       yield* migrated;
@@ -422,8 +423,9 @@ layer("TradingMissionService", (it) => {
     }),
   );
 
-  // The startup sweep's input: what settled, plus what nothing can ever settle.
-  it.effect("lists terminal missions and missions whose thread is gone", () =>
+  // The startup sweep's input: only orphans. A settled mission with a
+  // surviving thread is the permanent record of what was traded (plan 27 H1).
+  it.effect("lists only missions whose thread is gone", () =>
     Effect.gen(function* () {
       yield* migrated;
       const sql = yield* SqlClient.SqlClient;
@@ -434,12 +436,14 @@ layer("TradingMissionService", (it) => {
       yield* sql`
         UPDATE trading_missions SET status = 'revoked' WHERE mission_id = 'mission_done'
       `;
-      // `mission_live` is non-terminal, but its thread was never projected, so
-      // nothing can ever wake or settle it either.
+      // Both missions' threads were never projected, so nothing can ever wake,
+      // settle, or display either of them — terminal or not, both are orphans.
       const deletable = yield* service.listDeletableMissions();
       assert.deepEqual(deletable.map((m) => m.missionId).sort(), ["mission_done", "mission_live"]);
 
-      // Give the live mission a thread and it stops being deletable.
+      // Give the live mission a thread and it stops being deletable. The
+      // revoked one keeps a thread too and stops being deletable as well:
+      // terminal status alone no longer qualifies.
       yield* sql`
         INSERT INTO projection_projects (
           project_id, title, workspace_root, scripts_json, created_at, updated_at
@@ -453,7 +457,7 @@ layer("TradingMissionService", (it) => {
       const stillDeletable = yield* service.listDeletableMissions();
       assert.deepEqual(
         stillDeletable.map((m) => m.missionId),
-        ["mission_done"],
+        [],
       );
     }),
   );

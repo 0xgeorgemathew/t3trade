@@ -622,11 +622,14 @@ const makeTradingMissionService = Effect.gen(function* () {
       .pipe(Effect.mapError(sqlFail("deleteMission")), Effect.asVoid);
 
   const listDeletableMissions: TradingMissionServiceShape["listDeletableMissions"] = () =>
+    // Only orphans are deletable. A terminal (revoked/completed) mission with a
+    // surviving thread is the permanent record of what was traded — plan 27 H1
+    // stopped deleting those; a mission whose thread no longer exists has no
+    // surface left to show that record on and nothing that can ever wake it.
     sql<{ readonly mission_id: string; readonly status: string }>`
       SELECT m.mission_id, m.status
       FROM trading_missions m
-      WHERE m.status IN ('revoked', 'completed')
-         OR NOT EXISTS (
+      WHERE NOT EXISTS (
               SELECT 1 FROM projection_threads t
               WHERE t.thread_id = json_extract(m.harness_json, '$.threadId')
             )
