@@ -70,6 +70,8 @@ import * as Stream from "effect/Stream";
 import { ServerConfig, deriveServerPaths } from "../src/config.ts";
 import { OrchestrationEngineLive } from "../src/orchestration/Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "../src/orchestration/Layers/ProjectionPipeline.ts";
+import * as ThreadBackgroundLiveness from "../src/orchestration/ThreadBackgroundLiveness.ts";
+import * as ThreadPlanProgress from "../src/orchestration/ThreadPlanProgress.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "../src/orchestration/Layers/ProjectionSnapshotQuery.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../src/persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../src/persistence/Layers/OrchestrationEventStore.ts";
@@ -492,6 +494,11 @@ function buildLayer(workspaceDir: string, rootDir: string, dbPath: string) {
     // finds nothing and the binding falls back.
     Layer.provideMerge(makeProviderRegistryLayer()),
     Layer.provideMerge(ServerConfig.layerTest(workspaceDir, rootDir)),
+    // Upstream's projection pipeline now reads per-thread background liveness
+    // and plan progress, so every layer stack that builds it has to supply
+    // them — including the fork's own integration harnesses.
+    Layer.provideMerge(ThreadBackgroundLiveness.layer),
+    Layer.provideMerge(ThreadPlanProgress.layer),
     Layer.provideMerge(makeSqlitePersistenceLive(dbPath)),
     Layer.provideMerge(NodeServices.layer),
   );

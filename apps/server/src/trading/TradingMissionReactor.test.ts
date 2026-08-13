@@ -24,6 +24,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../config.ts";
 import { OrchestrationProjectionPipelineLive } from "../orchestration/Layers/ProjectionPipeline.ts";
+import * as ThreadBackgroundLiveness from "../orchestration/ThreadBackgroundLiveness.ts";
+import * as ThreadPlanProgress from "../orchestration/ThreadPlanProgress.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationEngineLive } from "../orchestration/Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "../orchestration/Layers/ProjectionSnapshotQuery.ts";
@@ -69,6 +71,10 @@ const TestLayer = TradingMissionReactorLive.pipe(
   // the honest stand-in: the lookup finds nothing and the binding falls back.
   Layer.provideMerge(makeProviderRegistryLayer()),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-reactor-" })),
+  // Upstream's projection pipeline reads per-thread background liveness and
+  // plan progress; every stack that builds it has to supply them.
+  Layer.provideMerge(ThreadBackgroundLiveness.layer),
+  Layer.provideMerge(ThreadPlanProgress.layer),
   Layer.provideMerge(SqlitePersistenceMemory),
   Layer.provideMerge(NodeServices.layer),
 );
@@ -820,6 +826,8 @@ it.live("asks the coordinator for a run when a watch fires", () =>
       Layer.provideMerge(
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-watchfired-" }),
       ),
+      Layer.provideMerge(ThreadBackgroundLiveness.layer),
+      Layer.provideMerge(ThreadPlanProgress.layer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -903,6 +911,8 @@ it.live("reconciles before resuming a paused mission", () =>
       Layer.provideMerge(
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-resumereconcile-" }),
       ),
+      Layer.provideMerge(ThreadBackgroundLiveness.layer),
+      Layer.provideMerge(ThreadPlanProgress.layer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -996,6 +1006,8 @@ it.live("sizes a mission with no stated capital from the live account value", ()
       // the honest stand-in: the lookup finds nothing and the binding falls back.
       Layer.provideMerge(makeProviderRegistryLayer()),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-capital-" })),
+      Layer.provideMerge(ThreadBackgroundLiveness.layer),
+      Layer.provideMerge(ThreadPlanProgress.layer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -1090,6 +1102,8 @@ it.live(
         Layer.provideMerge(
           ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-protection-" }),
         ),
+        Layer.provideMerge(ThreadBackgroundLiveness.layer),
+        Layer.provideMerge(ThreadPlanProgress.layer),
         Layer.provideMerge(SqlitePersistenceMemory),
         Layer.provideMerge(NodeServices.layer),
       );

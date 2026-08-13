@@ -8,7 +8,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { AiError, McpSchema, McpServer, Tool, Toolkit } from "effect/unstable/ai";
+import { AiError, McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import packageJson from "../../package.json" with { type: "json" };
@@ -388,6 +388,7 @@ const McpTransportLive = McpServer.layerHttp({
   name: "T3 Trade",
   version: packageJson.version,
   path: "/mcp",
+  protocols: [McpProtocol.v2025_06_18],
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
 export const layer = Layer.mergeAll(

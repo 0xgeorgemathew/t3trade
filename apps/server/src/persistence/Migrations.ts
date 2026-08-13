@@ -67,6 +67,11 @@ import Migration0051 from "./Migrations/051_TradingRunDecisions.ts";
 import Migration0052 from "./Migrations/052_TradingEntryQuotes.ts";
 import Migration0053 from "./Migrations/053_TradingExecutionSequences.ts";
 import Migration0054 from "./Migrations/054_ProjectionThreadTitleRegeneration.ts";
+import Migration0055 from "./Migrations/055_ProjectionThreadsPinned.ts";
+import Migration0056 from "./Migrations/056_ProjectionTurnsKeysetIndex.ts";
+import Migration0057 from "./Migrations/057_ProjectionThreadsPinOrderKey.ts";
+import Migration0058 from "./Migrations/058_ProjectionProjectsDefaultThreadEnvMode.ts";
+import Migration0059 from "./Migrations/059_ProjectionProjectFaviconPath.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -136,6 +141,11 @@ export const migrationEntries = [
   // already recorded as TradingDomain in every fork database. Every incoming
   // upstream migration takes the next free fork id — see PATCH_LEDGER.
   [54, "ProjectionThreadTitleRegeneration", Migration0054],
+  [55, "ProjectionThreadsPinned", Migration0055],
+  [56, "ProjectionTurnsKeysetIndex", Migration0056],
+  [57, "ProjectionThreadsPinOrderKey", Migration0057],
+  [58, "ProjectionProjectsDefaultThreadEnvMode", Migration0058],
+  [59, "ProjectionProjectFaviconPath", Migration0059],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

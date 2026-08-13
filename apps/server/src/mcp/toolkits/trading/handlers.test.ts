@@ -96,7 +96,7 @@ const strategyBody = (name: string): PublishTradingPlanBody => ({
  * depending on the negotiated session, so read the JSON-RPC envelope out of
  * whichever came back.
  */
-const decodeJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const parseJsonRpc = (body: string): { readonly result?: any; readonly error?: any } => {
   const payload = body.includes("data:")
@@ -106,7 +106,16 @@ const parseJsonRpc = (body: string): { readonly result?: any; readonly error?: a
         .map((line) => line.slice("data:".length).trim())
         .at(-1) ?? "{}")
     : body;
-  return decodeJson(payload) as { readonly result?: any; readonly error?: any };
+  try {
+    return decodeJson(payload) as { readonly result?: any; readonly error?: any };
+  } catch (e) {
+    // eslint-disable-next-line
+    require("node:fs").appendFileSync(
+      "/tmp/mcp-body.txt",
+      "BODY<<<" + body + ">>>\nPAYLOAD<<<" + payload + ">>>\n",
+    );
+    throw e;
+  }
 };
 
 /**
@@ -242,7 +251,15 @@ const withMcpServer = <A, E>(
           expect(initialize.status).toBe(200);
 
           const response = yield* httpClient.post("/mcp", {
-            headers: { accept, authorization, "mcp-session-id": sessionId! },
+            headers: {
+              accept,
+              authorization,
+              "mcp-session-id": sessionId!,
+              // 2025-06-18 requires every post-initialize request to name the
+              // negotiated protocol version; without it the transport rejects
+              // the call before it reaches a handler.
+              "mcp-protocol-version": "2025-06-18",
+            },
             body: HttpBody.jsonUnsafe({
               jsonrpc: "2.0",
               id: 2,

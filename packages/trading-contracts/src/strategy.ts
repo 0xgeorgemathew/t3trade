@@ -6,7 +6,7 @@
  *
  * @module TradingPlan
  */
-import { Effect, Option, Schema, SchemaIssue, SchemaTransformation } from "effect";
+import { Effect, Schema, SchemaIssue, SchemaTransformation } from "effect";
 import { PublishedStandDownCode } from "./decision.ts";
 import {
   PositiveUsdAmount,
@@ -130,7 +130,7 @@ const conditionStringToObject = Schema.String.pipe(
       decode: (value) =>
         value.trim() === ""
           ? Effect.fail(
-              new SchemaIssue.InvalidValue(Option.some(value), {
+              new SchemaIssue.InvalidValue({
                 message: "a prose condition must be a non-empty string",
               }),
             )

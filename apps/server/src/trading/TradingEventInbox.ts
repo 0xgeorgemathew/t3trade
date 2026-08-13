@@ -27,7 +27,7 @@ import { MissionInboxEventCategory, TradingDomainEventSummary, UnixMillis } from
 const decodeCategory = Schema.decodeUnknownSync(MissionInboxEventCategory);
 const encodeCategorySync = Schema.encodeSync(MissionInboxEventCategory);
 /** Encode the opaque inbox payload (`unknown`) to a JSON string for storage. */
-const encodePayloadJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const encodePayloadJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 export interface PersistEventInput {
   readonly missionId: string;

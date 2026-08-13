@@ -53,7 +53,7 @@ const reconnectSchedule = Schedule.max([
 /** Parse an inbound WS text frame into the envelope schema. */
 const decodeWsMessage = Schema.decodeUnknownEffect(WireWsMessage);
 /** Parse a raw JSON string into `unknown` (v4 idiom over raw JSON.parse). */
-const parseJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+const parseJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 /** Encode an outbound subscribe payload to its JSON wire string. */
 const encodeSubscribe = (sub: WsSubscription): string =>
   JSON.stringify({ method: "subscribe", subscription: sub });
