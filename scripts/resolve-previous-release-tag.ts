@@ -144,7 +144,12 @@ const compareStableVersions = (left: StableVersion, right: StableVersion): numbe
 };
 
 const parseStableTag = (tag: string): StableVersion | undefined => {
-  const match = /^v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(tag);
+  // The `t3trade-` prefix is optional: this fork tags `t3trade-v0.0.32` while
+  // upstream tags `v0.0.32`, and the tag list a release is resolved against
+  // holds both. Refusing the prefixed form made every release look like the
+  // first one ever cut, with no diff range in its notes.
+  const match =
+    /^(?:t3trade-)?v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(tag);
   if (!match) return undefined;
 
   const [, major, minor, patch, prerelease] = match;
@@ -175,7 +180,8 @@ const compareNightlyVersions = (left: NightlyVersion, right: NightlyVersion): nu
 const parseNightlyTag = (tag: string): NightlyVersion | undefined => {
   // Accept both the current `v<semver>` format and the legacy `nightly-v<semver>`
   // format so release note diffs keep working across the tag-format transition.
-  const match = /^(?:nightly-)?v(\d+)\.(\d+)\.(\d+)-nightly\.(\d{8})\.(\d+)$/.exec(tag);
+  const match =
+    /^(?:t3trade-)?(?:nightly-)?v(\d+)\.(\d+)\.(\d+)-nightly\.(\d{8})\.(\d+)$/.exec(tag);
   if (!match) return undefined;
 
   const [, major, minor, patch, date, runNumber] = match;

@@ -3,8 +3,13 @@ name: Release
 on:
   push:
     tags:
+      # Upstream's convention, and this fork's. `t3trade-v0.0.32` matched
+      # neither pattern before, so tagging a release ran NOTHING — which is how
+      # 0.0.32 came to be built by hand on a laptop and shipped unsigned.
       - "v*.*.*"
+      - "t3trade-v*.*.*"
       - "!v*-nightly.*"
+      - "!t3trade-v*-nightly.*"
   # Nightly releases are disabled on this fork: signing/publishing secrets
   # (Apple, Azure Trusted Signing, Vercel, Discord) are not configured, so every
   # scheduled run would fail. Re-enable once release credentials are in place.
@@ -86,6 +91,11 @@ jobs:
       is_prerelease: ${{ steps.release_meta.outputs.is_prerelease }}
       make_latest: ${{ steps.release_meta.outputs.make_latest }}
       ref: ${{ github.sha }}
+      has_relay_config: ${{ steps.capabilities.outputs.has_relay_config }}
+      can_publish_cli: ${{ steps.capabilities.outputs.can_publish_cli }}
+      can_deploy_web: ${{ steps.capabilities.outputs.can_deploy_web }}
+      can_finalize: ${{ steps.capabilities.outputs.can_finalize }}
+      can_announce: ${{ steps.capabilities.outputs.can_announce }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -140,16 +150,27 @@ jobs:
               raw="${GITHUB_REF_NAME}"
             fi
 
-            version="${raw#v}"
+            # Either prefix: `v0.0.32` or this fork's `t3trade-v0.0.32`.
+            version="${raw#t3trade-}"
+            version="${version#v}"
             if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
               echo "Invalid release version: $raw" >&2
               exit 1
             fi
 
+            # The release has to land on the tag that was actually pushed.
+            # Re-deriving it as "v$version" published a release at a tag nobody
+            # created and left the pushed one with nothing attached.
+            if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+              tag="${GITHUB_REF_NAME}"
+            else
+              tag="t3trade-v$version"
+            fi
+
             echo "release_channel=stable" >> "$GITHUB_OUTPUT"
             echo "version=$version" >> "$GITHUB_OUTPUT"
-            echo "tag=v$version" >> "$GITHUB_OUTPUT"
-            echo "name=T3 Code v$version" >> "$GITHUB_OUTPUT"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "name=T3 Trade v$version" >> "$GITHUB_OUTPUT"
             echo "cli_dist_tag=latest" >> "$GITHUB_OUTPUT"
             if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
@@ -159,6 +180,40 @@ jobs:
               echo "make_latest=false" >> "$GITHUB_OUTPUT"
             fi
           fi
+
+      # Which of the optional stages this repository is actually configured
+      # for. Upstream has every credential; a fork typically has none of them,
+      # and the parts that matter — build the app, publish the GitHub release —
+      # need no credential at all. Without this the whole run failed at the
+      # first stage whose secret was missing, so a fork could not cut a release
+      # by CI at all, and the artifact was built by hand instead.
+      #
+      # Secrets cannot be read in a job-level `if:`, which is why this is a
+      # step that writes outputs the later jobs gate on.
+      - id: capabilities
+        name: Resolve which release stages are configured
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          emit() {
+            if [[ -n "${2:-}" ]]; then
+              echo "$1=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$1=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::Skipping $1 — its credentials are not configured on this repository."
+            fi
+          }
+          emit has_relay_config "$CLOUDFLARE_API_TOKEN"
+          emit can_publish_cli "$NPM_TOKEN"
+          emit can_deploy_web "$VERCEL_TOKEN"
+          emit can_finalize "$RELEASE_APP_ID"
+          emit can_announce "$DISCORD_WEBHOOK_URL"
 
       - name: Check
         run: vp check
@@ -180,7 +235,7 @@ jobs:
   relay_public_config:
     name: Resolve T3 Connect public config
     needs: preflight
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' }}
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.preflight.outputs.has_relay_config == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment:
@@ -329,7 +384,9 @@ jobs:
     # build_wsl_node_pty failed; the Windows-only download step below then fails
     # that single platform if the prebuild is missing.
     needs: [preflight, relay_public_config, build_wsl_node_pty]
-    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' }}
+    # `skipped` is a pass here: the relay tracing config is telemetry wiring,
+    # not something the app needs to build or run.
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && (needs.relay_public_config.result == 'success' || needs.relay_public_config.result == 'skipped') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
@@ -400,13 +457,18 @@ jobs:
         with:
           targets: ${{ matrix.rust_target }}
 
+      # Only when the relay job ran — `download-artifact` fails hard on an
+      # artifact that was never uploaded, which would take the whole job down
+      # for the sake of telemetry wiring the app does not need.
       - name: Download relay client tracing config
+        if: needs.preflight.outputs.has_relay_config == 'true'
         uses: actions/download-artifact@v8
         with:
           name: relay-client-tracing-config
           path: ${{ runner.temp }}/relay-client-tracing
 
       - name: Load relay client tracing config
+        if: needs.preflight.outputs.has_relay_config == 'true'
         shell: bash
         run: |
           config_path="$RUNNER_TEMP/relay-client-tracing/relay-client-tracing.env"
@@ -668,7 +730,7 @@ jobs:
   publish_cli:
     name: Publish CLI to npm
     needs: [preflight, relay_public_config, build]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.build.result == 'success' }}
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.preflight.outputs.can_publish_cli == 'true' && (needs.relay_public_config.result == 'success' || needs.relay_public_config.result == 'skipped') && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -700,13 +762,18 @@ jobs:
               - --filter=@t3tools/web...
               - --filter=@t3tools/scripts...
 
+      # Only when the relay job ran — `download-artifact` fails hard on an
+      # artifact that was never uploaded, which would take the whole job down
+      # for the sake of telemetry wiring the app does not need.
       - name: Download relay client tracing config
+        if: needs.preflight.outputs.has_relay_config == 'true'
         uses: actions/download-artifact@v8
         with:
           name: relay-client-tracing-config
           path: ${{ runner.temp }}/relay-client-tracing
 
       - name: Load relay client tracing config
+        if: needs.preflight.outputs.has_relay_config == 'true'
         shell: bash
         run: |
           config_path="$RUNNER_TEMP/relay-client-tracing/relay-client-tracing.env"
@@ -747,7 +814,9 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [preflight, build, publish_cli]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && needs.publish_cli.result == 'success' }}
+    # This is the job the whole workflow exists for and it needs no credential
+    # beyond the run's own token, so a skipped npm publish must not stop it.
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && (needs.publish_cli.result == 'success' || needs.publish_cli.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -862,7 +931,7 @@ jobs:
   deploy_web:
     name: Deploy hosted web app
     needs: [preflight, relay_public_config, release]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.release.result == 'success' }}
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.preflight.outputs.can_deploy_web == 'true' && needs.relay_public_config.result == 'success' && needs.release.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -897,13 +966,18 @@ jobs:
               - --filter=@t3tools/scripts...
               - --filter=@t3tools/web...
 
+      # Only when the relay job ran — `download-artifact` fails hard on an
+      # artifact that was never uploaded, which would take the whole job down
+      # for the sake of telemetry wiring the app does not need.
       - name: Download relay client tracing config
+        if: needs.preflight.outputs.has_relay_config == 'true'
         uses: actions/download-artifact@v8
         with:
           name: relay-client-tracing-config
           path: ${{ runner.temp }}/relay-client-tracing
 
       - name: Load relay client tracing config
+        if: needs.preflight.outputs.has_relay_config == 'true'
         shell: bash
         run: |
           config_path="$RUNNER_TEMP/relay-client-tracing/relay-client-tracing.env"
@@ -980,7 +1054,7 @@ jobs:
 
   finalize:
     name: Finalize release
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success' && needs.preflight.outputs.release_channel == 'stable' }}
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.preflight.outputs.can_finalize == 'true' && needs.release.result == 'success' && needs.preflight.outputs.release_channel == 'stable' }}
     needs: [preflight, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -1062,6 +1136,7 @@ jobs:
     if: |
       always() && !cancelled() &&
       needs.preflight.result == 'success' &&
+      needs.preflight.outputs.can_announce == 'true' &&
       needs.relay_public_config.result == 'success' &&
       needs.release.result == 'success' &&
       needs.deploy_web.result == 'success' &&

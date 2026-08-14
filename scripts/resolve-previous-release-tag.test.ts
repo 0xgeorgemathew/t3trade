@@ -211,3 +211,20 @@ it.effect("preserves the GITHUB_OUTPUT append path and exact cause", () => {
     assert.notInclude(appendError.message, appendCause.message);
   });
 });
+
+it.effect("resolves the previous stable tag across the fork's t3trade- prefix", () =>
+  Effect.gen(function* () {
+    // The fork tags `t3trade-v0.0.32`; upstream tags `v0.0.31`. Both forms
+    // appear in the same tag list, and the previous release has to be found
+    // whichever way it was named — otherwise every release publishes as if it
+    // were the first, with no diff range in its notes.
+    const previous = yield* resolvePreviousReleaseTag("stable", "t3trade-v0.0.33", [
+      "t3trade-v0.0.32",
+      "v0.0.31",
+      "t3trade-v0.0.33",
+      "v0.0.34-nightly.20260814.1",
+    ]);
+
+    assert.strictEqual(previous, "t3trade-v0.0.32");
+  }),
+);
