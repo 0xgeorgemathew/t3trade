@@ -1574,6 +1574,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   }
 
   if (platform === "mac") {
+    // `afterPack` is a TOP-LEVEL electron-builder key — nesting it under `mac`
+    // fails schema validation before the build starts. It still only applies
+    // to mac here because that is the only platform this branch runs for.
+    if (!signed) {
+      buildConfig.afterPack = `./${ADHOC_SIGN_HOOK_FILENAME}`;
+    }
     buildConfig.mac = {
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
@@ -1592,9 +1598,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       // deterministically skipping identity discovery, so a build on a
       // machine that happens to have a signing certificate in its keychain
       // produces the same artifact as a build on one that does not.
-      ...(signed
-        ? {}
-        : { identity: null, afterPack: `./${ADHOC_SIGN_HOOK_FILENAME}` }),
+      ...(signed ? {} : { identity: null }),
       ...(macPasskeySigning
         ? {
             entitlements: macPasskeySigning.entitlementsPath,

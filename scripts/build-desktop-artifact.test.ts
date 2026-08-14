@@ -546,7 +546,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       // ad-hoc path here would silently ship an unsigned app from a signed
       // pipeline.
       assert.notProperty(mac, "identity");
-      assert.notProperty(mac, "afterPack");
+      assert.notProperty(config, "afterPack");
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
@@ -569,7 +569,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       // from a local path (never quarantined).
       const mac = config.mac as Record<string, unknown>;
       assert.strictEqual(mac.identity, null);
-      assert.strictEqual(mac.afterPack, "./adhoc-sign-mac.cjs");
+      // Top-level, not under `mac`: electron-builder rejects the whole config
+      // when the hook is nested there.
+      assert.strictEqual(config.afterPack, "./adhoc-sign-mac.cjs");
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
