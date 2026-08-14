@@ -61,8 +61,8 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
           <svg class="hero-source-arrow" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M8 7h9v9"/></svg>
         </a>
         <p class="hero-release" id="hero-release" hidden>
-          <span id="hero-release-tag"></span> · macOS arm64 · unsigned · right-click and
-          choose Open on first launch
+          <span id="hero-release-tag"></span> · macOS arm64 · not notarized · see the install
+          note below if macOS refuses to open it
         </p>
         <p class="hero-caution">
           Alpha software. Places orders on Hyperliquid <strong>testnet</strong> only. Testnet
@@ -351,12 +351,15 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
         </a>
         <a class="btn btn-ghost btn-lg" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">Run from source</a>
       </div>
+      <p class="cta-install-label">or install it in one line</p>
+      <pre class="cta-install"><code>curl -fsSL https://raw.githubusercontent.com/0xgeorgemathew/t3trade/main/scripts/install-macos.sh | bash</code></pre>
       <p class="cta-note">
-        The macOS build is Apple Silicon only and is not code-signed or notarized. On first
-        launch, right-click the app and choose Open to pass Gatekeeper. If macOS says the app
-        is damaged, it is the download's quarantine flag, not the download — clear it with
-        <code>xattr -dr com.apple.quarantine "/Applications/T3 Trade (Alpha).app"</code> and
-        open it again. Run from source on Windows, Linux, and Intel Macs.
+        The macOS build is Apple Silicon only and is not notarized by Apple, so a downloaded
+        copy is quarantined and macOS may refuse it — as &ldquo;damaged&rdquo; on older builds,
+        or as an app it cannot verify. The one-line installer above downloads the same DMG and
+        clears the quarantine flag for you; to do it by hand instead, drag the app to
+        Applications and run <code>xattr -dr com.apple.quarantine "/Applications/T3 Trade (Alpha).app"</code>.
+        Run from source on Windows, Linux, and Intel Macs.
         Older builds and checksums are on the <a href="https://github.com/0xgeorgemathew/t3trade/releases" target="_blank" rel="noopener noreferrer">releases page</a>.
       </p>
     </div>
@@ -1128,6 +1131,33 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     gap: 10px;
     justify-content: center;
     flex-wrap: wrap;
+  }
+
+  .cta-install-label {
+    margin: 22px 0 8px;
+    color: var(--fg-dim);
+    font-size: 12px;
+    letter-spacing: 0.02em;
+  }
+
+  /* The command has to survive a phone without wrapping into nonsense, so it
+     scrolls inside its own box rather than breaking mid-URL. */
+  .cta-install {
+    margin: 0 auto;
+    max-width: 640px;
+    overflow-x: auto;
+    padding: 10px 14px;
+    border: 1px solid var(--border, rgba(161, 161, 170, 0.2));
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.25);
+    text-align: left;
+  }
+
+  .cta-install code {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--fg-muted);
+    white-space: pre;
   }
 
   .cta-note {
