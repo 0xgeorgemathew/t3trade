@@ -122,8 +122,10 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
     ],
     gates: [
       "Then check the range is worth trading: call trading_estimate_costs fresh at the size you intend, and require range height >= " +
+        policy.rangeReversion.entryHeightCostMultiple +
+        "x `breakEvenPriceMoveUsd`. That is the entry test. A range above " +
         policy.rangeReversion.heightCostMultiple +
-        "x `breakEvenPriceMoveUsd`.",
+        "x is one worth working repeatedly rather than scalping once, which is a sizing and re-entry decision, not a permission.",
     ],
     standDownIf: [
       "If it is not, stand down and show the arithmetic — the height, the break-even move, and the multiple you got.",
@@ -145,12 +147,14 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
       "A BREAK OF YOUR OWN ARMED LEVEL IS THE SIGNAL — TAKE IT OR RETIRE THE LEVEL. When a `price_cross` wake fires at a level your published plan named as the trigger, the entry check is the break itself: a candle on your thesis timeframe closing through the level with the ATR expanding. Do not demand full multi-timeframe alignment on that wake — alignment is measured over 120-bar windows and mathematically CANNOT have turned by the time a fresh break is one candle old; requiring it means never taking the breakout you armed for. The higher timeframe's job here is narrower: it vetoes the entry only when it points the OPPOSITE way with conviction, not when it is flat. If the break fails your entry check (a wick through the level that closes back inside), say so — and if the same level has now failed twice, move it or stand the mission down explicitly rather than re-arming the identical trap a third time.",
     ],
     gates: [
-      "Then check the target against its cost. Call trading_estimate_costs at your size — it prices the round trip from the fee rate this wallet pays and the live book — and hold the target against the `minimumViableTargetUsd` it reports. A target that does not clear " +
+      "Then check the move against its cost, ONCE, at the entry. Call trading_estimate_costs at your size and hold the move on offer against `minimumViableTargetUsd` — " +
+        policy.momentum.entryCostMultiple +
+        "x the round trip. That is the whole entry test: above it the trade is worth taking, and the question of which rung to bank at is a question for the position, not for the flat turn deciding whether to have one. `preferredTargetUsd` (" +
         policy.momentum.targetCostMultiple +
-        "x the round-trip cost is not a trade; it is a fee donation with variance.",
+        "x) is the rung to AIM at, never a precondition — waiting for the market to pre-pay the ideal target is how a session of available trades goes untaken.",
     ],
     standDownIf: [
-      "If the observed fluctuation does not support a target worth taking after costs, say so and stand down rather than inventing one.",
+      "If the move on offer does not clear the entry multiple, say so and stand down rather than inventing a target. That is a real refusal — but it is the only one costs justify, and it is about this setup, not about the session.",
     ],
   },
   {
@@ -167,7 +171,7 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
     ],
     gates: [
       "Range height must clear the round-trip move the way the range scalp's does: call trading_estimate_costs at the size you intend and require height >= " +
-        policy.openingRange.heightCostMultiple +
+        policy.openingRange.entryHeightCostMultiple +
         "x `breakEvenPriceMoveUsd`.",
     ],
     standDownIf: [
@@ -196,7 +200,10 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
         " minutes, then re-read the regime from scratch; that many losses in a row usually mean the range you were trading is gone, not that the next one will pay.",
       "A WAKE WHILE FLAT RE-RUNS THE TOURNAMENT FROM SCRATCH. On a scheduled or staleness wake with no position, the incumbent thesis has no seniority: re-read the regime, re-read `candidates[]`, and let the field compete again — a plan published an hour ago is a record of that hour's market, not a claim on this one. While HOLDING, the bar is different: switching strategies means paying the exit and the re-entry, so a switch has to beat the incumbent by more than that round-trip cost, and the publish that switches shows the arithmetic.",
       "PLACE THE STOP BEYOND THE LEVEL THAT INVALIDATES THE THESIS, then add the noise floor — max(2x the half-spread, 0.35x ATR) — as margin. Never a bare dollar offset from entry: a stop that is not anchored to the structure that would prove the thesis wrong is anchored to nothing, and one inside the noise floor is a scheduled exit, not protection. trading_quote_entry refuses a stop inside the floor, the same rule trading_adjust_stop already enforces.",
-      "When a profit-target wake decides to extend rather than bank, arm a `pnl_giveback` watch beneath the peak before ending the turn. Extending without one bets the whole open profit on the next leg.",
+      "SIZE THE POSITION TO THE RISK CEILING, NOT TO YOUR NERVE. Unless the mandate names a notional, omit `sizeEth`/`notionalUsd` on trading_quote_entry and take the size the server quotes, or size down only for a reason you can name. The ceilings — gross notional, leverage, planned loss, loss budget — ARE the risk policy, and a size well inside them is not a safer version of the thesis, it is the same thesis paid a fraction as much: the spread, the minimum tick, the round trip and the turn it cost are all the same. `constrainedBy` says which ceiling bound the quote.",
+      "COSTS ARE AN EXIT INSTRUMENT, NOT AN ENTRY VETO. Before entry they answer one question — does the move on offer clear `minimumViableTargetUsd` — and that question is asked once. Once the position is on they are the instrument you manage with: `positionCosts` on every holding wake prices the round trip on the size you actually hold, so `unrealisedPnl` minus what is left of that round trip is what banking now is really worth, and `preferredTargetUsd` is the rung to hold an extension against. The market is not being predicted here; it is being read for what it is currently paying.",
+      "DEFEND WHAT IS OPEN, AND DO NOT LEAVE THE MOVE BEHIND. On every wake with a position, do three things before anything else: read `drawdownFromPeakUsd` against `peakUnrealisedPnl` to see what has already been handed back, trail the stop with trading_adjust_stop when structure has moved in your favour (`trail_peak` behind the newest swing, `breakeven` once the move covers the round trip), and keep a `pnl_giveback` armed under the peak whenever the position is in profit — not only when you decide to extend. A profit-target wake is a decision point: bank when the regime says mean-reversion or the structure ahead is thin, extend when the leg is still expanding and the higher timeframe agrees, and either way say which and arm what wakes you next. Extending with no giveback watch bets the whole open profit on the next leg.",
+      "GIVE THE TRADE ROOM TO BE RIGHT. A stop is not tightened because the position is uncomfortable — every stop-out inside the noise floor is a fee paid for nothing. The floor (max(2x half-spread, 0.35x ATR)) is the minimum, not the target: anchor the stop beyond the level that would actually prove the thesis wrong and add the floor as margin. When ATR expands under an open position, `volatility_room` is a legitimate adjustment back toward the entry's approved stop — that envelope is yours to use, and using it is not loosening risk, it is refusing to hand the trade to a wick.",
       "When a position closes you are woken one more time with a review of it — how long it was held, what it realised net of fees, what it was worth at its best and its worst. Spend that turn on it: call trading_get_trade_history and trading_get_target_calibration, say plainly whether the thesis held and whether the target was the right rung, and let that decide whether to re-enter. Do not re-enter in the same turn you close. Open the review with two or three sentences in the same plain register as the plan's `plainSummary` — what happened and what you will do next, no field names, no scores — so the thread reads as a story a non-trader can follow.",
       "Calibration is the one thing that can tell you your own habit is wrong. If it reports your targets as `optimistic`, read the next one off a nearer rung before blaming the market; if `conservative`, extend more often at the target wake instead of banking every one.",
       "To move a level rather than add one, pass `replacesWatchId` to trading_register_watch: the cancel and the new arm are one transaction, so the side you are re-levelling is never left unwatched.",

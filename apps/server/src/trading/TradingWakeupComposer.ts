@@ -401,12 +401,13 @@ const TRIM_LADDER: ReadonlyArray<{
     }),
   },
   {
-    // The `strategyReview` reminder goes here too: by this rung the plan's own
-    // prose is being cut to a line, and doctrine the run can read with one
-    // `trading_get_playbook` call does not outrank the market data beside it.
+    // The two review reminders go here too (only ever one is present): by this
+    // rung the plan's own prose is being cut to a line, and doctrine the run
+    // can read with one `trading_get_playbook` call does not outrank the market
+    // data beside it.
     name: "strategy_digest",
     apply: (wakeup) => {
-      const { strategyReview: _dropped, ...rest } = wakeup;
+      const { strategyReview: _dropped, positionReview: _alsoDropped, ...rest } = wakeup;
       return { ...rest, activeStrategy: digestStrategy(wakeup.activeStrategy) };
     },
   },
@@ -814,8 +815,15 @@ const make = Effect.gen(function* () {
       // rather than living only in the playbook the run may not call.
       const strategyReview =
         position.size === 0
-          ? "FLAT — the field is open and the published mode has no seniority. Score every playbook (momentum, range_reversion, opening_range) x both directions plus no-trade off candidates[], one line of expectancy after costs each, before restating the thesis. Losers go in alternativesConsidered[]."
+          ? "FLAT — the field is open and the published mode has no seniority. Score every playbook (momentum, range_reversion, opening_range) x both directions plus no-trade off candidates[], one line of expectancy after costs each, before restating the thesis. Losers go in alternativesConsidered[]. Entry needs the move to clear minimumViableTargetUsd, nothing more; preferredTargetUsd is the rung to aim at, not a precondition."
           : undefined;
+
+      // Holding: the turn belongs to the position, not to the thesis. See
+      // `positionReview` on the wakeup schema.
+      const positionReview =
+        position.size === 0
+          ? undefined
+          : "HOLDING — spend this turn on the position. Bank-or-extend against positionCosts (unrealisedPnl minus the remaining exit cost is what banking is worth) and preferredTargetUsd; check drawdownFromPeakUsd against peakUnrealisedPnl; trail the stop (trail_peak / breakeven, or volatility_room if ATR expanded) rather than leaving it where entry put it; keep a pnl_giveback armed under the peak whenever you are in profit.";
 
       // The other half of the same read: a level that IS armed, with a watch
       // that cannot evaluate the confirmation the condition declared.
@@ -848,6 +856,7 @@ const make = Effect.gen(function* () {
         ...(unarmedEntryConditions.length === 0 ? {} : { unarmedEntryConditions }),
         ...(misarmedEntryConditions.length === 0 ? {} : { misarmedEntryConditions }),
         ...(strategyReview === undefined ? {} : { strategyReview }),
+        ...(positionReview === undefined ? {} : { positionReview }),
         ...(levelHistory.length === 0 ? {} : { levelHistory }),
         ...(enteredWithoutScoredSetup === undefined ? {} : { enteredWithoutScoredSetup }),
         ...(previousStructureRead === undefined ? {} : { previousStructureRead }),

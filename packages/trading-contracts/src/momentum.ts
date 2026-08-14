@@ -1267,16 +1267,23 @@ function availableMoveUsd(
   return frame.lastImpulse?.sizeUsd;
 }
 
-/** The cost multiple each kind's own playbook gate demands. */
+/**
+ * The cost multiple each kind's own playbook gate demands to ENTER.
+ *
+ * The entry gate, deliberately, and not the rung the trade aims at: a
+ * tournament scored against the target rung reports a field of candidates that
+ * are all "below their gate" on any market that is not trending hard, and a
+ * loop reading that table declines all day.
+ */
 function requiredCostMultiple(kind: CandidateSetup["kind"], policy: TradingPolicy): number {
   switch (kind) {
     case "range_reversion":
-      return policy.rangeReversion.heightCostMultiple;
+      return policy.rangeReversion.entryHeightCostMultiple;
     case "opening_range_break":
-      return policy.openingRange.heightCostMultiple;
+      return policy.openingRange.entryHeightCostMultiple;
     case "momentum_breakout":
     case "trend_continuation":
-      return policy.momentum.targetCostMultiple;
+      return policy.momentum.entryCostMultiple;
   }
 }
 

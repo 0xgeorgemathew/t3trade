@@ -18,6 +18,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { checkProfitTarget, estimateTradingCosts, type CostEstimateInput } from "./costs.ts";
 import type { MarketCandle } from "./market.ts";
 import { PLAYBOOKS } from "./playbook.ts";
+import { ACTIVE_TRADING_POLICY } from "./policy.ts";
 import { measureVolatility } from "./volatility.ts";
 
 /** The audited window's boundaries, and the height a scalp is paid out of. */
@@ -168,17 +169,28 @@ describe("the boundary wake", () => {
 describe("the cost gate", () => {
   const referencePrice = measure(95).referencePrice;
 
-  it("stands down at the taker rate, with the arithmetic that says why", () => {
+  // This range used to be the worked example of a correct refusal: at 2.08x it
+  // sat under the 2.2x the playbook then demanded to enter. Separating the
+  // entry gate from the rung the scalp aims at is precisely the change that
+  // makes it tradeable — the height still does not pay twice over, and it no
+  // longer has to before the harness is allowed to find out.
+  it("clears the entry gate at the taker rate without paying the full rung", () => {
     const estimate = estimateTradingCosts(costsAt(referencePrice, 5));
 
     // Two taker fills at 5 bps on ~$3,405 of notional is $3.41, and the dime
     // of spread crossed twice is another $0.10.
     expect(estimate.roundTripUsd).toBeCloseTo(3.505, 3);
     expect(estimate.breakEvenPriceMoveUsd).toBeCloseTo(3.505, 3);
-    // $7.30 of range over a $3.51 break-even is 2.08x — under the 2.2x the
-    // range_reversion playbook requires, so this range does not pay at this fee rate.
     const multiple = RANGE_HEIGHT / estimate.breakEvenPriceMoveUsd;
     expect(multiple).toBeCloseTo(2.08, 2);
+    expect(multiple).toBeGreaterThan(RANGE_COST_MULTIPLE);
+    expect(multiple).toBeLessThan(ACTIVE_TRADING_POLICY.rangeReversion.heightCostMultiple);
+  });
+
+  it("stands down when the height cannot pay the entry gate", () => {
+    const estimate = estimateTradingCosts(costsAt(referencePrice, 12));
+
+    const multiple = RANGE_HEIGHT / estimate.breakEvenPriceMoveUsd;
     expect(multiple).toBeLessThan(RANGE_COST_MULTIPLE);
   });
 
@@ -217,8 +229,15 @@ describe("the published target", () => {
     expect([...checked.warnings]).toEqual([]);
   });
 
-  it("warns that the same target is below the floor at the taker rate", () => {
+  it("publishes clean at the taker rate too, now the floor is the entry gate", () => {
     const checked = checkProfitTarget({ targetProfitUsd, basis, takerFeeBpsPerSide: 5 });
+
+    expect([...checked.rejections]).toEqual([]);
+    expect([...checked.warnings]).toEqual([]);
+  });
+
+  it("still warns when the target cannot clear the entry gate at all", () => {
+    const checked = checkProfitTarget({ targetProfitUsd, basis, takerFeeBpsPerSide: 12 });
 
     expect([...checked.rejections]).toEqual([]);
     expect([...checked.warnings]).toEqual(["target_below_cost_floor"]);

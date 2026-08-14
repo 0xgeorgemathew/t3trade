@@ -4,6 +4,7 @@ import {
   checkProfitTarget,
   estimateTradingCosts,
   feeOnlyRoundTripUsd,
+  ENTRY_COST_MULTIPLE,
   PROFIT_TARGET_COST_MULTIPLE,
   walkBook,
   type CostEstimateInput,
@@ -72,7 +73,9 @@ describe("estimateTradingCosts", () => {
     expect(estimate.roundTripSlippageUsd).toBe(0);
     expect(estimate.roundTripUsd).toBeCloseTo(3, 10);
     expect(estimate.breakEvenPriceMoveUsd).toBeCloseTo(3, 10);
-    expect(estimate.minimumViableTargetUsd).toBeCloseTo(6, 10);
+    // The entry floor is 1.3 round trips; the rung the trade aims at is 2.
+    expect(estimate.minimumViableTargetUsd).toBeCloseTo(3.9, 10);
+    expect(estimate.preferredTargetUsd).toBeCloseTo(6, 10);
     expect(estimate.degraded).toBe(false);
   });
 
@@ -219,19 +222,19 @@ describe("quick-trades sizing sanity at $1,000 equity (plan 27 I4)", () => {
   it("keeps the fee-floor target well inside the risk budget at 1x capital", () => {
     const roundTripUsd = feeOnlyRoundTripUsd(1_000, FALLBACK_TAKER_FEE_BPS);
     expect(roundTripUsd).toBeCloseTo(1, 10);
-    const minimumViableTargetUsd = roundTripUsd * PROFIT_TARGET_COST_MULTIPLE;
-    // $2 of target against a $20 risk cap: fees are a tenth of the budget,
-    // not the reason to stand down.
-    expect(minimumViableTargetUsd).toBeCloseTo(2, 10);
+    const minimumViableTargetUsd = roundTripUsd * ENTRY_COST_MULTIPLE;
+    // $1.30 of target against a $20 risk cap: fees are a fifteenth of the
+    // budget, not the reason to stand down.
+    expect(minimumViableTargetUsd).toBeCloseTo(1.3, 10);
     expect(minimumViableTargetUsd).toBeLessThanOrEqual(PLANNED_RISK_USD / 5);
   });
 
   it("stays fee-viable even at the full gross-notional cap", () => {
     const roundTripUsd = feeOnlyRoundTripUsd(3_000, FALLBACK_TAKER_FEE_BPS);
-    const minimumViableTargetUsd = roundTripUsd * PROFIT_TARGET_COST_MULTIPLE;
-    // $6 at $3,000 notional still clears inside the $20 planned risk, so the
-    // sizing constants need no D2-gated adjustment for the small wallet.
-    expect(minimumViableTargetUsd).toBeCloseTo(6, 10);
+    const minimumViableTargetUsd = roundTripUsd * ENTRY_COST_MULTIPLE;
+    // $3.90 at $3,000 notional still clears inside the $20 planned risk, so
+    // the sizing constants need no D2-gated adjustment for the small wallet.
+    expect(minimumViableTargetUsd).toBeCloseTo(3.9, 10);
     expect(minimumViableTargetUsd).toBeLessThan(PLANNED_RISK_USD);
   });
 });

@@ -216,19 +216,20 @@ describe("compareCandidates", () => {
     assert.ok(row !== undefined);
     assert.equal(row.direction, "down");
     // The continuation rides the last impulse: 101 → 84 is 17 USD of move,
-    // 8.5x a 2 USD break-even, against the momentum gate's 2x.
+    // 8.5x a 2 USD break-even, against the momentum ENTRY gate — the rung the
+    // trade aims at is a management number and does not gate the table.
     assert.closeTo(row.availableMoveUsd ?? 0, 17, 1e-9);
     assert.closeTo(row.costMultiple ?? 0, 8.5, 1e-9);
-    assert.equal(row.requiredCostMultiple, ACTIVE_TRADING_POLICY.momentum.targetCostMultiple);
+    assert.equal(row.requiredCostMultiple, ACTIVE_TRADING_POLICY.momentum.entryCostMultiple);
     assert.equal(row.clearsCostGate, true);
     // The last close is 90 (end of the 86..90 recovery); the trigger is 84.
     assert.closeTo(row.distanceToTriggerUsd, 6, 1e-9);
   });
 
   it("fails the gate when the move cannot pay the multiple", () => {
-    const rows = compareCandidates(structure(), { breakEvenPriceMoveUsd: 10 });
+    const rows = compareCandidates(structure(), { breakEvenPriceMoveUsd: 15 });
     const row = rows.find((candidate) => candidate.strategy === "trend_continuation");
-    // 17 / 10 = 1.7, under the 2x the momentum playbook demands.
+    // 17 / 15 = 1.13, under the entry multiple the momentum playbook demands.
     assert.equal(row?.clearsCostGate, false);
   });
 

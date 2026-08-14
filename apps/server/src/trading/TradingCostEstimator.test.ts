@@ -85,7 +85,8 @@ layer("TradingCostEstimator", (it) => {
       assert.closeTo(estimate.roundTripFeeUsd, 1.8, 1e-9);
       assert.closeTo(estimate.roundTripSpreadUsd, 1, 1e-9);
       assert.closeTo(estimate.roundTripUsd, 2.8, 1e-9);
-      assert.closeTo(estimate.minimumViableTargetUsd, 5.6, 1e-9);
+      assert.closeTo(estimate.minimumViableTargetUsd, 3.64, 1e-9);
+      assert.closeTo(estimate.preferredTargetUsd, 5.6, 1e-9);
       assert.equal(estimate.degraded, false);
     }),
   );

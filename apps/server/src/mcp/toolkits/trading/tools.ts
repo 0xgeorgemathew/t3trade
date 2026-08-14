@@ -215,7 +215,7 @@ export const TradingEstimateCostsTool = Tool.make("trading_estimate_costs", {
   description:
     "Cost a round trip at a given size from the live fee rate and book. Name the position by `sizeEth` or `notionalUsd` (at the mark). " +
     "Three non-overlapping parts: `roundTripFeeUsd` (two taker fills at `takerFeeBpsPerSide`), `roundTripSpreadUsd` (crossing bid/ask twice, from `halfSpreadUsd`), `roundTripSlippageUsd` (walking the book past the touch). `roundTripUsd`=total; `breakEvenPriceMoveUsd`=move/unit to exit flat. " +
-    '`minimumViableTargetUsd`=2× round trip — the floor for any target. `protection.targetProfitUsd` is GROSS (`pnl_above` fires on exchange unrealised PnL, nets neither fees nor funding). `degraded` true when part unread (`notes` says which; total a LOWER BOUND). `fundingCostPer8hUsd`=per-funding holding cost (positive=long pays), outside round trip. Quote rates with units and the dollars they make ("4.5 bps/side = $0.90"); a bare rate reads as dollars.',
+    '`minimumViableTargetUsd`=the entry floor (1.3× round trip); `preferredTargetUsd` (2×) is the rung to AIM at, not a gate — clearing the floor is the entry test, the rung is a management call. `protection.targetProfitUsd` is GROSS (`pnl_above` fires on exchange unrealised PnL, nets neither fees nor funding). `degraded` true when part unread (`notes` says which; total a LOWER BOUND). `fundingCostPer8hUsd`=per-funding holding cost (positive=long pays), outside round trip. Quote rates with units and the dollars they make ("4.5 bps/side = $0.90"); a bare rate reads as dollars.',
   parameters: TradingEstimateCostsInput,
   success: TradingCostEstimate,
   failure: TradingToolRejectedError,
@@ -384,7 +384,7 @@ export const TradingQuoteEntryTool = Tool.make("trading_quote_entry", {
   description:
     "Price and size one entry, then execute it with `trading_execute { quoteId }` — the ONLY thing you need to build an entry. " +
     "You give `market`, `side` (buy=long, sell=short), `stopPrice` (on the LOSING side), and optionally `sizeEth` or `notionalUsd`. The SERVER derives strategyVersion, authorityVersion, the lease-owning run, executionSequence, a crossing `limitPrice` off the live BBO, `szDecimals` precision, `plannedLossAtStopUsd`, and the largest size inside every ceiling — then runs the SAME §16.3 preview `trading_execute` will run. " +
-    "Omit the size and you get the maximum feasible one — an upper bound to size DOWN from, not the size to trade. Too much gets a SMALLER quote plus `constrainedBy` (`gross_notional`, `leverage`, `planned_loss_ceiling`, `loss_budget`) — take it or re-quote. " +
+    "Omit the size unless the mandate names a notional: you get the largest one every risk ceiling allows, which IS the approved trade. Too much gets a SMALLER quote plus `constrainedBy` (`gross_notional`, `leverage`, `planned_loss_ceiling`, `loss_budget`) — take it or re-quote. " +
     "`outcome: refused` carries the preview item that refused it and `feasibleSize`. Quotes expire in 90s and are single-purpose: executing one twice returns the SAME execution (same sequence, same cloid). Nothing is reserved or signed by quoting. " +
     "`stopPrice` must clear the noise floor — max(2x half-spread, 0.35x ATR), trading_adjust_stop's rule — or the quote refuses (`stop_inside_noise_floor`). Anchor the stop beyond the level that invalidates the thesis.",
   parameters: TradingQuoteEntryInput,

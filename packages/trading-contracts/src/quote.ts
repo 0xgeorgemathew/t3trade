@@ -195,6 +195,14 @@ export interface QuoteSizingInput {
 export interface QuoteSizing {
   readonly size: number;
   readonly requestedSize: number;
+  /**
+   * The largest size every ceiling allows, whatever was asked for.
+   *
+   * The risk policy expressed as a number: a size at or near it is the size
+   * the mission approved. Reported so a quote can say when the size asked for
+   * is a small fraction of the trade the mandate actually permits.
+   */
+  readonly ceilingSize: number;
   readonly notionalUsd: number;
   readonly plannedLossAtStopUsd: number;
   readonly reservedRiskUsd: number;
@@ -227,6 +235,7 @@ export function deriveFeasibleSize(input: QuoteSizingInput): QuoteSizing {
     return {
       size: 0,
       requestedSize: input.requestedSize ?? 0,
+      ceilingSize: 0,
       notionalUsd: 0,
       plannedLossAtStopUsd: 0,
       reservedRiskUsd: 0,
@@ -267,6 +276,7 @@ export function deriveFeasibleSize(input: QuoteSizingInput): QuoteSizing {
   const requestedSize = input.requestedSize ?? binding.size;
   const allowed = Math.min(requestedSize, binding.size);
   const size = truncateSize(allowed, input.szDecimals);
+  const ceilingSize = truncateSize(binding.size, input.szDecimals);
 
   const notionalUsd = size * input.entryPrice;
   const plannedLossAtStopUsd = size * stopDistance;
@@ -282,6 +292,7 @@ export function deriveFeasibleSize(input: QuoteSizingInput): QuoteSizing {
     return {
       size,
       requestedSize,
+      ceilingSize,
       notionalUsd,
       plannedLossAtStopUsd,
       reservedRiskUsd,
@@ -296,6 +307,7 @@ export function deriveFeasibleSize(input: QuoteSizingInput): QuoteSizing {
   return {
     size,
     requestedSize,
+    ceilingSize,
     notionalUsd,
     plannedLossAtStopUsd,
     reservedRiskUsd,

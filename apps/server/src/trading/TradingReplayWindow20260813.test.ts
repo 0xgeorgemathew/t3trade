@@ -93,10 +93,19 @@ describe("the window under the policy in force (D2)", () => {
   it("refuses to ship any candidate off this window alone", () => {
     const candidate = {
       ...TRADING_POLICY_V1,
-      version: 2,
+      version: 99,
       label: "candidate: earlier trend calls, cheaper targets",
-      momentum: { targetCostMultiple: 1.5, directionScoreThreshold: 0.1 },
-      rangeReversion: { ...TRADING_POLICY_V1.rangeReversion, heightCostMultiple: 1.8 },
+      momentum: {
+        ...TRADING_POLICY_V1.momentum,
+        entryCostMultiple: 1.5,
+        targetCostMultiple: 1.5,
+        directionScoreThreshold: 0.1,
+      },
+      rangeReversion: {
+        ...TRADING_POLICY_V1.rangeReversion,
+        entryHeightCostMultiple: 1.8,
+        heightCostMultiple: 1.8,
+      },
     };
 
     for (const playbook of ["momentum", "range_reversion"] as const) {

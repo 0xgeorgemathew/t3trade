@@ -36,6 +36,10 @@ describe("deriveFeasibleSize", () => {
     assert.strictEqual(sizing.feasible, true);
     assert.strictEqual(sizing.size, 0.5);
     assert.strictEqual(sizing.constrainedBy, "requested");
+    // Getting the size asked for says nothing about how much of the approved
+    // trade it is: 0.5 ETH is a twentieth of what the ceilings here allow, and
+    // the quote can only say so because the ceiling is reported alongside.
+    assert.strictEqual(sizing.ceilingSize, 10);
     assert.strictEqual(sizing.plannedLossAtStopUsd, 5);
     // 5 planned loss + 1000 notional x (2 x 4.5 + 10) bps.
     assert.closeTo(sizing.reservedRiskUsd, 5 + 1_000 * 0.0019, 1e-9);

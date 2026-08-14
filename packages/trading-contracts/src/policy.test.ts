@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from "vite-plus/test";
 
-import { PROFIT_TARGET_COST_MULTIPLE } from "./costs.ts";
+import { ENTRY_COST_MULTIPLE, PROFIT_TARGET_COST_MULTIPLE } from "./costs.ts";
 import { DIRECTION_SCORE_THRESHOLD } from "./momentum.ts";
 import { PLAYBOOKS } from "./playbook.ts";
 import {
@@ -20,6 +20,7 @@ import {
   assessEntryGovernance,
   MIN_ENRICHMENT_SAMPLE_RUNS,
   TRADING_POLICY_V1,
+  TRADING_POLICY_V2,
 } from "./policy.ts";
 
 const playbook = (name: string) => {
@@ -29,10 +30,11 @@ const playbook = (name: string) => {
 };
 
 describe("the policy in force", () => {
-  it("is the baseline, to the digit", () => {
+  it("keeps v1 as the baseline, to the digit", () => {
     // Not a style point. A v1 that differed from shipped behaviour would make
-    // every later replay a comparison against a policy that never traded.
-    expect(ACTIVE_TRADING_POLICY).toBe(TRADING_POLICY_V1);
+    // every later replay a comparison against a policy that never traded — so
+    // it stays frozen even now that it is no longer the version in force.
+    expect(TRADING_POLICY_V1.momentum.entryCostMultiple).toBe(2);
     expect(TRADING_POLICY_V1.momentum.targetCostMultiple).toBe(2);
     expect(TRADING_POLICY_V1.momentum.directionScoreThreshold).toBe(0.15);
     expect(TRADING_POLICY_V1.rangeReversion.heightCostMultiple).toBe(2.2);
@@ -48,24 +50,51 @@ describe("the policy in force", () => {
     expect(TRADING_POLICY_V1.reassessment.flatFloorClampMinutes).toEqual([5, 30]);
   });
 
+  it("runs v2, which loosens the entry gates and nothing else", () => {
+    expect(ACTIVE_TRADING_POLICY).toBe(TRADING_POLICY_V2);
+    expect(ACTIVE_TRADING_POLICY.momentum.entryCostMultiple).toBe(1.3);
+    expect(ACTIVE_TRADING_POLICY.rangeReversion.entryHeightCostMultiple).toBe(1.6);
+    expect(ACTIVE_TRADING_POLICY.openingRange.entryHeightCostMultiple).toBe(1.6);
+    expect(ACTIVE_TRADING_POLICY.session.entrySizeFloorFractionOfCeiling).toBe(0.5);
+
+    // The rungs a trade aims at, the direction call, the range criteria, the
+    // session budget and the reassessment cadence are all v1's, unchanged: the
+    // only thing v2 moves is how much profit has to be visible before the
+    // harness may go and find out.
+    expect(ACTIVE_TRADING_POLICY.momentum.targetCostMultiple).toBe(
+      TRADING_POLICY_V1.momentum.targetCostMultiple,
+    );
+    expect(ACTIVE_TRADING_POLICY.momentum.directionScoreThreshold).toBe(
+      TRADING_POLICY_V1.momentum.directionScoreThreshold,
+    );
+    expect(ACTIVE_TRADING_POLICY.rangeReversion.heightCostMultiple).toBe(
+      TRADING_POLICY_V1.rangeReversion.heightCostMultiple,
+    );
+    expect(ACTIVE_TRADING_POLICY.reassessment).toEqual(TRADING_POLICY_V1.reassessment);
+  });
+
   it("is where the arithmetic gets its numbers", () => {
+    expect(ENTRY_COST_MULTIPLE).toBe(ACTIVE_TRADING_POLICY.momentum.entryCostMultiple);
     expect(PROFIT_TARGET_COST_MULTIPLE).toBe(ACTIVE_TRADING_POLICY.momentum.targetCostMultiple);
     expect(DIRECTION_SCORE_THRESHOLD).toBe(ACTIVE_TRADING_POLICY.momentum.directionScoreThreshold);
   });
 
   it("is where the doctrine gets its numbers", () => {
     const range = playbook("range_reversion");
+    expect(range).toContain(`${ACTIVE_TRADING_POLICY.rangeReversion.entryHeightCostMultiple}x`);
     expect(range).toContain(`${ACTIVE_TRADING_POLICY.rangeReversion.heightCostMultiple}x`);
     expect(range).toContain(`under ${ACTIVE_TRADING_POLICY.rangeReversion.stabilityPercent}`);
     expect(range).toContain(
       `between ${ACTIVE_TRADING_POLICY.rangeReversion.edgePercent} and ${100 - ACTIVE_TRADING_POLICY.rangeReversion.edgePercent}`,
     );
 
-    expect(playbook("momentum")).toContain(
-      `clear ${ACTIVE_TRADING_POLICY.momentum.targetCostMultiple}x the round-trip cost`,
+    const momentum = playbook("momentum");
+    expect(momentum).toContain(
+      `${ACTIVE_TRADING_POLICY.momentum.entryCostMultiple}x the round trip`,
     );
+    expect(momentum).toContain(`(${ACTIVE_TRADING_POLICY.momentum.targetCostMultiple}x)`);
     expect(playbook("opening_range")).toContain(
-      `${ACTIVE_TRADING_POLICY.openingRange.heightCostMultiple}x`,
+      `${ACTIVE_TRADING_POLICY.openingRange.entryHeightCostMultiple}x`,
     );
 
     // The session cutoff and the cooldown lived ONLY in this prose. They were

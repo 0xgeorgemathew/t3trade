@@ -40,6 +40,7 @@ import {
   MOMENTUM_TIMEFRAMES,
 } from "@t3tools/trading-contracts/momentum";
 import { stopNoiseFloorUsd } from "@t3tools/trading-contracts/stop-adjustment";
+import { ACTIVE_TRADING_POLICY } from "@t3tools/trading-contracts/policy";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import * as Clock from "effect/Clock";
@@ -382,12 +383,18 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       });
       const stopDistanceUsd = Math.abs(entryPrice - request.stopPrice);
       if (stopDistanceUsd < noiseFloorUsd) {
+        // Name the price that would clear. The floor is arithmetic the server
+        // already did; making the harness re-derive it costs a round trip and
+        // reads to it as a market refusal rather than a fixable input.
+        const clearingStop =
+          request.side === "buy" ? entryPrice - noiseFloorUsd : entryPrice + noiseFloorUsd;
         return refused(
           "stop_inside_noise_floor",
           `the stop at ${request.stopPrice} sits ${stopDistanceUsd.toFixed(2)} USD from the ` +
             `${entryPrice} entry, inside the ${noiseFloorUsd.toFixed(2)} USD noise floor ` +
             `(max(2 x ${halfSpreadUsd.toFixed(2)} half-spread, 0.35 x ${(setupSnapshot.atrUsd ?? 0).toFixed(2)} ATR)); ` +
-            "place the stop beyond the level that invalidates the thesis, plus that margin",
+            `${clearingStop.toFixed(2)} is the nearest stop that clears it — place yours at or beyond ` +
+            "the level that invalidates the thesis, plus that margin, and re-quote once",
         );
       }
 
@@ -442,6 +449,19 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       const warnings: Array<string> = [];
       if (sizing.constrainedBy !== "requested") {
         warnings.push(sizing.detail);
+      }
+      // A size well inside the ceilings is not a safer thesis, it is the same
+      // thesis paid less — the spread, the round trip, and the turn it took are
+      // unchanged. Said, never enforced: a mandate that names a notional is the
+      // user's call and this line is the only thing that happens about it.
+      const sizeFloor =
+        ACTIVE_TRADING_POLICY.session.entrySizeFloorFractionOfCeiling * sizing.ceilingSize;
+      if (sizing.constrainedBy === "requested" && sizing.size < sizeFloor) {
+        warnings.push(
+          `size ${sizing.size} is under ${(ACTIVE_TRADING_POLICY.session.entrySizeFloorFractionOfCeiling * 100).toFixed(0)}% ` +
+            `of the ${sizing.ceilingSize} every risk ceiling allows; unless the mandate caps the notional, ` +
+            "a position this far inside the approved risk pays proportionally less for the same costs and the same turn",
+        );
       }
       if (costs === null) {
         warnings.push(

@@ -303,6 +303,19 @@ export const TradingHarnessWakeup = Schema.Struct({
    */
   strategyReview: Schema.optional(TradingText),
   /**
+   * The mirror of `strategyReview`, present while a position IS open: what
+   * managing it means on this wake.
+   *
+   * A holding wake already carries everything the decision needs —
+   * `positionCosts` prices the exit on the size actually held,
+   * `peakUnrealisedPnl` and `drawdownFromPeakUsd` say what has been handed
+   * back — and the turns that read them still tended to restate the thesis and
+   * end. This is the instruction to spend the turn on the position instead:
+   * defend it, trail it, and decide bank-or-extend against the numbers beside
+   * it. Nothing branches on it.
+   */
+  positionReview: Schema.optional(TradingText),
+  /**
    * What the levels near the mark have already done to this mission — plan 27
    * B1. Bounded to the levels nearest the current mark. Absent when the
    * mission has no recorded level events yet.

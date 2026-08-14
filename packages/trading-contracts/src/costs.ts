@@ -22,16 +22,23 @@ import { ACTIVE_TRADING_POLICY } from "./policy.ts";
 import { ExchangeMarket, Price, UnixMillis } from "./primitives.ts";
 
 /**
- * How many round trips a target has to be worth before the trade is worth
- * taking.
+ * How many round trips a target has to be worth before an entry is allowed.
  *
- * One round trip is break-even before slippage and funding; a target at exactly
- * 1x pays the exchange and the harness takes the variance for nothing. Two is
- * the floor the momentum loop is held to — deliberately blunt, because the
- * failure it exists to stop is not a target that is slightly too small.
+ * One round trip is break-even before slippage and funding, so the gate sits
+ * above 1 — far enough that the trade is not taken for the exchange's benefit,
+ * near enough that the moves a fast market actually offers clear it.
  *
  * Read from the policy in force rather than written here, so a calibrated
  * version moves this check and the doctrine that describes it together.
+ */
+export const ENTRY_COST_MULTIPLE = ACTIVE_TRADING_POLICY.momentum.entryCostMultiple;
+
+/**
+ * How many round trips the target a trade is AIMING at should be worth.
+ *
+ * Not a gate. It is the rung the basis is written to and the number the
+ * management turns argue against — is the profit in hand worth the exit that
+ * realises it, and is there enough left on offer to justify extending.
  */
 export const PROFIT_TARGET_COST_MULTIPLE = ACTIVE_TRADING_POLICY.momentum.targetCostMultiple;
 
@@ -85,11 +92,17 @@ export const TradingCostEstimate = Schema.Struct({
   breakEvenPriceMoveUsd: Schema.Number,
   breakEvenPriceMovePercent: Schema.Number,
   /**
-   * The smallest profit target worth arming on this size:
-   * `PROFIT_TARGET_COST_MULTIPLE x roundTripUsd`, gross, the way `pnl_above`
-   * measures it.
+   * The smallest profit target worth entering for on this size:
+   * `ENTRY_COST_MULTIPLE x roundTripUsd`, gross, the way `pnl_above` measures
+   * it. A target above this is a trade to take.
    */
   minimumViableTargetUsd: Schema.Number,
+  /**
+   * The rung the target is aiming at: `PROFIT_TARGET_COST_MULTIPLE x
+   * roundTripUsd`. Not a gate — the number to bank at, and to hold an
+   * extension against once the position is on.
+   */
+  preferredTargetUsd: Schema.Number,
 
   measuredAt: UnixMillis,
   freshness: FreshnessMeta,
@@ -233,7 +246,8 @@ export function estimateTradingCosts(input: CostEstimateInput): TradingCostEstim
     breakEvenPriceMoveUsd,
     breakEvenPriceMovePercent:
       input.referencePrice > 0 ? (breakEvenPriceMoveUsd / input.referencePrice) * 100 : 0,
-    minimumViableTargetUsd: roundTripUsd * PROFIT_TARGET_COST_MULTIPLE,
+    minimumViableTargetUsd: roundTripUsd * ENTRY_COST_MULTIPLE,
+    preferredTargetUsd: roundTripUsd * PROFIT_TARGET_COST_MULTIPLE,
     measuredAt: input.measuredAt,
     freshness: input.freshness,
     degraded,
@@ -342,13 +356,16 @@ export function checkProfitTarget(input: {
     }
   }
 
+  // The floor is the ENTRY multiple, not the target rung: a published target
+  // between the two is a trade worth taking that happens to be aiming at a
+  // nearer rung than the ideal, and warning about it taught the harness to
+  // read every modest target as a defect.
   const floor =
-    feeOnlyRoundTripUsd(basis.positionNotionalUsd, input.takerFeeBpsPerSide) *
-    PROFIT_TARGET_COST_MULTIPLE;
+    feeOnlyRoundTripUsd(basis.positionNotionalUsd, input.takerFeeBpsPerSide) * ENTRY_COST_MULTIPLE;
   if (input.targetProfitUsd < floor) {
     warnings.push("target_below_cost_floor");
     messages.push(
-      `targetProfitUsd ${input.targetProfitUsd.toFixed(2)} is below ${PROFIT_TARGET_COST_MULTIPLE}x the round-trip cost ` +
+      `targetProfitUsd ${input.targetProfitUsd.toFixed(2)} is below ${ENTRY_COST_MULTIPLE}x the round-trip cost ` +
         `(${floor.toFixed(2)} on ${basis.positionNotionalUsd} of notional at ${input.takerFeeBpsPerSide} bps/side, before spread and slippage) — ` +
         "the target is gross, so it has to clear the round trip on its own",
     );

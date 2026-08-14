@@ -358,6 +358,23 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
+  it.effect("hands a holding wake the management brief instead", () =>
+    Effect.gen(function* () {
+      positionSize = 0;
+      assert.isUndefined((yield* compose()).positionReview);
+
+      positionSize = -1.25;
+      const holding = yield* compose();
+      positionSize = 0;
+      const review = holding.positionReview ?? "";
+      // The three things a holding turn is for: what banking is worth, what
+      // has already been handed back, and moving the stop off the entry.
+      assert.include(review, "positionCosts");
+      assert.include(review, "drawdownFromPeakUsd");
+      assert.include(review, "pnl_giveback");
+    }),
+  );
+
   it.effect("feeds a plan that reasons on 15m the 1m bars anyway", () =>
     Effect.gen(function* () {
       requestedIntervals = [];

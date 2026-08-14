@@ -25,9 +25,24 @@
 /** How momentum decides a target is worth its costs. */
 export interface MomentumPolicy {
   /**
-   * How many round trips a target has to be worth before the trade is worth
-   * taking. One round trip is break-even before slippage and funding; a target
-   * at exactly 1x pays the exchange and takes the variance for nothing.
+   * How many round trips the move on offer has to be worth before an entry is
+   * allowed at all.
+   *
+   * One round trip is break-even before slippage and funding, so the gate has
+   * to sit above 1 — but only far enough above it that the trade is not a coin
+   * flip for the exchange's benefit. It is deliberately NOT
+   * {@link MomentumPolicy.targetCostMultiple}: holding the entry to the rung
+   * the trade is aiming for is how a loop that is supposed to take many small
+   * trades ends up taking none.
+   */
+  readonly entryCostMultiple: number;
+  /**
+   * How many round trips a target is aiming to be worth — the rung to bank at,
+   * not a precondition for entering.
+   *
+   * A position already open is the case this number is for: it says whether
+   * the profit in front of you is worth the exit that realises it, and whether
+   * there is enough left on offer to justify extending.
    */
   readonly targetCostMultiple: number;
   /**
@@ -40,8 +55,14 @@ export interface MomentumPolicy {
 /** How the range scalp decides a range is a range, and worth trading. */
 export interface RangePolicy {
   /**
-   * Range height as a multiple of the break-even price move. Higher than
-   * momentum's because a scalp takes only part of the crossing.
+   * Range height as a multiple of the break-even price move, required to
+   * enter. Higher than momentum's because a scalp takes only part of the
+   * crossing, so the height has to pay for a capture of 60-70% of it.
+   */
+  readonly entryHeightCostMultiple: number;
+  /**
+   * The height a range is worth working rather than merely taking one scalp
+   * out of. Not a gate — the number the management turns argue against.
    */
   readonly heightCostMultiple: number;
   /**
@@ -57,6 +78,7 @@ export interface RangePolicy {
 
 /** The opening-range break, which shares the range's arithmetic. */
 export interface OpeningRangePolicy {
+  readonly entryHeightCostMultiple: number;
   readonly heightCostMultiple: number;
   readonly minBoundaryTouches: number;
 }
@@ -76,6 +98,17 @@ export interface SessionPolicy {
    * being traded. Read off `trading_get_trade_history`.
    */
   readonly feeShareOfGrossWarningPercent: number;
+  /**
+   * How much of the size the risk ceilings allow an unmandated entry is
+   * expected to actually take.
+   *
+   * The ceilings are the risk policy: a size inside them is a size the mission
+   * approved. Asking for a small fraction of one does not make the trade safer
+   * in any way the plan cares about — it makes the same thesis pay a fraction
+   * as much while the spread, the minimum tick, and the turn it took stay
+   * exactly the same. Below this fraction the quote says so; nothing refuses.
+   */
+  readonly entrySizeFloorFractionOfCeiling: number;
 }
 
 /**
@@ -118,16 +151,20 @@ export const TRADING_POLICY_V1: TradingPolicy = {
   version: 1,
   label: "as-shipped baseline; the constants before they were collected",
   momentum: {
+    // As shipped, the entry gate and the target rung were one number.
+    entryCostMultiple: 2,
     targetCostMultiple: 2,
     directionScoreThreshold: 0.15,
   },
   rangeReversion: {
+    entryHeightCostMultiple: 2.2,
     heightCostMultiple: 2.2,
     edgePercent: 20,
     stabilityPercent: 30,
     minBoundaryTouches: 2,
   },
   openingRange: {
+    entryHeightCostMultiple: 2.2,
     heightCostMultiple: 2.2,
     minBoundaryTouches: 2,
   },
@@ -137,6 +174,9 @@ export const TRADING_POLICY_V1: TradingPolicy = {
     consecutiveLossesBeforeCooldown: 3,
     cooldownMinutes: 30,
     feeShareOfGrossWarningPercent: 50,
+    // As shipped nothing said anything about size, which is the same as
+    // saying any size is the right one.
+    entrySizeFloorFractionOfCeiling: 0,
   },
   reassessment: {
     // The values `watchCoverageFloorMillis` has always used for a flat
@@ -148,13 +188,55 @@ export const TRADING_POLICY_V1: TradingPolicy = {
 };
 
 /**
+ * The entry gates separated from the target rungs.
+ *
+ * V1 held an entry to the rung the trade was aiming for: a setup whose
+ * available move was not worth two round trips could not be taken at all. On a
+ * fee-and-spread cost base that is a demand for a move most of the day does
+ * not offer, and the loop it produced spent its sessions publishing arithmetic
+ * about trades it declined. The objective is many small positive-expectancy
+ * trades, and a move worth 1.3 round trips taken repeatedly is that objective;
+ * a move worth 2 waited for is not.
+ *
+ * What did NOT move: nothing here touches a stop, a risk ceiling, a loss
+ * budget, or the noise floor. The only thing loosened is how much profit has
+ * to be visible in advance before the harness is allowed to go and find out.
+ * The 2x rung survives as the target the trade aims at once it is on, which is
+ * where costs belong — deciding whether the profit in hand is worth the exit
+ * that realises it.
+ */
+export const TRADING_POLICY_V2: TradingPolicy = {
+  ...TRADING_POLICY_V1,
+  version: 2,
+  label: "entry gates separated from target rungs; unmandated size floored",
+  momentum: {
+    ...TRADING_POLICY_V1.momentum,
+    entryCostMultiple: 1.3,
+  },
+  rangeReversion: {
+    ...TRADING_POLICY_V1.rangeReversion,
+    // A scalp takes 60-70% of the crossing, so the height still has to clear
+    // more than a breakout's leg does to pay the same round trip.
+    entryHeightCostMultiple: 1.6,
+  },
+  openingRange: {
+    ...TRADING_POLICY_V1.openingRange,
+    entryHeightCostMultiple: 1.6,
+  },
+  session: {
+    ...TRADING_POLICY_V1.session,
+    entrySizeFloorFractionOfCeiling: 0.5,
+  },
+};
+
+/**
  * The policy in force.
  *
  * Every threshold in the arithmetic and every number in the playbook prose
  * reads through this binding, so a candidate version takes effect in the rules
  * and in the doctrine at once, and the two cannot disagree.
  */
-export const ACTIVE_TRADING_POLICY: TradingPolicy = TRADING_POLICY_V1;
+export const ACTIVE_TRADING_POLICY: TradingPolicy = TRADING_POLICY_V2;
 
 /**
  * Whether the market data the harness reads is what is limiting its decisions.
