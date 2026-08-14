@@ -228,6 +228,35 @@ describe("coerceToolArguments", () => {
       return Tool.getJsonSchema(tool);
     };
 
+    // Both shapes below cost a `trading_publish_plan` round trip each on
+    // 2026-08-14: `timeframes` came back as labelled records and
+    // `scaleInConditions` as `{}`, and each rejection was worth a full retry of
+    // the whole strategy.
+    it("unwraps a labelled timeframe record to the literal it carries", () => {
+      const coerced = coerceToolArguments(schemaFor("trading_publish_plan"), {
+        expectedVersion: 0,
+        strategy: {
+          timeframes: [
+            { name: "5m", role: "thesis" },
+            { name: "15m", role: "confirmation" },
+          ],
+          positionManagement: { scaleInConditions: {} },
+        },
+      }) as { strategy: { timeframes: unknown; positionManagement: Record<string, unknown> } };
+
+      expect(coerced.strategy.timeframes).toEqual(["5m", "15m"]);
+      expect(coerced.strategy.positionManagement.scaleInConditions).toEqual([]);
+    });
+
+    it("leaves a wrapper whose value is not a declared literal alone", () => {
+      const coerced = coerceToolArguments(schemaFor("trading_publish_plan"), {
+        expectedVersion: 0,
+        strategy: { timeframes: [{ name: "4h" }] },
+      }) as { strategy: { timeframes: ReadonlyArray<unknown> } };
+
+      expect(coerced.strategy.timeframes).toEqual([{ name: "4h" }]);
+    });
+
     it('coerces maxBars: "100" on trading_get_market_history', () => {
       expect(
         coerceToolArguments(schemaFor("trading_get_market_history"), {

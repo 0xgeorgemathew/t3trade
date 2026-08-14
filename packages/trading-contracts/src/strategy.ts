@@ -35,6 +35,48 @@ export type TradingTimeframe = typeof TradingTimeframe.Type;
  */
 export const POC_DEFAULT_TIMEFRAME: TradingTimeframe = "1m";
 
+/** Longest first, so "15m" is never matched as "5m" inside a mandate. */
+const TIMEFRAMES_LONGEST_FIRST: ReadonlyArray<TradingTimeframe> = ["15m", "1h", "5m", "3m", "1m"];
+
+/**
+ * The timeframe the user's own mandate names, if it names one.
+ *
+ * A mandate is free text, so this is a literal scan for the five intervals the
+ * contracts define — "scalp ETH on the 5m" resolves to `5m`, and anything that
+ * names none resolves to nothing. It reads the FIRST interval mentioned, which
+ * is the one a sentence like "trade the 5m, confirm on 15m" means.
+ */
+export function mandatedTimeframe(instruction: string): TradingTimeframe | undefined {
+  const text = instruction.toLowerCase();
+  let earliest: { readonly at: number; readonly timeframe: TradingTimeframe } | undefined;
+  for (const timeframe of TIMEFRAMES_LONGEST_FIRST) {
+    const at = text.indexOf(timeframe);
+    if (at === -1) continue;
+    if (earliest === undefined || at < earliest.at) earliest = { at, timeframe };
+  }
+  return earliest?.timeframe;
+}
+
+/**
+ * The timeframe the runtime works a mission on: the mandate's, or `1m`.
+ *
+ * Deliberately NOT the plan's own `timeframes[0]`. The wakeup's candles, its
+ * volatility measurement, and the staleness floor that decides how often a flat
+ * mission is re-woken all key off this one value, so a plan that named 15m as
+ * its thesis timeframe had the runtime feeding it 15m bars and re-waking it
+ * every thirty minutes — the 1m structure that the entry actually turns on was
+ * never in front of it, and it could not have seen a setup form and expire
+ * between two wakes. The published `timeframes[0]` still says what the plan is
+ * reasoning on, and rides the wakeup as the paired higher timeframe when it is
+ * longer than this one.
+ *
+ * A user who names an interval in the mandate gets it; nobody else has stated a
+ * preference, so they get the fastest interval the exchange serves directly.
+ */
+export function runtimeTimeframe(instruction: string): TradingTimeframe {
+  return mandatedTimeframe(instruction) ?? POC_DEFAULT_TIMEFRAME;
+}
+
 /**
  * The operating note every auto-created mission carries alongside its mandate.
  *

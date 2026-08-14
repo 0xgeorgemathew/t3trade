@@ -20,7 +20,12 @@ import {
   ResolvedMarket,
 } from "./market.ts";
 import { TradingHarnessRun, TradingMission } from "./mission.ts";
-import { AgentConditionInput, TradingPlanState } from "./strategy.ts";
+import {
+  AgentConditionInput,
+  mandatedTimeframe,
+  runtimeTimeframe,
+  TradingPlanState,
+} from "./strategy.ts";
 import {
   TradingGetMissionResult,
   TradingExecuteInput,
@@ -836,5 +841,22 @@ describe("subpath exports", () => {
       expect(target.types, subpath).toBe(target.import);
       expect(target.import, subpath).toMatch(/^\.\/src\/[a-zA-Z-]+\.ts$/);
     }
+  });
+});
+
+describe("the timeframe the runtime works a mission on", () => {
+  it("reads the interval a mandate names, longest token first", () => {
+    // "15m" must never be read as the "5m" inside it.
+    expect(mandatedTimeframe("scalp ETH on the 15m")).toBe("15m");
+    expect(mandatedTimeframe("trade the 5m, confirm on 15m")).toBe("5m");
+    expect(mandatedTimeframe("trade BTC with momentum entries")).toBeUndefined();
+  });
+
+  it("falls back to 1m rather than to whatever the plan published", () => {
+    // The 2026-08-14 failure: plans published `timeframes: ["15m"]` and the
+    // runtime followed them, so a flat mission was re-woken every 30 minutes
+    // on 15m bars and never saw the 1m structure it was trading.
+    expect(runtimeTimeframe("trade BTC, momentum only")).toBe("1m");
+    expect(runtimeTimeframe("work the 1h")).toBe("1h");
   });
 });

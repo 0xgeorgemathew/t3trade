@@ -41,11 +41,14 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
-import { POC_DEFAULT_TIMEFRAME, type TradingTimeframe } from "@t3tools/trading-contracts/strategy";
+import {
+  POC_DEFAULT_TIMEFRAME,
+  runtimeTimeframe,
+  type TradingTimeframe,
+} from "@t3tools/trading-contracts/strategy";
 import {
   hasReassessmentWithin,
   isDeafWhileHoldingPosition,
@@ -365,16 +368,16 @@ const make = Effect.gen(function* () {
     });
 
   /**
-   * Resolve the strategy's primary timeframe, the one that drives the monitoring
-   * cadence. Falls back to the POC default when no strategy is published so a
-   * mission between strategies still gets a floor.
+   * The timeframe the monitoring cadence is scaled off: the mandate's, or `1m`.
+   *
+   * It used to be the published `timeframes[0]`, which let a plan that named
+   * 15m set its own re-wake floor at thirty minutes — the plan chose how often
+   * it would be asked to reconsider the plan. See `runtimeTimeframe`; the
+   * wakeup composer reads the same rule, so the bars a run is fed and the rate
+   * it is woken at cannot disagree.
    */
-  const primaryTimeframeFor = (strategy: Option.Option<TradingPlanState>): TradingTimeframe =>
-    // The strategy schema requires a non-empty `timeframes` array, so index 0 is
-    // present at runtime; the fallback only satisfies `noUncheckedIndexedAccess`.
-    strategy._tag === "Some"
-      ? (strategy.value.timeframes[0] ?? POC_DEFAULT_TIMEFRAME)
-      : POC_DEFAULT_TIMEFRAME;
+  const primaryTimeframeFor = (instruction: string): TradingTimeframe =>
+    runtimeTimeframe(instruction);
 
   /**
    * Arm a `pnl_above` watch at the strategy's declared profit target while the
@@ -464,7 +467,7 @@ const make = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const armed = yield* strategies.listWatches(missionId);
       const strategyOption = yield* strategies.getCurrentStrategy(missionId);
-      const primaryTimeframe = primaryTimeframeFor(strategyOption);
+      const primaryTimeframe = primaryTimeframeFor(mission.instruction);
 
       // Flat. Timing an entry is the harness's own business, so no level is
       // required on either side — but a mission that has published a thesis and

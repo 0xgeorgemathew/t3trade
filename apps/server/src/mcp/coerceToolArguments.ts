@@ -127,10 +127,51 @@ const coerceToStringCompatible = (value: string, types: ReadonlyArray<string>): 
   return value;
 };
 
+/**
+ * The keys a model wraps a scalar in when it answers a list-of-literals with a
+ * list of records. `timeframes: [{name:"15m", role:"thesis"}]` against
+ * `["1m"|"3m"|...]` is the observed shape — the value is right there, labelled,
+ * and the whole publish was lost for the wrapper around it.
+ */
+const SCALAR_WRAPPER_KEYS = ["name", "value", "interval", "timeframe"] as const;
+
+/**
+ * Unwrap `{name:"15m"}` to `"15m"` where the schema declares a string.
+ *
+ * Only ever unwraps to a string the schema would already accept: when the node
+ * declares an `enum`, a value outside it is left alone and fails validation as
+ * before. Returns `undefined` when there is nothing safe to unwrap.
+ */
+const unwrapScalarObject = (
+  value: Record<string, unknown>,
+  schema: JsonSchemaNode,
+): string | undefined => {
+  if (schema.type !== "string") return undefined;
+  for (const key of SCALAR_WRAPPER_KEYS) {
+    const inner = value[key];
+    if (typeof inner !== "string") continue;
+    if (Array.isArray(schema.enum) && !schema.enum.includes(inner)) continue;
+    return inner;
+  }
+  return undefined;
+};
+
 const coerceValue = (value: unknown, node: JsonSchemaNode, root: JsonSchemaNode): unknown => {
   if (value === null || value === undefined) return value;
 
   const schema = resolveNode(node, root);
+
+  // An empty object where the schema declares an array. Models emit `{}` for
+  // "nothing here" against `scaleInConditions: []`, and the two carry the same
+  // meaning; a non-empty object is a real mistake and still fails.
+  if (schema.type === "array" && isPlainObject(value) && Object.keys(value).length === 0) {
+    return [];
+  }
+
+  if (isPlainObject(value)) {
+    const unwrapped = unwrapScalarObject(value, schema);
+    if (unwrapped !== undefined) return unwrapped;
+  }
 
   // A string value where the schema declares an object/array: some CLIs
   // stringify nested params. Try to JSON-parse it into the declared shape

@@ -236,6 +236,48 @@ const toolErrorResult = (message: string) =>
     content: [{ type: "text", text: message }],
   });
 
+/**
+ * Build a validator that reports EVERY issue in a tool's arguments, not just
+ * the first. Compiled once per tool at registration; the returned function is
+ * what runs per call.
+ *
+ * Effect's toolkit decodes with the default `errors: "first"`, so a call with
+ * eight missing keys comes back naming one of them. The agent fixes that one,
+ * calls again, and is told the next — `trading_publish_plan` took ten round
+ * trips and ninety seconds to land a single plan that way, and every retry
+ * re-sent the whole strategy. This decodes the same coerced payload against the
+ * same schema first, with `errors: "all"`, purely to build the message: the
+ * toolkit still runs its own decode, so the value the handler receives is
+ * unchanged and nothing here can widen what is accepted.
+ *
+ * The validator returns the message to answer with, or `undefined` when the
+ * payload is valid.
+ */
+export const makeParameterIssueReporter = (
+  tool: Tool.Any,
+): ((args: unknown) => string | undefined) => {
+  const schema: unknown = tool.parametersSchema;
+  if (!Schema.isSchema(schema)) return () => undefined;
+  // Synchronous because every registered tool's parameter schema is plain data
+  // with no decoding services to provide: the only outcome besides the decoded
+  // value is the thrown `SchemaError` this exists to read.
+  const decode = Schema.decodeUnknownSync(schema as unknown as Schema.ConstraintDecoder<unknown>, {
+    errors: "all",
+  });
+  return (args) => {
+    try {
+      decode(args);
+      return undefined;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return (
+        `Invalid parameters for tool '${tool.name}': ${detail}\n` +
+        "Every issue above is listed — fix them all in ONE corrected call rather than one per attempt."
+      );
+    }
+  };
+};
+
 /** In-band tool outcomes that mean the requested operation did not succeed. */
 const isRejectedToolResult = (result: McpSchema.CallToolResult): boolean => {
   if (result.isError === true) return true;
@@ -284,6 +326,7 @@ const registerToolkitLenient = Effect.fnUntraced(function* <Tools extends Record
     const toolMeta = Context.getOrUndefined(annotations, Tool.Meta);
     const isDeclaredFailure = Schema.is(tool.failureSchema);
     const inputSchema = Tool.getJsonSchema(tool);
+    const reportParameterIssues = makeParameterIssueReporter(tool);
     yield* registry.addTool({
       tool: new McpSchema.Tool({
         name: tool.name,
@@ -308,73 +351,69 @@ const registerToolkitLenient = Effect.fnUntraced(function* <Tools extends Record
             fiber.context,
             McpInvocationContext.McpInvocationContext,
           );
-          return built
-            .handle(
-              tool.name,
-              // Coercion returns `unknown`; the toolkit's handle expects the
-              // tool's decoded input type. The cast mirrors the upstream
-              // registration, which receives `payload: any` — coercion only
-              // rewrites values that satisfy the schema, so validation below is
-              // unchanged.
-              coerceToolArguments(inputSchema, payload) as never,
-            )
-            .pipe(
-              Stream.unwrap,
-              Stream.run(Sink.last()),
-              Effect.flatMap(Effect.fromOption),
-              Effect.provideContext(services),
-              Effect.map(
-                (result) =>
-                  new McpSchema.CallToolResult({
-                    isError: false,
-                    structuredContent:
-                      typeof result.encodedResult === "object"
-                        ? (result.encodedResult as Record<string, unknown>)
-                        : undefined,
-                    content: [{ type: "text", text: JSON.stringify(result.encodedResult) }],
-                  }),
-              ),
-              Effect.tapCause(Effect.logError),
-              Effect.catch((error: unknown) => {
-                if (AiError.isAiError(error)) {
-                  const reason = error.reason;
-                  return Effect.succeed(
-                    reason._tag === "ToolParameterValidationError"
-                      ? toolErrorResult(reason.message)
-                      : toolErrorResult(INTERNAL_TOOL_ERROR_MESSAGE),
-                  );
-                }
-                if (isDeclaredFailure(error)) {
-                  const message =
-                    error instanceof Error ? error.message : INTERNAL_TOOL_ERROR_MESSAGE;
-                  return Effect.succeed(toolErrorResult(message));
-                }
-                return Effect.succeed(toolErrorResult(INTERNAL_TOOL_ERROR_MESSAGE));
-              }),
-              Effect.catchDefect(() =>
-                Effect.succeed(toolErrorResult(INTERNAL_TOOL_ERROR_MESSAGE)),
-              ),
-              // Every call is now a `CallToolResult`, error or not — the one
-              // place that knows both the tool name and what the agent was told.
-              Effect.tap((result) =>
-                invocation === undefined
-                  ? Effect.void
-                  : TradingRunTelemetry.recordToolCall(sql, {
-                      threadId: invocation.threadId,
-                      tool: tool.name,
-                      ok: result.isError !== true,
-                      accepted: !isRejectedToolResult(result),
-                      ...(result.isError === true
-                        ? {
-                            errorMessage:
-                              result.content[0]?.type === "text"
-                                ? result.content[0].text
-                                : JSON.stringify(result.structuredContent ?? {}),
-                          }
-                        : {}),
-                    }).pipe(Effect.catchCause(() => Effect.void)),
-              ),
-            );
+          // Coercion returns `unknown`; the toolkit's handle expects the tool's
+          // decoded input type. The cast mirrors the upstream registration,
+          // which receives `payload: any` — coercion only rewrites values that
+          // satisfy the schema, so validation below is unchanged.
+          const args = coerceToolArguments(inputSchema, payload);
+          const call = built.handle(tool.name, args as never).pipe(
+            Stream.unwrap,
+            Stream.run(Sink.last()),
+            Effect.flatMap(Effect.fromOption),
+            Effect.provideContext(services),
+            Effect.map(
+              (result) =>
+                new McpSchema.CallToolResult({
+                  isError: false,
+                  structuredContent:
+                    typeof result.encodedResult === "object"
+                      ? (result.encodedResult as Record<string, unknown>)
+                      : undefined,
+                  content: [{ type: "text", text: JSON.stringify(result.encodedResult) }],
+                }),
+            ),
+            Effect.tapCause(Effect.logError),
+            Effect.catch((error: unknown) => {
+              if (AiError.isAiError(error)) {
+                const reason = error.reason;
+                return Effect.succeed(
+                  reason._tag === "ToolParameterValidationError"
+                    ? toolErrorResult(reason.message)
+                    : toolErrorResult(INTERNAL_TOOL_ERROR_MESSAGE),
+                );
+              }
+              if (isDeclaredFailure(error)) {
+                const message =
+                  error instanceof Error ? error.message : INTERNAL_TOOL_ERROR_MESSAGE;
+                return Effect.succeed(toolErrorResult(message));
+              }
+              return Effect.succeed(toolErrorResult(INTERNAL_TOOL_ERROR_MESSAGE));
+            }),
+            Effect.catchDefect(() => Effect.succeed(toolErrorResult(INTERNAL_TOOL_ERROR_MESSAGE))),
+          );
+          const issues = reportParameterIssues(args);
+          return (issues === undefined ? call : Effect.succeed(toolErrorResult(issues))).pipe(
+            // Every call is now a `CallToolResult`, error or not — the one
+            // place that knows both the tool name and what the agent was told.
+            Effect.tap((result) =>
+              invocation === undefined
+                ? Effect.void
+                : TradingRunTelemetry.recordToolCall(sql, {
+                    threadId: invocation.threadId,
+                    tool: tool.name,
+                    ok: result.isError !== true,
+                    accepted: !isRejectedToolResult(result),
+                    ...(result.isError === true
+                      ? {
+                          errorMessage:
+                            result.content[0]?.type === "text"
+                              ? result.content[0].text
+                              : JSON.stringify(result.structuredContent ?? {}),
+                        }
+                      : {}),
+                  }).pipe(Effect.catchCause(() => Effect.void)),
+            ),
+          );
         }),
     });
   }

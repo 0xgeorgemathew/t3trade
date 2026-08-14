@@ -25,7 +25,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import type { TradingCostEstimate } from "@t3tools/trading-contracts/costs";
-import { POC_DEFAULT_TIMEFRAME, type TradingTimeframe } from "@t3tools/trading-contracts/strategy";
+import { runtimeTimeframe, type TradingTimeframe } from "@t3tools/trading-contracts/strategy";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 import type { ObservedVolatility } from "@t3tools/trading-contracts/volatility";
 
@@ -111,6 +111,31 @@ const HIGHER_TIMEFRAME: Readonly<Record<TradingTimeframe, TradingTimeframe | nul
   "5m": "1h",
   "15m": "1h",
   "1h": null,
+};
+
+/** Shortest to longest, for "is the plan's timeframe above the runtime's?". */
+const TIMEFRAME_ORDER: ReadonlyArray<TradingTimeframe> = ["1m", "3m", "5m", "15m", "1h"];
+
+/**
+ * Which second timeframe this wakeup measures.
+ *
+ * Normally the fixed pairing above. When the published plan reasons on a LONGER
+ * interval than the runtime one — the plan says 15m, the runtime feeds 1m —
+ * that is the structure the plan's own levels sit on, so it is the more useful
+ * pair and nothing about the plan's thinking is lost by the runtime working
+ * faster than it.
+ */
+const pairedTimeframe = (
+  primary: TradingTimeframe,
+  published: TradingTimeframe | undefined,
+): TradingTimeframe | null => {
+  if (
+    published !== undefined &&
+    TIMEFRAME_ORDER.indexOf(published) > TIMEFRAME_ORDER.indexOf(primary)
+  ) {
+    return published;
+  }
+  return HIGHER_TIMEFRAME[primary];
 };
 
 /**
@@ -376,8 +401,14 @@ const TRIM_LADDER: ReadonlyArray<{
     }),
   },
   {
+    // The `strategyReview` reminder goes here too: by this rung the plan's own
+    // prose is being cut to a line, and doctrine the run can read with one
+    // `trading_get_playbook` call does not outrank the market data beside it.
     name: "strategy_digest",
-    apply: (wakeup) => ({ ...wakeup, activeStrategy: digestStrategy(wakeup.activeStrategy) }),
+    apply: (wakeup) => {
+      const { strategyReview: _dropped, ...rest } = wakeup;
+      return { ...rest, activeStrategy: digestStrategy(wakeup.activeStrategy) };
+    },
   },
 ];
 
@@ -561,9 +592,8 @@ const make = Effect.gen(function* () {
    */
   const measureHigherTimeframe = (
     market: TradingMission["market"],
-    primary: TradingTimeframe,
+    higher: TradingTimeframe | null,
   ): Effect.Effect<ObservedVolatility | null> => {
-    const higher = HIGHER_TIMEFRAME[primary];
     if (higher === null) return Effect.succeed(null);
     return gateway
       .getMarketHistory({ market, interval: higher, maxBars: VOLATILITY_LOOKBACK_BARS })
@@ -637,7 +667,9 @@ const make = Effect.gen(function* () {
       // history ride the same batch so a woken run starts already knowing what
       // it holds and what price just did, without boilerplate tool calls. A
       // history-read failure fails compose the same way a snapshot failure does.
-      const primaryTimeframe = activeStrategy.timeframes[0] ?? POC_DEFAULT_TIMEFRAME;
+      // The mandate's interval, or 1m — see `runtimeTimeframe`. The plan's own
+      // `timeframes[0]` is what it reasons on, not what the runtime feeds it.
+      const primaryTimeframe = runtimeTimeframe(mission.instruction);
       const [marketSnapshot, accountSnapshot, position, history] = yield* Effect.all(
         [
           gateway.getMarketSnapshot(mission.market),
@@ -693,7 +725,10 @@ const make = Effect.gen(function* () {
       // arrives at all.
       const [higherTimeframeVolatility, positionCosts] = yield* Effect.all(
         [
-          measureHigherTimeframe(mission.market, primaryTimeframe),
+          measureHigherTimeframe(
+            mission.market,
+            pairedTimeframe(primaryTimeframe, activeStrategy.timeframes[0]),
+          ),
           costOpenPosition(
             mission.market,
             position.size,
@@ -774,6 +809,14 @@ const make = Effect.gen(function* () {
             })
           : [];
 
+      // Flat: every playbook is a candidate again this turn. See
+      // `strategyReview` on the wakeup schema for why this rides the payload
+      // rather than living only in the playbook the run may not call.
+      const strategyReview =
+        position.size === 0
+          ? "FLAT — the field is open and the published mode has no seniority. Score every playbook (momentum, range_reversion, opening_range) x both directions plus no-trade off candidates[], one line of expectancy after costs each, before restating the thesis. Losers go in alternativesConsidered[]."
+          : undefined;
+
       // The other half of the same read: a level that IS armed, with a watch
       // that cannot evaluate the confirmation the condition declared.
       const misarmedEntryConditions = findMisarmedEntryConditions({
@@ -804,6 +847,7 @@ const make = Effect.gen(function* () {
         armedWatches,
         ...(unarmedEntryConditions.length === 0 ? {} : { unarmedEntryConditions }),
         ...(misarmedEntryConditions.length === 0 ? {} : { misarmedEntryConditions }),
+        ...(strategyReview === undefined ? {} : { strategyReview }),
         ...(levelHistory.length === 0 ? {} : { levelHistory }),
         ...(enteredWithoutScoredSetup === undefined ? {} : { enteredWithoutScoredSetup }),
         ...(previousStructureRead === undefined ? {} : { previousStructureRead }),

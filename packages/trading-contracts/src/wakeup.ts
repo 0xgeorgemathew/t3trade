@@ -289,6 +289,20 @@ export const TradingHarnessWakeup = Schema.Struct({
    */
   misarmedEntryConditions: Schema.optional(Schema.Array(MisarmedEntryCondition)),
   /**
+   * Present while the mission is flat: the whole field is open this turn, and
+   * the published plan is one candidate in it rather than the incumbent.
+   *
+   * The doctrine has always said a flat wake re-runs the tournament
+   * (`standing_rules`), but doctrine is a `trading_get_playbook` call away and
+   * a waiting mission reliably spent its wake re-checking the trigger it had
+   * already published — the range it could have scalped while its momentum
+   * breakout never came was never scored. Nothing branches on this: it is the
+   * reminder, carried where it cannot be missed, on exactly the wakes where it
+   * applies. Absent while a position is open, where switching costs a round
+   * trip and the incumbent DOES have seniority.
+   */
+  strategyReview: Schema.optional(TradingText),
+  /**
    * What the levels near the mark have already done to this mission — plan 27
    * B1. Bounded to the levels nearest the current mark. Absent when the
    * mission has no recorded level events yet.

@@ -11,6 +11,7 @@ import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/uns
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import { TradingToolkit } from "./toolkits/trading/tools.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
@@ -272,3 +273,67 @@ it.effect("registers annotated tools and preserves authenticated request context
     }),
   ).pipe(Effect.provide(TestLayer)),
 );
+
+/**
+ * The publish that took ten round trips on 2026-08-14.
+ *
+ * Every field named here was rejected one at a time, in this order, across ten
+ * `trading_publish_plan` calls: `timeframes` missing, then `timeframes[0]` an
+ * object instead of a literal, then a condition's `description`, then five
+ * separate keys of `targetProfitBasis`, then two `alternativesConsidered`
+ * literals. One report naming all of them is one retry, not ten.
+ */
+const publishWithManyIssues = {
+  expectedVersion: 0,
+  strategy: {
+    name: "btc_momentum",
+    market: "BTC",
+    mode: "momentum",
+    direction: "short",
+    currentAction: "waiting",
+    belief: { summary: "s", regime: "trending", evidence: ["e"] },
+    entryPlan: {
+      orderPreference: "marketable_ioc",
+      conditions: [
+        { type: "candle_close", interval: "15m", direction: "below", priceLevel: 63206 },
+      ],
+    },
+    positionManagement: {
+      scaleInAllowed: false,
+      scaleInConditions: {},
+      partialReductionAllowed: true,
+    },
+    protection: {
+      stopMethod: "structure",
+      targetProfitUsd: 6.03,
+      targetProfitBasis: {
+        measurement: "swing_range",
+        measuredMoveUsd: 179,
+        referencePrice: 62917,
+      },
+    },
+    exitConditions: [],
+    abandonmentConditions: [],
+    reentryConditions: [],
+    alternativesConsidered: [
+      { strategy: "no_trade", direction: "both", verdict: "declined", reason: "r" },
+    ],
+  },
+};
+
+it("reports every invalid publish parameter in one message", () => {
+  const message = McpHttpServer.makeParameterIssueReporter(
+    TradingToolkit.tools.trading_publish_plan,
+  )(publishWithManyIssues);
+  expect(message).toBeDefined();
+  // The five that used to cost five separate calls, all in one answer.
+  for (const key of ["timeframes", "lookbackBars", "expectedHoldBars", "rationale", "verdict"]) {
+    expect(message, `expected ${key} in the report`).toContain(key);
+  }
+});
+
+it("stays silent on a payload the toolkit would accept", () => {
+  expect(
+    McpHttpServer.makeParameterIssueReporter(TradingToolkit.tools.trading_get_mission)({}),
+  ).toBeUndefined();
+});

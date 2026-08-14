@@ -239,11 +239,13 @@ const layer = it.layer(
 const composeFull = (input?: {
   readonly triggeringWatchId?: string;
   readonly activeStrategy?: TradingPlanState;
+  readonly instruction?: string;
 }) =>
   Effect.gen(function* () {
     const composer = yield* TradingWakeupComposer;
     return yield* composer.compose({
-      mission,
+      mission:
+        input?.instruction === undefined ? mission : { ...mission, instruction: input.instruction },
       harnessRunId: "run_1",
       cause: "scheduled_reassessment",
       occurredAt: NOW,
@@ -339,6 +341,50 @@ layer("TradingWakeupComposer", (it) => {
       assert.equal(wakeup.higherTimeframeVolatility?.barsObserved, VOLATILITY_LOOKBACK_BARS);
       // The higher timeframe is trimmed to the same two horizons as the primary.
       assert.equal(wakeup.higherTimeframeVolatility?.horizons.length, 2);
+    }),
+  );
+
+  it.effect("re-opens the whole field on a flat wake, and only on a flat wake", () =>
+    Effect.gen(function* () {
+      positionSize = 0;
+      const flat = yield* compose();
+      assert.include(flat.strategyReview ?? "", "range_reversion");
+
+      // Holding, the incumbent has seniority: a switch costs a round trip.
+      positionSize = -1.25;
+      const holding = yield* compose();
+      positionSize = 0;
+      assert.isUndefined(holding.strategyReview);
+    }),
+  );
+
+  it.effect("feeds a plan that reasons on 15m the 1m bars anyway", () =>
+    Effect.gen(function* () {
+      requestedIntervals = [];
+      // The failure this exists for: a plan published with `timeframes: ["15m"]`
+      // used to make the runtime read 15m bars and measure 15m volatility, so
+      // the 1m structure the entry actually turns on was never in front of it.
+      const composed = yield* composeFull({
+        activeStrategy: { ...strategy, timeframes: ["15m", "1h"] } as TradingPlanState,
+      });
+
+      assert.equal(composed.wakeup.recentCandles.interval, "1m");
+      assert.equal(composed.wakeup.observedVolatility.interval, "1m");
+      // The plan's own timeframe is not lost — it becomes the paired read.
+      assert.equal(composed.wakeup.higherTimeframeVolatility?.interval, "15m");
+      assert.deepEqual([...requestedIntervals].sort(), ["15m", "1m"]);
+    }),
+  );
+
+  it.effect("works the interval the mandate names when it names one", () =>
+    Effect.gen(function* () {
+      requestedIntervals = [];
+      const composed = yield* composeFull({
+        instruction: "scalp ETH on the 5m while the New York session is open",
+      });
+
+      assert.equal(composed.wakeup.recentCandles.interval, "5m");
+      assert.equal(composed.wakeup.higherTimeframeVolatility?.interval, "1h");
     }),
   );
 
@@ -444,6 +490,10 @@ layer("TradingWakeupComposer", (it) => {
 
       const { text } = yield* composeFull({ activeStrategy: verbose });
 
+      require("node:fs").writeFileSync(
+        "/private/tmp/claude-501/-Users-george-Workspace-t3trade/9890dc64-5bd3-42a8-90fb-a546f8c3089e/scratchpad/wake.txt",
+        text,
+      );
       assert.isAtMost(text.length, MAX_WAKEUP_CHARS);
       // The trim marker is what tells the run the plan it sees is a projection.
       assert.include(text, "…");
