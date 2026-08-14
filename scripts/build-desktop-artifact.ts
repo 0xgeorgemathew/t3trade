@@ -36,6 +36,16 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
 const DESKTOP_APP_ID = "com.t3trades.app";
+
+/**
+ * The `afterPack` hook that ad-hoc signs an unsigned macOS build.
+ *
+ * Lives in `scripts/lib/` and is copied into the staging tree at build time,
+ * because electron-builder resolves hooks by path relative to the project dir
+ * it is given — see the copy in `buildDesktopArtifact` and the hook's own
+ * header for why an unsigned mac build needs signing at all.
+ */
+const ADHOC_SIGN_HOOK_FILENAME = "adhoc-sign-mac.cjs";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -1574,20 +1584,17 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           schemes: ["t3code", "t3code-dev"],
         },
       ],
-      // An unsigned build is still ad-hoc signed. Without an identity
-      // electron-builder skips codesign altogether, and an arm64 .app with NO
-      // signature is not "unsigned" to Gatekeeper — it is INVALID, so a copy
-      // that came through a browser (and therefore carries the quarantine
-      // flag) is refused with "is damaged and can't be opened. You should
-      // move it to the Trash." That is what shipped in t3trade-v0.0.32, and
-      // it is why the same build ran fine locally: a file that never crossed
-      // the internet is never quarantined. `identity: null` makes
-      // electron-builder sign with the ad-hoc identity instead, which turns
-      // the refusal into the ordinary "Apple cannot check it" dialog that
-      // right-click → Open clears. It is not a substitute for a Developer ID
-      // and notarization; it is the difference between an app the user can
-      // choose to run and one macOS will not let them.
-      ...(signed ? {} : { identity: null }),
+      // An unsigned build is ad-hoc signed by the `afterPack` hook below.
+      //
+      // `identity: null` does NOT mean "sign ad-hoc", whatever it reads like:
+      // electron-builder's `handleNullIdentity` logs "skipped macOS code
+      // signing" and returns. It is set here for the half it does do —
+      // deterministically skipping identity discovery, so a build on a
+      // machine that happens to have a signing certificate in its keychain
+      // produces the same artifact as a build on one that does not.
+      ...(signed
+        ? {}
+        : { identity: null, afterPack: `./${ADHOC_SIGN_HOOK_FILENAME}` }),
       ...(macPasskeySigning
         ? {
             entitlements: macPasskeySigning.entitlementsPath,
@@ -1957,6 +1964,18 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 
   const stagePackageJsonString = yield* encodeJsonString(stagePackageJson);
   yield* fs.writeFileString(path.join(stageAppDir, "package.json"), `${stagePackageJsonString}\n`);
+
+  // electron-builder resolves hook functions by requiring a path relative to
+  // the project dir, and the project dir is the staging tree — so the hook has
+  // to be copied in beside the package.json that names it. It lives in the
+  // repo rather than being generated here so it can be read and reviewed as
+  // ordinary source.
+  if (options.platform === "mac" && !options.signed) {
+    yield* fs.copyFile(
+      path.join(repoRoot, "scripts/lib", ADHOC_SIGN_HOOK_FILENAME),
+      path.join(stageAppDir, ADHOC_SIGN_HOOK_FILENAME),
+    );
+  }
   const stageWorkspaceConfig = createStageWorkspaceConfig({
     platform: options.platform,
     arch: options.arch,

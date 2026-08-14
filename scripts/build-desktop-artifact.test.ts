@@ -542,9 +542,11 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.deepStrictEqual(mac.protocols, [
         { name: "T3 Trade", schemes: ["t3code", "t3code-dev"] },
       ]);
-      // A signed build resolves its identity the normal way; forcing ad-hoc
-      // here would silently ship an unsigned app from a signed pipeline.
+      // A signed build resolves its identity the normal way; forcing the
+      // ad-hoc path here would silently ship an unsigned app from a signed
+      // pipeline.
       assert.notProperty(mac, "identity");
+      assert.notProperty(mac, "afterPack");
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
@@ -560,11 +562,14 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
       );
 
-      // `identity: null` is electron-builder's ad-hoc signature. Skipping
-      // codesign entirely leaves an arm64 app macOS reads as INVALID, not as
-      // unsigned — which is why the v0.0.32 DMG was refused as "damaged"
-      // while the same build ran from a local path (never quarantined).
-      assert.strictEqual((config.mac as Record<string, unknown>).identity, null);
+      // electron-builder does NOT ad-hoc sign on `identity: null` — it skips
+      // signing and says so — so the signature has to come from the hook.
+      // Without it the app is INVALID rather than merely unsigned, which is
+      // why the v0.0.32 DMG was refused as "damaged" while the same build ran
+      // from a local path (never quarantined).
+      const mac = config.mac as Record<string, unknown>;
+      assert.strictEqual(mac.identity, null);
+      assert.strictEqual(mac.afterPack, "./adhoc-sign-mac.cjs");
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
