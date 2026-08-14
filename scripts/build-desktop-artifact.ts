@@ -1886,12 +1886,27 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   yield* fs.copy(stageResourcesDir, path.join(stageAppDir, "apps/desktop/prod-resources"));
 
+  // Passkey signing is an ADD-ON to Developer ID signing, not a precondition
+  // for it. Failing the whole signed build when no Associated Domains
+  // provisioning profile is configured made a plain Developer ID build —
+  // certificate plus notarization, which is all a downloaded app needs to open
+  // — impossible for anyone who does not also run the Clerk passkey setup.
+  // Every other misconfiguration still fails: a profile that is named but
+  // wrong is a mistake to report, not a feature to drop.
   const configuredMacPasskeySigning =
     options.platform === "mac" && options.signed
       ? yield* Effect.try({
           try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
-        })
+        }).pipe(
+          Effect.catchIf(
+            (error) => error._tag === "MissingMacPasskeyProvisioningProfileError",
+            () =>
+              Effect.logWarning(
+                "[desktop-artifact] No macOS provisioning profile configured — signing without passkey entitlements. Passkey sign-in will not work in this build.",
+              ).pipe(Effect.as(undefined)),
+          ),
+        )
       : undefined;
   const macPasskeySigning = configuredMacPasskeySigning
     ? {
