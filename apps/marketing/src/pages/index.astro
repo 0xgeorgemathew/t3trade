@@ -353,8 +353,10 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
       </div>
       <p class="cta-note">
         The macOS build is Apple Silicon only and is not code-signed or notarized. On first
-        launch, right-click the app and choose Open to pass Gatekeeper. Run from source on
-        Windows, Linux, and Intel Macs.
+        launch, right-click the app and choose Open to pass Gatekeeper. If macOS says the app
+        is damaged, it is the download's quarantine flag, not the download — clear it with
+        <code>xattr -dr com.apple.quarantine "/Applications/T3 Trade (Alpha).app"</code> and
+        open it again. Run from source on Windows, Linux, and Intel Macs.
         Older builds and checksums are on the <a href="https://github.com/0xgeorgemathew/t3trade/releases" target="_blank" rel="noopener noreferrer">releases page</a>.
       </p>
     </div>
