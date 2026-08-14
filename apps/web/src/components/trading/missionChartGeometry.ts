@@ -13,8 +13,15 @@
 
 import { readFillLifecycle, type ChartFillKind, type ChartFillMarker } from "./tradingPresentation";
 
-/** ViewBox units reserved at the right edge for price tags. */
-export const LABEL_GUTTER_WIDTH = 120;
+/**
+ * ViewBox units reserved at the right edge for price tags.
+ *
+ * 15% of the frame rather than 12%: a tag is a price over a caption, and at
+ * 12% the caption of a condition ("close above") was the thing that got
+ * ellipsised away on a half-width panel — leaving the level's price with no
+ * statement of what the level was.
+ */
+export const LABEL_GUTTER_WIDTH = 150;
 export const CHART_VIEWBOX_WIDTH = 1000;
 export const CHART_VIEWBOX_HEIGHT = 160;
 /** The drawable plot area: viewBox minus the right-edge price-tag gutter. */
@@ -36,8 +43,15 @@ export const MIN_CANDLES_FOR_SVG = 2;
  */
 export const DOMAIN_LEVEL_REACH_RATIO = 1.5;
 
-/** Minimum vertical gap between two gutter tags, in viewBox units. */
-export const GUTTER_LABEL_MIN_SEPARATION = 14;
+/**
+ * Minimum vertical gap between two gutter tags, in viewBox units.
+ *
+ * A tag is two lines — the price, and the word that says which level it is —
+ * so the gap has to clear both or the caption of one tag sits under the price
+ * of the next. 18 of 160 is a ninth of the plot's height, which is about two
+ * lines of 10px text on the panel heights this chart is rendered at.
+ */
+export const GUTTER_LABEL_MIN_SEPARATION = 18;
 
 /**
  * Below this gap the entry tag is folded into the mark tag rather than nudged
@@ -167,6 +181,39 @@ export interface GutterTag {
 }
 
 /**
+ * One candle, placed — the market's own texture behind the trade's shape.
+ *
+ * The chart drew closes only, which is a defensible line chart and not what
+ * the same minute looks like on the exchange: a bar that opened at the low and
+ * closed at the high reads identically to one that drifted, and the wick that
+ * took a stop out is not on screen at all. `bodyTop`/`bodyBottom` are already
+ * ordered for a rect, and `halfWidth` is half the bar's own pitch, so the
+ * renderer needs no arithmetic of its own.
+ */
+export interface ChartBar {
+  readonly key: number;
+  /** ViewBox x of the bar's centre. */
+  readonly x: number;
+  /** Half the spacing between two bars, capped — see `BAR_MAX_HALF_WIDTH`. */
+  readonly halfWidth: number;
+  readonly highY: number;
+  readonly lowY: number;
+  readonly bodyTop: number;
+  readonly bodyBottom: number;
+  /** Close at or above open is `up`. Doji resolve to `up`, as exchanges do. */
+  readonly direction: "up" | "down";
+}
+
+/**
+ * Widest a candle body is drawn, in viewBox units.
+ *
+ * A short window (a mission two bars old) would otherwise draw two slabs
+ * hundreds of units wide. The cap keeps a sparse chart reading as a sparse
+ * chart rather than as a bar chart of two values.
+ */
+export const BAR_MAX_HALF_WIDTH = 6;
+
+/**
  * Everything the SVG renderer needs, derived once from candles + prices.
  *
  * The functions (`xForTime`, `yForPrice`) are closed over the domain so the
@@ -194,6 +241,11 @@ export interface ChartGeometry {
   readonly nowX: number;
   readonly xForTime: (t: number) => number;
   readonly yForPrice: (p: number) => number;
+  /**
+   * Every candle in the window, placed. Empty when no candle carries an
+   * `open` — a body drawn from a guessed open is a bar that did not happen.
+   */
+  readonly bars: ReadonlyArray<ChartBar>;
   /** Closes before the entry time — the flat part of the line. */
   readonly preEntryPoints: ReadonlyArray<ChartPoint>;
   /** Closes from entry time onward — the held part of the line. */
@@ -276,8 +328,8 @@ export interface ChartPastMarker {
 
 /** Input shape for {@link computeChartGeometry}. */
 export interface ComputeChartGeometryInput {
-  // `open` is accepted (so a `TradingChartCandle` can be passed verbatim) but
-  // unused: the chart draws closes, not the full OHLC body.
+  // `open` is optional so a series that carries only closes still draws its
+  // line; the candle bodies are simply left out of `bars` for those.
   readonly candles: ReadonlyArray<{
     readonly openTime: number;
     readonly open?: number;
@@ -808,6 +860,35 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     }
   }
 
+  // --- candles: the market's own texture, under everything else. -----------
+  //
+  // Drawn from the bars' own pitch rather than from the interval, so a feed
+  // with a gap in it does not stretch one body across the hole. A candle
+  // without an `open` is skipped rather than bodied from the previous close:
+  // the fallback is a convention, and a chart that invents one is no longer
+  // the same picture as the exchange's.
+  const barPitch =
+    candles.length < 2
+      ? 0
+      : (xForTime(lastCandleTime) - xForTime(timeStart)) / (candles.length - 1);
+  const halfWidth = Math.max(0.5, Math.min(BAR_MAX_HALF_WIDTH, (barPitch * 0.72) / 2));
+  const bars: ChartBar[] = [];
+  for (const candle of candles) {
+    if (candle.open === undefined) continue;
+    const openY = yForPrice(candle.open);
+    const closeY = yForPrice(candle.close);
+    bars.push({
+      key: candle.openTime,
+      x: xForTime(candle.openTime),
+      halfWidth,
+      highY: yForPrice(candle.high),
+      lowY: yForPrice(candle.low),
+      bodyTop: Math.min(openY, closeY),
+      bodyBottom: Math.max(openY, closeY),
+      direction: candle.close >= candle.open ? "up" : "down",
+    });
+  }
+
   // --- levels --------------------------------------------------------------
   const levels = buildLevels({
     yForPrice,
@@ -904,6 +985,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     nowX,
     xForTime,
     yForPrice,
+    bars,
     preEntryPoints,
     postEntryPoints,
     livePoints,

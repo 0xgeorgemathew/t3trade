@@ -241,10 +241,15 @@ function tagCaption(tag: GutterTag): string {
       return "target";
     case "liquidation":
       return "liq";
+    // Not "close above": a condition here is a `price_cross` as often as a
+    // `candle_close` and the geometry does not carry which, so the caption
+    // said "close" about levels that fire on a touch. The direction is the
+    // part that is always true — and at five characters it is the part that
+    // still fits in the gutter on a half-width panel.
     case "condition_above":
-      return "close above";
+      return "above";
     case "condition_below":
-      return "close below";
+      return "below";
     case "pending_buy":
       return "buying";
     case "pending_sell":
@@ -390,8 +395,43 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           />
         ) : null}
 
-        {/* Pre-entry segment: muted, the flat part of the line. */}
-        {geometry.preEntryPoints.length >= 2 ? (
+        {/* The candles. Drawn first, so everything the mission did sits on
+            top of them, and drawn quietly: they are the market's texture —
+            the wick that took a stop out, the bar that opened at its low —
+            not the subject. The subject is still the coloured segment above. */}
+        {geometry.bars.map((bar) => {
+          const ink =
+            bar.direction === "up"
+              ? "color-mix(in oklab, var(--color-profit) 55%, transparent)"
+              : "color-mix(in oklab, var(--color-loss) 55%, transparent)";
+          return (
+            <g key={`bar-${bar.key}`}>
+              <line
+                x1={bar.x}
+                y1={bar.highY}
+                x2={bar.x}
+                y2={bar.lowY}
+                stroke={ink}
+                strokeWidth={1}
+                vectorEffect="non-scaling-stroke"
+              />
+              <rect
+                x={bar.x - bar.halfWidth}
+                // A doji has no height, and a zero-height rect draws nothing —
+                // give it the thickness of a line so the bar is still there.
+                y={bar.bodyTop}
+                width={bar.halfWidth * 2}
+                height={Math.max(0.75, bar.bodyBottom - bar.bodyTop)}
+                fill={ink}
+              />
+            </g>
+          );
+        })}
+
+        {/* Pre-entry segment: muted, the flat part of the line. Suppressed
+            once the candles are drawn — the same closes twice, once as a line
+            through the bodies, is the noise this chart keeps clearing out. */}
+        {geometry.bars.length === 0 && geometry.preEntryPoints.length >= 2 ? (
           <polyline
             points={toPoints(geometry.preEntryPoints)}
             fill="none"
@@ -401,8 +441,11 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           />
         ) : null}
 
-        {/* Post-entry segment: the held part, coloured by pnl. */}
-        {geometry.postEntryPoints.length >= 2 ? (
+        {/* Post-entry segment: the held part, coloured by pnl. With no entry
+            it is not a held part at all, just the closes again — so with
+            candles drawn it is suppressed exactly like the pre-entry one. */}
+        {(geometry.bars.length === 0 || entryLevelY !== null) &&
+        geometry.postEntryPoints.length >= 2 ? (
           <polyline
             points={toPoints(geometry.postEntryPoints)}
             fill="none"
@@ -598,20 +641,26 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           const caption = tagCaption(tag);
           const glyph = tagGlyph(tag);
           return (
+            // Price and caption stack rather than sharing a line. On a narrow
+            // panel the gutter is ~70px, and "3421.50 close above" on one line
+            // truncated to "3421.50 clo…" — the half of the tag that says WHAT
+            // the level is was the half being hidden.
             <span
               key={tag.key}
-              className="absolute left-1.5 flex max-w-full -translate-y-1/2 items-baseline gap-1 truncate"
+              className="absolute left-1.5 right-0.5 flex -translate-y-1/2 flex-col leading-[1.15]"
               style={{
                 top: `${(tag.labelY / CHART_VIEWBOX_HEIGHT) * 100}%`,
                 color: tag.kind === "mark" ? segmentColor : levelInkColor(tag.kind),
                 fontWeight: tag.kind === "mark" ? 600 : 400,
               }}
             >
-              {glyph === "" ? null : <span>{glyph}</span>}
-              <span>{formatPrice(tag.price)}</span>
-              {tag.offScale === null ? null : <span>{tag.offScale === "above" ? "↑" : "↓"}</span>}
+              <span className="flex items-baseline gap-1 whitespace-nowrap">
+                {glyph === "" ? null : <span>{glyph}</span>}
+                <span>{formatPrice(tag.price)}</span>
+                {tag.offScale === null ? null : <span>{tag.offScale === "above" ? "↑" : "↓"}</span>}
+              </span>
               {caption === "" ? null : (
-                <span className="truncate opacity-70">
+                <span className="truncate text-[9px] opacity-70">
                   {tag.kind === "mark" ? `(${caption})` : caption}
                 </span>
               )}

@@ -1477,10 +1477,27 @@ describe("deriveChartConditions", () => {
     ).toEqual([]);
   });
 
-  it("carries the met flag from a triggered watch", () => {
+  it("carries the met flag from a triggered watch while the position is open", () => {
     expect(
-      deriveChartConditions({ watches: [{ ...priceCross, status: "triggered" as const }] })[0],
+      deriveChartConditions(
+        { watches: [{ ...priceCross, status: "triggered" as const }] },
+        {
+          entryPrice: 1_900,
+          size: 0.5,
+        },
+      )[0],
     ).toMatchObject({ met: true });
+  });
+
+  it("drops a fired watch once the mission is flat", () => {
+    // The stop and target of a closed trade are levels nothing is waiting on.
+    // Left drawn, they stayed on the chart with a tick beside them for the
+    // rest of the session, next to the position card that had gone.
+    expect(
+      deriveChartConditions({ watches: [{ ...priceCross, status: "triggered" as const }] }),
+    ).toEqual([]);
+    // An armed one still is waiting, so it stays.
+    expect(deriveChartConditions({ watches: [priceCross] })).toHaveLength(1);
   });
 });
 

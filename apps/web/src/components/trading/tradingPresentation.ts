@@ -1736,6 +1736,12 @@ export function deriveChartConditions(
 
   for (const persisted of mission.watches) {
     if (persisted.status !== "active" && persisted.status !== "triggered") continue;
+    // A watch that has already fired is context while the position it fired
+    // for is still open — "this is the level that woke me". Once the mission
+    // is flat it is a level nothing is waiting on, and leaving it drawn is how
+    // a closed trade's stop and target stayed on the chart with ticks beside
+    // them for the rest of the session.
+    if (persisted.status === "triggered" && basis === null) continue;
     const watch = persisted.watch;
     const met = persisted.status === "triggered";
 

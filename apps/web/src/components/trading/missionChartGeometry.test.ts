@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  BAR_MAX_HALF_WIDTH,
   CHART_VIEWBOX_HEIGHT,
   DOMAIN_PADDING_RATIO,
   FUTURE_GUTTER_RATIO,
@@ -1112,5 +1113,59 @@ describe("findLevelAtPrice", () => {
 
   it("returns null when nothing is drawn at all", () => {
     expect(findLevelAtPrice([], 1900)).toBeNull();
+  });
+});
+
+describe("computeChartGeometry — candles", () => {
+  const base = {
+    entryPrice: null,
+    stopPrice: null,
+    targetPrice: null,
+    liquidationPrice: null,
+    entryTime: null,
+    markPrice: null,
+  };
+
+  it("places every bar's body and wicks, ordered for a rect", () => {
+    const geometry = computeChartGeometry({ ...base, candles: fiveWalkingCandles() });
+
+    expect(geometry).not.toBeNull();
+    expect(geometry!.bars).toHaveLength(5);
+    for (const bar of geometry!.bars) {
+      // y is inverted, so the high is the smallest number of the four.
+      expect(bar.highY).toBeLessThanOrEqual(bar.bodyTop);
+      expect(bar.bodyTop).toBeLessThanOrEqual(bar.bodyBottom);
+      expect(bar.bodyBottom).toBeLessThanOrEqual(bar.lowY);
+      expect(bar.halfWidth).toBeGreaterThan(0);
+      expect(bar.halfWidth).toBeLessThanOrEqual(BAR_MAX_HALF_WIDTH);
+    }
+  });
+
+  it("calls a bar by where it closed against where it opened", () => {
+    const candles = [
+      { openTime: 0, open: 100, high: 105, low: 99, close: 104 },
+      { openTime: 60_000, open: 104, high: 104, low: 98, close: 99 },
+      // A doji: no body at all, and still a bar that happened.
+      { openTime: 120_000, open: 99, high: 100, low: 98, close: 99 },
+    ];
+    const bars = computeChartGeometry({ ...base, candles })!.bars;
+
+    expect(bars.map((bar) => bar.direction)).toEqual(["up", "down", "up"]);
+    expect(bars[2]!.bodyTop).toBe(bars[2]!.bodyBottom);
+  });
+
+  it("draws no bodies for a series that carries only closes", () => {
+    // A body drawn from a guessed open is a bar that did not happen; the line
+    // still draws, so the chart degrades rather than lying.
+    const candles = fiveWalkingCandles().map(({ openTime, high, low, close }) => ({
+      openTime,
+      high,
+      low,
+      close,
+    }));
+    const geometry = computeChartGeometry({ ...base, candles })!;
+
+    expect(geometry.bars).toEqual([]);
+    expect(geometry.postEntryPoints).toHaveLength(5);
   });
 });

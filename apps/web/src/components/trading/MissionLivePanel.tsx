@@ -54,6 +54,8 @@ import type {
 import { ChevronDown, ChevronUp, ExternalLinkIcon } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 
+import { runtimeTimeframe } from "@t3tools/trading-contracts/strategy";
+
 import type { ChartInterval } from "~/lib/tradingMarketChartState";
 import { useTradingMarketChart } from "~/lib/tradingMarketChartState";
 import { cn } from "~/lib/utils";
@@ -259,7 +261,11 @@ export function MissionLivePanel({
   // `complete` sits it out: that mission is reported by the summary card in the
   // timeline, and a second chart of the same finished trade is a duplicate.
   const wantsChart = panelWantsChart(state);
-  const interval: ChartInterval = strategy?.timeframes?.[0] ?? "1m";
+  // The same rule the runtime resolves its own candles with: the interval the
+  // mandate names, else 1m. Following the plan's `timeframes[0]` instead meant
+  // a plan published on 15m drew a 15m chart of a mission the runtime was
+  // waking on 1m structure — two pictures of one mission that disagreed.
+  const interval: ChartInterval = runtimeTimeframe(mission.instruction);
   const chart = useTradingMarketChart(environmentId, mission.market, interval, {
     enabled: wantsChart,
   });
