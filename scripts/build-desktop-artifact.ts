@@ -38,14 +38,16 @@ const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
 const DESKTOP_APP_ID = "com.t3trades.app";
 
 /**
- * The `afterPack` hook that ad-hoc signs an unsigned macOS build.
+ * The `afterPack` hook that ad-hoc signs an unsigned macOS build — see the
+ * hook's own header for why an unsigned mac build needs signing at all.
  *
- * Lives in `scripts/lib/` and is copied into the staging tree at build time,
- * because electron-builder resolves hooks by path relative to the project dir
- * it is given — see the copy in `buildDesktopArtifact` and the hook's own
- * header for why an unsigned mac build needs signing at all.
+ * An ABSOLUTE path, resolved from this module's location. electron-builder
+ * resolves a relative hook path against its own cwd (not the `--projectDir`
+ * it was handed) and then rejects anything landing outside the project — so a
+ * `./`-prefixed path is unusable here whichever tree the file is in. An
+ * absolute path skips that check and is required directly.
  */
-const ADHOC_SIGN_HOOK_FILENAME = "adhoc-sign-mac.cjs";
+const ADHOC_SIGN_HOOK_PATH = new URL("./lib/adhoc-sign-mac.cjs", import.meta.url).pathname;
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -1578,7 +1580,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     // fails schema validation before the build starts. It still only applies
     // to mac here because that is the only platform this branch runs for.
     if (!signed) {
-      buildConfig.afterPack = `./${ADHOC_SIGN_HOOK_FILENAME}`;
+      buildConfig.afterPack = ADHOC_SIGN_HOOK_PATH;
     }
     buildConfig.mac = {
       target: target === "dmg" ? [target, "zip"] : [target],
@@ -1968,18 +1970,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 
   const stagePackageJsonString = yield* encodeJsonString(stagePackageJson);
   yield* fs.writeFileString(path.join(stageAppDir, "package.json"), `${stagePackageJsonString}\n`);
-
-  // electron-builder resolves hook functions by requiring a path relative to
-  // the project dir, and the project dir is the staging tree — so the hook has
-  // to be copied in beside the package.json that names it. It lives in the
-  // repo rather than being generated here so it can be read and reviewed as
-  // ordinary source.
-  if (options.platform === "mac" && !options.signed) {
-    yield* fs.copyFile(
-      path.join(repoRoot, "scripts/lib", ADHOC_SIGN_HOOK_FILENAME),
-      path.join(stageAppDir, ADHOC_SIGN_HOOK_FILENAME),
-    );
-  }
   const stageWorkspaceConfig = createStageWorkspaceConfig({
     platform: options.platform,
     arch: options.arch,

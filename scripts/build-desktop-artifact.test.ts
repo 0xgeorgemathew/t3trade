@@ -570,8 +570,12 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const mac = config.mac as Record<string, unknown>;
       assert.strictEqual(mac.identity, null);
       // Top-level, not under `mac`: electron-builder rejects the whole config
-      // when the hook is nested there.
-      assert.strictEqual(config.afterPack, "./adhoc-sign-mac.cjs");
+      // when the hook is nested there. And absolute, not `./`-relative: it
+      // resolves a relative hook against its own cwd and then refuses paths
+      // outside the project dir, so a relative one can never resolve.
+      const afterPack = config.afterPack as string;
+      assert.isTrue(afterPack.startsWith("/"), afterPack);
+      assert.isTrue(afterPack.endsWith("/scripts/lib/adhoc-sign-mac.cjs"), afterPack);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
