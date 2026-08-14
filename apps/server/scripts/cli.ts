@@ -20,6 +20,7 @@ import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import serverPackageJson from "../package.json" with { type: "json" };
+import { CLI_PACKAGE_NAME } from "../src/cli/packageName.ts";
 import {
   ServerCliBuildAssetMissingError,
   ServerCliCommandExitError,
@@ -190,7 +191,10 @@ const createVpPmPublishArgs = (config: PublishCommandConfig): ReadonlyArray<stri
   const args = [
     "publish",
     "--filter",
-    "t3",
+    // The manifest on disk has ALREADY been rewritten to the published name
+    // by the time this runs, so the filter has to match that and not the
+    // workspace name it had a moment ago.
+    CLI_PACKAGE_NAME,
     "--access",
     config.access,
     "--tag",
@@ -242,9 +246,14 @@ const publishCmd = Command.make(
           const workspaceCatalog = workspaceConfig.catalog ?? {};
           const workspaceOverrides = workspaceConfig.overrides ?? {};
           const pkg: PackageJson = {
-            name: serverPackageJson.name,
+            // The PUBLISHED identity, not the workspace one — see
+            // `src/cli/packageName.ts`. Upstream owns `t3` on npm; this fork
+            // ships the same package as `t3trade`, so `npx t3trade` runs it.
+            // The bin is renamed with it: a global install must not put a `t3`
+            // on the PATH that upstream's package also claims.
+            name: CLI_PACKAGE_NAME,
             repository: serverPackageJson.repository,
-            bin: serverPackageJson.bin,
+            bin: { [CLI_PACKAGE_NAME]: "./dist/bin.mjs" },
             type: serverPackageJson.type,
             version,
             engines: serverPackageJson.engines,

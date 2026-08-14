@@ -9,6 +9,7 @@ import * as BootService from "../cloud/bootService.ts";
 import type * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
+import { CLI_PACKAGE_NAME } from "./invocation.ts";
 
 export const bootServiceLayer = (config: ServerConfig.ServerConfig["Service"]) =>
   BootService.layer({
@@ -55,10 +56,10 @@ export function formatServiceStatus(
   }
   return [
     "T3 Trade service",
-    `  Status: ${status.current ? `installed · t3@${cliVersion}` : "needs an update or repair"}`,
+    `  Status: ${status.current ? `installed · ${CLI_PACKAGE_NAME}@${cliVersion}` : "needs an update or repair"}`,
     `  Unit: ${status.unitPath}`,
     `  Logs: ${status.logPath}`,
-    ...(status.current ? [] : ["  Next: Run `npx t3@latest service update`."]),
+    ...(status.current ? [] : [`  Next: Run \`npx ${CLI_PACKAGE_NAME}@latest service update\`.`]),
   ].join("\n");
 }
 
@@ -94,7 +95,7 @@ const serviceInstallCommand = Command.make("install", projectLocationFlags).pipe
 
 const serviceUpdateCommand = Command.make("update", projectLocationFlags).pipe(
   Command.withDescription(
-    "Update or repair the background service using this CLI version. Use `npx t3@latest service update` for the latest release.",
+    `Update or repair the background service using this CLI version. Use \`npx ${CLI_PACKAGE_NAME}@latest service update\` for the latest release.`,
   ),
   Command.withHandler((flags) =>
     runServiceCommand(
