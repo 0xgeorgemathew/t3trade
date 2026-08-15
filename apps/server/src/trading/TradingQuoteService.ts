@@ -39,6 +39,10 @@ import {
   MOMENTUM_LOOKBACK_BARS,
   MOMENTUM_TIMEFRAMES,
 } from "@t3tools/trading-contracts/momentum";
+import {
+  notionalForProfitTarget,
+  roundTripCostFractionOfNotional,
+} from "@t3tools/trading-contracts/costs";
 import { stopNoiseFloorUsd } from "@t3tools/trading-contracts/stop-adjustment";
 import { ACTIVE_TRADING_POLICY } from "@t3tools/trading-contracts/policy";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
@@ -166,6 +170,35 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       LIMIT 1
     `.pipe(Effect.map((rows) => rows[0]?.run_id ?? null));
 
+  /**
+   * The published plan's target and the move its basis claims will produce it.
+   *
+   * Read as two numbers rather than through the strategy decoder: a quote that
+   * fails because a historical field no longer decodes would be a refusal about
+   * bookkeeping, and this is a sizing hint. Both null when the mission has
+   * published nothing, when the plan stood down, or when the basis is missing.
+   */
+  const readTargetBasis = (missionId: string) =>
+    sql<{
+      readonly target_profit_usd: number | null;
+      readonly measured_move_usd: number | null;
+      readonly stand_down_code: string | null;
+    }>`
+      SELECT
+        json_extract(s.strategy_json, '$.protection.targetProfitUsd') AS target_profit_usd,
+        json_extract(s.strategy_json, '$.protection.targetProfitBasis.measuredMoveUsd') AS measured_move_usd,
+        json_extract(s.strategy_json, '$.standDownCode') AS stand_down_code
+      FROM momentum_strategy_versions s
+      JOIN trading_missions m
+        ON m.mission_id = s.mission_id AND m.strategy_version = s.version
+      WHERE s.mission_id = ${missionId}
+    `.pipe(
+      Effect.map((rows) => rows[0] ?? null),
+      // A sizing hint is never worth the turn: an unreadable row leaves the
+      // quote sized exactly as it was before this existed.
+      Effect.orElseSucceed(() => null),
+    );
+
   const quote: TradingQuoteService["Service"]["quote"] = (request) =>
     Effect.gen(function* () {
       const mission = yield* missions.getMission(request.missionId);
@@ -233,11 +266,37 @@ export const makeTradingQuoteService = Effect.gen(function* () {
         request.sizeEth ??
         (request.notionalUsd === undefined ? undefined : request.notionalUsd / entryPrice);
 
+      // The notional the plan's own target needs, given what the round trip
+      // costs at this book. A floor the sizing lifts toward, never a ceiling:
+      // sizing down does not make a target cheaper to reach, it makes it
+      // unreachable, because the costs shrink with the notional and the target
+      // does not. Every risk ceiling still binds above it.
+      const plan = yield* readTargetBasis(request.missionId);
+      const targetNotional =
+        plan === null ||
+        plan.stand_down_code !== null ||
+        plan.target_profit_usd === null ||
+        plan.measured_move_usd === null
+          ? null
+          : notionalForProfitTarget({
+              targetProfitUsd: plan.target_profit_usd,
+              expectedPriceMoveUsd: plan.measured_move_usd,
+              referencePrice: entryPrice,
+              costFractionOfNotional: roundTripCostFractionOfNotional({
+                takerFeeBpsPerSide: takerFeeRateBps,
+                halfSpreadUsd: Math.max(0, (bestAsk - bestBid) / 2),
+                referencePrice: entryPrice,
+              }),
+            });
+
       const sizing = deriveFeasibleSize({
         side: request.side,
         entryPrice,
         stopPrice: request.stopPrice,
         requestedSize,
+        ...(targetNotional?.notionalUsd == null
+          ? {}
+          : { targetNotionalUsd: targetNotional.notionalUsd }),
         szDecimals: resolved.szDecimals,
         existingNotionalUsd: budgetInput.openPositions.reduce(
           (sum, position) => sum + position.size * (position.weightedEntryPrice ?? entryPrice),
@@ -462,6 +521,26 @@ export const makeTradingQuoteService = Effect.gen(function* () {
             `of the ${sizing.ceilingSize} every risk ceiling allows; unless the mandate caps the notional, ` +
             "a position this far inside the approved risk pays proportionally less for the same costs and the same turn",
         );
+      }
+      // Say what the target did to the size, in both directions. A trade is
+      // never refused over this: a target the ceilings cannot fund is a target
+      // to re-cut at the next publish, not a reason to sit out a setup that
+      // cleared every risk rule.
+      if (targetNotional !== null) {
+        if (targetNotional.notionalUsd === null) {
+          warnings.push(
+            `the plan's target cannot be funded at any size: ${targetNotional.reason} — ` +
+              "re-cut the target off the move the market is actually producing, or take the trade for a nearer rung",
+          );
+        } else if (!sizing.fundsTarget) {
+          warnings.push(
+            `this size pays about ${(sizing.notionalUsd * targetNotional.netFraction).toFixed(2)} USD ` +
+              `on the plan's expected move, short of the target it published; ${targetNotional.reason}, ` +
+              `and ${sizing.constrainedBy} capped the notional at ${sizing.notionalUsd.toFixed(2)} USD`,
+          );
+        }
+        // A size RAISED to fund the target is already reported: `constrainedBy`
+        // is `target_notional` and the block above pushed its detail.
       }
       if (costs === null) {
         warnings.push(

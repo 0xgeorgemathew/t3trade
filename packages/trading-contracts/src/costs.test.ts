@@ -4,6 +4,8 @@ import {
   checkProfitTarget,
   estimateTradingCosts,
   feeOnlyRoundTripUsd,
+  notionalForProfitTarget,
+  roundTripCostFractionOfNotional,
   ENTRY_COST_MULTIPLE,
   PROFIT_TARGET_COST_MULTIPLE,
   walkBook,
@@ -236,5 +238,59 @@ describe("quick-trades sizing sanity at $1,000 equity (plan 27 I4)", () => {
     // the sizing constants need no D2-gated adjustment for the small wallet.
     expect(minimumViableTargetUsd).toBeCloseTo(3.9, 10);
     expect(minimumViableTargetUsd).toBeLessThan(PLANNED_RISK_USD);
+  });
+});
+
+describe("sizing a position to the target it is taken for", () => {
+  const costFraction = roundTripCostFractionOfNotional({
+    takerFeeBpsPerSide: 5,
+    halfSpreadUsd: 0.1,
+    referencePrice: 2_000,
+  });
+
+  it("prices the round trip as a share of notional, fees plus both crossings", () => {
+    // 2 x 5bps = 0.1%, plus 2 x $0.10 on a $2,000 price = 0.01%.
+    expect(costFraction).toBeCloseTo(0.001 + 0.0001, 10);
+  });
+
+  it("returns the notional that pays the target after the round trip", () => {
+    const sized = notionalForProfitTarget({
+      targetProfitUsd: 20,
+      expectedPriceMoveUsd: 10,
+      referencePrice: 2_000,
+      costFractionOfNotional: costFraction,
+    });
+
+    // A $10 move on a $2,000 price is 0.5%; less the 0.11% round trip, each
+    // dollar of notional keeps 0.39%, so $20 of target needs ~$5,128.
+    expect(sized.moveFraction).toBeCloseTo(0.005, 10);
+    expect(sized.netFraction).toBeCloseTo(0.0039, 10);
+    expect(sized.notionalUsd).toBeCloseTo(20 / 0.0039, 6);
+  });
+
+  it("needs MORE notional as the target rises, never less", () => {
+    const at = (targetProfitUsd: number): number =>
+      notionalForProfitTarget({
+        targetProfitUsd,
+        expectedPriceMoveUsd: 10,
+        referencePrice: 2_000,
+        costFractionOfNotional: costFraction,
+      }).notionalUsd ?? 0;
+
+    expect(at(40)).toBeGreaterThan(at(20));
+  });
+
+  it("says no notional pays a target when the move cannot clear the costs", () => {
+    const sized = notionalForProfitTarget({
+      targetProfitUsd: 20,
+      // 0.05% of price, under the 0.11% round trip.
+      expectedPriceMoveUsd: 1,
+      referencePrice: 2_000,
+      costFractionOfNotional: costFraction,
+    });
+
+    expect(sized.notionalUsd).toBeNull();
+    expect(sized.netFraction).toBeLessThan(0);
+    expect(sized.reason).toContain("no notional pays this target");
   });
 });

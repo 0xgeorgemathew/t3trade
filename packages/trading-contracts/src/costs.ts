@@ -256,6 +256,106 @@ export function estimateTradingCosts(input: CostEstimateInput): TradingCostEstim
 }
 
 // ---------------------------------------------------------------------------
+// Sizing a position to the target it is being taken for
+// ---------------------------------------------------------------------------
+
+/**
+ * The share of notional one round trip costs, as a fraction.
+ *
+ * Fees on both fills plus crossing the spread twice. Slippage past the touch is
+ * deliberately absent: it is the one component that does not scale with
+ * notional, so folding it in here would make the fraction a function of the
+ * size it is used to compute. The caller holds the full
+ * {@link TradingCostEstimate} when it wants the whole number.
+ */
+export function roundTripCostFractionOfNotional(input: {
+  readonly takerFeeBpsPerSide: number;
+  readonly halfSpreadUsd: number;
+  readonly referencePrice: number;
+}): number {
+  const fees = (input.takerFeeBpsPerSide / 10_000) * 2;
+  const spread = input.referencePrice > 0 ? (input.halfSpreadUsd / input.referencePrice) * 2 : 0;
+  return fees + spread;
+}
+
+/** What {@link notionalForProfitTarget} concluded, and why. */
+export interface TargetNotional {
+  /**
+   * The notional this target needs, in USD. Null when no notional can pay it:
+   * the expected move does not clear the round-trip cost, so the position is a
+   * fee-generator at every size.
+   */
+  readonly notionalUsd: number | null;
+  /** The expected move as a fraction of price, before costs. */
+  readonly moveFraction: number;
+  /** What is left of that move after the round trip — the fraction that pays. */
+  readonly netFraction: number;
+  readonly reason: string;
+}
+
+/**
+ * The notional a profit target needs, given the move expected and what the
+ * round trip costs.
+ *
+ * The target is a USD figure and the move is a percentage, so the notional is
+ * what converts one into the other — and because the round trip is also a
+ * percentage of notional, the two are solved together:
+ *
+ *   notional x (move% - roundTrip%) = targetProfitUsd
+ *
+ * That is the whole arithmetic behind "use a higher notional so the trade can
+ * absorb its costs and still reach the target". Sizing the position DOWN does
+ * not make a target cheaper to reach — it makes it unreachable, because the
+ * costs shrink with the notional but the target does not.
+ *
+ * This is a sizing input, never a veto. A null result says this target cannot
+ * be funded at any size, which is information for the turn that set the target;
+ * nothing here refuses a trade.
+ */
+export function notionalForProfitTarget(input: {
+  readonly targetProfitUsd: number;
+  /** The move the plan expects to capture, in USD of price. */
+  readonly expectedPriceMoveUsd: number;
+  readonly referencePrice: number;
+  /** From {@link roundTripCostFractionOfNotional}. */
+  readonly costFractionOfNotional: number;
+}): TargetNotional {
+  const moveFraction =
+    input.referencePrice > 0 ? Math.abs(input.expectedPriceMoveUsd) / input.referencePrice : 0;
+  const netFraction = moveFraction - input.costFractionOfNotional;
+
+  if (!(input.targetProfitUsd > 0)) {
+    return {
+      notionalUsd: null,
+      moveFraction,
+      netFraction,
+      reason: "no positive profit target to size against",
+    };
+  }
+  if (!(netFraction > 0)) {
+    return {
+      notionalUsd: null,
+      moveFraction,
+      netFraction,
+      reason:
+        `the expected ${(moveFraction * 100).toFixed(3)}% move does not clear the ` +
+        `${(input.costFractionOfNotional * 100).toFixed(3)}% round trip, so no notional pays this target`,
+    };
+  }
+
+  const notionalUsd = input.targetProfitUsd / netFraction;
+  return {
+    notionalUsd,
+    moveFraction,
+    netFraction,
+    reason:
+      `${input.targetProfitUsd.toFixed(2)} USD of target over a ${(netFraction * 100).toFixed(3)}% ` +
+      `net move (${(moveFraction * 100).toFixed(3)}% gross less a ${(input.costFractionOfNotional * 100).toFixed(3)}% ` +
+      `round trip) needs ${notionalUsd.toFixed(2)} USD of notional`,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Publish-time validation of a profit target
 // ---------------------------------------------------------------------------
 

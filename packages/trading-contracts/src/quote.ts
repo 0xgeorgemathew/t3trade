@@ -54,6 +54,13 @@ export type QuotableActionType = typeof QuotableActionType.Type;
  */
 export const QuoteSizeConstraint = Schema.Literals([
   "requested",
+  /**
+   * The size was raised above the one asked for so the position can pay the
+   * plan's own profit target after its round-trip costs — see
+   * `notionalForProfitTarget`. Every ceiling below still bound it; this only
+   * ever names a size that cleared them all.
+   */
+  "target_notional",
   "gross_notional",
   "leverage",
   "planned_loss_ceiling",
@@ -190,6 +197,19 @@ export interface QuoteSizingInput {
   readonly takerFeeBpsPerSide: number;
   readonly stopSlippageReserveBps: number;
   readonly minimumNotionalUsd: number;
+  /**
+   * The notional the plan's profit target needs to be reachable after costs,
+   * from `notionalForProfitTarget`. Omitted when no target or no expected move
+   * was readable.
+   *
+   * A FLOOR the sizing lifts toward, never a ceiling and never a veto: a
+   * smaller size does not make a target cheaper to reach, it makes it
+   * unreachable, because the round trip shrinks with the notional and the
+   * target does not. Every risk ceiling still binds above it — a target that
+   * needs more notional than the mission is allowed to hold is reported, not
+   * funded.
+   */
+  readonly targetNotionalUsd?: number | undefined;
 }
 
 export interface QuoteSizing {
@@ -210,6 +230,12 @@ export interface QuoteSizing {
   /** False when no size clears; `constrainedBy` says which rule made it so. */
   readonly feasible: boolean;
   readonly detail: string;
+  /**
+   * Whether the quoted notional is large enough to pay the plan's target after
+   * costs. True when no target notional was supplied — there is nothing to
+   * fall short of.
+   */
+  readonly fundsTarget: boolean;
 }
 
 /** Truncate toward zero at the exchange's base-unit precision. */
@@ -241,6 +267,7 @@ export function deriveFeasibleSize(input: QuoteSizingInput): QuoteSizing {
       reservedRiskUsd: 0,
       constrainedBy: "stop_on_wrong_side",
       feasible: false,
+      fundsTarget: false,
       detail:
         `a ${input.side} entry at ${input.entryPrice} needs its stop ` +
         `${input.side === "buy" ? "below" : "above"} that price; got ${input.stopPrice}`,
@@ -274,19 +301,37 @@ export function deriveFeasibleSize(input: QuoteSizingInput): QuoteSizing {
 
   const binding = caps.reduce((tightest, cap) => (cap.size < tightest.size ? cap : tightest));
   const requestedSize = input.requestedSize ?? binding.size;
-  const allowed = Math.min(requestedSize, binding.size);
+
+  // The size the plan's own target needs, as a floor under the requested one.
+  // Sizing below it does not make the target safer to pursue; it makes it
+  // arithmetically unreachable.
+  const targetSize =
+    input.targetNotionalUsd === undefined || input.targetNotionalUsd <= 0
+      ? 0
+      : input.targetNotionalUsd / input.entryPrice;
+  const desiredSize = Math.max(requestedSize, targetSize);
+
+  const allowed = Math.min(desiredSize, binding.size);
   const size = truncateSize(allowed, input.szDecimals);
   const ceilingSize = truncateSize(binding.size, input.szDecimals);
 
   const notionalUsd = size * input.entryPrice;
   const plannedLossAtStopUsd = size * stopDistance;
   const reservedRiskUsd = plannedLossAtStopUsd + notionalUsd * feeAndSlip;
+  const fundsTarget =
+    input.targetNotionalUsd === undefined || notionalUsd >= input.targetNotionalUsd;
 
-  // `requested` only when the harness's own number survived; otherwise name the
-  // rule that cut it, so "ask for less" and "this mission cannot trade" read
-  // differently.
+  // `requested` only when the harness's own number survived untouched;
+  // `target_notional` when the target lifted it; otherwise the rule that cut
+  // it, so "ask for less", "this is what the target needs" and "this mission
+  // cannot trade" all read differently.
+  const raisedForTarget = input.requestedSize !== undefined && targetSize > input.requestedSize;
   const constrainedBy: QuoteSizeConstraint =
-    input.requestedSize === undefined || allowed < input.requestedSize ? binding.by : "requested";
+    allowed < desiredSize || input.requestedSize === undefined
+      ? binding.by
+      : raisedForTarget
+        ? "target_notional"
+        : "requested";
 
   if (notionalUsd < input.minimumNotionalUsd) {
     return {
@@ -298,6 +343,7 @@ export function deriveFeasibleSize(input: QuoteSizingInput): QuoteSizing {
       reservedRiskUsd,
       constrainedBy: "below_exchange_minimum",
       feasible: false,
+      fundsTarget,
       detail:
         `the largest size ${binding.by} allows is ${size} ($${notionalUsd.toFixed(2)} notional), ` +
         `below the $${input.minimumNotionalUsd} exchange minimum`,
@@ -313,11 +359,15 @@ export function deriveFeasibleSize(input: QuoteSizingInput): QuoteSizing {
     reservedRiskUsd,
     constrainedBy,
     feasible: true,
+    fundsTarget,
     detail:
       constrainedBy === "requested"
         ? `size ${size} clears every ceiling`
-        : `size ${size} is what ${constrainedBy} allows` +
-          (input.requestedSize === undefined ? "" : ` of the ${input.requestedSize} requested`),
+        : constrainedBy === "target_notional"
+          ? `size ${size} ($${notionalUsd.toFixed(2)} notional) is what the plan's profit target needs ` +
+            `after costs, up from the ${input.requestedSize} requested`
+          : `size ${size} is what ${constrainedBy} allows` +
+            (input.requestedSize === undefined ? "" : ` of the ${input.requestedSize} requested`),
   };
 }
 

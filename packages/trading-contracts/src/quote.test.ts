@@ -172,6 +172,50 @@ describe("deriveQuoteLimitPrice", () => {
   });
 });
 
+describe("sizing to the plan's own profit target", () => {
+  it("raises a too-small request to the notional the target needs", () => {
+    // $6,000 of notional is 3 ETH at 2,000 — twice the 1.5 asked for.
+    const sizing = deriveFeasibleSize({ ...base, requestedSize: 1.5, targetNotionalUsd: 6_000 });
+
+    assert.strictEqual(sizing.feasible, true);
+    assert.strictEqual(sizing.size, 3);
+    assert.strictEqual(sizing.constrainedBy, "target_notional");
+    assert.strictEqual(sizing.fundsTarget, true);
+    assert.include(sizing.detail, "profit target");
+  });
+
+  it("never lowers a request that already funds the target", () => {
+    const sizing = deriveFeasibleSize({ ...base, requestedSize: 4, targetNotionalUsd: 6_000 });
+
+    assert.strictEqual(sizing.size, 4);
+    assert.strictEqual(sizing.constrainedBy, "requested");
+    assert.strictEqual(sizing.fundsTarget, true);
+  });
+
+  it("keeps every risk ceiling above the target, and reports the shortfall", () => {
+    // The target wants $6,000 of notional; the gross ceiling allows $4,000.
+    const sizing = deriveFeasibleSize({
+      ...base,
+      requestedSize: 1.5,
+      targetNotionalUsd: 6_000,
+      maximumGrossNotionalUsd: 4_000,
+    });
+
+    assert.strictEqual(sizing.feasible, true);
+    assert.strictEqual(sizing.size, 2);
+    assert.strictEqual(sizing.constrainedBy, "gross_notional");
+    assert.strictEqual(sizing.fundsTarget, false);
+  });
+
+  it("is a no-op when no target notional is supplied", () => {
+    const sizing = deriveFeasibleSize({ ...base, requestedSize: 1.5 });
+
+    assert.strictEqual(sizing.size, 1.5);
+    assert.strictEqual(sizing.constrainedBy, "requested");
+    assert.strictEqual(sizing.fundsTarget, true);
+  });
+});
+
 describe("TradingQuoteEntryInput", () => {
   it("rejects two competing size instructions", () => {
     const decode = Schema.decodeUnknownSync(TradingQuoteEntryInput);
