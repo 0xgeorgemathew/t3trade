@@ -35,7 +35,9 @@
  * holds the plan's profit-taking on the exchange: exactly one resting
  * reduce-only ALO at the plan's derived target price while a position is
  * open, withdrawn when the position is flat or the plan has no target. It
- * shares the confirm-before-cancel ordering and never touches a stop.
+ * shares the confirm-before-cancel ordering, never touches a stop, and never
+ * touches a reduce-only order the harness rested itself (a `patient` exit —
+ * the caller names those in `preserveCloids`).
  *
  * @module TradingProtectionService
  */
@@ -128,6 +130,17 @@ export interface TakeProfitInput {
    * caller reads the plan; this service owns only the exchange convergence.
    */
   readonly targetBasis: ProfitTargetPriceBasis | null;
+  /**
+   * Cloids of resting reduce-only orders the HARNESS placed itself — a
+   * `patient` exit (plan 29 step 2.3) is one, and it is a reduce-only limit
+   * on the reducing side exactly like a take-profit.
+   *
+   * They are invisible to this pass: it neither counts one as satisfying the
+   * plan's target nor cancels one. A model that deliberately rested part of
+   * its exit must not have that order withdrawn five seconds later by a
+   * server loop whose only claim on it is that it has the same shape.
+   */
+  readonly preserveCloids?: ReadonlyArray<string> | undefined;
 }
 
 /** How a take-profit reconciliation pass ended. */
@@ -666,11 +679,11 @@ export const makeTradingProtectionService = Effect.gen(function* () {
    * The mirror of `isProtectiveOrder`: reduce-only and on the reducing side
    * are shared, but a take-profit is a RESTING LIMIT (never a trigger —
    * triggers are the stop's wire shape and stay invisible here) priced on the
-   * PROFIT side of the mark, where a stop is priced on the losing side. A
-   * patient reduce the harness placed at the near side satisfies this too once
-   * the market moves it past the mark; converging it into the plan's target is
-   * the same ownership rule the stop reconcile applies to every stop-shaped
-   * order — the plan is the declared state, the exchange is converged to it.
+   * PROFIT side of the mark, where a stop is priced on the losing side.
+   *
+   * A `patient` exit the harness placed itself has the same shape, so it is
+   * excluded by cloid rather than by shape: converging one into the plan's
+   * target would cancel an order the model deliberately rested.
    */
   const isTakeProfitOrder = (
     order: AgentOpenOrder,
@@ -678,9 +691,11 @@ export const makeTradingProtectionService = Effect.gen(function* () {
       readonly market: string;
       readonly positionSize: number;
       readonly referencePrice: number;
+      readonly preserved: ReadonlySet<string>;
     },
   ): boolean => {
     if (order.market !== input.market) return false;
+    if (order.cloid !== undefined && input.preserved.has(order.cloid)) return false;
     if (!order.reduceOnly || order.isTrigger) return false;
     if (order.remainingSize <= PROTECTION_SIZE_EPSILON) return false;
 
@@ -693,12 +708,21 @@ export const makeTradingProtectionService = Effect.gen(function* () {
       : order.limitPrice < input.referencePrice;
   };
 
-  /** A resting reduce-only limit with no position behind it: pure leftover. */
-  const isFlatLeftoverReduceLimit = (order: AgentOpenOrder, market: string): boolean =>
+  /**
+   * A resting reduce-only limit with no position behind it: pure leftover.
+   * A preserved cloid is the harness's own order and is left where it is,
+   * flat or not — withdrawing it is the caller's decision, never this pass's.
+   */
+  const isFlatLeftoverReduceLimit = (
+    order: AgentOpenOrder,
+    market: string,
+    preserved: ReadonlySet<string>,
+  ): boolean =>
     order.market === market &&
     order.reduceOnly &&
     !order.isTrigger &&
-    order.remainingSize > PROTECTION_SIZE_EPSILON;
+    order.remainingSize > PROTECTION_SIZE_EPSILON &&
+    !(order.cloid !== undefined && preserved.has(order.cloid));
 
   /**
    * Two targets closer than this are the same target. The wire carries five
@@ -751,6 +775,11 @@ export const makeTradingProtectionService = Effect.gen(function* () {
           return cancelled;
         });
 
+      // The harness's own resting reduce-only orders, invisible to every
+      // predicate below: this pass owns the plan's take-profit, not the
+      // model's patient exits.
+      const preserved = new Set(input.preserveCloids ?? []);
+
       let view = yield* readCanonical(input);
       let exposure = Math.abs(view.positionSize);
 
@@ -760,7 +789,9 @@ export const makeTradingProtectionService = Effect.gen(function* () {
       // owns the belt for the take-profit it places.)
       if (exposure <= PROTECTION_SIZE_EPSILON) {
         const cancelled = yield* cancelAll(
-          view.openOrders.filter((order) => isFlatLeftoverReduceLimit(order, input.market)),
+          view.openOrders.filter((order) =>
+            isFlatLeftoverReduceLimit(order, input.market, preserved),
+          ),
         );
         return {
           status: "flat",
@@ -787,6 +818,7 @@ export const makeTradingProtectionService = Effect.gen(function* () {
             market: input.market,
             positionSize: view.positionSize,
             referencePrice: view.referencePrice,
+            preserved,
           }),
         );
         const cancelled = yield* cancelAll(tps);
@@ -805,6 +837,7 @@ export const makeTradingProtectionService = Effect.gen(function* () {
             market: input.market,
             positionSize: v.positionSize,
             referencePrice: v.referencePrice,
+            preserved,
           }),
         );
 
@@ -867,7 +900,9 @@ export const makeTradingProtectionService = Effect.gen(function* () {
           // The position left while the take-profit was landing — it may have
           // filled against it. Withdraw the leftovers, same as the flat pass.
           const cancelled = yield* cancelAll(
-            view.openOrders.filter((order) => isFlatLeftoverReduceLimit(order, input.market)),
+            view.openOrders.filter((order) =>
+              isFlatLeftoverReduceLimit(order, input.market, preserved),
+            ),
           );
           return {
             status: "flat",

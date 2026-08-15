@@ -478,8 +478,13 @@ export const MomentumProtection = Schema.Struct({
    *
    * The number is gross of fees and funding — `pnl_above` fires on the
    * exchange's unrealised PnL — so it has to clear the round trip on its own.
-   * The server never auto-places a take-profit order on the exchange; this is
-   * wake-and-decide throughout.
+   *
+   * Since plan 29 step 2.5 the server ALSO rests a reduce-only ALO at the
+   * price this target's basis derives (see {@link takeProfitLimitPrice}), so
+   * the profit can be taken as a maker while the position is unattended. The
+   * `pnl_above` wake is unchanged and is still the decision point: the resting
+   * order banks the published rung, and the wake is where extending it is
+   * argued.
    */
   targetProfitUsd: PositiveUsdAmount,
   /**

@@ -943,6 +943,30 @@ const make = Effect.gen(function* () {
     });
 
   /**
+   * The cloids of reduce-only orders the HARNESS itself rested — a `patient`
+   * exit (plan 29 step 2.3) and nothing else, since every other exit crosses
+   * and never rests. They are handed to the take-profit reconcile as orders
+   * it must leave alone: a patient exit and a take-profit are the same shape
+   * on the book, and only the record says which one the model asked for.
+   */
+  const readHarnessRestingExitCloids = (input: {
+    readonly missionId: TradingMissionId;
+    readonly market: TradingMarket;
+  }) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly cloid: string }>`
+        SELECT cloid FROM trading_execution_records
+        WHERE mission_id = ${input.missionId}
+          AND market = ${input.market}
+          AND reduce_only = 1
+          AND time_in_force = 'alo'
+          AND status IN ('submitted', 'accepted')
+      `;
+      return rows.map((row) => row.cloid);
+    }).pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<string>));
+
+  /**
    * Converge the resting take-profit to the plan: the protection service
    * reads canonical state and places, replaces, or withdraws the reduce-only
    * ALO at the plan's derived target price. Failures log and wait for the
@@ -958,6 +982,10 @@ const make = Effect.gen(function* () {
       readonly executionSequence: number;
     }) {
       const targetBasis = yield* readPlanTargetBasis(input.missionId);
+      const preserveCloids = yield* readHarnessRestingExitCloids({
+        missionId: input.missionId,
+        market: input.market,
+      });
       const outcome = yield* protection.reconcileTakeProtection({
         missionId: input.missionId,
         strategyVersion: input.strategyVersion,
@@ -965,6 +993,7 @@ const make = Effect.gen(function* () {
         masterAddress: input.masterAddress,
         market: input.market,
         targetBasis,
+        preserveCloids,
       });
       yield* Effect.logInfo("trading take-profit reconciled", {
         missionId: input.missionId,

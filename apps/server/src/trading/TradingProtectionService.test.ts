@@ -605,6 +605,43 @@ it.effect("withdraws resting take-profits when the plan removes its target", () 
   }),
 );
 
+it.effect("leaves a harness-placed patient exit alone when the plan has no target", () =>
+  Effect.gen(function* () {
+    // A `patient` exit (plan 29 step 2.3) rests reduce-only on the reducing
+    // side — the same shape as a take-profit, and only the execution record
+    // says which is which. Cancelling it would undo the model's own decision
+    // five seconds after it made it.
+    const fake = makeFake({ orders: [restingTakeProfit("0xpatientexit", 0.5, 3_100)] });
+    const outcome = yield* runTakeProfit(fake, {
+      ...TP_INPUT,
+      targetBasis: null,
+      preserveCloids: ["0xpatientexit"],
+    });
+
+    assert.equal(outcome.status, "withdrawn");
+    assert.deepEqual(fake.cancels, []);
+  }),
+);
+
+it.effect("does not let a patient exit stand in for the plan's take-profit", () =>
+  Effect.gen(function* () {
+    // Preserved both ways: the harness's order is neither cancelled nor
+    // counted as the plan's profit-taking, so the plan's own target still
+    // goes on the book beside it. Both are reduce-only, so the pair cannot
+    // take more than the position.
+    const fake = makeFake({ orders: [restingTakeProfit("0xpatientexit", 0.5, 3_200)] });
+    const outcome = yield* runTakeProfit(fake, {
+      ...TP_INPUT,
+      preserveCloids: ["0xpatientexit"],
+    });
+
+    assert.equal(outcome.status, "placed");
+    assert.equal(fake.aloPlacements.length, 1);
+    assert.equal(fake.aloPlacements[0]!.limitPrice, 3_200);
+    assert.deepEqual(fake.cancels, []);
+  }),
+);
+
 it.effect("withdraws a leftover take-profit when the position is flat", () =>
   Effect.gen(function* () {
     // The orphan case: the take-profit filled (or the position was closed
