@@ -28,6 +28,7 @@ import {
   TradingMissionControl,
   TradingMissionStatus,
   TradingOrderIntent,
+  TradingOrderTimeInForce,
 } from "@t3tools/trading-contracts";
 import * as Schema from "effect/Schema";
 
@@ -60,7 +61,7 @@ export const TradingExecutionView = Schema.Struct({
   market: Schema.String,
   size: Schema.Number,
   limitPrice: Schema.Number,
-  timeInForce: Schema.Literals(["ioc", "gtc"]),
+  timeInForce: TradingOrderTimeInForce,
   reduceOnly: Schema.Boolean,
   status: Schema.String,
   updatedAt: IsoDateTime,

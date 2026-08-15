@@ -24,6 +24,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ThreadId, TradingMissionId } from "@t3tools/contracts";
 import type { OrchestrationTradingMission, TradingMissionTimelineEntry } from "@t3tools/contracts";
+import type { TradingOrderTimeInForce } from "@t3tools/trading-contracts/execution";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import {
@@ -371,7 +372,7 @@ const toMission = (
             market: exec.inFlightExecution.market,
             size: exec.inFlightExecution.size,
             limitPrice: exec.inFlightExecution.limit_price,
-            timeInForce: exec.inFlightExecution.time_in_force as "ioc" | "gtc",
+            timeInForce: exec.inFlightExecution.time_in_force as TradingOrderTimeInForce,
             reduceOnly: exec.inFlightExecution.reduce_only !== 0,
             status: exec.inFlightExecution.status,
             updatedAt: toIso(exec.inFlightExecution.updated_at),
