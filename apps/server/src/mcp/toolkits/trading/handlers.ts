@@ -712,7 +712,6 @@ const handlers = {
           missionId: mission.id,
           market: input.market,
           newStopPrice: input.newStopPrice,
-          observedAtrUsd: input.observedAtrUsd,
           expectedVersion: input.expectedVersion,
         })
         .pipe(Effect.orDie);

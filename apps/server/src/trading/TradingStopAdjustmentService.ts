@@ -68,7 +68,6 @@ export interface TradingStopAdjustmentServiceShape {
     readonly missionId: string;
     readonly market: TradingMarket;
     readonly newStopPrice: number;
-    readonly observedAtrUsd: number;
     readonly expectedVersion: number;
   }) => Effect.Effect<StopAdjustmentDecision, PersistenceSqlError>;
 
@@ -196,8 +195,10 @@ const make = Effect.gen(function* () {
       }
       const prices = { previousStop: currentStopPrice, newStop: input.newStopPrice };
 
-      // The server's own ATR, over the strategy's primary timeframe. The
-      // agent's number is cross-checked against this, never substituted for it.
+      // The server's own ATR, over the strategy's primary timeframe: the noise
+      // floor and the step cap are measured on it. The agent supplies no ATR
+      // any more (plan 29 step 3.5) — restating the server's number was
+      // proof-of-work, not evidence.
       const history = yield* gateway
         .getMarketHistory({
           market: input.market,
@@ -270,7 +271,6 @@ const make = Effect.gen(function* () {
         originalStopPrice,
         targetPrice,
         serverAtrUsd,
-        observedAtrUsd: input.observedAtrUsd,
         halfSpreadUsd,
         nowMillis: now,
         barMillis: timeframeBarMillis(timeframe),
@@ -282,7 +282,7 @@ const make = Effect.gen(function* () {
         return refuse(
           refusal,
           `mark ${markPrice}, stop ${currentStopPrice} -> ${input.newStopPrice}, ` +
-            `ATR ${serverAtrUsd.toFixed(4)} (server) vs ${input.observedAtrUsd} (observed), ` +
+            `ATR ${serverAtrUsd.toFixed(4)}, ` +
             `${spent} of ${STOP_ADJUSTMENT_LIMITS.maximumAdjustmentsPerPosition} adjustments used`,
           prices,
         );

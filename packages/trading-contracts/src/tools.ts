@@ -476,16 +476,13 @@ export type TradingAdjustStopRefusalContext = typeof TradingAdjustStopRefusalCon
  * `checkStopAdjustment`'s rules in front of it: the risk envelope the entry was
  * approved with, a per-call step cap measured in ATR, a noise floor, the
  * breakeven ratchet, and a rate limit. Everything the server needs to check
- * those it measures itself; `observedAtrUsd` is the agent's own number, kept
- * only so a stop derived from stale data can be refused rather than placed.
+ * those — the ATR included — it measures itself.
  */
 export const TradingAdjustStopInput = Schema.Struct({
   ...missionBound,
   market: TradingMarket,
   newStopPrice: Price,
   justification: StopAdjustmentJustification,
-  /** The ATR the agent measured this turn; cross-checked against the server's. */
-  observedAtrUsd: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   /** The strategy version the harness believes is current; stale is rejected. */
   expectedVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   // Execution identity is allocated from current server state after the

@@ -10,6 +10,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   checkStopAdjustment,
   plannedLossAtStopUsd,
+  StopAdjustmentRefusalCode,
   STOP_ADJUSTMENT_LIMITS,
   STOP_DECISION_WAKE_FRACTION,
   stopDecisionWakePnlUsd,
@@ -35,7 +36,6 @@ const longTrail: StopAdjustmentPolicyInput = {
   originalStopPrice: 1_880,
   targetPrice: 1_960,
   serverAtrUsd: 10,
-  observedAtrUsd: 10,
   halfSpreadUsd: 0.25,
   nowMillis: 100 * MINUTE,
   barMillis: MINUTE,
@@ -94,7 +94,7 @@ describe("checkStopAdjustment", () => {
     });
   });
 
-  // Rule 2: the ATR step cap, and the cross-check on the agent's own number.
+  // Rule 2: the ATR step cap.
   describe("the step cap", () => {
     it("refuses a step past half an ATR", () => {
       // Stop distance 40 makes the fractional cap 10, so 0.5 x ATR = 5 binds.
@@ -114,11 +114,12 @@ describe("checkStopAdjustment", () => {
       expect(checkStopAdjustment({ ...close, newStopPrice: 1_885.5 })).toBe("step_too_large");
     });
 
-    it("refuses when the agent's measured ATR diverges from the server's", () => {
-      const limit = STOP_ADJUSTMENT_LIMITS.maximumAtrDivergence;
-      expect(checkStopAdjustment({ ...longTrail, observedAtrUsd: 10 * (1 + limit) })).toBeNull();
-      expect(checkStopAdjustment({ ...longTrail, observedAtrUsd: 14 })).toBe("atr_mismatch");
-      expect(checkStopAdjustment({ ...longTrail, observedAtrUsd: 6 })).toBe("atr_mismatch");
+    // Plan 29 step 3.5: the agent no longer restates the server's ATR. The
+    // cross-check was proof-of-work — the server's number was always the one
+    // the bounds are measured on — and the input field is gone.
+    it("takes no observed ATR: the server's number is the only one", () => {
+      expect("observedAtrUsd" in longTrail).toBe(false);
+      expect(StopAdjustmentRefusalCode.literals).not.toContain("atr_mismatch");
     });
   });
 
@@ -136,7 +137,6 @@ describe("checkStopAdjustment", () => {
       const wideSpread = {
         ...longTrail,
         serverAtrUsd: 4,
-        observedAtrUsd: 4,
         halfSpreadUsd: 4,
         currentStopPrice: 1_912.4,
         markPrice: 1_920,

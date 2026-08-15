@@ -40,8 +40,6 @@ export const StopAdjustmentRefusalCode = Schema.Literals([
   "wrong_side",
   /** The move would risk more than the entry was approved with. */
   "risk_envelope",
-  /** The agent's ATR and the server's disagree — it is reasoning on stale data. */
-  "atr_mismatch",
   /** One call may only take a small step. */
   "step_too_large",
   /** The new stop sits inside the market's own noise. */
@@ -64,8 +62,6 @@ export const STOP_ADJUSTMENT_LIMITS = {
   maximumStepAtrMultiple: 0.5,
   /** Largest single step, as a fraction of the current stop distance. */
   maximumStepDistanceFraction: 0.25,
-  /** How far the agent's measured ATR may diverge from the server's. */
-  maximumAtrDivergence: 0.3,
   /** Minimum stop distance, as a multiple of the half-spread. */
   noiseFloorHalfSpreadMultiple: 2,
   /** Minimum stop distance, as a multiple of ATR. */
@@ -99,8 +95,6 @@ export interface StopAdjustmentPolicyInput {
   readonly targetPrice?: number | undefined;
   /** ATR the server measured this turn over the primary timeframe. */
   readonly serverAtrUsd: number;
-  /** ATR the agent says it measured. Cross-checked, never used as the bound. */
-  readonly observedAtrUsd: number;
   readonly halfSpreadUsd: number;
   readonly nowMillis: number;
   /** One primary-timeframe bar, in milliseconds. */
@@ -168,14 +162,7 @@ export function checkStopAdjustment(
     return "wrong_side";
   }
 
-  // 1. The agent's own measurement, cross-checked. A stop derived from an ATR
-  // that no longer holds is a stop derived from a market that no longer exists.
-  if (input.serverAtrUsd > 0) {
-    const divergence = Math.abs(input.observedAtrUsd - input.serverAtrUsd) / input.serverAtrUsd;
-    if (divergence > STOP_ADJUSTMENT_LIMITS.maximumAtrDivergence) return "atr_mismatch";
-  }
-
-  // 2. Risk never grows past the plan. Tightening is always allowed; loosening
+  // 1. Risk never grows past the plan. Tightening is always allowed; loosening
   // only back toward the stop the entry was approved with.
   const approvedLoss = plannedLossAtStopUsd({
     positionSize: input.positionSize,
@@ -189,7 +176,7 @@ export function checkStopAdjustment(
   });
   if (proposedLoss > approvedLoss + PRICE_EPSILON) return "risk_envelope";
 
-  // 3. Once the stop has crossed to the winning side of entry, it stays there.
+  // 2. Once the stop has crossed to the winning side of entry, it stays there.
   // A trade that can no longer lose does not get to become one that can again.
   const currentOnWinningSide = isLong
     ? input.currentStopPrice >= input.entryPrice
@@ -199,7 +186,7 @@ export function checkStopAdjustment(
     : input.newStopPrice <= input.entryPrice + PRICE_EPSILON;
   if (currentOnWinningSide && !newOnWinningSide) return "breakeven_ratchet";
 
-  // 4. Small steps only — trailing, not jumping.
+  // 3. Small steps only — trailing, not jumping.
   const currentDistance = Math.abs(input.markPrice - input.currentStopPrice);
   const step = Math.abs(input.newStopPrice - input.currentStopPrice);
   const maximumStep = Math.min(
@@ -208,7 +195,7 @@ export function checkStopAdjustment(
   );
   if (step > maximumStep + PRICE_EPSILON) return "step_too_large";
 
-  // 5. Never choke the trade: the stop has to sit outside the market's own
+  // 4. Never choke the trade: the stop has to sit outside the market's own
   // noise, or it is not protection, it is a scheduled exit.
   const newDistance = Math.abs(input.markPrice - input.newStopPrice);
   const noiseFloor = stopNoiseFloorUsd({
@@ -217,7 +204,7 @@ export function checkStopAdjustment(
   });
   if (newDistance < noiseFloor - PRICE_EPSILON) return "noise_floor";
 
-  // 6. And it may not be dragged more than halfway from entry to target. Past
+  // 5. And it may not be dragged more than halfway from entry to target. Past
   // that the stop, not the target, is what ends the trade — profit protection
   // turned into an early exit while the move it was published for is still
   // available.
@@ -231,7 +218,7 @@ export function checkStopAdjustment(
     if (encroaches) return "target_encroachment";
   }
 
-  // 7. Trailing, not twitching.
+  // 6. Trailing, not twitching.
   if (input.adjustmentsThisPosition >= STOP_ADJUSTMENT_LIMITS.maximumAdjustmentsPerPosition) {
     return "adjustment_budget";
   }
