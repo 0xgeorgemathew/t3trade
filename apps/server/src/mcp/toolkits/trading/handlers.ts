@@ -23,8 +23,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 
-import type { TradingMission } from "../../../trading/Schemas.ts";
-import type { PersistedWatch } from "../../../trading/Schemas.ts";
+import type { PersistedWatch, TradingMission } from "../../../trading/Schemas.ts";
+import type { TradingPlanState } from "../../../trading/Schemas.ts";
 import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
 import { TradingExitService } from "../../../trading/TradingExitService.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
@@ -37,6 +37,8 @@ import { recordStructureRead } from "../../../trading/TradingLevelHistory.ts";
 import { recordViableCandidateSeen } from "../../../trading/TradingRunTelemetry.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
+import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
+import { notionalToPricePlanCosts } from "@t3tools/trading-contracts/costs";
 import type { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 import {
@@ -970,8 +972,9 @@ const handlers = {
 
       // The tournament table (plan 27 E1): each setup joined with its
       // playbook's cost gate at the current book. The estimate is priced at
-      // the mission's allocated capital — the notional a real entry would be
-      // sized around — and its absence costs the multiples, never the read.
+      // the size the mission would actually take — the current plan's target
+      // notional when it publishes one, the allocated capital otherwise — and
+      // its absence costs the multiples, never the read.
       const cost =
         mission === null
           ? null
@@ -981,11 +984,59 @@ const handlers = {
                 mission.tradingAccountId,
               );
               const estimator = yield* TradingCostEstimator;
-              return yield* estimator.estimate({
+              const fallbackFeeBps = mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide;
+              // Priced at the approved ceiling first: the fallback answer, and
+              // the read of the fee rate, mark and half spread the plan's size
+              // is derived from, so both estimates price the same market.
+              const atCeiling = yield* estimator.estimate({
                 market: input.market,
                 masterAddress,
                 notionalUsd: mission.authority.allocatedCapitalUsd,
-                fallbackTakerFeeBpsPerSide: mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
+                fallbackTakerFeeBpsPerSide: fallbackFeeBps,
+              });
+
+              // Plan 29 2.6 (plan 28 defect 5): the ceiling is the worst fill
+              // the mission could possibly take, not the one it would take —
+              // on a thin book, every candidate was gated against it. When the
+              // current plan publishes a target with a basis, re-price at the
+              // notional that target needs, bounded by the authority ceilings
+              // — the same sizing arithmetic the quote path sizes an entry
+              // with. A flat mission, a stand-down, or a target no notional
+              // funds keeps the ceiling: there is nothing better to price at.
+              const strategies = yield* TradingStrategyService;
+              const plan = yield* strategies.getCurrentStrategy(mission.id).pipe(
+                // A sizing hint is never worth the read: an unreadable plan
+                // leaves the estimate priced exactly as it was above.
+                Effect.catchCause(() => Effect.succeed(Option.none<TradingPlanState>())),
+              );
+              const currentPlan = Option.isSome(plan) ? plan.value : null;
+              const basis = currentPlan?.protection.targetProfitBasis;
+              const sizing =
+                currentPlan === null ||
+                currentPlan.standDownCode !== undefined ||
+                basis === undefined
+                  ? null
+                  : notionalToPricePlanCosts({
+                      targetProfitUsd: currentPlan.protection.targetProfitUsd,
+                      expectedPriceMoveUsd: basis.measuredMoveUsd,
+                      referencePrice: atCeiling.referencePrice,
+                      takerFeeBpsPerSide: atCeiling.takerFeeBpsPerSide,
+                      halfSpreadUsd: atCeiling.halfSpreadUsd,
+                      allocatedCapitalUsd: mission.authority.allocatedCapitalUsd,
+                      maximumLeverage: mission.authority.maximumLeverage,
+                      maximumGrossNotionalUsd: mission.authority.maximumGrossNotionalUsd,
+                      minimumNotionalUsd: MIN_NOTIONAL_USD,
+                    });
+              const sized =
+                sizing === null || sizing.notionalUsd === null ? null : sizing.notionalUsd;
+              // A target that needs the whole ceiling (or more, which the caps
+              // fold back to it) is already priced by the first estimate.
+              if (sized === null || sized >= atCeiling.notionalUsd) return atCeiling;
+              return yield* estimator.estimate({
+                market: input.market,
+                masterAddress,
+                notionalUsd: sized,
+                fallbackTakerFeeBpsPerSide: fallbackFeeBps,
               });
             }).pipe(Effect.catchCause(() => Effect.succeed(null)));
 
@@ -993,6 +1044,24 @@ const handlers = {
         structure,
         cost === null ? null : { breakEvenPriceMoveUsd: cost.breakEvenPriceMoveUsd },
       );
+
+      // Plan 28 defect 5: a degraded estimate is a lower bound — part of the
+      // round trip could not be read — and the table was built on it silently.
+      // One line on each row the estimate priced; said, never a gate.
+      const pricedCandidates =
+        cost !== null && cost.degraded
+          ? candidates.map((candidate) =>
+              candidate.costMultiple === undefined
+                ? candidate
+                : {
+                    ...candidate,
+                    note:
+                      `${candidate.note} — cost caveat: the estimate this multiple was priced on ` +
+                      "is degraded (part of the round trip could not be read, so the true cost is " +
+                      "higher than shown); trading_estimate_costs carries the itemised note",
+                  },
+            )
+          : candidates;
 
       // Plan 27 I3: if this read put a candidate through its cost gate, mark
       // the open run — a later stand-down on this turn is then a refusal of a
@@ -1005,7 +1074,7 @@ const handlers = {
         }).pipe(Effect.catchCause(() => Effect.void));
       }
 
-      return { ...structure, candidates };
+      return { ...structure, candidates: pricedCandidates };
     }),
 
   trading_get_trade_history: (input) =>

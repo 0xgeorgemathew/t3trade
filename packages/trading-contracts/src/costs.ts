@@ -411,6 +411,102 @@ export function notionalForProfitTarget(input: {
   };
 }
 
+/**
+ * The notional a plan's published target needs, from the numbers the caller
+ * has already read: the fee rate, the half spread, and the price both are
+ * measured against.
+ *
+ * This is the one composition of {@link notionalForProfitTarget} and
+ * {@link roundTripCostFractionOfNotional} — both the quote path and the
+ * market-structure cost read size through it, so the two cannot drift into
+ * answering the same question two different ways.
+ */
+export function targetNotionalForPlan(input: {
+  readonly targetProfitUsd: number;
+  /** The move the plan expects to capture, in USD of price. */
+  readonly expectedPriceMoveUsd: number;
+  readonly referencePrice: number;
+  readonly takerFeeBpsPerSide: number;
+  readonly halfSpreadUsd: number;
+}): TargetNotional {
+  return notionalForProfitTarget({
+    targetProfitUsd: input.targetProfitUsd,
+    expectedPriceMoveUsd: input.expectedPriceMoveUsd,
+    referencePrice: input.referencePrice,
+    costFractionOfNotional: roundTripCostFractionOfNotional({
+      takerFeeBpsPerSide: input.takerFeeBpsPerSide,
+      halfSpreadUsd: input.halfSpreadUsd,
+      referencePrice: input.referencePrice,
+    }),
+  });
+}
+
+/**
+ * What a cost read should be priced at when the mission holds a plan with a
+ * live target, and what capped it.
+ */
+export interface PlanCostSizing {
+  /**
+   * The notional to price the estimate at, or null when no notional pays the
+   * plan's target — the caller then keeps its own fallback size.
+   */
+  readonly notionalUsd: number | null;
+  /** The target arithmetic, uncapped, for the caller's reporting. */
+  readonly target: TargetNotional;
+}
+
+/**
+ * The notional a cost read should be priced at for a plan with a live target
+ * (plan 29 step 2.6, plan 28 defect 5).
+ *
+ * The market-structure read used to price its estimate at the mission's
+ * approved ceiling, which on a thin book walks the worst fill the mission
+ * could possibly take and then gates every candidate against it. When the
+ * current plan publishes a target with a basis, the size the mission would
+ * actually take is the notional that target needs — bounded by the same
+ * notional ceilings `deriveFeasibleSize` caps a real entry with, plus the
+ * approved capital the fallback prices at, so a plan-sized estimate is never
+ * larger than the ceiling behaviour it replaces.
+ *
+ * The stop-dependent ceilings (planned loss, loss budget) are deliberately
+ * absent: a structure read happens before any entry has a stop, so the
+ * notional ceilings are the honest bound it can know. Slippage past the touch
+ * is still priced in full at the size returned — the estimate is what changes
+ * with size, not the arithmetic.
+ */
+export function notionalToPricePlanCosts(input: {
+  readonly targetProfitUsd: number;
+  readonly expectedPriceMoveUsd: number;
+  readonly referencePrice: number;
+  readonly takerFeeBpsPerSide: number;
+  readonly halfSpreadUsd: number;
+  readonly allocatedCapitalUsd: number;
+  readonly maximumLeverage: number;
+  readonly maximumGrossNotionalUsd: number;
+  /** The exchange's minimum trade; a target below it could never be taken. */
+  readonly minimumNotionalUsd: number;
+}): PlanCostSizing {
+  const target = targetNotionalForPlan(input);
+  if (target.notionalUsd === null) return { notionalUsd: null, target };
+
+  // `deriveFeasibleSize` expresses the leverage ceiling as margin x leverage;
+  // allocated capital is included so the plan-sized notional can only ever
+  // shrink the estimate relative to pricing at the ceiling, never grow it.
+  const ceiling = Math.min(
+    input.allocatedCapitalUsd,
+    input.maximumLeverage * input.allocatedCapitalUsd,
+    input.maximumGrossNotionalUsd,
+  );
+  // At least the exchange minimum — a target that needs less than the
+  // smallest legal trade would otherwise price the gate at a round trip no
+  // entry could take. Never above the ceiling, even when the minimum is the
+  // larger of the two: above the approved risk is not a size, it is a defect.
+  return {
+    notionalUsd: Math.min(Math.max(target.notionalUsd, input.minimumNotionalUsd), ceiling),
+    target,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Publish-time validation of a profit target
 // ---------------------------------------------------------------------------

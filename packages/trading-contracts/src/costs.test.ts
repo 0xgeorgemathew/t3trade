@@ -5,7 +5,9 @@ import {
   estimateTradingCosts,
   feeOnlyRoundTripUsd,
   notionalForProfitTarget,
+  notionalToPricePlanCosts,
   roundTripCostFractionOfNotional,
+  targetNotionalForPlan,
   ENTRY_COST_MULTIPLE,
   PROFIT_TARGET_COST_MULTIPLE,
   walkBook,
@@ -347,5 +349,118 @@ describe("sizing a position to the target it is taken for", () => {
     expect(sized.notionalUsd).toBeNull();
     expect(sized.netFraction).toBeLessThan(0);
     expect(sized.reason).toContain("no notional pays this target");
+  });
+
+  it("is what targetNotionalForPlan composes, so the sizing and gating paths share it", () => {
+    // The quote path and the market-structure cost read both size through
+    // targetNotionalForPlan; pinning it to the manual composition here is
+    // what keeps the two from drifting apart on what a target needs.
+    expect(
+      targetNotionalForPlan({
+        targetProfitUsd: 20,
+        expectedPriceMoveUsd: 10,
+        referencePrice: 2_000,
+        takerFeeBpsPerSide: 5,
+        halfSpreadUsd: 0.1,
+      }),
+    ).toEqual(
+      notionalForProfitTarget({
+        targetProfitUsd: 20,
+        expectedPriceMoveUsd: 10,
+        referencePrice: 2_000,
+        costFractionOfNotional: costFraction,
+      }),
+    );
+  });
+});
+
+// Plan 28 defect 5: the sizing path and the gating path were answering the
+// same question two different ways — the fraction excludes slippage, the
+// estimate includes it. The agreement is on fees + spread exactly.
+describe("the sizing fraction and the estimate agree (plan 28 defect 5)", () => {
+  it("covers exactly fees plus spread at the same notional", () => {
+    // A book thin enough to walk, so the estimate's total carries a real
+    // slippage component the fraction cannot see — the agreement has to hold
+    // anyway, on the two components the fraction claims to cover.
+    const estimate = estimateTradingCosts(
+      input({
+        sizeEth: 5,
+        asks: [
+          { price: 2_000.5, size: 1 },
+          { price: 2_002.5, size: 10 },
+        ],
+        bids: [
+          { price: 1_999.5, size: 1 },
+          { price: 1_997.5, size: 10 },
+        ],
+      }),
+    );
+    expect(estimate.roundTripSlippageUsd).toBeGreaterThan(0);
+
+    const fraction = roundTripCostFractionOfNotional({
+      takerFeeBpsPerSide: estimate.takerFeeBpsPerSide,
+      halfSpreadUsd: estimate.halfSpreadUsd,
+      referencePrice: estimate.referencePrice,
+    });
+
+    // The fraction deliberately excludes slippage: it is the one round-trip
+    // component that does not scale with notional, so folding it in would
+    // make the fraction a function of the very size it exists to compute.
+    // What must hold is that at the same notional it covers the fees and the
+    // spread exactly, and nothing else.
+    expect(fraction * estimate.notionalUsd).toBeCloseTo(
+      estimate.roundTripFeeUsd + estimate.roundTripSpreadUsd,
+      10,
+    );
+  });
+});
+
+describe("notionalToPricePlanCosts — the notional a cost read is priced at (plan 29 2.6)", () => {
+  const sizingInput = {
+    targetProfitUsd: 20,
+    expectedPriceMoveUsd: 10,
+    referencePrice: 2_000,
+    takerFeeBpsPerSide: 5,
+    halfSpreadUsd: 0.1,
+    allocatedCapitalUsd: 10_000,
+    maximumLeverage: 3,
+    maximumGrossNotionalUsd: 30_000,
+    minimumNotionalUsd: 10,
+  };
+
+  it("prices at the notional the plan's target needs when every ceiling allows it", () => {
+    const sized = notionalToPricePlanCosts(sizingInput);
+    // $20 of target over the 0.39% net move from the block above.
+    expect(sized.notionalUsd).toBeCloseTo(20 / 0.0039, 6);
+    expect(sized.target.notionalUsd).toBeCloseTo(20 / 0.0039, 6);
+  });
+
+  it("caps at the approved capital when the target needs more than the mission may hold", () => {
+    const sized = notionalToPricePlanCosts({ ...sizingInput, allocatedCapitalUsd: 4_000 });
+    expect(sized.notionalUsd).toBe(4_000);
+    // The cap bounds the priced size; the target arithmetic is reported
+    // unmodified, so the caller can say the ceilings cannot fund the target.
+    expect(sized.target.notionalUsd).toBeCloseTo(20 / 0.0039, 6);
+  });
+
+  it("caps at margin x leverage when the mandate runs below 1x", () => {
+    const sized = notionalToPricePlanCosts({ ...sizingInput, maximumLeverage: 0.4 });
+    expect(sized.notionalUsd).toBe(4_000);
+  });
+
+  it("floors at the exchange minimum — no smaller trade exists to price", () => {
+    // $0.15 of target over a ~1.89% net move needs under $8 of notional.
+    const sized = notionalToPricePlanCosts({
+      ...sizingInput,
+      targetProfitUsd: 0.15,
+      expectedPriceMoveUsd: 40,
+    });
+    expect(sized.notionalUsd).toBe(10);
+  });
+
+  it("says null when no notional pays the target, so the caller keeps its ceiling", () => {
+    const sized = notionalToPricePlanCosts({ ...sizingInput, expectedPriceMoveUsd: 1 });
+    expect(sized.notionalUsd).toBeNull();
+    expect(sized.target.reason).toContain("no notional pays this target");
   });
 });

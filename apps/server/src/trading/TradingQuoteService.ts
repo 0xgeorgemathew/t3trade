@@ -39,10 +39,7 @@ import {
   MOMENTUM_LOOKBACK_BARS,
   MOMENTUM_TIMEFRAMES,
 } from "@t3tools/trading-contracts/momentum";
-import {
-  notionalForProfitTarget,
-  roundTripCostFractionOfNotional,
-} from "@t3tools/trading-contracts/costs";
+import { targetNotionalForPlan } from "@t3tools/trading-contracts/costs";
 import { stopNoiseFloorUsd } from "@t3tools/trading-contracts/stop-adjustment";
 import { ACTIVE_TRADING_POLICY } from "@t3tools/trading-contracts/policy";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
@@ -272,21 +269,21 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       // unreachable, because the costs shrink with the notional and the target
       // does not. Every risk ceiling still binds above it.
       const plan = yield* readTargetBasis(request.missionId);
+      // Sized through the same composition the structure read's cost estimate
+      // uses (`targetNotionalForPlan`), so the quote path and the gating path
+      // cannot drift apart on what a target needs.
       const targetNotional =
         plan === null ||
         plan.stand_down_code !== null ||
         plan.target_profit_usd === null ||
         plan.measured_move_usd === null
           ? null
-          : notionalForProfitTarget({
+          : targetNotionalForPlan({
               targetProfitUsd: plan.target_profit_usd,
               expectedPriceMoveUsd: plan.measured_move_usd,
               referencePrice: entryPrice,
-              costFractionOfNotional: roundTripCostFractionOfNotional({
-                takerFeeBpsPerSide: takerFeeRateBps,
-                halfSpreadUsd: Math.max(0, (bestAsk - bestBid) / 2),
-                referencePrice: entryPrice,
-              }),
+              takerFeeBpsPerSide: takerFeeRateBps,
+              halfSpreadUsd: Math.max(0, (bestAsk - bestBid) / 2),
             });
 
       const sizing = deriveFeasibleSize({
