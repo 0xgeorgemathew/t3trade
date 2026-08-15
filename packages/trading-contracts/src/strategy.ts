@@ -202,7 +202,11 @@ export type AgentConditionInput = typeof AgentConditionInput.Type;
 export const MomentumStrategyDirection = Schema.Literals(["long", "short", "both", "conditional"]);
 export type MomentumStrategyDirection = typeof MomentumStrategyDirection.Type;
 
-export const MomentumOrderPreference = Schema.Literals(["marketable_ioc", "resting_limit"]);
+export const MomentumOrderPreference = Schema.Literals([
+  "marketable_ioc",
+  "resting_limit",
+  "post_only",
+]);
 export type MomentumOrderPreference = typeof MomentumOrderPreference.Type;
 
 export const MomentumStrategyAction = Schema.Literals([

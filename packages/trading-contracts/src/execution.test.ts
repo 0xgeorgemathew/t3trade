@@ -6,11 +6,13 @@
  * entry past the lock. The assertions below are what makes the drift loud.
  */
 import { describe, expect, it } from "vite-plus/test";
+import { Schema } from "effect";
 
 import {
   NON_TERMINAL_EXECUTION_STATUSES,
   PENDING_EXECUTION_STATUSES,
   TradingExecutionStatus,
+  TradingOrderTimeInForce,
   isPendingExecutionStatus,
 } from "./execution.ts";
 
@@ -42,5 +44,16 @@ describe("PENDING_EXECUTION_STATUSES", () => {
       ...PENDING_EXECUTION_STATUSES,
       "accepted",
     ]);
+  });
+});
+
+describe("TradingOrderTimeInForce", () => {
+  it("accepts ioc, gtc, and the post-only alo", () => {
+    const decode = Schema.decodeUnknownSync(TradingOrderTimeInForce);
+    expect(decode("ioc")).toBe("ioc");
+    expect(decode("gtc")).toBe("gtc");
+    // ALO (add-limit-only) is the maker-guaranteed resting order.
+    expect(decode("alo")).toBe("alo");
+    expect(() => decode("fok")).toThrow();
   });
 });

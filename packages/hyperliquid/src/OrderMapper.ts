@@ -30,6 +30,7 @@ export class HyperliquidOrderMapperError extends Schema.TaggedErrorClass<Hyperli
       "missing_best_bid",
       "below_min_notional",
       "non_positive_size",
+      "would_have_crossed",
     ]),
     detail: Schema.optional(Schema.String),
   },
@@ -98,12 +99,93 @@ function deriveIocLimitPrice(
 }
 
 /**
+ * Refuse a post-only (ALO) limit that would have crossed the book.
+ *
+ * ALO is the exchange-side maker guarantee: an ALO order that would cross is
+ * rejected by the exchange, not filled. T3 rejects it here — pre-signing —
+ * so the mission learns `would_have_crossed` instead of spending a nonce on
+ * an order the exchange was always going to refuse. The check needs the same
+ * side of a fresh BBO the crossing would happen against: a buy needs the
+ * best ask, a sell the best bid, and a stale or missing side is the existing
+ * `stale_bbo` / `missing_best_*` rejection.
+ */
+function assertPostOnlyRests(
+  side: TradingOrderIntent["side"],
+  limitPrice: number,
+  bbo: MarketBestBidOffer,
+): Effect.Effect<number, HyperliquidOrderMapperError> {
+  if (side === "buy") {
+    if (bbo.askPrice === undefined) {
+      return new HyperliquidOrderMapperError({ reason: "missing_best_ask" });
+    }
+    if (limitPrice >= bbo.askPrice) {
+      return new HyperliquidOrderMapperError({
+        reason: "would_have_crossed",
+        detail: `post-only buy limit ${limitPrice} would cross the best ask ${bbo.askPrice}`,
+      });
+    }
+    return Effect.succeed(limitPrice);
+  }
+  if (bbo.bidPrice === undefined) {
+    return new HyperliquidOrderMapperError({ reason: "missing_best_bid" });
+  }
+  if (limitPrice <= bbo.bidPrice) {
+    return new HyperliquidOrderMapperError({
+      reason: "would_have_crossed",
+      detail: `post-only sell limit ${limitPrice} would cross the best bid ${bbo.bidPrice}`,
+    });
+  }
+  return Effect.succeed(limitPrice);
+}
+
+/**
+ * Resolve the harness's order preference into the wire time-in-force and the
+ * raw limit price it rests at.
+ *
+ * Every preference maps explicitly. The `default` is an exhaustiveness guard,
+ * not a fallback: a preference added to the contract without a branch here is
+ * a compile error (the `never` assignment), and a defect at runtime — never
+ * a silent rest as GTC.
+ */
+function chooseTimeInForceAndLimit(
+  intent: TradingOrderIntent,
+  bbo: MarketBestBidOffer,
+  allowedSlippageBps: number,
+  nowMs: number,
+): Effect.Effect<
+  { readonly timeInForce: TradingWireOrder["timeInForce"]; readonly rawLimit: number },
+  HyperliquidOrderMapperError
+> {
+  switch (intent.orderPreference) {
+    case "marketable_ioc":
+      return Effect.gen(function* () {
+        yield* assertBboFresh(bbo, nowMs);
+        const rawLimit = yield* deriveIocLimitPrice(intent.side, bbo, allowedSlippageBps);
+        return { timeInForce: "ioc" as const, rawLimit };
+      });
+    case "resting_limit":
+      return Effect.succeed({ timeInForce: "gtc" as const, rawLimit: intent.limitPrice });
+    case "post_only":
+      return Effect.gen(function* () {
+        yield* assertBboFresh(bbo, nowMs);
+        const rawLimit = yield* assertPostOnlyRests(intent.side, intent.limitPrice, bbo);
+        return { timeInForce: "alo" as const, rawLimit };
+      });
+    default: {
+      const unmapped: never = intent.orderPreference;
+      return Effect.die(`unmapped order preference: ${String(unmapped)}`);
+    }
+  }
+}
+
+/**
  * Map an intent to a wire order ready for signing.
  *
- * For `marketable_ioc` the limit price is derived from the fresh BBO ±
- * slippage (§15.4). For `resting_limit` the harness-supplied `limitPrice`
- * is used as-is and the order rests as GTC. In both cases size is truncated
- * to `szDecimals`, price is normalised, and the exchange minimum notional is
+ * `marketable_ioc` derives its limit from the fresh BBO ± slippage (§15.4);
+ * `resting_limit` uses the harness-supplied `limitPrice` as a GTC; `post_only`
+ * uses the harness limit as an ALO and is refused when it would have crossed
+ * the book (see `assertPostOnlyRests`). In every case size is truncated to
+ * `szDecimals`, price is normalised, and the exchange minimum notional is
  * enforced before the order leaves.
  */
 export const mapOrder = (
@@ -116,14 +198,12 @@ export const mapOrder = (
       return yield* new HyperliquidOrderMapperError({ reason: "non_positive_size" });
     }
 
-    // Choose time-in-force + limit price by preference.
-    const isIoc = intent.orderPreference === "marketable_ioc";
-    if (isIoc) {
-      yield* assertBboFresh(bbo, nowMs);
-    }
-    const rawLimit = isIoc
-      ? yield* deriveIocLimitPrice(intent.side, bbo, allowedSlippageBps)
-      : intent.limitPrice;
+    const { timeInForce, rawLimit } = yield* chooseTimeInForceAndLimit(
+      intent,
+      bbo,
+      allowedSlippageBps,
+      nowMs,
+    );
 
     const limitPriceStr = formatPrice(rawLimit);
     const sizeStr = formatSize(intent.size, szDecimals);
@@ -149,10 +229,33 @@ export const mapOrder = (
       side: intent.side,
       limitPrice: limitPriceStr,
       size: sizeStr,
-      timeInForce: isIoc ? "ioc" : ("gtc" as const),
+      timeInForce,
       reduceOnly: intent.reduceOnly,
     } as TradingWireOrder);
   });
+
+/**
+ * Contract time-in-force to Hyperliquid wire time-in-force (PascalCase).
+ *
+ * Explicit three-way mapping: anything that is not exactly one of the three
+ * mapped literals is a programming error, not an order to quietly rest as
+ * GTC — a new contract literal without a branch here fails the `never`
+ * assignment at compile time and dies loudly at runtime.
+ */
+function wireTif(tif: TradingWireOrder["timeInForce"]): "Ioc" | "Gtc" | "Alo" {
+  switch (tif) {
+    case "ioc":
+      return "Ioc";
+    case "gtc":
+      return "Gtc";
+    case "alo":
+      return "Alo";
+    default: {
+      const unmapped: never = tif;
+      throw new Error(`unmapped time in force: ${String(unmapped)}`);
+    }
+  }
+}
 
 /**
  * Build the Hyperliquid `order` action payload (insertion-order keys) for the
@@ -176,7 +279,7 @@ export function buildOrderAction(
         p: order.limitPrice,
         s: order.size,
         r: order.reduceOnly,
-        t: { limit: { tif: order.timeInForce === "ioc" ? "Ioc" : "Gtc" } },
+        t: { limit: { tif: wireTif(order.timeInForce) } },
         // Hyperliquid order-wire uses "c" for the client order id inside an
         // order leg (verified against hyperliquid-python-sdk's
         // order_request_to_order_wire). The cancel-by-cloid action's top-level
@@ -317,7 +420,7 @@ export function buildGroupedEntryWithStopAction(
         p: entry.limitPrice,
         s: entry.size,
         r: entry.reduceOnly,
-        t: { limit: { tif: entry.timeInForce === "ioc" ? "Ioc" : "Gtc" } },
+        t: { limit: { tif: wireTif(entry.timeInForce) } },
         c: entry.cloid,
       },
       protectiveLeg(stop, assetIndex),

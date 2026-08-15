@@ -37,11 +37,13 @@ export type TradingOrderSide = typeof TradingOrderSide.Type;
  * Hyperliquid time-in-force for the mapped order.
  *
  * `marketable_ioc` prices off a fresh best bid/ask plus slippage (§15.4);
- * `gtc` rests at the limit until cancelled. The harness expresses a
- * preference via `MomentumOrderPreference`; the order mapper turns it into
- * one of these.
+ * `gtc` rests at the limit until cancelled; `alo` (add-limit-only) rests as
+ * post-only — the exchange rejects it rather than let it take liquidity, so
+ * the mapper refuses a limit that would have crossed before signing. The
+ * harness expresses a preference via `MomentumOrderPreference`; the order
+ * mapper turns it into one of these.
  */
-export const TradingOrderTimeInForce = Schema.Literals(["ioc", "gtc"]);
+export const TradingOrderTimeInForce = Schema.Literals(["ioc", "gtc", "alo"]);
 export type TradingOrderTimeInForce = typeof TradingOrderTimeInForce.Type;
 
 /**

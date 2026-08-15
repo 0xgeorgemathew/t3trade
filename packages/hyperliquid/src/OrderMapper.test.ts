@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "@effect/vitest";
 
 import type { MarketBestBidOffer } from "@t3tools/trading-contracts/market";
-import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
+import type { TradingOrderIntent, TradingWireOrder } from "@t3tools/trading-contracts/execution";
 
 import {
   buildCancelByCloidAction,
@@ -123,6 +123,76 @@ describe("mapOrder", () => {
     }),
   );
 
+  it.effect("rests a post-only ALO order at the harness limit without crossing", () =>
+    Effect.gen(function* () {
+      const order = yield* mapOrder({
+        // 1891 sits below both the bid (1891.4) and the ask (1891.5).
+        intent: baseIntent({ orderPreference: "post_only", limitPrice: 1_891 }),
+        bbo: FRESH_BBO(1_000),
+        szDecimals: 4,
+        allowedSlippageBps: 50,
+        nowMs: 1_000,
+      });
+      expect(order.timeInForce).toBe("alo");
+      expect(order.limitPrice).toBe("1891");
+    }),
+  );
+
+  it.effect("rejects a post-only buy whose limit would cross the ask", () =>
+    Effect.gen(function* () {
+      const error = yield* mapOrder({
+        // A buy at exactly the best ask crosses — ALO means rest or nothing.
+        intent: baseIntent({ orderPreference: "post_only", limitPrice: 1_891.5 }),
+        bbo: FRESH_BBO(1_000),
+        szDecimals: 4,
+        allowedSlippageBps: 50,
+        nowMs: 1_000,
+      }).pipe(Effect.flip);
+      expect(error.reason).toBe("would_have_crossed");
+    }),
+  );
+
+  it.effect("rejects a post-only sell whose limit would cross the bid", () =>
+    Effect.gen(function* () {
+      const error = yield* mapOrder({
+        // A sell at exactly the best bid crosses.
+        intent: baseIntent({ side: "sell", orderPreference: "post_only", limitPrice: 1_891.4 }),
+        bbo: FRESH_BBO(1_000),
+        szDecimals: 4,
+        allowedSlippageBps: 50,
+        nowMs: 1_000,
+      }).pipe(Effect.flip);
+      expect(error.reason).toBe("would_have_crossed");
+    }),
+  );
+
+  it.effect("rejects a post-only order priced off a stale BBO (§15.4)", () =>
+    Effect.gen(function* () {
+      const error = yield* mapOrder({
+        intent: baseIntent({ orderPreference: "post_only", limitPrice: 1_891 }),
+        // BBO observed at 0; now is 5s later — past the 2s window.
+        bbo: FRESH_BBO(0),
+        szDecimals: 4,
+        allowedSlippageBps: 50,
+        nowMs: 5_000,
+      }).pipe(Effect.flip);
+      expect(error.reason).toBe("stale_bbo");
+    }),
+  );
+
+  it.effect("rejects a post-only buy when the ask side is missing", () =>
+    Effect.gen(function* () {
+      const error = yield* mapOrder({
+        intent: baseIntent({ orderPreference: "post_only", limitPrice: 1_891 }),
+        bbo: { ...FRESH_BBO(1_000), askPrice: undefined, askSize: undefined },
+        szDecimals: 4,
+        allowedSlippageBps: 50,
+        nowMs: 1_000,
+      }).pipe(Effect.flip);
+      expect(error.reason).toBe("missing_best_ask");
+    }),
+  );
+
   it.effect("produces a deterministic cloid from the intent", () =>
     Effect.gen(function* () {
       const a = yield* mapOrder({
@@ -170,8 +240,28 @@ describe("buildOrderAction / buildCancelByCloidAction", () => {
       expect(leg.b).toBe(true);
       expect(leg.c).toBe(order.cloid);
       expect(leg.cloid).toBeUndefined();
+      // An IOC wire order carries the PascalCase literal — not the contract's.
+      expect(leg.t).toEqual({ limit: { tif: "Ioc" } });
     }),
   );
+
+  it("maps every contract TIF to exactly one wire TIF", () => {
+    const wireOrder = (timeInForce: TradingWireOrder["timeInForce"]): TradingWireOrder => ({
+      cloid: "0x" + "a".repeat(32),
+      coin: "ETH",
+      side: "buy",
+      limitPrice: "1891",
+      size: "0.5",
+      timeInForce,
+      reduceOnly: false,
+    });
+    const wireTifOf = (order: TradingWireOrder): unknown =>
+      ((buildOrderAction(order, 2).orders as unknown[])[0] as Record<string, unknown>).t;
+    // The whole table, exactly — a fourth contract TIF must grow this list.
+    expect(wireTifOf(wireOrder("ioc"))).toEqual({ limit: { tif: "Ioc" } });
+    expect(wireTifOf(wireOrder("gtc"))).toEqual({ limit: { tif: "Gtc" } });
+    expect(wireTifOf(wireOrder("alo"))).toEqual({ limit: { tif: "Alo" } });
+  });
 
   it("builds a cancel-by-cloid action with insertion-order keys", () => {
     // The cancel action mirrors the order action's shape: a discriminating
@@ -293,6 +383,29 @@ describe("protective order actions — §17.2 step 3 / step 6", () => {
       expect(legs[1]!.r).toBe(true);
       expect(legs[1]!.b).toBe(false);
       expect(legs[1]!.c).toBe(PROTECT_CLOID);
+      expect(legs[1]!.t).toEqual({
+        trigger: { isMarket: true, triggerPx: "1800", tpsl: "sl" },
+      });
+    }),
+  );
+
+  it.effect("carries an ALO entry leg inside a normalTpsl group", () =>
+    Effect.gen(function* () {
+      const entry = yield* mapOrder({
+        intent: baseIntent({ orderPreference: "post_only", limitPrice: 1_891 }),
+        bbo: FRESH_BBO(1_000),
+        szDecimals: 4,
+        allowedSlippageBps: 50,
+        nowMs: 1_000,
+      });
+      const stop = yield* protectiveStop;
+      const action = buildGroupedEntryWithStopAction(entry, stop, 2);
+
+      const legs = action.orders as ReadonlyArray<Record<string, unknown>>;
+      // The entry leg keeps the ALO time-in-force through the grouping.
+      expect(legs[0]!.t).toEqual({ limit: { tif: "Alo" } });
+      // The stop leg stays a market trigger — a stop is not a place to be
+      // patient, whatever the entry's time-in-force is.
       expect(legs[1]!.t).toEqual({
         trigger: { isMarket: true, triggerPx: "1800", tpsl: "sl" },
       });

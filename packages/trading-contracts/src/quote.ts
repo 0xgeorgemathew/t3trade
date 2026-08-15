@@ -375,20 +375,27 @@ export function deriveFeasibleSize(input: QuoteSizingInput): QuoteSizing {
  * The limit price to quote from a live book.
  *
  * `marketable_ioc` has to cross, so it takes the far side plus the slippage
- * allowance the executor itself uses; `resting_limit` sits at the near side.
- * The server prices this rather than the harness because a limit that does not
- * cross is refused at preview and reads to a model as "the market refused".
+ * allowance the executor itself uses; `resting_limit` and `post_only` sit at
+ * the near side. The server prices this rather than the harness because a
+ * limit that does not cross is refused at preview and reads to a model as
+ * "the market refused".
  */
 export function deriveQuoteLimitPrice(input: {
   readonly side: "buy" | "sell";
-  readonly orderPreference: "marketable_ioc" | "resting_limit";
+  readonly orderPreference: MomentumOrderPreference;
   readonly bestBid: number;
   readonly bestAsk: number;
   readonly slippageBps: number;
 }): number {
   const allowance = 1 + input.slippageBps / 10_000;
-  if (input.orderPreference === "resting_limit") {
-    return input.side === "buy" ? input.bestBid : input.bestAsk;
+  switch (input.orderPreference) {
+    case "marketable_ioc":
+      return input.side === "buy" ? input.bestAsk * allowance : input.bestBid / allowance;
+    case "resting_limit":
+    case "post_only":
+      // A post-only order prices at the near side like a resting limit: ALO
+      // is the exchange-side guarantee that it rests, and the near side is
+      // the local best effort at never pricing through the book.
+      return input.side === "buy" ? input.bestBid : input.bestAsk;
   }
-  return input.side === "buy" ? input.bestAsk * allowance : input.bestBid / allowance;
 }

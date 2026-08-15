@@ -170,6 +170,18 @@ describe("deriveQuoteLimitPrice", () => {
       book.bestAsk,
     );
   });
+
+  it("prices a post-only order at the near side, never through the book", () => {
+    const book = { bestBid: 1_999, bestAsk: 2_001, slippageBps: 50 };
+
+    const buy = deriveQuoteLimitPrice({ ...book, side: "buy", orderPreference: "post_only" });
+    assert.strictEqual(buy, book.bestBid);
+    assert.isBelow(buy, book.bestAsk);
+
+    const sell = deriveQuoteLimitPrice({ ...book, side: "sell", orderPreference: "post_only" });
+    assert.strictEqual(sell, book.bestAsk);
+    assert.isAbove(sell, book.bestBid);
+  });
 });
 
 describe("sizing to the plan's own profit target", () => {
