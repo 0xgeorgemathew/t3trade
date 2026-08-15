@@ -89,8 +89,10 @@ export function runtimeTimeframe(instruction: string): TradingTimeframe {
  * told every mission to arm candle-close watches, which the range playbook
  * explicitly flags as misarmed at a boundary.
  *
- * What is left is only the part a user's own mandate will never state and the
- * playbooks cannot: which interval the loop turns on. It names the timeframe
+ * What is left is the part a user's own mandate will never state and the
+ * playbooks elaborate on: which interval the loop turns on, and the one gate
+ * every trade answers to — whether the expected move over the intended hold is
+ * bigger than the round trip is worth. It names the timeframe
  * even though every wakeup already carries `defaultTimeframe`, because a
  * harness weighs a direct instruction more heavily than a field in a snapshot,
  * and the two agreeing is what keeps the loop turning once a minute rather than
@@ -101,7 +103,7 @@ export function runtimeTimeframe(instruction: string): TradingTimeframe {
  * again in the other direction.
  */
 export const POC_STANDING_INSTRUCTION =
-  "Work on 1m candles unless your own read says otherwise, and arm each watch on that interval so a run wakes within a minute — the watch TYPE is the playbook's call, not this note's: a breakout confirms on the close, a range boundary triggers on the touch. Read the regime before you look for a trade. The objective is many small positive-expectancy trades, not one perfect one: run the tournament, take the best candidate that clears its gates, bank modest profits, and go again. Declining to trade must be justified against the best candidate on the table, never against perfection — standing down repeatedly while the field holds a viable candidate is itself a failure to report.";
+  "Work on 1m candles unless your own read says otherwise, and arm each watch on that interval so a run wakes within a minute — the watch TYPE is the playbook's call, not this note's: a breakout confirms on the close, a range boundary triggers on the touch. One gate decides whether a trade is worth taking: is the expected move over your intended hold bigger than the round trip is worth? If not, stand down and say so in one line.";
 
 /**
  * Prose the harness may leave out, decoded as an empty string.

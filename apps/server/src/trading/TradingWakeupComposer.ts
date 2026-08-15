@@ -815,7 +815,7 @@ const make = Effect.gen(function* () {
       // rather than living only in the playbook the run may not call.
       const strategyReview =
         position.size === 0
-          ? "FLAT — the field is open and the published mode has no seniority. Score every playbook (momentum, range_reversion, opening_range) x both directions plus no-trade off candidates[], one line of expectancy after costs each, before restating the thesis. Losers go in alternativesConsidered[]. Entry needs the move to clear minimumViableTargetUsd, nothing more; preferredTargetUsd is the rung to aim at, not a precondition."
+          ? "FLAT — the field is open: momentum, range_reversion, opening_range, ema_cross, and rsi_reversion are all candidates again, and `candidates[]` carries each setup with its own cost arithmetic. Weigh each against one gate — is the expected move over the intended hold bigger than the round trip is worth? — and take the one that clears it by the most, or none of them if none do."
           : undefined;
 
       // Holding: the turn belongs to the position, not to the thesis. See

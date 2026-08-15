@@ -166,12 +166,14 @@ const encodeBootstrapText = Schema.encodeSync(Schema.fromJsonString(BootstrapWak
  * to, no armed levels, and nothing for the operator's panel to show.
  */
 const FIRST_TURN_CONTRACT =
-  "End this turn with trading_publish_plan, whatever you decide. If the costs " +
-  "or the market do not justify entering, publish the stand-down: " +
-  "targetProfitBasis.insufficientVolatility true, the arithmetic in rationale, " +
-  "protection.targetProfitUsd set to the minimum viable target the costs " +
-  "demand, and entryPlan.conditions carrying the price levels that would change " +
-  "the read. A declined entry is a plan, not a missing one.";
+  "Until a plan exists, the turn owes one: end it with trading_publish_plan, " +
+  "whatever you decide. If the costs or the market do not justify entering, " +
+  "publish the stand-down: targetProfitBasis.insufficientVolatility true, " +
+  "the arithmetic in rationale, protection.targetProfitUsd set to the minimum " +
+  "viable target the costs demand, and entryPlan.conditions carrying the price " +
+  "levels that would change the read. Once a plan is published, revise it when " +
+  "it changes — a stand-down does not re-publish unchanged. A declined entry is " +
+  "a plan, not a missing one.";
 
 /**
  * Causes that may wake a mission with no published strategy. Each of these
