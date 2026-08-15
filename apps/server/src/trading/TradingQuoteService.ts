@@ -178,23 +178,24 @@ export const makeTradingQuoteService = Effect.gen(function* () {
 
   /**
    * The published plan's target: the USD rung and the price it aims at, when
-   * the plan publishes either.
+   * the plan publishes either, and whether the plan stood aside.
    *
    * Read as numbers rather than through the strategy decoder: a quote that
    * fails because a historical field no longer decodes would be a refusal about
    * bookkeeping, and this is a sizing hint. Null fields when the mission has
-   * published nothing, when the plan stood down, or when the fields are absent.
+   * published nothing, when the plan stood aside (`intent: "stand_aside"` —
+   * the stand-down of the old schema), or when the fields are absent.
    */
   const readPlanTarget = (missionId: string) =>
     sql<{
       readonly target_profit_usd: number | null;
       readonly take_profit_price: number | null;
-      readonly stand_down_code: string | null;
+      readonly stand_aside: number | null;
     }>`
       SELECT
-        json_extract(s.strategy_json, '$.protection.targetProfitUsd') AS target_profit_usd,
-        json_extract(s.strategy_json, '$.protection.takeProfitPrice') AS take_profit_price,
-        json_extract(s.strategy_json, '$.standDownCode') AS stand_down_code
+        json_extract(s.strategy_json, '$.target.profitUsd') AS target_profit_usd,
+        json_extract(s.strategy_json, '$.target.price') AS take_profit_price,
+        json_extract(s.strategy_json, '$.intent') = 'stand_aside' AS stand_aside
       FROM momentum_strategy_versions s
       JOIN trading_missions m
         ON m.mission_id = s.mission_id AND m.strategy_version = s.version
@@ -290,7 +291,7 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       // only to plans that name the level they are aiming at.
       const targetNotional =
         plan === null ||
-        plan.stand_down_code !== null ||
+        plan.stand_aside === 1 ||
         plan.target_profit_usd === null ||
         plan.take_profit_price === null
           ? null

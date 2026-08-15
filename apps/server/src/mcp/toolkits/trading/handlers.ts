@@ -1006,7 +1006,7 @@ const handlers = {
               // the current plan states an intended entry notional, re-price
               // at that size, floored at the exchange minimum and capped by
               // the ceiling the fallback priced at. A mission without a plan,
-              // a stand-down, or a plan that names no size keeps the ceiling:
+              // a stand-aside, or a plan that names no size keeps the ceiling:
               // there is nothing better to price at.
               const strategies = yield* TradingStrategyService;
               const plan = yield* strategies.getCurrentStrategy(mission.id).pipe(
@@ -1015,10 +1015,10 @@ const handlers = {
                 Effect.catchCause(() => Effect.succeed(Option.none<TradingPlanState>())),
               );
               const currentPlan = Option.isSome(plan) ? plan.value : null;
-              const intended = currentPlan?.entryPlan.initialNotionalUsd;
+              const intended = currentPlan?.entry.initialNotionalUsd;
               const sized =
                 currentPlan === null ||
-                currentPlan.standDownCode !== undefined ||
+                currentPlan.intent === "stand_aside" ||
                 intended === undefined ||
                 intended <= 0
                   ? null

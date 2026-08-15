@@ -1,13 +1,14 @@
 /**
- * Trading plan state - spec §10.5.
+ * Trading plan state - spec §10.5, reshaped position-centric (plan 29 step 4.1).
  *
  * This stores the harness's published conclusions, not its hidden reasoning.
- * Every execution is gated against the version recorded here.
+ * The document is eight fields - market, intent, entry, stop, target,
+ * invalidation, reassess, because - and every execution is still gated against
+ * the version row that carries it.
  *
  * @module TradingPlan
  */
 import { Effect, Schema, SchemaIssue, SchemaTransformation } from "effect";
-import { PublishedStandDownCode } from "./decision.ts";
 import {
   PositiveUsdAmount,
   Price,
@@ -110,10 +111,10 @@ export const POC_STANDING_INSTRUCTION =
  *
  * A required key the harness omits is not a smaller mistake than a wrong value:
  * the Effect toolkit rejects the whole `trading_publish_plan` call with
- * `Missing key`, which costs the turn and tells the user nothing useful. Both
- * fields typed this way are ones the harness has been observed omitting, and
- * both are prose the publish path can fill from the belief summary. A weaker
- * constraint needs no migration — every persisted row still decodes.
+ * `Missing key`, which costs the turn and tells the user nothing useful. The
+ * one field typed this way (`because`) is prose the harness has been observed
+ * omitting. A weaker constraint needs no migration — every persisted row still
+ * decodes.
  */
 const OmittableProse = TradingText.pipe(Schema.withDecodingDefault(Effect.succeed("")));
 
@@ -191,16 +192,21 @@ export const AgentConditionInput = Schema.Union([
 export type AgentConditionInput = typeof AgentConditionInput.Type;
 
 /**
- * The shape of the trade a plan is making, as a free-text label the harness
- * names for its strategy. The closed enum this used to be (the four
- * continuation modes plus `range_reversion`) widened to free text because
- * nothing in the runtime branches on the value — the only two reads are a
- * passthrough copy in `TradingStrategyService` and a generic display in the
- * web client — so a closed list was a restraint with no enforcement behind
- * it. The five old values remain valid (they are strings).
+ * What the plan intends to do about a position — plan 29 step 4.1.
+ *
+ * Three values, one per state a mission can be in relative to the market:
+ * `long` and `short` name the position the plan is working toward, and
+ * `stand_aside` is the explicit no-position intent — this is where stand-downs
+ * live now. Telemetry keys on it (`intent === "stand_aside"`), entry sizing
+ * hints and take-profit placement skip when it is set, and the wakeup carries
+ * it as the plan's headline.
+ *
+ * Conditionality is prose, not a fourth value: a plan whose entry depends on
+ * something publishes `intent: "long"` with the dependency written in the
+ * trigger and in `because`. `both` was always that case wearing an enum value.
  */
-export const MomentumStrategyDirection = Schema.Literals(["long", "short", "both", "conditional"]);
-export type MomentumStrategyDirection = typeof MomentumStrategyDirection.Type;
+export const TradingPlanIntent = Schema.Literals(["long", "short", "stand_aside"]);
+export type TradingPlanIntent = typeof TradingPlanIntent.Type;
 
 export const MomentumOrderPreference = Schema.Literals([
   "marketable_ioc",
@@ -227,145 +233,104 @@ export function urgencyToOrderPreference(urgency: TradingUrgency): MomentumOrder
   return urgency === "patient" ? "post_only" : "marketable_ioc";
 }
 
-export const MomentumStrategyAction = Schema.Literals([
-  "analysing",
-  "waiting",
-  "entering",
-  "holding",
-  "scaling",
-  "reducing",
-  "exiting",
-  "reassessing",
-  "abandoning",
-]);
-export type MomentumStrategyAction = typeof MomentumStrategyAction.Type;
+/**
+ * The two phases a mission is in, derived from what it holds.
+ *
+ * The plan document used to carry a nine-value `currentAction` the model named
+ * itself; nothing branched on more than "is it waiting-like", and the honest
+ * source for that is the position: flat is waiting on a trigger, holding is
+ * managing an exposure. See {@link planPhase}.
+ */
+export type TradingPlanPhase = "waiting" | "holding";
 
 /**
- * The actions that mean "not in the market and not on the way in".
+ * Which phase the mission is in, from the signed position size.
  *
- * A plan in one of these states is waiting for something, so the levels its
- * entry conditions name are triggers it should have armed — see
- * `findUnarmedEntryConditions`. `entering` is excluded: an order is already
- * going in and the trigger has already been decided.
+ * This is plan 29 step 4.4's collapse, arrived early because the gates that
+ * used to read `currentAction` (unarmed-entry reporting on the wakeup and in
+ * the web client) need somewhere to read. Flat — `size === 0`, the same test
+ * the wakeup composer uses — means waiting; any non-zero size means holding.
  */
-const WAITING_LIKE_ACTIONS: ReadonlySet<MomentumStrategyAction> = new Set([
-  "analysing",
-  "waiting",
-  "reassessing",
-]);
-
-export function isWaitingLikeAction(action: MomentumStrategyAction): boolean {
-  return WAITING_LIKE_ACTIONS.has(action);
+export function planPhase(positionSize: number): TradingPlanPhase {
+  return positionSize === 0 ? "waiting" : "holding";
 }
 
-const MomentumBelief = Schema.Struct({
-  summary: TradingText,
-  regime: TradingText,
-  confidence: Schema.optional(Schema.Number),
-  evidence: Schema.Array(TradingText),
+/**
+ * The entry leg: what has to happen before size goes on, and how urgently.
+ *
+ * `triggers` are prose conditions (a bare string or the object form — see
+ * {@link AgentConditionInput}); the optional hints a trigger may carry are what
+ * the near-miss detectors read, so a plan that names a level can be told it
+ * armed nothing there. `urgency` is the only order-shape knob the model ever
+ * sees — the execution layer maps it to a preference and a wire time-in-force.
+ * There is deliberately no `orderPreference` here: that vocabulary is the
+ * server's, and the plan never names a time-in-force again.
+ */
+export const TradingPlanEntry = Schema.Struct({
+  triggers: Schema.Array(AgentConditionInput),
+  /** How urgently entries under this plan should land; defaults to `now`. */
+  urgency: TradingUrgency.pipe(Schema.withDecodingDefault(Effect.succeed("now"))),
+  initialNotionalUsd: Schema.optional(UsdAmount),
+  maximumIntendedNotionalUsd: Schema.optional(UsdAmount),
 });
+export type TradingPlanEntry = typeof TradingPlanEntry.Type;
 
 /**
- * The entry plan as the harness authors it: urgency in, orderPreference out.
- *
- * The harness states how urgently it wants entries under this plan to land; it
- * does not name a time-in-force. `orderPreference` remains the accepted and the
- * persisted form: every plan document already in `momentum_strategy_versions`
- * carries it, the web client renders it, and a publish that names it explicitly
- * still gets exactly what it named. A publish that names only `urgency` gets
- * the preference it derives, and what is persisted — and re-decoded on every
- * later read — is the preference, so the stored shape is unchanged for either
- * kind of author.
+ * The stop leg: how the position is protected. Stops are market orders on the
+ * wire; the price and planned-loss fields are the plan's own statement of
+ * both, unchanged from the `protection` struct they used to live in.
  */
-const MomentumEntryPlanWire = Schema.Struct({
-  /**
-   * Optional on input, always present on the decoded value.
-   *
-   * A required key the harness omits is not a smaller mistake than a wrong value
-   * — the Effect toolkit rejects the whole `trading_publish_plan` call with
-   * `Missing key`, which costs the turn and tells the user nothing useful. This
-   * is one of the two prose keys the harness has actually been observed
-   * omitting; the publish handler fills an empty one from the belief summary.
-   */
-  explanation: OmittableProse,
-  initialNotionalUsd: Schema.optional(UsdAmount),
-  maximumIntendedNotionalUsd: Schema.optional(UsdAmount),
-  /** How urgently entries under this plan should land. Defaults to `now`. */
-  urgency: Schema.optional(TradingUrgency),
-  /** The persisted form of urgency. An explicitly named value wins over one derived from `urgency`. */
-  orderPreference: Schema.optional(MomentumOrderPreference),
-  conditions: Schema.Array(AgentConditionInput),
+export const TradingPlanStop = Schema.Struct({
+  method: TradingText,
+  price: Schema.optional(Price),
+  maximumPlannedLossUsd: Schema.optional(UsdAmount),
 });
+export type TradingPlanStop = typeof TradingPlanStop.Type;
 
-/** What a published plan's entry leg carries once decoded: no urgency, always a preference. */
-const MomentumEntryPlanStored = Schema.Struct({
-  explanation: TradingText,
-  initialNotionalUsd: Schema.optional(UsdAmount),
-  maximumIntendedNotionalUsd: Schema.optional(UsdAmount),
-  orderPreference: MomentumOrderPreference,
-  conditions: Schema.Array(AgentConditionDescription),
+/**
+ * The target leg: what the position is aiming at. A plan may state it as a
+ * USD rung, a price, or both; a stand-aside plan states neither.
+ *
+ * `profitUsd` is the conservative rung the runtime arms a `pnl_above` watch at
+ * and the resting reduce-only ALO is priced from (see
+ * {@link takeProfitLimitPrice}) — both unchanged from when these fields lived
+ * under `protection`.
+ */
+export const TradingPlanTarget = Schema.Struct({
+  profitUsd: Schema.optional(PositiveUsdAmount),
+  price: Schema.optional(Price),
+  method: Schema.optional(TradingText),
 });
+export type TradingPlanTarget = typeof TradingPlanTarget.Type;
 
-const MomentumEntryPlan = MomentumEntryPlanWire.pipe(
-  Schema.decodeTo(
-    MomentumEntryPlanStored,
-    SchemaTransformation.transformOrFail({
-      // The one derivation: an explicit preference (every persisted row, and a
-      // publish that still names one) passes through untouched; otherwise the
-      // urgency maps, with `now` the default when both were omitted. Conditions
-      // arrive already decoded to objects by the wire union, so prose-string
-      // conditions are normalised here too.
-      decode: (
-        wire: typeof MomentumEntryPlanWire.Type,
-      ): Effect.Effect<typeof MomentumEntryPlanStored.Encoded> =>
-        Effect.succeed({
-          explanation: wire.explanation,
-          ...(wire.initialNotionalUsd === undefined
-            ? {}
-            : { initialNotionalUsd: wire.initialNotionalUsd }),
-          ...(wire.maximumIntendedNotionalUsd === undefined
-            ? {}
-            : { maximumIntendedNotionalUsd: wire.maximumIntendedNotionalUsd }),
-          orderPreference: wire.orderPreference ?? urgencyToOrderPreference(wire.urgency ?? "now"),
-          conditions: wire.conditions,
-        }),
-      // Encode drops urgency: the persisted document carries the preference it
-      // derived and nothing else, exactly the shape every existing row has.
-      encode: (
-        plan: typeof MomentumEntryPlanStored.Encoded,
-      ): Effect.Effect<typeof MomentumEntryPlanWire.Type> =>
-        Effect.succeed({
-          explanation: plan.explanation,
-          ...(plan.initialNotionalUsd === undefined
-            ? {}
-            : { initialNotionalUsd: plan.initialNotionalUsd }),
-          ...(plan.maximumIntendedNotionalUsd === undefined
-            ? {}
-            : { maximumIntendedNotionalUsd: plan.maximumIntendedNotionalUsd }),
-          orderPreference: plan.orderPreference,
-          conditions: plan.conditions,
-        }),
-    }),
+/**
+ * How long an untriggered plan stays fresh, in minutes — plan 29 step 4.1.
+ *
+ * After this long without an entry the plan should prompt a reassessment
+ * rather than sit armed forever (step 4.6 honors it; for now it is carried,
+ * bounded, and displayed). Required on the document, but `afterMinutes`
+ * decodes to a default when omitted so a row written without one stays sane.
+ */
+export const DEFAULT_REASSESS_AFTER_MINUTES = 90;
+
+export const TradingPlanReassess = Schema.Struct({
+  afterMinutes: Schema.Number.check(Schema.isGreaterThan(0)).pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_REASSESS_AFTER_MINUTES)),
   ),
-);
-
-const MomentumPositionManagement = Schema.Struct({
-  scaleInAllowed: Schema.Boolean,
-  scaleInConditions: Schema.Array(AgentConditionInput),
-  partialReductionAllowed: Schema.Boolean,
-  trailingMethod: Schema.optional(TradingText),
 });
+export type TradingPlanReassess = typeof TradingPlanReassess.Type;
 
 /**
  * The price a resting reduce-only take-profit limit rests at (plan 29 step
  * 2.5), derived from the plan's own target fields and the position.
  *
- * `protection.takeProfitPrice`, when the plan published one, IS the price.
- * Otherwise the plan states its target as a USD rung, and the price is derived
- * from the position's entry, direction-aware: a long banks by selling ABOVE
- * its entry, a short by buying BELOW it. Getting the sign wrong is not a
- * cosmetic defect; it would rest a reduce-only limit on the losing side of the
- * position where it fills immediately at a loss.
+ * `target.price`, when the plan published one, IS the price. Otherwise the
+ * plan states its target as a USD rung (`target.profitUsd` — `targetProfitUsd`
+ * before plan 29 step 4.1), and the price is derived from the position's
+ * entry, direction-aware: a long banks by selling ABOVE its entry, a short by
+ * buying BELOW it. Getting the sign wrong is not a cosmetic defect; it would
+ * rest a reduce-only limit on the losing side of the position where it fills
+ * immediately at a loss.
  *
  * Returns `null` when no usable target exists — no published price, no rung a
  * positive entry price and size can price, or no position to derive a
@@ -373,7 +338,7 @@ const MomentumPositionManagement = Schema.Struct({
  * take-profit", never as "keep whatever is there".
  */
 export function takeProfitLimitPrice(input: {
-  /** The plan's `protection.takeProfitPrice`, when it published one. */
+  /** The plan's `target.price`, when it published one. */
   readonly takeProfitPrice: number | null | undefined;
   /** The plan's conservative target rung, in USD of profit. */
   readonly targetProfitUsd: number | null | undefined;
@@ -397,129 +362,66 @@ export function takeProfitLimitPrice(input: {
   return input.positionSize > 0 ? input.entryPrice + move : input.entryPrice - move;
 }
 
-export const MomentumProtection = Schema.Struct({
-  stopMethod: TradingText,
-  stopPrice: Schema.optional(Price),
-  takeProfitMethod: Schema.optional(TradingText),
-  takeProfitPrice: Schema.optional(Price),
-  /**
-   * The unrealised PnL, in USD, at which this position should be closed or
-   * re-justified — the conservative rung of the published ladder.
-   *
-   * While a position is open the runtime arms a `pnl_above` watch at it. That
-   * wake is a decision point, not an instruction to close: the harness reads the
-   * book and the momentum and either banks (close, or reduce and keep a
-   * runner) or extends (republish at the next version with the base rung and a
-   * fresh target). Treating it as an automatic close is what turns a deliberately
-   * conservative estimate into a hard cap on every win.
-   *
-   * The number is gross of fees and funding — `pnl_above` fires on the
-   * exchange's unrealised PnL — so it has to clear the round trip on its own.
-   *
-   * Since plan 29 step 2.5 the server ALSO rests a reduce-only ALO at the
-   * price this target derives (see {@link takeProfitLimitPrice}), so
-   * the profit can be taken as a maker while the position is unattended. The
-   * `pnl_above` wake is unchanged and is still the decision point: the resting
-   * order banks the published rung, and the wake is where extending it is
-   * argued.
-   */
-  targetProfitUsd: PositiveUsdAmount,
-  /**
-   * The target ladder in prose: the conservative rung (published as
-   * `targetProfitUsd`), the base rung the position is extended to on a
-   * profit-target wake that still looks like momentum, and the extension rung
-   * bounded by the nearest structure — each net of the round-trip cost.
-   *
-   * Only one number can be armed as a watch, so this is where the other two
-   * live. Without them, the wake that fires at the conservative rung arrives
-   * with nowhere to extend to.
-   */
-  targetProfitRationale: Schema.optional(TradingText),
-  maximumPlannedLossUsd: Schema.optional(UsdAmount),
-});
-
 /**
- * One candidate the tournament considered and did not run — or the one it did.
+ * Every `TradingPlanState` field the harness authors — eight, one per line a
+ * position-centric plan needs (plan 29 step 4.1): what market, which way,
+ * how in, how out on the downside, how out on the upside, what would change
+ * the read, how long the plan stays fresh, and why any of it.
  *
- * Plan 27 E3: the publish carries the field so a declined strategy leaves a
- * record next to the chosen one, and the UI can render the comparison as a
- * plain list. `direction: "none"` is the no-trade candidate every tournament
- * includes.
- */
-export const ConsideredAlternative = Schema.Struct({
-  /** The playbook or setup kind considered, e.g. "range_reversion". */
-  strategy: TradingText,
-  direction: Schema.Literals(["long", "short", "none"]),
-  verdict: Schema.Literals(["chosen", "viable_not_best", "fails_gates", "no_setup"]),
-  /** One line on expectancy after costs — the arithmetic, not a mood. */
-  reason: TradingText,
-});
-export type ConsideredAlternative = typeof ConsideredAlternative.Type;
-
-/**
- * Every `TradingPlanState` field the harness authors.
+ * Everything the twenty-field document carried that was not one of those is
+ * either prose inside `because` (strategy names, indicators, regime,
+ * evidence, alternatives, the ladder beyond the conservative rung) or a
+ * runtime decision that never belonged in the document (exits, re-entries,
+ * position management, the model naming its own action).
  *
- * `version` and `updatedAt` are excluded because the server assigns them on
- * publish; see `PublishTradingPlanBody` in `./tools.ts`.
+ * `updatedAt` is excluded because the server assigns it on publish; see
+ * `PublishTradingPlanBody` in `./tools.ts`.
  */
 export const tradingPlanAuthoredFields = {
-  name: TradingText,
   market: TradingMarket,
 
-  mode: TradingText,
+  intent: TradingPlanIntent,
 
-  direction: MomentumStrategyDirection,
+  entry: TradingPlanEntry,
+
+  stop: TradingPlanStop,
+
+  target: TradingPlanTarget,
+
   /**
-   * `timeframes[0]` is the primary timeframe that drives the monitoring
-   * cadence (the runtime scales its reassessment floor off it). A strategy
-   * must name at least one timeframe.
+   * What would end the thesis without a trade: regime flips, the level the
+   * read turns on fails, time runs out. Prose — the old
+   * `abandonmentConditions` without the condition machinery. Exits and
+   * re-entries are runtime decisions made against a live position, not plan
+   * fields, and are gone.
    */
-  timeframes: Schema.Array(TradingTimeframe).check(Schema.isNonEmpty()),
+  invalidation: Schema.Array(TradingText),
 
-  belief: MomentumBelief,
-  entryPlan: MomentumEntryPlan,
-  positionManagement: MomentumPositionManagement,
-  protection: MomentumProtection,
-
-  exitConditions: Schema.Array(AgentConditionInput),
-  abandonmentConditions: Schema.Array(AgentConditionInput),
-  reentryConditions: Schema.Array(AgentConditionInput),
-
-  currentAction: MomentumStrategyAction,
+  reassess: TradingPlanReassess,
 
   /**
-   * Why this accepted publish declined to enter. Omit when the plan carries a
-   * viable setup or an open position. Explicit attribution is what lets the
-   * decision funnel distinguish a quiet market from a move eaten by costs.
-   */
-  standDownCode: Schema.optional(PublishedStandDownCode),
-
-  /** See `MomentumEntryPlan.explanation` — optional in, always present out. */
-  explanation: OmittableProse,
-
-  /**
-   * The plan in plain language — 2-4 sentences a non-trader can follow, no
-   * tool or field names, no scores. It must answer: what is the market doing,
-   * what is planned and in which direction, what triggers it, and roughly
-   * what is risked versus expected.
+   * The narrative: why this plan, in plain language — the strategy and its
+   * indicators, the regime read, the evidence, and what the plan in plain
+   * terms is trying to do. Absorbs `belief.summary`, `belief.regime`,
+   * `belief.evidence[]`, `explanation`, `plainSummary` and the target
+   * rationale.
    *
-   * Doctrine requires it on every publish (the tool description states the
-   * constraints); the schema decodes an omitted one as `""` so strategies
-   * persisted before the field existed still decode — same trade-off as
-   * `explanation` above.
+   * Decoded as `""` when omitted — a required key the harness leaves out is
+   * not a smaller mistake than a wrong value, and rejecting the whole publish
+   * over it costs the turn. Same trade-off the old prose fields made.
    */
-  plainSummary: OmittableProse,
-
-  /**
-   * The tournament's losing candidates, one row each — see
-   * {@link ConsideredAlternative}. Optional: a publish that ran no tournament
-   * (a pure stand-down on unreadable data, say) has nothing to record here.
-   */
-  alternativesConsidered: Schema.optional(Schema.Array(ConsideredAlternative)),
+  because: OmittableProse,
 } as const;
 
+/**
+ * The persisted plan document — the eight authored fields plus `updatedAt`.
+ *
+ * No `version`: the plan carries no version number of its own. The
+ * `momentum_strategy_versions` table keys its rows and the mission's
+ * `strategy_version` column points at the current one; neither is the
+ * document's business.
+ */
 export const TradingPlanState = Schema.Struct({
-  version: Schema.Number.check(Schema.isGreaterThanOrEqualTo(1)),
   ...tradingPlanAuthoredFields,
   updatedAt: UnixMillis,
 });

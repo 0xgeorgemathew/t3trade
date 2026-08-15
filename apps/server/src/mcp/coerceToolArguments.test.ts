@@ -218,7 +218,7 @@ describe("coerceToolArguments", () => {
    *   before the node's own `type` concludes "accepts nothing" and coerces no
    *   numeric string at all, on any real tool.
    * - A schema emitted more than once is hoisted into `$defs` and referenced by
-   *   pointer (`exitConditions.items` is `{"$ref": "#/$defs/Union_"}`), so a
+   *   pointer (`entry.triggers.items` is `{"$ref": "#/$defs/Union_"}`), so a
    *   walker that does not resolve `$ref` never descends into it.
    */
   describe("against the real trading tool schemas", () => {
@@ -228,33 +228,46 @@ describe("coerceToolArguments", () => {
       return Tool.getJsonSchema(tool);
     };
 
-    // Both shapes below cost a `trading_publish_plan` round trip each on
-    // 2026-08-14: `timeframes` came back as labelled records and
-    // `scaleInConditions` as `{}`, and each rejection was worth a full retry of
-    // the whole strategy.
+    // The shapes below cost a `trading_publish_plan` round trip each on
+    // 2026-08-14: literals came back as labelled records and lists as `{}`.
+    // Ported to the eight-field plan: the labelled literal a trigger can carry
+    // is its `timeframe`.
     it("unwraps a labelled timeframe record to the literal it carries", () => {
       const coerced = coerceToolArguments(schemaFor("trading_publish_plan"), {
         expectedVersion: 0,
         strategy: {
-          timeframes: [
-            { name: "5m", role: "thesis" },
-            { name: "15m", role: "confirmation" },
-          ],
-          positionManagement: { scaleInConditions: {} },
+          entry: {
+            triggers: [
+              {
+                description: "thesis",
+                timeframe: { name: "5m", role: "thesis" },
+                priceLevel: "1800",
+              },
+              { description: "confirm", timeframe: { name: "15m", role: "confirmation" } },
+            ],
+          },
         },
-      }) as { strategy: { timeframes: unknown; positionManagement: Record<string, unknown> } };
+      }) as {
+        strategy: { entry: { triggers: ReadonlyArray<Record<string, unknown>> } };
+      };
 
-      expect(coerced.strategy.timeframes).toEqual(["5m", "15m"]);
-      expect(coerced.strategy.positionManagement.scaleInConditions).toEqual([]);
+      expect(coerced.strategy.entry.triggers).toEqual([
+        { description: "thesis", timeframe: "5m", priceLevel: 1800 },
+        { description: "confirm", timeframe: "15m" },
+      ]);
     });
 
     it("leaves a wrapper whose value is not a declared literal alone", () => {
       const coerced = coerceToolArguments(schemaFor("trading_publish_plan"), {
         expectedVersion: 0,
-        strategy: { timeframes: [{ name: "4h" }] },
-      }) as { strategy: { timeframes: ReadonlyArray<unknown> } };
+        strategy: { entry: { triggers: [{ description: "x", timeframe: { name: "4h" } }] } },
+      }) as {
+        strategy: { entry: { triggers: ReadonlyArray<unknown> } };
+      };
 
-      expect(coerced.strategy.timeframes).toEqual([{ name: "4h" }]);
+      expect(coerced.strategy.entry.triggers).toEqual([
+        { description: "x", timeframe: { name: "4h" } },
+      ]);
     });
 
     it('coerces maxBars: "100" on trading_get_market_history', () => {
@@ -305,31 +318,32 @@ describe("coerceToolArguments", () => {
       ).toEqual({ missionId: "mission_1", quoteId: "quote_1" });
     });
 
-    it("coerces through a $ref'd condition and leaves a prose condition a string", () => {
+    it("coerces through a $ref'd trigger and leaves a prose trigger a string", () => {
       const coerced = coerceToolArguments(schemaFor("trading_publish_plan"), {
         expectedVersion: "0",
         strategy: {
-          protection: { stopMethod: "fixed", stopPrice: "1800", targetProfitUsd: "25" },
-          // `exitConditions.items` is a `$ref` into `$defs`: the object branch
+          stop: { method: "fixed", price: "1800" },
+          target: { profitUsd: "25" },
+          // `entry.triggers.items` is a `$ref` into `$defs`: the object branch
           // must still have its `priceLevel` coerced, and the prose branch must
-          // survive untouched so the string-condition input stays valid.
-          exitConditions: [
-            { description: "back above the level", priceLevel: "1865.9" },
-            "bank it",
-          ],
+          // survive untouched so the string-trigger input stays valid.
+          entry: {
+            triggers: [{ description: "back above the level", priceLevel: "1865.9" }, "bank it"],
+          },
         },
       }) as {
         expectedVersion: unknown;
-        strategy: { protection: Record<string, unknown>; exitConditions: ReadonlyArray<unknown> };
+        strategy: {
+          stop: Record<string, unknown>;
+          target: Record<string, unknown>;
+          entry: { triggers: ReadonlyArray<unknown> };
+        };
       };
 
       expect(coerced.expectedVersion).toBe(0);
-      expect(coerced.strategy.protection).toEqual({
-        stopMethod: "fixed",
-        stopPrice: 1800,
-        targetProfitUsd: 25,
-      });
-      expect(coerced.strategy.exitConditions).toEqual([
+      expect(coerced.strategy.stop).toEqual({ method: "fixed", price: 1800 });
+      expect(coerced.strategy.target).toEqual({ profitUsd: 25 });
+      expect(coerced.strategy.entry.triggers).toEqual([
         { description: "back above the level", priceLevel: 1865.9 },
         "bank it",
       ]);

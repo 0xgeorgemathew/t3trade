@@ -24,7 +24,6 @@
 import {
   deriveDecisionOutcome,
   deriveStandDownCode,
-  type PublishedStandDownCode,
   type TradingDecisionOutcome,
   type TradingRunFacts,
 } from "@t3tools/trading-contracts/decision";
@@ -215,40 +214,27 @@ const readBinding = (harnessJson: string): { provider: string | null; model: str
 const readPlan = (
   strategyJson: string | null,
 ): {
-  mode: string | null;
-  standDown: boolean;
-  standDownCode: PublishedStandDownCode | undefined;
+  standAside: boolean;
   armedEntry: boolean;
 } => {
   if (strategyJson === null) {
-    return { mode: null, standDown: false, standDownCode: undefined, armedEntry: false };
+    return { standAside: false, armedEntry: false };
   }
   try {
     const plan = JSON.parse(strategyJson) as {
-      readonly mode?: unknown;
-      readonly standDownCode?: unknown;
-      readonly entryPlan?: { readonly conditions?: unknown };
+      readonly intent?: unknown;
+      readonly entry?: { readonly triggers?: unknown };
     };
-    const conditions = plan.entryPlan?.conditions;
-    const explicitCode =
-      typeof plan.standDownCode === "string" &&
-      [
-        "insufficient_volatility",
-        "costs_exceed_target",
-        "regime_unclear",
-        "data_unavailable",
-        "tool_call_failed",
-      ].includes(plan.standDownCode)
-        ? (plan.standDownCode as PublishedStandDownCode)
-        : undefined;
+    const triggers = plan.entry?.triggers;
     return {
-      mode: typeof plan.mode === "string" ? plan.mode : null,
-      standDown: explicitCode !== undefined,
-      standDownCode: explicitCode,
-      armedEntry: Array.isArray(conditions) && conditions.length > 0,
+      // The old schema keyed this on a published `standDownCode`; the plan
+      // document no longer carries one (plan 29 step 4.1). Standing aside is
+      // the explicit no-position intent, and it is the whole signal.
+      standAside: plan.intent === "stand_aside",
+      armedEntry: Array.isArray(triggers) && triggers.length > 0,
     };
   } catch {
-    return { mode: null, standDown: false, standDownCode: undefined, armedEntry: false };
+    return { standAside: false, armedEntry: false };
   }
 };
 
@@ -294,8 +280,7 @@ export const settleRunDecision = (
       toolErrorCount: run.tool_error_count,
       ...(run.first_tool_error !== null ? { firstToolError: run.first_tool_error } : {}),
       publishedPlan: run.published_plan === 1,
-      publishedStandDown: run.published_plan === 1 && plan.standDown,
-      ...(plan.standDownCode === undefined ? {} : { publishedStandDownCode: plan.standDownCode }),
+      publishedStandDown: run.published_plan === 1 && plan.standAside,
       hasArmedEntry: plan.armedEntry,
       executeAttempted: run.execute_attempted === 1,
       ...(run.first_preview_refusal !== null
@@ -324,6 +309,9 @@ export const settleRunDecision = (
     const latency =
       run.started_at === null ? null : Math.max(0, input.completedAt - run.started_at);
 
+    // `playbook` is null now: the plan document stopped naming a mode (plan 29
+    // step 4.1 — the strategy name lives in `because` as prose), and a run
+    // settles exactly once, so this only stamps runs settling from here on.
     yield* sql`
       UPDATE trading_harness_runs SET
         outcome = ${outcome},
@@ -331,7 +319,7 @@ export const settleRunDecision = (
         provider = ${binding.provider},
         model = ${binding.model},
         market = ${mission?.market ?? null},
-        playbook = ${plan.mode},
+        playbook = null,
         strategy_version = ${mission?.strategy_version ?? null},
         authority_version = ${mission?.authority_version ?? null},
         latency_ms = ${latency}

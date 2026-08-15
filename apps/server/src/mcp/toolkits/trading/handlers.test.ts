@@ -45,38 +45,18 @@ const fakeEnvironment = ServerEnvironment.ServerEnvironment.of({
   getDescriptor: Effect.die("unused"),
 });
 
-const strategyBody = (name: string): PublishTradingPlanBody => ({
-  name,
+const strategyBody = (because: string): PublishTradingPlanBody => ({
   market: "ETH",
-  mode: "breakout_continuation",
-  direction: "long",
-  timeframes: ["5m"],
-  belief: {
-    summary: "ETH is breaking the overnight range on expanding volume.",
-    regime: "trending",
-    evidence: ["range high reclaimed", "volume above 20-period average"],
+  intent: "long",
+  entry: {
+    triggers: [{ description: "5m candle closes above 3,200" }],
+    urgency: "now",
   },
-  entryPlan: {
-    explanation: "Enter on a 5m close above the range high.",
-    orderPreference: "marketable_ioc",
-    conditions: [{ description: "5m candle closes above 3,200" }],
-  },
-  positionManagement: {
-    scaleInAllowed: false,
-    scaleInConditions: [],
-    partialReductionAllowed: true,
-  },
-  protection: {
-    stopMethod: "Structural stop beneath the breakout candle low.",
-    targetProfitUsd: 20,
-  },
-  exitConditions: [{ description: "Momentum stalls for three consecutive candles." }],
-  abandonmentConditions: [{ description: "Range high is lost on a 15m close." }],
-  reentryConditions: [],
-  currentAction: "waiting",
-  explanation: "Momentum continuation on the overnight range break.",
-  plainSummary:
-    "ETH broke above its overnight range; I plan to buy the breakout and sell if it falls back in.",
+  stop: { method: "Structural stop beneath the breakout candle low." },
+  target: { profitUsd: 20 },
+  invalidation: ["Range high is lost on a 15m close."],
+  reassess: { afterMinutes: 90 },
+  because,
 });
 
 /**
@@ -287,14 +267,14 @@ it.effect("serves trading_get_mission and a versioned publish over the real /mcp
       assert.equal(published.result.isError, false);
       assert.equal(published.result.structuredContent.outcome, "accepted");
       assert.equal(published.result.structuredContent.strategyVersion, 1);
-      assert.equal(published.result.structuredContent.strategy.version, 1);
+      assert.equal(published.result.structuredContent.strategy.intent, "long");
       assert.deepStrictEqual(published.result.structuredContent.supersededWatchIds, []);
 
       const after = yield* callTool(BOUND_THREAD, "trading_get_mission", {
         missionId: MISSION_ID,
       });
       assert.equal(after.result.structuredContent.strategyVersion, 1);
-      assert.equal(after.result.structuredContent.strategy.name, "overnight range break");
+      assert.equal(after.result.structuredContent.strategy.because, "overnight range break");
 
       // The accepted publish was announced on the orchestration engine, which
       // is what puts it on the server's ordered WS push path — and so was the
@@ -334,7 +314,7 @@ it.effect("rejects a stale expectedVersion over MCP and leaves v(n) intact", () 
         missionId: MISSION_ID,
       });
       assert.equal(current.result.structuredContent.strategyVersion, 1);
-      assert.equal(current.result.structuredContent.strategy.name, "v1");
+      assert.equal(current.result.structuredContent.strategy.because, "v1");
     }),
   ),
 );
@@ -578,7 +558,7 @@ it.effect("resolves an omitted missionId to the bound mission for a write tool",
       // The bound mission now carries the published strategy.
       const after = yield* callTool(BOUND_THREAD, "trading_get_mission", {});
       assert.equal(after.result.structuredContent.strategyVersion, 1);
-      assert.equal(after.result.structuredContent.strategy.name, "no missionId supplied");
+      assert.equal(after.result.structuredContent.strategy.because, "no missionId supplied");
     }),
   ),
 );
@@ -602,20 +582,23 @@ it.effect("still rejects a wrong missionId with mission_not_bound_to_thread", ()
   ),
 );
 
-it.effect("decodes a prose-string exit condition and round-trips it as the object shape", () =>
+it.effect("decodes a prose-string entry trigger and round-trips it as the object shape", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
       // A bare prose string where the schema asked for `{ description }` used to
       // fail the whole publish. The lenient input union decodes it to the object
-      // shape, and the persisted strategy carries the object back out.
-      const strategyBodyWithProseExit = {
-        ...strategyBody("prose exit condition"),
-        exitConditions: ["Exit if a finalized 1m candle closes back above 1865.9."],
+      // shape, and the persisted plan carries the object back out.
+      const strategyBodyWithProseTrigger = {
+        ...strategyBody("prose trigger"),
+        entry: {
+          triggers: ["Enter if a finalized 1m candle closes above 3,201."],
+          urgency: "now",
+        },
       };
       const published = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
         missionId: MISSION_ID,
         expectedVersion: 0,
-        strategy: strategyBodyWithProseExit,
+        strategy: strategyBodyWithProseTrigger,
       });
       assert.equal(published.result.isError, false);
       assert.equal(published.result.structuredContent.outcome, "accepted");
@@ -623,11 +606,11 @@ it.effect("decodes a prose-string exit condition and round-trips it as the objec
       const after = yield* callTool(BOUND_THREAD, "trading_get_mission", {
         missionId: MISSION_ID,
       });
-      const exitConditions = after.result.structuredContent.strategy.exitConditions;
-      assert.equal(exitConditions.length, 1);
+      const triggers = after.result.structuredContent.strategy.entry.triggers;
+      assert.equal(triggers.length, 1);
       // The persisted/encoded form is the object shape, not the bare string.
-      assert.deepStrictEqual(exitConditions[0], {
-        description: "Exit if a finalized 1m candle closes back above 1865.9.",
+      assert.deepStrictEqual(triggers[0], {
+        description: "Enter if a finalized 1m candle closes above 3,201.",
       });
     }),
   ),

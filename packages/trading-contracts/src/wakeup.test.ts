@@ -76,36 +76,19 @@ describe("TradingHarnessWakeup", () => {
   const decode = Schema.decodeUnknownSync(TradingHarnessWakeup);
 
   const strategy = {
-    version: 3,
-    name: "ETH 1m trend continuation",
     market: "ETH",
-    mode: "breakout_continuation",
-    direction: "long",
-    timeframes: ["1m"],
-    belief: {
-      summary: "Higher lows on the 1m.",
-      regime: "trending",
-      confidence: 0.6,
-      evidence: ["1m close 4000"],
-    },
-    entryPlan: {
-      explanation: "Enter on a reclaim.",
+    intent: "long",
+    entry: {
+      triggers: [{ description: "reclaim of the prior high" }],
+      urgency: "now",
       initialNotionalUsd: 200,
       maximumIntendedNotionalUsd: 400,
-      orderPreference: "marketable_ioc",
-      conditions: [{ description: "reclaim of the prior high" }],
     },
-    positionManagement: {
-      scaleInAllowed: false,
-      scaleInConditions: [],
-      partialReductionAllowed: true,
-    },
-    protection: { stopMethod: "under the last swing low", stopPrice: 3_900, targetProfitUsd: 15 },
-    exitConditions: [{ description: "a close under 3900" }],
-    abandonmentConditions: [],
-    reentryConditions: [],
-    currentAction: "holding",
-    explanation: "Long the 1m reclaim.",
+    stop: { method: "under the last swing low", price: 3_900 },
+    target: { profitUsd: 15 },
+    invalidation: ["a close under 3900"],
+    reassess: { afterMinutes: 90 },
+    because: "Long the 1m reclaim; higher lows on the 1m in a trending regime.",
     updatedAt: 1_000_000,
   };
 

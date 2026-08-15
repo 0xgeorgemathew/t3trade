@@ -167,11 +167,12 @@ const encodeBootstrapText = Schema.encodeSync(Schema.fromJsonString(BootstrapWak
  */
 const FIRST_TURN_CONTRACT =
   "Until a plan exists, the turn owes one: end it with trading_publish_plan, " +
-  "whatever you decide. If the costs or the market do not justify entering, " +
-  "publish the stand-down: standDownCode naming the reason, the reasoning in " +
-  "rationale, and entryPlan.conditions carrying the price levels that would " +
-  "change the read. Once a plan is published, revise it when it changes — a " +
-  "stand-down does not re-publish unchanged. A declined entry is a plan, not " +
+  "whatever you decide. The plan is eight fields: market, intent, entry, " +
+  "stop, target, invalidation, reassess, because. If the costs or the market " +
+  'do not justify entering, publish intent "stand_aside" — the reasoning in ' +
+  "because, and entry.triggers carrying the price levels that would change " +
+  "the read. Once a plan is published, revise it when it changes — a " +
+  "stand-aside does not re-publish unchanged. A declined entry is a plan, not " +
   "a missing one.";
 
 /**
@@ -187,7 +188,7 @@ const CAUSES_ALLOWED_WITHOUT_STRATEGY: ReadonlySet<TradingHarnessRunCause> = new
 
 const PUBLISH_OVERDUE_NOTE =
   "This mission has already taken a turn and still has no published plan. " +
-  "Publish one now — including the stand-down shape if the read has not changed.";
+  "Publish one now — including a stand-aside plan if the read has not changed.";
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -388,7 +389,9 @@ const make = Effect.gen(function* () {
    * This is the runtime's half of the wake-and-decide profit target: the
    * strategy names the win worth banking, the runtime wakes the harness when
    * the unrealised PnL reaches it, and the harness decides whether to bank it
-   * or republish with a higher target.
+   * or republish with a higher target. A plan that names no target rung arms
+   * nothing — the target leg is optional on the new document (plan 29 step
+   * 4.1), and a stand-aside plan never reaches here at all.
    */
   const ensureProfitTargetArmed = (input: {
     readonly missionId: string;
@@ -396,11 +399,14 @@ const make = Effect.gen(function* () {
     readonly armed: ReadonlyArray<PersistedWatch>;
   }) =>
     Effect.gen(function* () {
+      const targetProfitUsd = input.strategy.target.profitUsd;
+      if (targetProfitUsd === undefined) return;
+
       const alreadyArmed = input.armed.some(
         (w) =>
           w.status === "active" &&
           w.watch.type === "pnl_above" &&
-          w.watch.valueUsd === input.strategy.protection.targetProfitUsd,
+          w.watch.valueUsd === targetProfitUsd,
       );
       if (alreadyArmed) return;
 
@@ -409,14 +415,14 @@ const make = Effect.gen(function* () {
         watch: {
           type: "pnl_above",
           market: input.strategy.market,
-          valueUsd: input.strategy.protection.targetProfitUsd,
+          valueUsd: targetProfitUsd,
         },
         armedReason: "profit_target",
       });
       yield* Effect.logInfo("TradingTurnCoordinator: armed the profit-target watch", {
         missionId: input.missionId,
         watchId: watch.id,
-        targetProfitUsd: input.strategy.protection.targetProfitUsd,
+        targetProfitUsd,
       });
     });
 

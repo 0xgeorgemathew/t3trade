@@ -17,52 +17,31 @@ const layer = it.layer(
   ),
 );
 
-const body = (name: string): PublishTradingPlanBody => ({
-  name,
+/** A plan body as the eight-field document defines it (plan 29 step 4.1). */
+const body = (because: string): PublishTradingPlanBody => ({
   market: "ETH",
-  mode: "breakout_continuation",
-  direction: "long",
-  timeframes: ["5m"],
-  belief: {
-    summary: "Breakout confirmed on rising relative volume.",
-    regime: "trending",
-    evidence: ["5m close 3748.9"],
+  intent: "long",
+  entry: {
+    triggers: [{ description: "Retest of 3,718 holds" }],
+    urgency: "now",
   },
-  entryPlan: {
-    explanation: "Enter on a retest that holds.",
-    orderPreference: "marketable_ioc",
-    conditions: [{ description: "Retest of 3,718 holds" }],
-  },
-  positionManagement: {
-    scaleInAllowed: true,
-    scaleInConditions: [],
-    partialReductionAllowed: true,
-  },
-  protection: {
-    stopMethod: "Below the last accepted swing low",
-    stopPrice: 3_652,
-    targetProfitUsd: 25,
-  },
-  exitConditions: [{ description: "5m close under 3,690" }],
-  abandonmentConditions: [],
-  reentryConditions: [],
-  currentAction: "waiting",
-  explanation: "Waiting for the retest.",
-  plainSummary: "ETH just broke higher; I plan to buy if the breakout level holds on a dip.",
+  stop: { method: "Below the last accepted swing low", price: 3_652 },
+  target: { profitUsd: 25 },
+  invalidation: [],
+  reassess: { afterMinutes: 90 },
+  because,
 });
 
 /**
- * The same body with both `explanation` keys absent from the wire input — the
- * shape the model actually sent when `trading_publish_plan` failed with
- * `Missing key ["strategy"]["explanation"]`. It has to go through the decoder
- * to prove the schema accepts the omission, not just the publish path.
+ * The same body with `because` absent from the wire input — the shape a model
+ * that skips narrative sends. It has to go through the decoder to prove the
+ * schema accepts the omission, not just the publish path.
  */
 const decodePlanBody = Schema.decodeUnknownSync(PublishTradingPlanBody);
 
-const bodyWithoutExplanations = (name: string): PublishTradingPlanBody => {
-  const { explanation: _top, entryPlan, ...rest } = body(name);
-  const { explanation: _entry, ...entryPlanRest } = entryPlan;
-  return decodePlanBody({ ...rest, entryPlan: entryPlanRest });
+const bodyWithoutBecause = (because: string): PublishTradingPlanBody => {
+  const { because: _dropped, ...rest } = body(because);
+  return decodePlanBody(rest);
 };
 
 const setup = Effect.gen(function* () {
@@ -126,14 +105,16 @@ layer("trading_publish_plan (§14.3)", (it) => {
       const result = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
         expectedVersion: 0,
-        strategy: body("v1"),
+        strategy: body("v1: breakout thesis"),
       });
 
       assert.equal(result.outcome, "accepted");
       if (result.outcome === "accepted") {
         assert.equal(result.strategyVersion, 1);
-        assert.equal(result.strategy.version, 1);
-        assert.equal(result.strategy.name, "v1");
+        assert.equal(result.strategy.intent, "long");
+        assert.equal(result.strategy.because, "v1: breakout thesis");
+        // The document carries no version of its own; the row does.
+        assert.equal("version" in result.strategy, false);
         // The server stamps updatedAt from the clock; the harness never sends it.
         assert.equal(typeof result.strategy.updatedAt, "number");
       }
@@ -153,7 +134,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
         const result = yield* strategies.publishMomentumStrategy({
           missionId: "mission_1",
           expectedVersion,
-          strategy: body(`v${expectedVersion + 1}`),
+          strategy: body(`v${expectedVersion + 1} thesis`),
         });
         assert.equal(result.outcome, "accepted");
         if (result.outcome === "accepted") {
@@ -163,8 +144,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
 
       const current = yield* strategies.getCurrentStrategy("mission_1");
       assert.ok(Option.isSome(current));
-      assert.equal(Option.getOrThrow(current).version, 3);
-      assert.equal(Option.getOrThrow(current).name, "v3");
+      assert.equal(Option.getOrThrow(current).because, "v3 thesis");
     }),
   );
 
@@ -176,7 +156,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
         expectedVersion: 0,
-        strategy: body("v1"),
+        strategy: body("v1 thesis"),
       });
 
       const stale = yield* strategies.publishMomentumStrategy({
@@ -193,8 +173,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
 
       // The accepted v1 still stands.
       const current = yield* strategies.getCurrentStrategy("mission_1");
-      assert.equal(Option.getOrThrow(current).name, "v1");
-      assert.equal(Option.getOrThrow(current).version, 1);
+      assert.equal(Option.getOrThrow(current).because, "v1 thesis");
     }),
   );
 
@@ -349,54 +328,61 @@ layer("trading_publish_plan (§14.3)", (it) => {
   );
 
   // -------------------------------------------------------------------------
-  // Target validation. `targetProfitUsd` is the one published number the
-  // runtime acts on unprompted — it arms a `pnl_above` watch at it — so it is
-  // the one worth checking before the publish lands.
+  // The target leg. `target.profitUsd` is the one published number the runtime
+  // acts on unprompted — it arms a `pnl_above` watch at it — so it is the one
+  // worth checking before the publish lands.
   // -------------------------------------------------------------------------
 
-  const withProtection = (
-    name: string,
-    protection: Partial<PublishTradingPlanBody["protection"]>,
+  const withTarget = (
+    because: string,
+    target: Partial<PublishTradingPlanBody["target"]>,
   ): PublishTradingPlanBody => {
-    const base = body(name);
-    return { ...base, protection: { ...base.protection, ...protection } };
+    const base = body(because);
+    return { ...base, target: { ...base.target, ...target } };
   };
 
-  // A range scalp is published through the same tool under the same checks —
-  // the target validation is mode-agnostic on purpose. What has to survive the
-  // trip is the pair that says what kind of trade it is: `range_reversion` with
-  // a boundary on each side, which is direction `both`.
-  it.effect("round-trips a range_reversion strategy without degrading it", () =>
+  // A short plan and a stand-aside publish through the same tool under the same
+  // checks — the intent is mode-agnostic on purpose. What has to survive the
+  // trip is what the plan says it is: the side it works, or standing aside.
+  it.effect("round-trips a short plan and a stand-aside plan without degrading either", () =>
     Effect.gen(function* () {
       yield* setup;
       const strategies = yield* TradingStrategyService;
-      const base = body("ETH 1m range reversion");
 
-      const result = yield* strategies.publishMomentumStrategy({
+      const short = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
         expectedVersion: 0,
         strategy: {
-          ...base,
-          mode: "range_reversion",
-          direction: "both",
-          timeframes: ["1m"],
-          belief: { ...base.belief, regime: "ranging", summary: "Range holding, $7.30 tall." },
+          ...body("fading the extended leg"),
+          intent: "short",
         },
       });
+      assert.equal(short.outcome, "accepted");
 
-      assert.equal(result.outcome, "accepted");
+      const aside = yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedVersion: 1,
+        strategy: {
+          ...withTarget("costs exceed the move on offer", {}),
+          intent: "stand_aside",
+          entry: { triggers: [], urgency: "now" },
+          target: {},
+        },
+      });
+      assert.equal(aside.outcome, "accepted");
+
       const current = yield* strategies.getCurrentStrategy("mission_1");
       assert.ok(Option.isSome(current));
       const strategy = Option.getOrThrow(current);
-      assert.equal(strategy.mode, "range_reversion");
-      assert.equal(strategy.direction, "both");
+      assert.equal(strategy.intent, "stand_aside");
+      assert.equal(strategy.target.profitUsd, undefined);
     }),
   );
 
   // Plan 29 step 3.2: the target-basis ceremony is gone. Nothing grades where
-  // `targetProfitUsd` came from any more — a target with no derivation beside
-  // it, or one that disagrees with its own reasoning, publishes like any other,
-  // and the next wake is where the number is weighed.
+  // the target came from any more — a target with no derivation beside it, or
+  // one that disagrees with its own reasoning, publishes like any other, and
+  // the next wake is where the number is weighed.
   it.effect("publishes a target no derivation stands beside", () =>
     Effect.gen(function* () {
       yield* setup;
@@ -405,7 +391,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       const result = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
         expectedVersion: 0,
-        strategy: withProtection("no basis", { targetProfitUsd: 90 }),
+        strategy: withTarget("no derivation beside the rung", { profitUsd: 90 }),
       });
 
       assert.equal(result.outcome, "accepted");
@@ -427,9 +413,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       const result = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
         expectedVersion: 0,
-        strategy: withProtection("too small", {
-          targetProfitUsd: 1.7,
-        }),
+        strategy: withTarget("too small for the round trip", { profitUsd: 1.7 }),
       });
 
       assert.equal(result.outcome, "accepted");
@@ -471,28 +455,32 @@ layer("trading_publish_plan (§14.3)", (it) => {
         expectedVersion: 0,
         strategy: {
           ...verbose,
-          explanation: "e".repeat(5_000),
-          belief: { ...verbose.belief, summary: "s".repeat(5_000) },
+          because: "b".repeat(5_000),
+          entry: {
+            ...verbose.entry,
+            triggers: [{ description: "d".repeat(5_000) }],
+          },
         },
       });
 
       assert.equal(result.outcome, "accepted");
       if (result.outcome === "accepted") {
-        assert.equal(result.strategy.explanation.length, 601);
-        assert.equal(result.strategy.belief.summary.length, 601);
+        assert.equal(result.strategy.because.length, 601);
+        assert.equal(result.strategy.entry.triggers[0]?.description.length, 601);
         // Short fields are untouched.
-        assert.equal(result.strategy.entryPlan.explanation, "Enter on a retest that holds.");
+        assert.equal(result.strategy.stop.method, "Below the last accepted swing low");
         assert.deepEqual([...result.warnings].sort(), [
-          "belief.summary truncated to 600 chars",
-          "explanation truncated to 600 chars",
+          "because truncated to 600 chars",
+          "entry.triggers[0].description truncated to 600 chars",
         ]);
       }
     }),
   );
 
-  // The observed failure: the model omitted `strategy.explanation` and the
-  // toolkit rejected the whole call with `Missing key`, costing the turn.
-  it.effect("accepts a plan that omits its explanation, filling it from the belief", () =>
+  // The observed failure, in its new shape: the model omits the narrative and
+  // the toolkit would have rejected the whole call with `Missing key`, costing
+  // the turn. `because` decodes as "" instead.
+  it.effect("accepts a plan that omits because, decoding it as empty prose", () =>
     Effect.gen(function* () {
       yield* setup;
       const strategies = yield* TradingStrategyService;
@@ -500,19 +488,16 @@ layer("trading_publish_plan (§14.3)", (it) => {
       const result = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
         expectedVersion: 0,
-        strategy: bodyWithoutExplanations("lenient"),
+        strategy: bodyWithoutBecause("lenient"),
       });
 
       assert.equal(result.outcome, "accepted");
       if (result.outcome === "accepted") {
-        assert.equal(result.strategy.explanation, "Breakout confirmed on rising relative volume.");
-        assert.equal(
-          result.strategy.entryPlan.explanation,
-          "Breakout confirmed on rising relative volume.",
-        );
+        assert.equal(result.strategy.because, "");
       }
     }),
   );
+
   // `getCurrentStrategy` answers what the mission believes now. A harness that
   // has republished three times could not see what it believed before, which is
   // what "was the last target the right rung?" needs.
@@ -537,10 +522,10 @@ layer("trading_publish_plan (§14.3)", (it) => {
       assert.equal(history.length, 2);
       assert.equal(history[0]?.version, 2);
       assert.equal(history[1]?.version, 1);
-      // The skeleton, not the whole strategy: enough to score a target against.
-      assert.equal(history[0]?.targetProfitUsd, body("x").protection.targetProfitUsd);
-      assert.equal(history[0]?.timeframe, "5m");
-      assert.ok((history[0]?.beliefSummary ?? "").length > 0);
+      // The skeleton, not the whole plan: enough to score a target against.
+      assert.equal(history[0]?.targetProfitUsd, body("x").target.profitUsd);
+      assert.equal(history[0]?.intent, "long");
+      assert.equal(history[0]?.because, "second thesis");
     }),
   );
 
@@ -554,7 +539,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
         strategy: body("readable"),
       });
 
-      // A strategy published before a field became required still sits in this
+      // A plan published before a field became required still sits in this
       // table. One unreadable row should cost that row, not the history.
       const sql = yield* SqlClient.SqlClient;
       yield* sql`

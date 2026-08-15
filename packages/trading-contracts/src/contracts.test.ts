@@ -93,44 +93,26 @@ const account: TradingAccount = {
 };
 
 const strategy: TradingPlanState = {
-  version: 1,
-  name: "ETH 5m breakout continuation",
   market: "ETH",
-  mode: "breakout_continuation",
-  direction: "long",
-  timeframes: ["5m", "15m"],
-  belief: {
-    summary: "Breakout confirmed on 1.6x relative volume.",
-    regime: "trending",
-    confidence: 0.7,
-    evidence: ["5m close 3748.9", "relative volume 1.6x"],
-  },
-  entryPlan: {
-    explanation: "Enter on a retest that holds.",
+  intent: "long",
+  entry: {
+    triggers: [{ description: "Retest of 3,718 holds", timeframe: "5m", priceLevel: 3_718.4 }],
+    urgency: "now",
     initialNotionalUsd: 1_115,
     maximumIntendedNotionalUsd: 3_000,
-    orderPreference: "marketable_ioc",
-    conditions: [{ description: "Retest of 3,718 holds", timeframe: "5m", priceLevel: 3_718.4 }],
   },
-  positionManagement: {
-    scaleInAllowed: true,
-    scaleInConditions: [{ description: "New 5m high on rising volume" }],
-    partialReductionAllowed: true,
-    trailingMethod: "fixed stop for the POC",
-  },
-  protection: {
-    stopMethod: "Below the last accepted swing low",
-    stopPrice: 3_652,
-    targetProfitUsd: 25,
+  stop: {
+    method: "Below the last accepted swing low",
+    price: 3_652,
     maximumPlannedLossUsd: 19.9,
   },
-  exitConditions: [{ description: "5m close under 3,690", timeframe: "5m", priceLevel: 3_690 }],
-  abandonmentConditions: [{ description: "Regime flips to mean-reverting" }],
-  reentryConditions: [{ description: "Fresh breakout above 3,760" }],
-  currentAction: "holding",
-  explanation: "Long 0.30 ETH, protected at 3,652.",
-  plainSummary:
-    "ETH has been climbing and just broke above a level it kept failing at. I am long a small position and will sell if it falls back below 3,652, risking about $20 to make $25.",
+  target: { profitUsd: 25 },
+  invalidation: ["Regime flips to mean-reverting"],
+  reassess: { afterMinutes: 90 },
+  because:
+    "ETH has been climbing and just broke above a level it kept failing at, on 1.6x relative " +
+    "volume in a trending regime. Long a small position; sell if it falls back below 3,652, " +
+    "risking about $20 to make $25.",
   updatedAt: 1_753_000_000_000,
 };
 
@@ -191,7 +173,7 @@ describe("trading contracts decode published shapes", () => {
   it("decodes a full TradingMission including nested authority and strategy", () => {
     const decoded = decodeMission(mission);
     expect(decoded.status).toBe("position_open");
-    expect(decoded.strategy?.mode).toBe("breakout_continuation");
+    expect(decoded.strategy?.intent).toBe("long");
     expect(decoded.authority.allowDirectionReversal).toBe(false);
   });
 
@@ -200,53 +182,53 @@ describe("trading contracts decode published shapes", () => {
   });
 
   it("decodes a TradingPlanState", () => {
-    expect(decodeStrategy(strategy).timeframes).toEqual(["5m", "15m"]);
+    const decoded = decodeStrategy(strategy);
+    expect(decoded.entry.triggers[0]?.priceLevel).toBe(3_718.4);
+    expect(decoded.stop.price).toBe(3_652);
+    expect(decoded.target.profitUsd).toBe(25);
   });
 
-  it("decodes an entry plan that states urgency into the preference it means", () => {
-    // The harness states urgency, never a time-in-force: `patient` becomes a
-    // post-only preference, and an omitted one means `now`.
+  it("decodes a stand-aside plan as the no-position intent", () => {
+    // Standing aside is an intent value now, not a code bolted onto a trade
+    // plan: a declined entry is `stand_aside` with the reasoning in `because`.
+    const standAside = decodeStrategy({
+      ...strategy,
+      intent: "stand_aside",
+      entry: { ...strategy.entry, triggers: [], urgency: "now" },
+      target: {},
+    });
+    expect(standAside.intent).toBe("stand_aside");
+    expect(standAside.target.profitUsd).toBeUndefined();
+  });
+
+  it("defaults an omitted entry urgency to now and keeps a stated one", () => {
+    const { urgency: _urgency, ...withoutUrgency } = strategy.entry;
+    const omitted = decodeStrategy({ ...strategy, entry: withoutUrgency });
+    expect(omitted.entry.urgency).toBe("now");
+
     const patient = decodeStrategy({
       ...strategy,
-      entryPlan: { ...strategy.entryPlan, orderPreference: undefined, urgency: "patient" },
+      entry: { ...strategy.entry, urgency: "patient" },
     });
-    expect(patient.entryPlan.orderPreference).toBe("post_only");
-    expect("urgency" in patient.entryPlan).toBe(false);
-
-    const neither = decodeStrategy({
-      ...strategy,
-      entryPlan: { ...strategy.entryPlan, orderPreference: undefined },
-    });
-    expect(neither.entryPlan.orderPreference).toBe("marketable_ioc");
+    expect(patient.entry.urgency).toBe("patient");
   });
 
-  it("decodes a persisted entry plan's explicit preference untouched", () => {
-    // Every row in momentum_strategy_versions carries `orderPreference`; it is
-    // the stored representation, and re-decoding must not reinterpret it.
-    expect(decodeStrategy(strategy).entryPlan.orderPreference).toBe("marketable_ioc");
-    const resting = decodeStrategy({
+  it("drops an order preference named on the entry leg", () => {
+    // The model never names a time-in-force (plan 29 step 4.1): `urgency` is
+    // the only knob. A harness that still sends `orderPreference` (an old
+    // habit) gets it silently ignored rather than echoed anywhere — it cannot
+    // influence the execution path.
+    const decoded = decodeStrategy({
       ...strategy,
-      entryPlan: { ...strategy.entryPlan, orderPreference: "resting_limit" },
+      entry: { ...strategy.entry, orderPreference: "post_only" },
     });
-    expect(resting.entryPlan.orderPreference).toBe("resting_limit");
-    // An explicit preference wins over an urgency that disagrees with it.
-    const both = decodeStrategy({
-      ...strategy,
-      entryPlan: { ...strategy.entryPlan, urgency: "patient" },
-    });
-    expect(both.entryPlan.orderPreference).toBe("marketable_ioc");
+    expect("orderPreference" in decoded.entry).toBe(false);
+    expect(decoded.entry.urgency).toBe("now");
   });
 
-  it("decodes a range_reversion strategy as itself, not as a continuation mode", () => {
-    const rangeScalp = decodeStrategy({
-      ...strategy,
-      name: "ETH 1m range reversion",
-      mode: "range_reversion",
-      direction: "both",
-      belief: { ...strategy.belief, regime: "ranging" },
-    });
-    expect(rangeScalp.mode).toBe("range_reversion");
-    expect(rangeScalp.direction).toBe("both");
+  it("defaults a reassess window that omitted its minutes", () => {
+    const decoded = decodeStrategy({ ...strategy, reassess: {} });
+    expect(decoded.reassess.afterMinutes).toBe(90);
   });
 
   it("decodes every MarketWatch variant", () => {
@@ -328,14 +310,14 @@ describe("trading contracts decode published shapes", () => {
 
 describe("§14.3 mission tool contracts", () => {
   it("accepts a publish input whose body omits server-assigned fields", () => {
-    const { version: _version, updatedAt: _updatedAt, ...body } = strategy;
+    const { updatedAt: _updatedAt, ...body } = strategy;
     const decoded = decodePublishInput({
       missionId: "mission_1",
       expectedVersion: 0,
       strategy: body,
     });
     expect(decoded.expectedVersion).toBe(0);
-    expect("version" in decoded.strategy).toBe(false);
+    expect("updatedAt" in decoded.strategy).toBe(false);
   });
 
   it("decodes both publish outcomes", () => {
@@ -372,12 +354,9 @@ describe("§14.3 mission tool contracts", () => {
         {
           version: 1,
           publishedAt: 1_000,
-          mode: "breakout_continuation",
-          direction: "long",
-          currentAction: "waiting",
-          timeframe: "1m",
+          intent: "long",
           targetProfitUsd: 12,
-          beliefSummary: "higher lows on the 1m",
+          because: "higher lows on the 1m",
         },
       ],
     });
@@ -412,7 +391,7 @@ describe("§14.3 mission tool contracts", () => {
     const decoded = decodePublishInput({
       expectedVersion: 0,
       strategy: (() => {
-        const { version: _v, updatedAt: _u, ...body } = strategy;
+        const { updatedAt: _u, ...body } = strategy;
         return body;
       })(),
     });
@@ -485,21 +464,21 @@ describe("§14.3 mission tool contracts", () => {
     expect(() => decodeCondition("   ")).toThrow();
   });
 
-  it("round-trips a strategy whose exitConditions are bare prose strings", () => {
+  it("round-trips a strategy whose entry triggers are bare prose strings", () => {
     // The authored/input form accepts prose strings; the persisted form is the
-    // object shape. A strategy published with prose exit conditions decodes and
-    // re-encodes as objects.
-    const { version: _v, updatedAt: _u, ...body } = strategy;
+    // object shape. A strategy published with prose triggers decodes and
+    // re-encodes as objects, so the near-miss detectors keep their hints.
+    const { updatedAt: _u, ...body } = strategy;
     const decoded = decodePublishInput({
       missionId: "mission_1",
       expectedVersion: 0,
       strategy: {
         ...body,
-        exitConditions: ["Exit if a finalized 1m candle closes back above 1865.9."],
+        entry: { ...body.entry, triggers: ["Enter on a finalized 1m close above 3760."] },
       },
     });
-    expect(decoded.strategy.exitConditions).toEqual([
-      { description: "Exit if a finalized 1m candle closes back above 1865.9." },
+    expect(decoded.strategy.entry.triggers).toEqual([
+      { description: "Enter on a finalized 1m close above 3760." },
     ]);
   });
 });

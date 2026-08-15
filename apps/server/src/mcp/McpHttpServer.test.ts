@@ -277,42 +277,24 @@ it.effect("registers annotated tools and preserves authenticated request context
 /**
  * The publish that took ten round trips on 2026-08-14.
  *
- * Every field named here was rejected one at a time, in this order, across
- * several `trading_publish_plan` calls: `timeframes` missing, then
- * `timeframes[0]` an object instead of a literal, then a condition's
- * `description`, then the management lists, then two `alternativesConsidered`
- * literals. One report naming all of them is one retry, not ten.
+ * Several fields wrong at once in the eight-field shape, each of which would
+ * cost its own rejected `trading_publish_plan` call. One report naming all of
+ * them is one retry, not ten.
  */
 const publishWithManyIssues = {
   expectedVersion: 0,
   strategy: {
-    name: "btc_momentum",
-    market: "BTC",
-    mode: "momentum",
-    direction: "short",
-    currentAction: "waiting",
-    belief: { summary: "s", regime: "trending", evidence: ["e"] },
-    entryPlan: {
-      orderPreference: "marketable_ioc",
-      conditions: [
-        { type: "candle_close", interval: "15m", direction: "below", priceLevel: 63206 },
-      ],
+    market: "SOL",
+    intent: "sideways",
+    entry: {
+      triggers: [{ description: "reclaim", priceLevel: "63206" }],
+      urgency: "eventually",
     },
-    positionManagement: {
-      scaleInAllowed: false,
-      scaleInConditions: {},
-      partialReductionAllowed: true,
-    },
-    protection: {
-      stopMethod: "structure",
-      targetProfitUsd: 6.03,
-    },
-    exitConditions: [],
-    abandonmentConditions: [],
-    reentryConditions: [],
-    alternativesConsidered: [
-      { strategy: "no_trade", direction: "both", verdict: "declined", reason: "r" },
-    ],
+    stop: { method: "structure", price: -1 },
+    target: { profitUsd: 0 },
+    invalidation: ["regime flips"],
+    reassess: { afterMinutes: -5 },
+    because: "fading the extension",
   },
 };
 
@@ -322,7 +304,7 @@ it("reports every invalid publish parameter in one message", () => {
   )(publishWithManyIssues);
   expect(message).toBeDefined();
   // The fields that each used to cost a separate call, all in one answer.
-  for (const key of ["timeframes", "scaleInConditions", "direction", "verdict"]) {
+  for (const key of ["market", "intent", "urgency", "priceLevel", "afterMinutes"]) {
     expect(message, `expected ${key} in the report`).toContain(key);
   }
 });

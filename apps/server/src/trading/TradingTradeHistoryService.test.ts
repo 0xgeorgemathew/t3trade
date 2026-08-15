@@ -68,7 +68,7 @@ const insertStrategy = (version: number, targetProfitUsd: number, createdAt: num
     const sql = yield* SqlClient.SqlClient;
     // Written as text rather than encoded: the history reads one field out of
     // this column with `json_extract`, so the row only has to carry that field.
-    const json = `{"protection":{"targetProfitUsd":${targetProfitUsd}}}`;
+    const json = `{"target":{"profitUsd":${targetProfitUsd}}}`;
     yield* sql`
       INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
       VALUES (${MISSION}, ${version}, ${json}, ${createdAt})

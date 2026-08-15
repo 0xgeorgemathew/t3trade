@@ -168,10 +168,10 @@ export const TradingHarnessWakeup = Schema.Struct({
    * doing. `staleness_floor` means the triggering reassessment was auto-armed
    * because nothing else could have woken the mission — nothing crossed, and
    * the thesis is the thing to reconsider. `profit_target` means the position
-   * reached the strategy's declared `protection.targetProfitUsd`. That is a
-   * decision point, not a close order: read the book and the momentum, then
-   * either bank (close, or reduce and keep a runner) or extend — republish at
-   * the next version with the ladder's base rung and a fresh basis, and say why.
+   * reached the strategy's declared `target.profitUsd`. That is a decision
+   * point, not a close order: read the book and the momentum, then either
+   * bank (close, or reduce and keep a runner) or extend — republish at the
+   * next version with the ladder's base rung and a fresh basis, and say why.
    */
   wakeReason: Schema.optional(WatchArmedReason),
   /** The user message that woke the run, when the cause is `user_message`. */
@@ -192,8 +192,8 @@ export const TradingHarnessWakeup = Schema.Struct({
    */
   position: AgentNetPosition,
   /**
-   * The last 8 bars of the primary timeframe
-   * (`activeStrategy.timeframes[0]`, falling back to `defaultTimeframe`).
+   * The last 8 bars of the runtime timeframe (the interval the mandate names,
+   * else `1m` — see `runtimeTimeframe` in `./strategy.ts`).
    *
    * A bounded slice of recent price action so the run can answer "what did
    * price just do?" without a `trading_get_market_history` round-trip. Deeper

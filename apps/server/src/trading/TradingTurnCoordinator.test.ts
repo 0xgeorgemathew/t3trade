@@ -135,30 +135,14 @@ const seedMission = Effect.gen(function* () {
     missionId: "mission_1",
     expectedVersion: 0,
     strategy: {
-      name: "ETH breakout",
       market: "ETH",
-      mode: "breakout_continuation",
-      direction: "long",
-      timeframes: ["5m"],
-      belief: { summary: "bullish", regime: "trending", evidence: [] },
-      entryPlan: { explanation: "enter", orderPreference: "marketable_ioc", conditions: [] },
-      positionManagement: {
-        scaleInAllowed: false,
-        scaleInConditions: [],
-        partialReductionAllowed: false,
-      },
-      protection: {
-        stopMethod: "fixed",
-        targetProfitUsd: 10,
-        // Publishing checks the target against the basis it claims to come from:
-        // (10 USD of price / 2,000 mark) x 2,000 of notional = 10 USD of PnL.
-      },
-      exitConditions: [],
-      abandonmentConditions: [],
-      reentryConditions: [],
-      currentAction: "waiting",
-      explanation: "wait for breakout",
-      plainSummary: "ETH is pushing higher; I plan to buy once it breaks out.",
+      intent: "long",
+      entry: { triggers: [], urgency: "now" },
+      stop: { method: "fixed" },
+      target: { profitUsd: 10 },
+      invalidation: [],
+      reassess: { afterMinutes: 90 },
+      because: "wait for breakout",
     },
   });
   if (published.outcome !== "accepted") throw new Error("seed publish rejected");

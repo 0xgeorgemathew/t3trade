@@ -19,7 +19,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import { TradingMissionNotFoundError } from "./Errors.ts";
 import { isActiveMissionStatus } from "./MissionTransitions.ts";
-import { boundStrategyProse, fillOmittedProse, PUBLISHED_PROSE_CHARS } from "./StrategyProse.ts";
+import { boundStrategyProse, PUBLISHED_PROSE_CHARS } from "./StrategyProse.ts";
 import { toPersistedWatch } from "./TradingWatchService.ts";
 import {
   TradingPlanState,
@@ -100,10 +100,9 @@ interface WatchRow {
 /**
  * One published version as its history summary, or nothing.
  *
- * The full `TradingPlanState` is large and mostly prose; a history of ten
- * of them would crowd out the mission snapshot it rides in. This keeps the
- * skeleton — what was believed, what was targeted, on what basis — and drops
- * the rest.
+ * The full `TradingPlanState` is mostly prose; a history of ten of them would
+ * crowd out the mission snapshot it rides in. This keeps the skeleton — what
+ * was intended, what was targeted, why — and drops the rest.
  *
  * A row that no longer decodes returns `[]`: strategies published before a
  * field became required still sit in this table, and a history is a nicety
@@ -124,12 +123,11 @@ const toStrategySummary = (row: {
     {
       version: row.version,
       publishedAt: row.created_at,
-      mode: strategy.mode,
-      direction: strategy.direction,
-      currentAction: strategy.currentAction,
-      ...(strategy.timeframes[0] === undefined ? {} : { timeframe: strategy.timeframes[0] }),
-      targetProfitUsd: strategy.protection.targetProfitUsd,
-      beliefSummary: strategy.belief.summary,
+      intent: strategy.intent,
+      ...(strategy.target.profitUsd === undefined
+        ? {}
+        : { targetProfitUsd: strategy.target.profitUsd }),
+      ...(strategy.because === "" ? {} : { because: strategy.because }),
     },
   ];
 };
@@ -213,15 +211,14 @@ const makeTradingStrategyService = Effect.gen(function* () {
         } as const;
       }
 
-      // What actually gets persisted: the harness's plan with its omitted prose
-      // filled in and its long prose clipped. The plan rides on every wakeup for
-      // the mission's life, so an unbounded field here is an unbounded field
-      // there — see `StrategyProse`. Nothing grades the target any more: its
-      // derivation is the harness's own work, read back on the next wake, and
-      // cost is context the observation carries (plan 29 steps 3.1/3.2).
-      const filled = fillOmittedProse(input.strategy);
+      // What actually gets persisted: the harness's plan with its long prose
+      // clipped. The plan rides on every wakeup for the mission's life, so an
+      // unbounded field here is an unbounded field there — see `StrategyProse`.
+      // Nothing grades the target any more: its derivation is the harness's
+      // own work, read back on the next wake, and cost is context the
+      // observation carries (plan 29 steps 3.1/3.2).
       const { strategy: boundedStrategy, truncatedFields } = boundStrategyProse(
-        filled,
+        input.strategy,
         PUBLISHED_PROSE_CHARS,
       );
       const proseWarnings = truncatedFields.map(
@@ -231,7 +228,6 @@ const makeTradingStrategyService = Effect.gen(function* () {
       const version = input.expectedVersion + 1;
       const now = yield* Clock.currentTimeMillis;
       const strategy: TradingPlanState = {
-        version,
         ...boundedStrategy,
         updatedAt: now,
       };

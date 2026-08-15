@@ -690,53 +690,31 @@ it.live(
                     missionId: MISSION_ID,
                     expectedVersion: 0,
                     strategy: {
-                      name: "ETH 5m breakout continuation",
                       market: "ETH",
-                      mode: "breakout_continuation",
-                      direction: "long",
-                      timeframes: ["5m", "15m"],
-                      belief: {
-                        summary: "Breakout confirmed on 1.6x relative volume.",
-                        regime: "trending",
-                        confidence: 0.7,
-                        evidence: ["5m close 3001", "relative volume 1.6x"],
-                      },
-                      entryPlan: {
-                        explanation: "Enter on a retest that holds.",
-                        initialNotionalUsd: 1_500,
-                        maximumIntendedNotionalUsd: 3_000,
-                        orderPreference: "marketable_ioc",
-                        conditions: [
+                      intent: "long",
+                      entry: {
+                        triggers: [
                           {
                             description: "Retest of 3,000 holds",
                             timeframe: "5m",
                             priceLevel: 3_000,
                           },
                         ],
+                        urgency: "now",
+                        initialNotionalUsd: 1_500,
+                        maximumIntendedNotionalUsd: 3_000,
                       },
-                      positionManagement: {
-                        scaleInAllowed: true,
-                        scaleInConditions: [{ description: "New 5m high on rising volume" }],
-                        partialReductionAllowed: true,
-                        trailingMethod: "fixed stop for the POC",
-                      },
-                      protection: {
-                        stopMethod: "Below the last accepted swing low",
-                        stopPrice: 2_950,
-                        targetProfitUsd: 25,
-                        // Publishing checks the target against the basis it
-                        // claims to come from: (25 / 3,000) x 3,000 = 25.
+                      stop: {
+                        method: "Below the last accepted swing low",
+                        price: 2_950,
                         maximumPlannedLossUsd: 20,
                       },
-                      exitConditions: [
-                        { description: "5m close under 2,890", timeframe: "5m", priceLevel: 2_890 },
-                      ],
-                      abandonmentConditions: [{ description: "Regime flips to mean-reverting" }],
-                      reentryConditions: [{ description: "Fresh breakout above 3,100" }],
-                      currentAction: "entering",
-                      explanation: "Long ETH momentum, protected at 2,950.",
-                      plainSummary:
-                        "ETH is trending up; I am buying and will sell if it drops to 2,950.",
+                      target: { profitUsd: 25 },
+                      invalidation: ["Regime flips to mean-reverting"],
+                      reassess: { afterMinutes: 90 },
+                      because:
+                        "ETH 5m breakout continuation on 1.6x relative volume; long ETH " +
+                        "momentum, protected at 2,950.",
                     },
                   });
                   assert.equal(published.outcome, "accepted", "strategy publish must be accepted");

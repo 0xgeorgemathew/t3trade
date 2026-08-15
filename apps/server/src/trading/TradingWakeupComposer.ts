@@ -29,7 +29,11 @@ import {
   type TradingCostContext,
   type TradingCostEstimate,
 } from "@t3tools/trading-contracts/costs";
-import { runtimeTimeframe, type TradingTimeframe } from "@t3tools/trading-contracts/strategy";
+import {
+  planPhase,
+  runtimeTimeframe,
+  type TradingTimeframe,
+} from "@t3tools/trading-contracts/strategy";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 import type { ObservedVolatility } from "@t3tools/trading-contracts/volatility";
 
@@ -48,7 +52,6 @@ import {
   describeArmedWatch,
   findMisarmedEntryConditions,
   findUnarmedEntryConditions,
-  isWaitingLikeAction,
   TradingDomainEventSummary,
   TradingHarnessWakeup,
   type TradingHarnessRunCause,
@@ -117,30 +120,23 @@ const HIGHER_TIMEFRAME: Readonly<Record<TradingTimeframe, TradingTimeframe | nul
   "1h": null,
 };
 
-/** Shortest to longest, for "is the plan's timeframe above the runtime's?". */
-const TIMEFRAME_ORDER: ReadonlyArray<TradingTimeframe> = ["1m", "3m", "5m", "15m", "1h"];
-
 /**
  * Which second timeframe this wakeup measures.
  *
- * Normally the fixed pairing above. When the published plan reasons on a LONGER
- * interval than the runtime one — the plan says 15m, the runtime feeds 1m —
- * that is the structure the plan's own levels sit on, so it is the more useful
- * pair and nothing about the plan's thinking is lost by the runtime working
- * faster than it.
+ * A target has to be checked against a structure longer than the one it was
+ * read off, and on 1m the longest horizon the measurement offers is twenty
+ * minutes. Rather than instruct the harness to remember a second
+ * `trading_measure_volatility` call it is free to skip, the wakeup carries the
+ * pair. A mission already running on 1h has nothing higher to pair with.
+ *
+ * This used to prefer the plan's published `timeframes[0]` when it sat above
+ * the runtime interval; the plan no longer names timeframes (plan 29 step
+ * 4.1), so the fixed pairing is the whole rule — a plan that reasons on a
+ * longer interval says so in `because`, and the runtime still feeds it the
+ * fastest bars plus this one higher read.
  */
-const pairedTimeframe = (
-  primary: TradingTimeframe,
-  published: TradingTimeframe | undefined,
-): TradingTimeframe | null => {
-  if (
-    published !== undefined &&
-    TIMEFRAME_ORDER.indexOf(published) > TIMEFRAME_ORDER.indexOf(primary)
-  ) {
-    return published;
-  }
-  return HIGHER_TIMEFRAME[primary];
-};
+const pairedTimeframe = (primary: TradingTimeframe): TradingTimeframe | null =>
+  HIGHER_TIMEFRAME[primary];
 
 /**
  * The schema is the source of truth for shape: the wakeup struct is decoded
@@ -343,17 +339,11 @@ const boundWakeupProse = (strategy: TradingPlanState): TradingPlanState => ({
 /** The second rung: keep the head of each published list, drop the tail. */
 const boundStrategyLists = (strategy: TradingPlanState): TradingPlanState => ({
   ...strategy,
-  belief: {
-    ...strategy.belief,
-    evidence: capList(strategy.belief.evidence, (dropped) => `(+${dropped} more)`),
+  entry: {
+    ...strategy.entry,
+    triggers: capList(strategy.entry.triggers, conditionMarker),
   },
-  entryPlan: {
-    ...strategy.entryPlan,
-    conditions: capList(strategy.entryPlan.conditions, conditionMarker),
-  },
-  exitConditions: capList(strategy.exitConditions, conditionMarker),
-  abandonmentConditions: capList(strategy.abandonmentConditions, conditionMarker),
-  reentryConditions: capList(strategy.reentryConditions, conditionMarker),
+  invalidation: capList(strategy.invalidation, (dropped) => `(+${dropped} more)`),
 });
 
 /**
@@ -365,22 +355,17 @@ const boundStrategyLists = (strategy: TradingPlanState): TradingPlanState => ({
  */
 /**
  * The hardest strategy projection: prose clipped to a line each and the
- * evidence list replaced by a pointer. The persisted plan is untouched and one
+ * trigger list replaced by a pointer. The persisted plan is untouched and one
  * `trading_get_mission` call away.
  */
-const digestStrategy = (strategy: TradingPlanState): TradingPlanState => {
-  const bounded: TradingPlanState = {
-    ...strategy,
-    ...boundStrategyProse(strategy, WAKEUP_DIGEST_PROSE_CHARS).strategy,
-  };
-  return {
-    ...bounded,
-    belief: {
-      ...bounded.belief,
-      evidence: ["(clipped — call trading_get_mission for the full plan)"],
-    },
-  };
-};
+const digestStrategy = (strategy: TradingPlanState): TradingPlanState => ({
+  ...strategy,
+  ...boundStrategyProse(strategy, WAKEUP_DIGEST_PROSE_CHARS).strategy,
+  entry: {
+    ...strategy.entry,
+    triggers: [{ description: "(clipped — call trading_get_mission for the full plan)" }],
+  },
+});
 
 const TRIM_LADDER: ReadonlyArray<{
   readonly name: string;
@@ -480,21 +465,20 @@ export const renderBoundedWakeup = (
     positionCosts: current.positionCosts,
     costContext: current.costContext,
     strategy: {
-      version: current.activeStrategy.version,
-      mode: current.activeStrategy.mode,
-      direction: current.activeStrategy.direction,
-      timeframes: current.activeStrategy.timeframes,
-      currentAction: current.activeStrategy.currentAction,
-      standDownCode: current.activeStrategy.standDownCode,
-      entryConditions: current.activeStrategy.entryPlan.conditions.slice(0, 3),
-      protection: current.activeStrategy.protection,
+      market: current.activeStrategy.market,
+      intent: current.activeStrategy.intent,
+      // The phase the old `currentAction` used to carry, derived from what the
+      // mission holds: flat is waiting, a position is holding.
+      planPhase: planPhase(current.position.size),
+      entryTriggers: current.activeStrategy.entry.triggers.slice(0, 3),
+      stop: current.activeStrategy.stop,
+      target: current.activeStrategy.target,
     },
     armedWatches: current.armedWatches.slice(0, 6),
     unarmedEntryConditions: current.unarmedEntryConditions,
     misarmedEntryConditions: current.misarmedEntryConditions,
     pendingEvents: current.pendingEvents.slice(-3),
-    omitted:
-      "call trading_get_mission for the full strategy, authority, watches, and pending state",
+    omitted: "call trading_get_mission for the full plan, authority, watches, and pending state",
   });
   if (essential.length <= MAX_WAKEUP_CHARS) {
     return { text: essential, steps, untrimmedChars };
@@ -702,8 +686,8 @@ const make = Effect.gen(function* () {
       // history ride the same batch so a woken run starts already knowing what
       // it holds and what price just did, without boilerplate tool calls. A
       // history-read failure fails compose the same way a snapshot failure does.
-      // The mandate's interval, or 1m — see `runtimeTimeframe`. The plan's own
-      // `timeframes[0]` is what it reasons on, not what the runtime feeds it.
+      // The mandate's interval, or 1m — see `runtimeTimeframe`. The plan no
+      // longer names a timeframe of its own (plan 29 step 4.1).
       const primaryTimeframe = runtimeTimeframe(mission.instruction);
       const [marketSnapshot, accountSnapshot, position, history] = yield* Effect.all(
         [
@@ -762,10 +746,7 @@ const make = Effect.gen(function* () {
       // allocated capital.
       const [higherTimeframeVolatility, positionCosts, costContext] = yield* Effect.all(
         [
-          measureHigherTimeframe(
-            mission.market,
-            pairedTimeframe(primaryTimeframe, activeStrategy.timeframes[0]),
-          ),
+          measureHigherTimeframe(mission.market, pairedTimeframe(primaryTimeframe)),
           costOpenPosition(
             mission.market,
             position.size,
@@ -775,9 +756,9 @@ const make = Effect.gen(function* () {
           position.size === 0
             ? costFlatWakeup(
                 mission.market,
-                activeStrategy.entryPlan.initialNotionalUsd &&
-                  activeStrategy.entryPlan.initialNotionalUsd > 0
-                  ? activeStrategy.entryPlan.initialNotionalUsd
+                activeStrategy.entry.initialNotionalUsd &&
+                  activeStrategy.entry.initialNotionalUsd > 0
+                  ? activeStrategy.entry.initialNotionalUsd
                   : null,
                 mission.authority.allocatedCapitalUsd,
                 address,
@@ -849,11 +830,13 @@ const make = Effect.gen(function* () {
 
       // Flat and waiting: the entry levels the plan names, that nothing is armed
       // at. The runtime reports the gap and never closes it — a watch predicate
-      // comes from `MarketWatch`, never from a condition's prose.
+      // comes from `MarketWatch`, never from a condition's prose. Flat is the
+      // waiting phase (`planPhase`); the old gate read the nine-value
+      // `currentAction`, and "flat" is the whole of what it meant.
       const unarmedEntryConditions =
-        position.size === 0 && isWaitingLikeAction(activeStrategy.currentAction)
+        planPhase(position.size) === "waiting"
           ? findUnarmedEntryConditions({
-              conditions: activeStrategy.entryPlan.conditions,
+              conditions: activeStrategy.entry.triggers,
               watches: armed,
             })
           : [];
@@ -874,9 +857,9 @@ const make = Effect.gen(function* () {
           : "HOLDING — spend this turn on the position. Bank-or-extend against positionCosts (unrealisedPnl minus the remaining exit cost is what banking is worth) and preferredTargetUsd; check drawdownFromPeakUsd against peakUnrealisedPnl; trail the stop (trail_peak / breakeven, or volatility_room if ATR expanded) rather than leaving it where entry put it; keep a pnl_giveback armed under the peak whenever you are in profit.";
 
       // The other half of the same read: a level that IS armed, with a watch
-      // that cannot evaluate the confirmation the condition declared.
+      // that cannot evaluate the confirmation the trigger declared.
       const misarmedEntryConditions = findMisarmedEntryConditions({
-        conditions: activeStrategy.entryPlan.conditions,
+        conditions: activeStrategy.entry.triggers,
         watches: armed,
       });
 

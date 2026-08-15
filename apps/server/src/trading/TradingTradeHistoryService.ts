@@ -133,7 +133,7 @@ const make = Effect.gen(function* () {
 
       const versions = yield* sql<StrategyVersionRow>`
         SELECT version, created_at,
-               json_extract(strategy_json, '$.protection.targetProfitUsd') AS target_profit_usd
+               json_extract(strategy_json, '$.target.profitUsd') AS target_profit_usd
         FROM momentum_strategy_versions
         WHERE mission_id = ${input.missionId}
         ORDER BY created_at DESC, version DESC

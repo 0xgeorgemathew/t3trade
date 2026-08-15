@@ -37,7 +37,11 @@ import { clearSessionProfile, isTradingThread } from "../provider/SessionProfile
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import type { HarnessRunRequest } from "./Schemas.ts";
 import { TradingMissionProjection } from "./TradingMissionProjection.ts";
-import { TradingMissionReactor, TradingMissionReactorLive } from "./TradingMissionReactor.ts";
+import {
+  moduleReadPlanTarget,
+  TradingMissionReactor,
+  TradingMissionReactorLive,
+} from "./TradingMissionReactor.ts";
 import { TradingAutoMission } from "./TradingAutoMission.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import {
@@ -1172,3 +1176,51 @@ it.live(
     }),
   { timeout: 30_000 },
 );
+
+// ---------------------------------------------------------------------------
+// The plan target the take-profit reconcile reads (plan 29 steps 2.5 and 4.1)
+// ---------------------------------------------------------------------------
+
+const sqliteLayer = it.layer(Layer.provideMerge(SqlitePersistenceMemory, NodeServices.layer));
+
+sqliteLayer("moduleReadPlanTarget", (it) => {
+  // Plan 29 step 4.1: the stand-down of the old schema is `intent:
+  // "stand_aside"`, and the take-profit reconcile must read it as "no target"
+  // exactly as the stand-down was read — a plan that declined to trade does
+  // not rest a reduce-only take-profit against a target it is not aiming at.
+  it.effect("reads the reshaped target legs, and skips a stand-aside plan", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const planJson = (intent: "long" | "stand_aside") =>
+        `{"market":"ETH","intent":"${intent}","entry":{"triggers":[],"urgency":"now"},` +
+        `"stop":{"method":"swing low"},"target":{"profitUsd":25,"price":3652},` +
+        `"invalidation":[],"reassess":{"afterMinutes":90},"because":"x","updatedAt":1000}`;
+
+      yield* sql`
+        INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+        VALUES ('mission-tp', 1, ${planJson("long")}, 1000)
+      `;
+      yield* sql`
+        INSERT INTO trading_missions (
+          mission_id, user_id, trading_account_id, instruction, market, strategy_family,
+          harness_json, status, control_json, authority_version, strategy_version, version,
+          created_at, updated_at
+        ) VALUES (
+          'mission-tp', 'local', 'acct_1', 'Trade ETH', 'ETH', 'momentum',
+          '{}', 'waiting', '{}', 1, 1, 1, 1000, 1000
+        )
+      `;
+
+      const long = yield* moduleReadPlanTarget(TradingMissionId.make("mission-tp"));
+      assert.deepStrictEqual(long, { takeProfitPrice: 3_652, targetProfitUsd: 25 });
+
+      // Same target fields, standing aside: the skip, not the numbers.
+      yield* sql`
+        UPDATE momentum_strategy_versions SET strategy_json = ${planJson("stand_aside")}
+        WHERE mission_id = 'mission-tp' AND version = 1
+      `;
+      const aside = yield* moduleReadPlanTarget(TradingMissionId.make("mission-tp"));
+      assert.strictEqual(aside, null);
+    }),
+  );
+});

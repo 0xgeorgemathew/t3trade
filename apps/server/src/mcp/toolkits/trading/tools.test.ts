@@ -117,8 +117,9 @@ it("publish description states the publish contract, not the methodology", () =>
   expect(publish).not.toContain("targetProfitBasis");
   // But never the resting orders — that division of labor is the contract.
   expect(publish).toContain("resting orders");
-  // How the harness records that no viable target exists.
-  expect(publish).toContain("standDownCode");
+  // How the harness records that no viable target exists: the explicit
+  // no-position intent (plan 29 step 4.1).
+  expect(publish).toContain("stand_aside");
   // The doctrine is gone.
   expect(publish).not.toContain("MEASURE TWO TIMEFRAMES");
 });

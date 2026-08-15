@@ -73,22 +73,31 @@ const readRun = Effect.gen(function* () {
   return rows[0]!;
 });
 
-const standDownPlan = {
-  mode: "stand_down",
-  standDownCode: "insufficient_volatility",
-  entryPlan: { conditions: [] },
-  protection: { targetProfitUsd: 10 },
+/** A stand-aside plan: the explicit no-position intent (plan 29 step 4.1). */
+const standAsidePlan = {
+  market: "ETH",
+  intent: "stand_aside",
+  entry: { triggers: [], urgency: "now" },
+  stop: { method: "no position to protect" },
+  target: {},
+  invalidation: [],
+  reassess: { afterMinutes: 90 },
+  because: "costs exceed the move on offer",
 };
 
+/** A waiting plan with an armed entry level. */
 const waitingPlan = {
-  mode: "breakout_continuation",
-  entryPlan: { conditions: [{ priceLevel: 2_000 }] },
-  protection: { targetProfitUsd: 10 },
-};
-
-const costStandDownPlan = {
-  ...standDownPlan,
-  standDownCode: "costs_exceed_target",
+  market: "ETH",
+  intent: "long",
+  entry: {
+    triggers: [{ description: "reclaim of 2,000 on rising volume", priceLevel: 2_000 }],
+    urgency: "now",
+  },
+  stop: { method: "under the prior swing low" },
+  target: { profitUsd: 10 },
+  invalidation: [],
+  reassess: { afterMinutes: 90 },
+  because: "long the reclaim",
 };
 
 layer("TradingRunTelemetry", (it) => {
@@ -157,36 +166,42 @@ layer("TradingRunTelemetry", (it) => {
     }),
   );
 
-  it.effect("settles a published stand-down as no_setup", () =>
+  it.effect("settles a published stand-aside as no_setup", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* seed({ plan: standDownPlan });
+      yield* seed({ plan: standAsidePlan });
       yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
 
       yield* settleRunDecision(sql, { runId: "run_1", completedAt: 4_000 });
 
       const run = yield* readRun;
       assert.strictEqual(run["outcome"], "no_setup");
+      // The plan carries no reason code any more, so the attribution is the
+      // derived default, not a code the document stated.
       assert.strictEqual(run["stand_down_code"], "insufficient_volatility");
       assert.strictEqual(run["provider"], "claude");
       assert.strictEqual(run["model"], "claude-opus-5");
       assert.strictEqual(run["market"], "ETH");
-      assert.strictEqual(run["playbook"], "stand_down");
+      // The playbook column is null now: the plan stopped naming a mode.
+      assert.strictEqual(run["playbook"], null);
       assert.strictEqual(run["authority_version"], 3);
       assert.strictEqual(run["latency_ms"], 3_000);
     }),
   );
 
-  it.effect("records the accepted publish's explicit stand-down code", () =>
+  it.effect("settles a published thesis without armed levels as no_setup too", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* seed({ plan: costStandDownPlan });
+      yield* seed({
+        plan: { ...waitingPlan, entry: { triggers: [], urgency: "now" }, intent: "long" },
+      });
       yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
 
       yield* settleRunDecision(sql, { runId: "run_1", completedAt: 4_000 });
       const run = yield* readRun;
       assert.strictEqual(run["outcome"], "no_setup");
-      assert.strictEqual(run["stand_down_code"], "costs_exceed_target");
+      // Not a stand-aside: the flatter refusal, where the read resolved.
+      assert.strictEqual(run["stand_down_code"], "regime_unclear");
     }),
   );
 
@@ -272,7 +287,7 @@ layer("TradingRunTelemetry", (it) => {
   it.effect("settles exactly once per run", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* seed({ plan: standDownPlan });
+      yield* seed({ plan: standAsidePlan });
       yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
       yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
 
@@ -289,7 +304,7 @@ layer("TradingRunTelemetry", (it) => {
   it.effect("reports the funnel grouped by outcome and provider", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* seed({ plan: standDownPlan });
+      yield* seed({ plan: standAsidePlan });
       yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
       yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
 
@@ -309,7 +324,7 @@ layer("TradingRunTelemetry", (it) => {
   it.effect("answers the enrichment question from the record, not from a hunch", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* seed({ plan: standDownPlan });
+      yield* seed({ plan: standAsidePlan });
       yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
       yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
 

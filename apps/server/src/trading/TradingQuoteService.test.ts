@@ -377,4 +377,47 @@ layer("TradingQuoteService", (it) => {
       assert.strictEqual(consumed.reason, "quote_mission_mismatch");
     }),
   );
+
+  // Plan 29 step 4.1: the stand-down of the old schema is `intent:
+  // "stand_aside"`, and it must skip the entry-sizing lift exactly as the
+  // stand-down did — a plan that declined to trade does not size an entry
+  // toward a target it is not aiming at.
+  it.effect("skips the target-sizing lift on a stand-aside plan, applies it on a long", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      const quotes = yield* TradingQuoteService;
+
+      // The plan's target, as the reshaped document stores it: a $50 rung at a
+      // level $100 above the entry. Sizing toward it lifts the 0.05 ETH
+      // request to whatever the ceilings allow.
+      const planJson = (intent: "long" | "stand_aside") =>
+        `{"market":"ETH","intent":"${intent}","entry":{"triggers":[],"urgency":"now"},` +
+        `"stop":{"method":"swing low"},"target":{"profitUsd":50,"price":2100.5},` +
+        `"invalidation":[],"reassess":{"afterMinutes":90},"because":"x","updatedAt":1000}`;
+      yield* sql`
+        INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+        VALUES ('mission_1', 1, ${planJson("long")}, 1000)
+      `;
+
+      const lifted = yield* quoteALong;
+      assert.strictEqual(lifted.outcome, "quoted");
+
+      yield* sql`
+        UPDATE momentum_strategy_versions
+        SET strategy_json = ${planJson("stand_aside")}
+        WHERE mission_id = 'mission_1' AND version = 1
+      `;
+      const skipped = yield* quoteALong;
+      assert.strictEqual(skipped.outcome, "quoted");
+
+      if (lifted.outcome !== "quoted" || skipped.outcome !== "quoted") return;
+      // The lift is real (the long plan's target raised the size above the
+      // bare request), and the stand-aside skips it: same target fields, no
+      // lift — the request is sized exactly as a plan with no target is.
+      assert.isAbove(lifted.quote.size, 0.05);
+      assert.strictEqual(skipped.quote.size, 0.05);
+      assert.strictEqual(skipped.quote.constrainedBy, "requested");
+    }),
+  );
 });

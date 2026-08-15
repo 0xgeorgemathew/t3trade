@@ -37,7 +37,7 @@ import type { TradingAdjustStopRefusalContext } from "@t3tools/trading-contracts
 import type { TradingMarket } from "@t3tools/trading-contracts/primitives";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
-import { POC_DEFAULT_TIMEFRAME } from "@t3tools/trading-contracts/strategy";
+import { runtimeTimeframe } from "@t3tools/trading-contracts/strategy";
 import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
 
@@ -127,9 +127,10 @@ const make = Effect.gen(function* () {
       }
 
       const strategy = yield* strategies.getCurrentStrategy(input.missionId).pipe(Effect.orDie);
-      const timeframe = Option.isSome(strategy)
-        ? (strategy.value.timeframes[0] ?? POC_DEFAULT_TIMEFRAME)
-        : POC_DEFAULT_TIMEFRAME;
+      // The mission's runtime timeframe — the interval the mandate names, else
+      // 1m. The plan stopped publishing its own `timeframes[0]` (plan 29 step
+      // 4.1), so the mission is the source, same as the wakeup composer.
+      const timeframe = runtimeTimeframe(mission.instruction);
 
       // Exchange reads refuse rather than die: a transient gateway failure is
       // "cannot measure right now", and the stop the position has is safe.
@@ -225,12 +226,15 @@ const make = Effect.gen(function* () {
       }
 
       // The published target as a price: the same arithmetic the runtime's
-      // `pnl_above` target watch fires on, read back onto the price axis.
+      // `pnl_above` target watch fires on, read back onto the price axis. A
+      // plan that names no rung (the target leg is optional now, plan 29 step
+      // 4.1) has no target price to check the move against.
       const isLong = position.size > 0;
-      const targetPrice = Option.isSome(strategy)
-        ? position.entry_price +
-          (isLong ? 1 : -1) * (strategy.value.protection.targetProfitUsd / Math.abs(position.size))
-        : undefined;
+      const targetProfitUsd = Option.isSome(strategy) ? strategy.value.target.profitUsd : undefined;
+      const targetPrice =
+        targetProfitUsd === undefined
+          ? undefined
+          : position.entry_price + (isLong ? 1 : -1) * (targetProfitUsd / Math.abs(position.size));
 
       const openedAt = position.opened_at ?? 0;
 

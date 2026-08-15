@@ -126,46 +126,30 @@ const encodeStrategy = Schema.encodeSync(Schema.fromJsonString(TradingPlanState)
 
 /** A published range scalp, as the strategy projector would have written it. */
 const rangeReversionStrategy: TradingPlanState = {
-  version: 1,
-  name: "ETH 1m range reversion",
   market: "ETH",
-  mode: "range_reversion",
-  // A range pays whichever edge price reaches first, so both sides are armed.
-  direction: "both",
-  timeframes: ["1m"],
-  belief: {
-    summary: "Range between 3,404.80 and 3,412.10 has held for two hours.",
-    regime: "ranging",
-    evidence: ["excursionSymmetryRatio 1.0", "positionInRangePercent 8.7"],
+  // A range pays whichever edge price reaches first; the side is the trigger's
+  // to decide, which the new schema says in prose instead of `direction: "both"`.
+  intent: "short",
+  entry: {
+    triggers: [{ description: "Price touches 3,404.80 with the range intact" }],
+    urgency: "now",
   },
-  entryPlan: {
-    explanation: "Fade each boundary back toward the middle.",
-    orderPreference: "marketable_ioc",
-    conditions: [{ description: "Price touches 3,404.80 with the range intact" }],
-  },
-  positionManagement: {
-    scaleInAllowed: false,
-    scaleInConditions: [],
-    partialReductionAllowed: true,
-  },
-  protection: {
-    stopMethod: "A 1m close outside the range says it broke rather than held",
-    targetProfitUsd: 4.75,
-  },
-  exitConditions: [{ description: "Target reached, or a close outside the range" }],
-  abandonmentConditions: [],
-  reentryConditions: [],
-  currentAction: "waiting",
-  explanation: "Waiting for the floor.",
-  plainSummary: "Price is bouncing inside a band; I buy near the bottom and sell near the top.",
+  stop: { method: "A 1m close outside the range says it broke rather than held" },
+  target: { profitUsd: 4.75 },
+  invalidation: [],
+  reassess: { afterMinutes: 90 },
+  because:
+    "Range between 3,404.80 and 3,412.10 has held two hours (excursionSymmetryRatio 1.0, " +
+    "positionInRangePercent 8.7). Fade each boundary back toward the middle; price is " +
+    "bouncing inside a band, so buy near the bottom and sell near the top.",
   updatedAt: 1_754_356_376_000,
 };
 
 layer("TradingMissionProjection strategy card", (it) => {
   // The projection degrades a strategy it cannot decode to "no strategy", which
   // is right for a row published before a field became required and wrong for
-  // every new mode. A range scalp has to come back as itself.
-  it.effect("reads a range_reversion strategy back rather than degrading it", () =>
+  // every new shape. A range scalp has to come back as itself.
+  it.effect("reads a published range scalp back rather than degrading it", () =>
     Effect.gen(function* () {
       yield* seedMission;
       const sql = yield* SqlClient.SqlClient;
@@ -180,9 +164,12 @@ layer("TradingMissionProjection strategy card", (it) => {
       assert.isTrue(Option.isSome(mission));
       const strategy = Option.getOrThrow(mission).strategy;
 
-      assert.equal(strategy?.mode, "range_reversion");
-      assert.equal(strategy?.direction, "both");
-      assert.equal(strategy?.protection.targetProfitUsd, 4.75);
+      assert.equal(strategy?.intent, "short");
+      assert.equal(strategy?.target.profitUsd, 4.75);
+      assert.equal(
+        strategy?.entry.triggers[0]?.description,
+        "Price touches 3,404.80 with the range intact",
+      );
     }),
   );
 });

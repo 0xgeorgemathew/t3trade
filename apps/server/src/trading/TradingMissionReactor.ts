@@ -27,7 +27,7 @@ import {
   stopProximityWatchLevel,
 } from "@t3tools/trading-contracts/stop-adjustment";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
-import { POC_DEFAULT_TIMEFRAME, TradingTimeframe } from "@t3tools/trading-contracts/strategy";
+import { runtimeTimeframe, TradingTimeframe } from "@t3tools/trading-contracts/strategy";
 import { PENDING_EXECUTION_STATUSES } from "@t3tools/trading-contracts/execution";
 import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
 import {
@@ -185,29 +185,63 @@ const describeWatchPredicate = (watch: PersistedWatch["watch"]): string => {
 };
 
 /**
- * The primary timeframe of the mission's live strategy, read straight off the
- * stored JSON.
+ * The timeframe the mission's cadences measure on: the mandate's interval, or
+ * `1m` — the same `runtimeTimeframe` rule the wakeup composer and the coverage
+ * floor use.
  *
- * Reading the row rather than taking a `TradingStrategyService` dependency
- * keeps the reactor's layer exactly as wide as it was. Anything unreadable —
- * no strategy yet, a shape this build does not recognise — falls back to the
- * POC default, which is the same thing the coverage floor does: a mission
- * between strategies still gets a cadence.
+ * This used to read the plan's published `timeframes[0]`; the plan no longer
+ * names timeframes (plan 29 step 4.1), so the mission's own instruction is the
+ * source. Anything unreadable — no mission row, a NULL instruction — falls
+ * back to the POC default, which is the same thing the coverage floor does: a
+ * mission between strategies still gets a cadence. Reading the row rather
+ * than taking a `TradingMissionService` dependency keeps the reactor's layer
+ * exactly as wide as it was.
  */
-const primaryTimeframeFromStrategyJson = (json: string | undefined): TradingTimeframe => {
-  if (json === undefined) return POC_DEFAULT_TIMEFRAME;
-  try {
-    const parsed: unknown = JSON.parse(json);
-    const timeframes =
-      typeof parsed === "object" && parsed !== null
-        ? (parsed as { readonly timeframes?: unknown }).timeframes
-        : undefined;
-    const first = Array.isArray(timeframes) ? timeframes[0] : undefined;
-    return Schema.is(TradingTimeframe)(first) ? first : POC_DEFAULT_TIMEFRAME;
-  } catch {
-    return POC_DEFAULT_TIMEFRAME;
-  }
-};
+const primaryTimeframeFromMission = (missionId: TradingMissionId) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ readonly instruction: string | null }>`
+      SELECT instruction FROM trading_missions WHERE mission_id = ${missionId}
+    `;
+    return runtimeTimeframe(rows[0]?.instruction ?? "");
+  });
+
+/**
+ * The active plan's target, read as numbers rather than through the strategy
+ * decoder — a reconciliation that refused to act because a historical prose
+ * field stopped decoding would leave a take-profit resting against a plan that
+ * had withdrawn it.
+ *
+ * Null when the mission has published nothing or stood aside
+ * (`intent: "stand_aside"` — the stand-down of the old schema, and the same
+ * skip it performed); the price rung is null when the plan published neither a
+ * take-profit price nor a target. Hoisted to module scope so the stand-aside
+ * skip is testable without the whole reactor layer.
+ */
+export const moduleReadPlanTarget = (missionId: TradingMissionId) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{
+      readonly take_profit_price: number | null;
+      readonly target_profit_usd: number | null;
+      readonly stand_aside: number | null;
+    }>`
+      SELECT
+        json_extract(s.strategy_json, '$.target.price') AS take_profit_price,
+        json_extract(s.strategy_json, '$.target.profitUsd') AS target_profit_usd,
+        json_extract(s.strategy_json, '$.intent') = 'stand_aside' AS stand_aside
+      FROM momentum_strategy_versions s
+      JOIN trading_missions m
+        ON m.mission_id = s.mission_id AND m.strategy_version = s.version
+      WHERE s.mission_id = ${missionId}
+    `;
+    const row = rows[0];
+    if (row === undefined || row.stand_aside === 1) return null;
+    return {
+      takeProfitPrice: row.take_profit_price,
+      targetProfitUsd: row.target_profit_usd,
+    };
+  });
 
 export interface TradingMissionReactorShape {
   /** Start the event stream. The server-startup reconcile runs at layer build. */
@@ -769,16 +803,10 @@ const make = Effect.gen(function* () {
       const position = positions[0];
       if (position === undefined || position.mark_px === null) return;
 
-      // The strategy's primary timeframe drives the ATR, the same one every
-      // other cadence in the mission is measured on.
-      const strategyRows = yield* sql<{ readonly strategy_json: string }>`
-        SELECT s.strategy_json
-        FROM momentum_strategy_versions s
-        JOIN trading_missions m
-          ON m.mission_id = s.mission_id AND m.strategy_version = s.version
-        WHERE s.mission_id = ${missionId}
-      `;
-      const timeframe = primaryTimeframeFromStrategyJson(strategyRows[0]?.strategy_json);
+      // The mission's runtime timeframe drives the ATR, the same one every
+      // other cadence in the mission is measured on (see
+      // `primaryTimeframeFromMission`).
+      const timeframe = yield* primaryTimeframeFromMission(missionId);
 
       const history = yield* gateway.getMarketHistory({
         market,
@@ -898,39 +926,10 @@ const make = Effect.gen(function* () {
   // --- plan 29 step 2.5: keep a resting reduce-only take-profit on the book --
 
   /**
-   * The active plan's target, read as numbers rather than through the strategy
-   * decoder — the same trade-off `TradingQuoteService`'s target read makes: a
-   * reconciliation that refused to act because a historical prose field stopped
-   * decoding would leave a take-profit resting against a plan that had
-   * withdrawn it.
-   *
-   * Null when the mission has published nothing or stood down; the price rung
-   * is null when the plan published neither a take-profit price nor a target.
+   * The active plan's target — see the module-scope `moduleReadPlanTarget` for
+   * what it reads and why it is not decoded through the strategy schema.
    */
-  const readPlanTarget = (missionId: TradingMissionId) =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const rows = yield* sql<{
-        readonly take_profit_price: number | null;
-        readonly target_profit_usd: number | null;
-        readonly stand_down_code: string | null;
-      }>`
-        SELECT
-          json_extract(s.strategy_json, '$.protection.takeProfitPrice') AS take_profit_price,
-          json_extract(s.strategy_json, '$.protection.targetProfitUsd') AS target_profit_usd,
-          json_extract(s.strategy_json, '$.standDownCode') AS stand_down_code
-        FROM momentum_strategy_versions s
-        JOIN trading_missions m
-          ON m.mission_id = s.mission_id AND m.strategy_version = s.version
-        WHERE s.mission_id = ${missionId}
-      `;
-      const row = rows[0];
-      if (row === undefined || row.stand_down_code !== null) return null;
-      return {
-        takeProfitPrice: row.take_profit_price,
-        targetProfitUsd: row.target_profit_usd,
-      };
-    });
+  const readPlanTarget = moduleReadPlanTarget;
 
   /**
    * The cloids of reduce-only orders the HARNESS itself rested — a `patient`

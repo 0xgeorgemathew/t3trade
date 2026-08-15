@@ -62,7 +62,7 @@ const insertStrategy = (version: number, targetProfitUsd: number) =>
     const sql = yield* SqlClient.SqlClient;
     // Written as text: the calibration read pulls the target out of this
     // column, so the row only has to carry that.
-    const json = `{"protection":{"targetProfitUsd":${targetProfitUsd}}}`;
+    const json = `{"target":{"profitUsd":${targetProfitUsd}}}`;
     yield* sql`
       INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
       VALUES (${MISSION}, ${version}, ${json}, ${version * 1_000})

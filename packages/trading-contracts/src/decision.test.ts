@@ -63,21 +63,22 @@ describe("deriveDecisionOutcome", () => {
   });
 
   it("keeps the explicit stand-down reason instead of inferring volatility", () => {
+    // The plan document carries no reason code any more (plan 29 step 4.1:
+    // standing aside is `intent: "stand_aside"`, the reasoning is prose), so a
+    // published stand-aside attributes to the volatility default and nothing
+    // masquerades as an explicit code.
     const costs = facts({
       publishedPlan: true,
       publishedStandDown: true,
-      publishedStandDownCode: "costs_exceed_target",
     });
     expect(deriveDecisionOutcome(costs)).toBe("no_setup");
-    expect(deriveStandDownCode(costs, "no_setup")).toBe("costs_exceed_target");
+    expect(deriveStandDownCode(costs, "no_setup")).toBe("insufficient_volatility");
 
-    const data = facts({
-      publishedPlan: true,
-      publishedStandDown: true,
-      publishedStandDownCode: "data_unavailable",
-    });
-    expect(deriveDecisionOutcome(data)).toBe("blocked_by_data");
-    expect(deriveStandDownCode(data, "blocked_by_data")).toBe("data_unavailable");
+    // A publish that is not a stand-aside and armed nothing is the flatter
+    // refusal: the read resolved and the market had nothing.
+    const thesis = facts({ publishedPlan: true, publishedStandDown: false });
+    expect(deriveDecisionOutcome(thesis)).toBe("no_setup");
+    expect(deriveStandDownCode(thesis, "no_setup")).toBe("regime_unclear");
   });
 
   it("distinguishes a published thesis with armed levels from one without", () => {

@@ -57,12 +57,13 @@ export {
 
 export {
   AgentConditionDescription,
-  MomentumProtection,
-  MomentumStrategyAction,
-  MomentumStrategyDirection,
-  isWaitingLikeAction,
+  TradingPlanEntry,
+  TradingPlanIntent,
   TradingPlanState,
+  TradingPlanStop,
+  TradingPlanTarget,
   TradingTimeframe,
+  planPhase,
 } from "@t3tools/trading-contracts/strategy";
 
 export {

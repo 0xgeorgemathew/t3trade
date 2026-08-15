@@ -153,24 +153,22 @@ export const TradingPendingExecution = Schema.Struct({
 export type TradingPendingExecution = typeof TradingPendingExecution.Type;
 
 /**
- * One strategy version the mission published, as its own history reads it.
+ * One plan version the mission published, as its own history reads it.
  *
- * `trading_get_mission` returns the CURRENT strategy, so a mission that has
+ * `trading_get_mission` returns the CURRENT plan, so a mission that has
  * republished four times can see only its latest thesis — and "did the last
  * three targets work?" was a question with no way to ask it. This is the
- * skeleton of each: what was believed, what was targeted, and on what basis.
+ * skeleton of each: what it intended, what it targeted, and why.
  */
 export const PublishedStrategySummary = Schema.Struct({
   version: Schema.Number,
   publishedAt: UnixMillis,
-  mode: Schema.String,
-  direction: Schema.String,
-  currentAction: Schema.String,
-  /** Primary timeframe — `timeframes[0]` of that version. */
-  timeframe: Schema.optional(Schema.String),
+  /** The plan's intent that version — `long`, `short`, or `stand_aside`. */
+  intent: Schema.String,
+  /** The conservative target rung that version named, when it named one. */
   targetProfitUsd: Schema.optional(Schema.Number),
-  /** The one-line belief that version was published on. */
-  beliefSummary: Schema.optional(Schema.String),
+  /** The narrative that version was published on. */
+  because: Schema.optional(Schema.String),
 });
 export type PublishedStrategySummary = typeof PublishedStrategySummary.Type;
 
@@ -227,11 +225,13 @@ export type TradingGetMissionResult = typeof TradingGetMissionResult.Type;
 // -- trading_publish_plan ----------------------------------------------------
 
 /**
- * The strategy body the harness publishes.
+ * The plan body the harness publishes — the eight authored fields of the
+ * position-centric document (plan 29 step 4.1): `market`, `intent`, `entry`,
+ * `stop`, `target`, `invalidation`, `reassess`, `because`.
  *
- * `version` and `updatedAt` are assigned by the server on acceptance, so the
- * harness supplies neither: the accepted version is always
- * `expectedVersion + 1`.
+ * `updatedAt` is assigned by the server on acceptance, so the harness does not
+ * supply it. The accepted plan's identity in `momentum_strategy_versions` is
+ * the row itself; the document carries no version number.
  */
 export const PublishTradingPlanBody = Schema.Struct(tradingPlanAuthoredFields);
 export type PublishTradingPlanBody = typeof PublishTradingPlanBody.Type;

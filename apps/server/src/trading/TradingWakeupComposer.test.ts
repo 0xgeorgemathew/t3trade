@@ -37,31 +37,19 @@ const MARK = 4_000;
 const NOW = 2_000_000;
 
 const strategy = {
-  version: 3,
-  name: "ETH 1m trend continuation",
   market: "ETH",
-  mode: "breakout_continuation",
-  direction: "long",
-  timeframes: ["1m"],
-  belief: { summary: "higher lows", regime: "trending", confidence: 0.6, evidence: ["1m close"] },
-  entryPlan: {
-    explanation: "enter on a reclaim",
+  intent: "long",
+  entry: {
+    triggers: [{ description: "reclaim of the prior high" }],
+    urgency: "now",
     initialNotionalUsd: 200,
     maximumIntendedNotionalUsd: 400,
-    orderPreference: "marketable_ioc",
-    conditions: [{ description: "reclaim of the prior high" }],
   },
-  positionManagement: {
-    scaleInAllowed: false,
-    scaleInConditions: [],
-    partialReductionAllowed: true,
-  },
-  protection: { stopMethod: "under the last swing low", stopPrice: 3_900, targetProfitUsd: 15 },
-  exitConditions: [{ description: "a close under 3900" }],
-  abandonmentConditions: [],
-  reentryConditions: [],
-  currentAction: "holding",
-  explanation: "long the reclaim",
+  stop: { method: "under the last swing low", price: 3_900 },
+  target: { profitUsd: 15 },
+  invalidation: ["a close under 3900"],
+  reassess: { afterMinutes: 90 },
+  because: "long the reclaim: higher lows on the 1m in a trending regime",
   updatedAt: NOW - 900_000,
 } as unknown as TradingPlanState;
 
@@ -382,19 +370,20 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
-  it.effect("feeds a plan that reasons on 15m the 1m bars anyway", () =>
+  it.effect("feeds the runtime's 1m bars even when the plan reasons on a longer interval", () =>
     Effect.gen(function* () {
       requestedIntervals = [];
-      // The failure this exists for: a plan published with `timeframes: ["15m"]`
+      // The failure this exists for: a plan that named `timeframes: ["15m"]`
       // used to make the runtime read 15m bars and measure 15m volatility, so
       // the 1m structure the entry actually turns on was never in front of it.
-      const composed = yield* composeFull({
-        activeStrategy: { ...strategy, timeframes: ["15m", "1h"] } as TradingPlanState,
-      });
+      // The plan no longer names timeframes (plan 29 step 4.1) — the mandate
+      // is the only source, and an unmandated mission gets 1m plus the fixed
+      // 15m pairing.
+      const composed = yield* composeFull({});
 
       assert.equal(composed.wakeup.recentCandles.interval, "1m");
       assert.equal(composed.wakeup.observedVolatility.interval, "1m");
-      // The plan's own timeframe is not lost — it becomes the paired read.
+      // The higher read still happens — the fixed pairing, not the plan's.
       assert.equal(composed.wakeup.higherTimeframeVolatility?.interval, "15m");
       assert.deepEqual([...requestedIntervals].sort(), ["15m", "1m"]);
     }),
@@ -442,8 +431,8 @@ layer("TradingWakeupComposer", (it) => {
       const wakeup = yield* composeFull({
         activeStrategy: {
           ...strategy,
-          entryPlan: {
-            ...strategy.entryPlan,
+          entry: {
+            ...strategy.entry,
             initialNotionalUsd: undefined,
           },
         } as unknown as TradingPlanState,
@@ -475,13 +464,15 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
-  /** The same plan, waiting to enter, with two named trigger levels. */
+  /**
+   * The same plan, waiting to enter, with two named trigger levels. Flat is
+   * the waiting phase now (`planPhase`) — there is no `currentAction` to name.
+   */
   const waitingStrategy = {
     ...(strategy as unknown as Record<string, unknown>),
-    currentAction: "waiting",
-    entryPlan: {
-      ...(strategy.entryPlan as unknown as Record<string, unknown>),
-      conditions: [
+    entry: {
+      ...(strategy.entry as unknown as Record<string, unknown>),
+      triggers: [
         // Armed: `watch_up` sits at 4,040.
         { description: "reclaim of the prior high", priceLevel: 4_040, timeframe: "1m" },
         // Named in prose only.
@@ -534,24 +525,18 @@ layer("TradingWakeupComposer", (it) => {
       // which left the mission deaf while still holding a position.
       const verbose = {
         ...strategy,
-        explanation: "e".repeat(10_000),
-        belief: {
-          ...strategy.belief,
-          summary: "s".repeat(10_000),
-          evidence: Array.from({ length: 20 }, (_, i) => `evidence ${i} ${"v".repeat(500)}`),
+        because: "b".repeat(10_000),
+        invalidation: Array.from({ length: 20 }, (_, i) => `invalidation ${i} ${"x".repeat(500)}`),
+        entry: {
+          ...strategy.entry,
+          triggers: Array.from({ length: 20 }, (_, i) => ({
+            description: `trigger ${i} ${"t".repeat(500)}`,
+          })),
         },
-        entryPlan: { ...strategy.entryPlan, explanation: "p".repeat(10_000) },
-        exitConditions: Array.from({ length: 20 }, (_, i) => ({
-          description: `exit ${i} ${"x".repeat(500)}`,
-        })),
       } as unknown as TradingPlanState;
 
       const { text } = yield* composeFull({ activeStrategy: verbose });
 
-      require("node:fs").writeFileSync(
-        "/private/tmp/claude-501/-Users-george-Workspace-t3trade/9890dc64-5bd3-42a8-90fb-a546f8c3089e/scratchpad/wake.txt",
-        text,
-      );
       assert.isAtMost(text.length, MAX_WAKEUP_CHARS);
       // The trim marker is what tells the run the plan it sees is a projection.
       assert.include(text, "…");

@@ -68,20 +68,15 @@ export const TradingStandDownCode = Schema.Literals([
 ]);
 export type TradingStandDownCode = typeof TradingStandDownCode.Type;
 
-/** Codes a harness may state on an accepted stand-down publish. */
-export const PublishedStandDownCode = Schema.Literals([
-  "insufficient_volatility",
-  "costs_exceed_target",
-  "regime_unclear",
-  "data_unavailable",
-  "tool_call_failed",
-]);
-export type PublishedStandDownCode = typeof PublishedStandDownCode.Type;
-
 /**
  * The facts a run accumulates while it is open, from which its terminal outcome
  * is derived. Every field is observed by the server — none is asserted by the
  * model.
+ *
+ * There is no explicit stand-down reason any more: the plan document stopped
+ * carrying one (plan 29 step 4.1 — standing aside is `intent: "stand_aside"`
+ * and the reasoning is prose in `because`), so `no_setup` attribution falls to
+ * the derived default below.
  */
 export interface TradingRunFacts {
   /** Tool names called during the run, in call order, with repeats. */
@@ -92,10 +87,8 @@ export interface TradingRunFacts {
   readonly firstToolError?: string | undefined;
   /** A `trading_publish_plan` call was accepted during the run. */
   readonly publishedPlan: boolean;
-  /** The published plan declared itself a stand-down. */
+  /** The published plan declared itself a stand-aside (`intent: "stand_aside"`). */
   readonly publishedStandDown: boolean;
-  /** The accepted publish's explicit reason, when it supplied one. */
-  readonly publishedStandDownCode?: PublishedStandDownCode | undefined;
   /** The published plan carries at least one armed entry level. */
   readonly hasArmedEntry: boolean;
   /** `trading_execute` or `trading_adjust_stop` was called. */
@@ -126,12 +119,6 @@ export function deriveDecisionOutcome(facts: TradingRunFacts): TradingDecisionOu
   if (!facts.publishedPlan) {
     return facts.toolErrorCount > 0 ? "blocked_by_data" : "no_decision";
   }
-  if (
-    facts.publishedStandDownCode === "data_unavailable" ||
-    facts.publishedStandDownCode === "tool_call_failed"
-  ) {
-    return "blocked_by_data";
-  }
   if (facts.publishedStandDown) return "no_setup";
   return facts.hasArmedEntry ? "waiting_with_setup" : "no_setup";
 }
@@ -152,18 +139,12 @@ export function deriveStandDownCode(
         ? "exchange_rejected"
         : "preview_refused";
     case "blocked_by_data":
-      return (
-        facts.publishedStandDownCode ??
-        (facts.toolErrorCount > 0 ? "data_unavailable" : "tool_call_failed")
-      );
+      return facts.toolErrorCount > 0 ? "data_unavailable" : "tool_call_failed";
     case "no_decision":
       return "not_published";
     case "waiting_with_setup":
       return "awaiting_trigger";
     case "no_setup":
-      return (
-        facts.publishedStandDownCode ??
-        (facts.publishedStandDown ? "insufficient_volatility" : "regime_unclear")
-      );
+      return facts.publishedStandDown ? "insufficient_volatility" : "regime_unclear";
   }
 }

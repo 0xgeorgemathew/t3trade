@@ -54,7 +54,7 @@ const lookupPointer = (root: JsonSchemaNode, ref: string): JsonSchemaNode | unde
  * Resolve a `$ref` node against the document it came from.
  *
  * Effect hoists a schema it emits more than once into `$defs` and refers to it
- * by pointer — `exitConditions.items` is `{"$ref": "#/$defs/Union_"}`. Without
+ * by pointer — `entry.triggers.items` is `{"$ref": "#/$defs/Union_"}`. Without
  * this the walker sees a node with no `type` and no `properties` and coerces
  * nothing inside it. The hop limit is a cycle guard for a self-referential
  * definition; an unresolvable ref falls back to the node as written.
@@ -129,7 +129,7 @@ const coerceToStringCompatible = (value: string, types: ReadonlyArray<string>): 
 
 /**
  * The keys a model wraps a scalar in when it answers a list-of-literals with a
- * list of records. `timeframes: [{name:"15m", role:"thesis"}]` against
+ * list of records. A trigger.s `timeframe: {name:"15m", role:"thesis"}` against
  * `["1m"|"3m"|...]` is the observed shape — the value is right there, labelled,
  * and the whole publish was lost for the wrapper around it.
  */
@@ -162,7 +162,7 @@ const coerceValue = (value: unknown, node: JsonSchemaNode, root: JsonSchemaNode)
   const schema = resolveNode(node, root);
 
   // An empty object where the schema declares an array. Models emit `{}` for
-  // "nothing here" against `scaleInConditions: []`, and the two carry the same
+  // "nothing here" against an empty `triggers: []`, and the two carry the same
   // meaning; a non-empty object is a real mistake and still fails.
   if (schema.type === "array" && isPlainObject(value) && Object.keys(value).length === 0) {
     return [];
