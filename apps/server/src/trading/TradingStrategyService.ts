@@ -16,8 +16,6 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { checkProfitTarget } from "@t3tools/trading-contracts/costs";
-
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import { TradingMissionNotFoundError } from "./Errors.ts";
 import { isActiveMissionStatus } from "./MissionTransitions.ts";
@@ -131,9 +129,6 @@ const toStrategySummary = (row: {
       currentAction: strategy.currentAction,
       ...(strategy.timeframes[0] === undefined ? {} : { timeframe: strategy.timeframes[0] }),
       targetProfitUsd: strategy.protection.targetProfitUsd,
-      ...(strategy.protection.targetProfitBasis === undefined
-        ? {}
-        : { targetProfitBasis: strategy.protection.targetProfitBasis }),
       beliefSummary: strategy.belief.summary,
     },
   ];
@@ -218,30 +213,12 @@ const makeTradingStrategyService = Effect.gen(function* () {
         } as const;
       }
 
-      // The profit target is the one published number the runtime acts on by
-      // itself — it arms a `pnl_above` watch at it — so it is the one number
-      // worth checking before the publish lands. `checkProfitTarget` rejects a
-      // target with no derivation and one its own derivation does not produce;
-      // what the trade costs is not graded here (plan 29 step 3.1). See
-      // `costs.ts`.
-      const protection = input.strategy.protection;
-      const check = checkProfitTarget({
-        targetProfitUsd: protection.targetProfitUsd,
-        basis: protection.targetProfitBasis,
-      });
-      if (check.rejections.length > 0) {
-        return {
-          outcome: "rejected",
-          reason: "target_not_justified",
-          currentVersion: mission.strategy_version,
-          detail: check.messages.join("; "),
-        } as const;
-      }
-
       // What actually gets persisted: the harness's plan with its omitted prose
       // filled in and its long prose clipped. The plan rides on every wakeup for
       // the mission's life, so an unbounded field here is an unbounded field
-      // there — see `StrategyProse`.
+      // there — see `StrategyProse`. Nothing grades the target any more: its
+      // derivation is the harness's own work, read back on the next wake, and
+      // cost is context the observation carries (plan 29 steps 3.1/3.2).
       const filled = fillOmittedProse(input.strategy);
       const { strategy: boundedStrategy, truncatedFields } = boundStrategyProse(
         filled,
@@ -307,9 +284,9 @@ const makeTradingStrategyService = Effect.gen(function* () {
         strategy,
         strategyVersion: version,
         supersededWatchIds: superseded.map((row) => row.watch_id),
-        // Everything that was not worth refusing the publish over: the basis
-        // messages that rode along, and any prose the server clipped.
-        warnings: [...check.messages, ...proseWarnings],
+        // Everything that was not worth refusing the publish over: any prose
+        // the server clipped.
+        warnings: [...proseWarnings],
       } as const;
     });
 

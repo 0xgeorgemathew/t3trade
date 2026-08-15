@@ -56,14 +56,13 @@ const insertMission = (missionId: string, tradingAccountId: string) =>
     `;
   });
 
-/** A strategy version carrying the hit rate its basis claimed. */
-const insertStrategy = (version: number, targetProfitUsd: number, claimedHitRate: number | null) =>
+/** A strategy version carrying a published target. */
+const insertStrategy = (version: number, targetProfitUsd: number) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    // Written as text: the calibration read pulls two fields out of this column
-    // with `json_extract`, so the row only has to carry those.
-    const basis = claimedHitRate === null ? "{}" : `{"historicalHitRatePercent":${claimedHitRate}}`;
-    const json = `{"protection":{"targetProfitUsd":${targetProfitUsd},"targetProfitBasis":${basis}}}`;
+    // Written as text: the calibration read pulls the target out of this
+    // column, so the row only has to carry that.
+    const json = `{"protection":{"targetProfitUsd":${targetProfitUsd}}}`;
     yield* sql`
       INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
       VALUES (${MISSION}, ${version}, ${json}, ${version * 1_000})
@@ -97,11 +96,11 @@ const insertTrade = (input: {
   });
 
 layer("TradingCalibrationService", (it) => {
-  it.effect("grades each trade against the claim of the version it closed under", () =>
+  it.effect("grades each trade against the version it closed under", () =>
     Effect.gen(function* () {
       yield* migrated;
-      yield* insertStrategy(1, 10, 50);
-      yield* insertStrategy(2, 30, 25);
+      yield* insertStrategy(1, 10);
+      yield* insertStrategy(2, 30);
 
       // Five trades under v1, all of which touched its $10 target.
       for (let i = 0; i < MIN_CALIBRATION_TRADES; i++) {
@@ -127,26 +126,28 @@ layer("TradingCalibrationService", (it) => {
       const calibration = yield* TradingCalibrationService;
       const read = yield* calibration.read({ missionId: MISSION });
 
-      // Newest version first.
+      // Newest version first. Nothing publishes a claimed hit rate any more
+      // (the basis went with plan 29 step 3.2), so every verdict grades the
+      // observed rate alone — grouped by the version it closed under.
       assert.equal(read.entries[0]?.strategyVersion, 2);
-      assert.equal(read.entries[0]?.claimedHitRatePercent, 25);
+      assert.equal(read.entries[0]?.claimedHitRatePercent, undefined);
       assert.equal(read.entries[0]?.observedHitRatePercent, 0);
-      assert.equal(read.entries[0]?.verdict, "optimistic");
+      assert.equal(read.entries[0]?.verdict, "as_claimed");
 
       assert.equal(read.entries[1]?.strategyVersion, 1);
-      assert.equal(read.entries[1]?.claimedHitRatePercent, 50);
+      assert.equal(read.entries[1]?.claimedHitRatePercent, undefined);
       assert.equal(read.entries[1]?.observedHitRatePercent, 100);
-      assert.equal(read.entries[1]?.verdict, "conservative");
+      assert.equal(read.entries[1]?.verdict, "as_claimed");
 
       assert.equal(read.tradeCount, MIN_CALIBRATION_TRADES * 2);
       assert.equal(read.overallReachedTargetPercent, 50);
     }),
   );
 
-  it.effect("reads no claim from a basis that published none", () =>
+  it.effect("states when no claimed hit rate was published", () =>
     Effect.gen(function* () {
       yield* migrated;
-      yield* insertStrategy(1, 10, null);
+      yield* insertStrategy(1, 10);
       for (let i = 0; i < MIN_CALIBRATION_TRADES; i++) {
         yield* insertTrade({
           closedAt: 1_000 + i,
@@ -162,7 +163,7 @@ layer("TradingCalibrationService", (it) => {
 
       assert.equal(read.entries[0]?.claimedHitRatePercent, undefined);
       assert.equal(read.entries[0]?.observedHitRatePercent, 100);
-      assert.match(read.entries[0]?.note ?? "", /claimed no hit rate/);
+      assert.match(read.entries[0]?.note ?? "", /no claimed hit rate was published/);
     }),
   );
 
@@ -200,7 +201,7 @@ layer("TradingCalibrationService", (it) => {
       yield* insertMission(MISSION, "acct_1");
       yield* insertMission("mission_sibling", "acct_1");
       yield* insertMission("mission_stranger", "acct_other");
-      yield* insertStrategy(1, 10, 50);
+      yield* insertStrategy(1, 10);
 
       // This mission measured one stop of its own...
       yield* insertTrade({

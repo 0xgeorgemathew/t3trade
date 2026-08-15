@@ -42,20 +42,6 @@ const body = (name: string): PublishTradingPlanBody => ({
     stopMethod: "Below the last accepted swing low",
     stopPrice: 3_652,
     targetProfitUsd: 25,
-    targetProfitBasis: {
-      measurement: "excursion_quantile",
-      timeframe: "5m",
-      lookbackBars: 120,
-      // (46.25 / 3,700) x 2,000 of notional = the 25 USD published above.
-      // Publishing checks that arithmetic, so the two cannot drift apart.
-      measuredMoveUsd: 46.25,
-      expectedHoldBars: 10,
-      referencePrice: 3_700,
-      targetPriceMovePercent: 1.25,
-      positionNotionalUsd: 2_000,
-      historicalHitRatePercent: 50,
-      rationale: "Median 10-bar upside excursion over the last 120 5m bars is 46.25 USD of price.",
-    },
   },
   exitConditions: [{ description: "5m close under 3,690" }],
   abandonmentConditions: [],
@@ -407,7 +393,11 @@ layer("trading_publish_plan (§14.3)", (it) => {
     }),
   );
 
-  it.effect("rejects a target published with no basis at all", () =>
+  // Plan 29 step 3.2: the target-basis ceremony is gone. Nothing grades where
+  // `targetProfitUsd` came from any more — a target with no derivation beside
+  // it, or one that disagrees with its own reasoning, publishes like any other,
+  // and the next wake is where the number is weighed.
+  it.effect("publishes a target no derivation stands beside", () =>
     Effect.gen(function* () {
       yield* setup;
       const strategies = yield* TradingStrategyService;
@@ -415,37 +405,12 @@ layer("trading_publish_plan (§14.3)", (it) => {
       const result = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
         expectedVersion: 0,
-        strategy: withProtection("no basis", { targetProfitBasis: undefined }),
+        strategy: withProtection("no basis", { targetProfitUsd: 90 }),
       });
 
-      assert.equal(result.outcome, "rejected");
-      if (result.outcome === "rejected") {
-        assert.equal(result.reason, "target_not_justified");
-        assert.match(result.detail ?? "", /targetProfitBasis/);
-        assert.equal(result.currentVersion, 0);
-      }
-
-      // A rejected publish leaves the mission where it was.
-      assert.ok(Option.isNone(yield* strategies.getCurrentStrategy("mission_1")));
-    }),
-  );
-
-  it.effect("rejects a target the basis next to it does not produce", () =>
-    Effect.gen(function* () {
-      yield* setup;
-      const strategies = yield* TradingStrategyService;
-
-      // The basis says (46.25 / 3,700) x 2,000 = 25; the target claims 90.
-      const result = yield* strategies.publishMomentumStrategy({
-        missionId: "mission_1",
-        expectedVersion: 0,
-        strategy: withProtection("mismatched", { targetProfitUsd: 90 }),
-      });
-
-      assert.equal(result.outcome, "rejected");
-      if (result.outcome === "rejected") {
-        assert.equal(result.reason, "target_not_justified");
-        assert.match(result.detail ?? "", /does not follow from the basis/);
+      assert.equal(result.outcome, "accepted");
+      if (result.outcome === "accepted") {
+        assert.deepEqual(result.warnings, []);
       }
     }),
   );
@@ -464,17 +429,6 @@ layer("trading_publish_plan (§14.3)", (it) => {
         expectedVersion: 0,
         strategy: withProtection("too small", {
           targetProfitUsd: 1.7,
-          targetProfitBasis: {
-            measurement: "excursion_quantile",
-            timeframe: "1m",
-            lookbackBars: 120,
-            measuredMoveUsd: 1.7,
-            expectedHoldBars: 10,
-            referencePrice: 2_000,
-            targetPriceMovePercent: 0.085,
-            positionNotionalUsd: 2_000,
-            rationale: "10-bar p75 upside excursion on a quiet 1m window.",
-          },
         }),
       });
 
@@ -585,7 +539,6 @@ layer("trading_publish_plan (§14.3)", (it) => {
       assert.equal(history[1]?.version, 1);
       // The skeleton, not the whole strategy: enough to score a target against.
       assert.equal(history[0]?.targetProfitUsd, body("x").protection.targetProfitUsd);
-      assert.equal(history[0]?.targetProfitBasis?.measurement, "excursion_quantile");
       assert.equal(history[0]?.timeframe, "5m");
       assert.ok((history[0]?.beliefSummary ?? "").length > 0);
     }),

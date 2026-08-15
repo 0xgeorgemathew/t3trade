@@ -38,14 +38,17 @@ const INPUT: ProtectionInput = {
   stopPrice: 2_950,
 };
 
-/** The plan's basis for a long: reference 3000, target move 200 → TP at 3200. */
+/**
+ * The plan's target for a long: a $100 rung on the 0.5 ETH the fake holds,
+ * entry 3000 → a move of 200 → TP at 3200.
+ */
 const TP_INPUT: TakeProfitInput = {
   missionId: "mission_protect",
   strategyVersion: 1,
   executionSequence: 0,
   masterAddress: MASTER,
   market: "ETH",
-  targetBasis: { referencePrice: 3_000, measuredMoveUsd: 200 },
+  target: { takeProfitPrice: null, targetProfitUsd: 100 },
 };
 
 /** A resting reduce-only stop below a long. */
@@ -584,10 +587,10 @@ it.effect("leaves the resting take-profit alone when it already matches the targ
 
 it.effect("places nothing and cancels nothing without a usable target", () =>
   Effect.gen(function* () {
-    // targetBasis null: the plan stood down, published no basis, or flagged
-    // insufficient volatility. No target means no order — and no leftover.
+    // target null: the plan stood down or published nothing usable. No target
+    // means no order — and no leftover.
     const fake = makeFake();
-    const outcome = yield* runTakeProfit(fake, { ...TP_INPUT, targetBasis: null });
+    const outcome = yield* runTakeProfit(fake, { ...TP_INPUT, target: null });
 
     assert.equal(outcome.status, "withdrawn");
     assert.deepEqual(fake.aloPlacements, []);
@@ -598,10 +601,26 @@ it.effect("places nothing and cancels nothing without a usable target", () =>
 it.effect("withdraws resting take-profits when the plan removes its target", () =>
   Effect.gen(function* () {
     const fake = makeFake({ orders: [restingTakeProfit("0xoldtp", 0.5, 3_100)] });
-    const outcome = yield* runTakeProfit(fake, { ...TP_INPUT, targetBasis: null });
+    const outcome = yield* runTakeProfit(fake, { ...TP_INPUT, target: null });
 
     assert.equal(outcome.status, "withdrawn");
     assert.deepEqual(fake.cancels, ["0xoldtp"]);
+  }),
+);
+
+it.effect("rests at the plan's published take-profit price when it names one", () =>
+  Effect.gen(function* () {
+    // The published price wins over the derived rung ($100 on 0.5 from entry
+    // 3000 would say 3200; the plan says 3250, and 3250 is what rests).
+    const fake = makeFake({ orders: [restingTakeProfit("0xtp", 0.5, 3_250)] });
+    const outcome = yield* runTakeProfit(fake, {
+      ...TP_INPUT,
+      target: { takeProfitPrice: 3_250, targetProfitUsd: 100 },
+    });
+
+    assert.equal(outcome.status, "unchanged");
+    assert.deepEqual(fake.aloPlacements, []);
+    assert.deepEqual(fake.cancels, []);
   }),
 );
 
@@ -614,7 +633,7 @@ it.effect("leaves a harness-placed patient exit alone when the plan has no targe
     const fake = makeFake({ orders: [restingTakeProfit("0xpatientexit", 0.5, 3_100)] });
     const outcome = yield* runTakeProfit(fake, {
       ...TP_INPUT,
-      targetBasis: null,
+      target: null,
       preserveCloids: ["0xpatientexit"],
     });
 

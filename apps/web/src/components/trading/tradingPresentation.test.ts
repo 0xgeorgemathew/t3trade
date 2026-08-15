@@ -1007,18 +1007,6 @@ describe("deriveStrategyPlan", () => {
       stopPrice: 1840,
       targetProfitUsd: 18.5,
       targetProfitRationale: "Conservative 1864 · Base 1880 · Extension 1900.",
-      targetProfitBasis: {
-        measurement: "excursion_quantile",
-        timeframe: "5m",
-        lookbackBars: 60,
-        measuredMoveUsd: 12.4,
-        expectedHoldBars: 10,
-        referencePrice: 1860,
-        targetPriceMovePercent: 1.0,
-        positionNotionalUsd: 500,
-        historicalHitRatePercent: 50,
-        rationale: "median 5m excursion over 60 bars",
-      },
       maximumPlannedLossUsd: 20,
     },
     abandonmentConditions: [
@@ -1144,50 +1132,11 @@ describe("deriveStrategyPlan", () => {
     );
   });
 
-  // The basis is the harness showing its work: measurement, lookback, hold, and
-  // the historical hit rate the median came from. It is the interesting field.
-  it("flattens the profit-target basis into the four lines the card shows", () => {
-    expect(deriveStrategyPlan(mission)?.basis).toEqual({
-      measurement: "excursion quantile",
-      lookback: "5m · 60b",
-      hold: "10b",
-      hitRate: "50%",
-    });
-  });
-
-  it("drops the hit rate when the measurement did not report one", () => {
-    const plan = deriveStrategyPlan({
-      strategyVersion: 1,
-      strategy: {
-        ...strategy,
-        protection: {
-          ...strategy.protection,
-          targetProfitBasis: {
-            ...strategy.protection.targetProfitBasis,
-            historicalHitRatePercent: undefined,
-          },
-        },
-      },
-    })!;
-    expect(plan.basis?.hitRate).toBeNull();
-  });
-
-  it("omits the basis entirely when none was published", () => {
-    const plan = deriveStrategyPlan({
-      strategyVersion: 1,
-      strategy: {
-        ...strategy,
-        protection: { ...strategy.protection, targetProfitBasis: undefined },
-      },
-    })!;
-    expect(plan.basis).toBeNull();
-  });
-
   // The stand-down publish: the turn read the market, found nothing worth
   // taking after costs, and recorded that. `targetProfitUsd` is then the target
   // the costs DEMANDED, not one the mission is aiming at, and the flag is what
   // stops the panel from drawing it as a level on a trade that was declined.
-  it("flags a stand-down plan from the basis, so its target reads as a threshold", () => {
+  it("flags a stand-down plan from its code, so its target reads as a threshold", () => {
     const plan = deriveStrategyPlan({
       strategyVersion: 1,
       strategy: {
@@ -1195,11 +1144,8 @@ describe("deriveStrategyPlan", () => {
         protection: {
           ...strategy.protection,
           targetProfitUsd: 8.6,
-          targetProfitBasis: {
-            ...strategy.protection.targetProfitBasis,
-            insufficientVolatility: true,
-          },
         },
+        standDownCode: "insufficient_volatility",
       },
     })!;
     expect(plan.isStandDown).toBe(true);
@@ -1208,15 +1154,6 @@ describe("deriveStrategyPlan", () => {
 
   it("does not flag an ordinary plan as a stand-down", () => {
     expect(deriveStrategyPlan(mission)?.isStandDown).toBe(false);
-    // Nor when a basis was published without the field at all.
-    const noBasis = deriveStrategyPlan({
-      strategyVersion: 1,
-      strategy: {
-        ...strategy,
-        protection: { ...strategy.protection, targetProfitBasis: undefined },
-      },
-    })!;
-    expect(noBasis.isStandDown).toBe(false);
   });
 
   it("reports the scaling flags as allowed / not allowed", () => {

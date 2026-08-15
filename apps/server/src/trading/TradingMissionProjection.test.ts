@@ -151,18 +151,6 @@ const rangeReversionStrategy: TradingPlanState = {
   protection: {
     stopMethod: "A 1m close outside the range says it broke rather than held",
     targetProfitUsd: 4.75,
-    targetProfitBasis: {
-      measurement: "swing_range",
-      timeframe: "1m",
-      lookbackBars: 120,
-      // 65% of the $7.30 height — the capture, not the whole crossing.
-      measuredMoveUsd: 4.745,
-      expectedHoldBars: 23,
-      referencePrice: 3_405.43,
-      targetPriceMovePercent: 0.139,
-      positionNotionalUsd: 3_405.43,
-      rationale: "Range height 7.30 over 120 1m bars; 65% of it is 4.745 of price.",
-    },
   },
   exitConditions: [{ description: "Target reached, or a close outside the range" }],
   abandonmentConditions: [],
@@ -194,8 +182,7 @@ layer("TradingMissionProjection strategy card", (it) => {
 
       assert.equal(strategy?.mode, "range_reversion");
       assert.equal(strategy?.direction, "both");
-      assert.equal(strategy?.protection.targetProfitBasis?.measurement, "swing_range");
-      assert.equal(strategy?.protection.targetProfitBasis?.measuredMoveUsd, 4.745);
+      assert.equal(strategy?.protection.targetProfitUsd, 4.75);
     }),
   );
 });

@@ -45,7 +45,6 @@ interface TradeRow {
   readonly peak_unrealised_pnl: number;
   readonly trough_unrealised_pnl: number;
   readonly net_pnl: number;
-  readonly claimed_hit_rate: number | null;
   readonly stop_noise_floor_multiple: number | null;
 }
 
@@ -54,16 +53,14 @@ const make = Effect.gen(function* () {
 
   const read: TradingCalibrationServiceShape["read"] = (input) =>
     Effect.gen(function* () {
-      // The claimed hit rate lives inside the strategy version's basis, so the
-      // join is to the version the trade closed under — not the current one,
-      // which is the whole point: a target is graded against the claim made
-      // when it was set.
-      //
       // The read spans the whole trading account, not just this mission (plan
       // 27 H4): settled missions keep their rows now, and a stop-placement
       // sample stuck at n=1 per mission was never going to say anything. The
       // sibling missions found here belong to the same account as the one the
-      // calibration was asked about.
+      // calibration was asked about. The claimed hit rate the basis used to
+      // carry went with the basis itself (plan 29 step 3.2); the per-version
+      // grouping still grades each target against the version it was published
+      // under, off the trade's own version column.
       const rows = yield* sql<TradeRow>`
         SELECT
           t.mission_id,
@@ -72,15 +69,9 @@ const make = Effect.gen(function* () {
           t.peak_unrealised_pnl,
           t.trough_unrealised_pnl,
           t.net_pnl,
-          t.stop_noise_floor_multiple,
-          json_extract(
-            v.strategy_json,
-            '$.protection.targetProfitBasis.historicalHitRatePercent'
-          ) AS claimed_hit_rate
+          t.stop_noise_floor_multiple
         FROM trading_closed_trades t
         LEFT JOIN trading_missions m ON m.mission_id = t.mission_id
-        LEFT JOIN momentum_strategy_versions v
-          ON v.mission_id = t.mission_id AND v.version = t.strategy_version
         WHERE t.mission_id = ${input.missionId}
            OR m.trading_account_id = (
                 SELECT trading_account_id FROM trading_missions
@@ -104,7 +95,6 @@ const make = Effect.gen(function* () {
           peakUnrealisedPnlUsd: row.peak_unrealised_pnl,
           troughUnrealisedPnlUsd: row.trough_unrealised_pnl,
           netPnlUsd: row.net_pnl,
-          claimedHitRatePercent: foreign ? null : row.claimed_hit_rate,
           stopNoiseFloorMultiple: row.stop_noise_floor_multiple,
           // Post-close candles are not read here; the avoidable-stop share
           // grades on the noise floor alone until the re-cross measurement is

@@ -1,6 +1,5 @@
 /**
- * What a round trip costs, and whether a published target follows from its
- * basis.
+ * What a round trip costs, as context — never as a gate.
  *
  * The harness could measure volatility precisely and still publish a target
  * below break-even, because nothing it could read told it what a trade costs.
@@ -25,7 +24,7 @@ import { ExchangeMarket, Price, UnixMillis } from "./primitives.ts";
 /**
  * How many round trips the target a trade is AIMING at should be worth.
  *
- * Not a gate. It is the rung the basis is written to and the number the
+ * Not a gate. It is the rung the target aims at and the number the
  * management turns argue against — is the profit in hand worth the exit that
  * realises it, and is there enough left on offer to justify extending.
  */
@@ -450,155 +449,4 @@ export function targetNotionalForPlan(input: {
       referencePrice: input.referencePrice,
     }),
   });
-}
-
-/**
- * What a cost read should be priced at when the mission holds a plan with a
- * live target, and what capped it.
- */
-export interface PlanCostSizing {
-  /**
-   * The notional to price the estimate at, or null when no notional pays the
-   * plan's target — the caller then keeps its own fallback size.
-   */
-  readonly notionalUsd: number | null;
-  /** The target arithmetic, uncapped, for the caller's reporting. */
-  readonly target: TargetNotional;
-}
-
-/**
- * The notional a cost read should be priced at for a plan with a live target
- * (plan 29 step 2.6, plan 28 defect 5).
- *
- * The market-structure read used to price its estimate at the mission's
- * approved ceiling, which on a thin book walks the worst fill the mission
- * could possibly take and then priced every candidate's cost against it. When
- * the current plan publishes a target with a basis, the size the mission would
- * actually take is the notional that target needs — bounded by the same
- * notional ceilings `deriveFeasibleSize` caps a real entry with, plus the
- * approved capital the fallback prices at, so a plan-sized estimate is never
- * larger than the ceiling behaviour it replaces.
- *
- * The stop-dependent ceilings (planned loss, loss budget) are deliberately
- * absent: a structure read happens before any entry has a stop, so the
- * notional ceilings are the honest bound it can know. Slippage past the touch
- * is still priced in full at the size returned — the estimate is what changes
- * with size, not the arithmetic.
- */
-export function notionalToPricePlanCosts(input: {
-  readonly targetProfitUsd: number;
-  readonly expectedPriceMoveUsd: number;
-  readonly referencePrice: number;
-  readonly takerFeeBpsPerSide: number;
-  readonly halfSpreadUsd: number;
-  readonly allocatedCapitalUsd: number;
-  readonly maximumLeverage: number;
-  readonly maximumGrossNotionalUsd: number;
-  /** The exchange's minimum trade; a target below it could never be taken. */
-  readonly minimumNotionalUsd: number;
-}): PlanCostSizing {
-  const target = targetNotionalForPlan(input);
-  if (target.notionalUsd === null) return { notionalUsd: null, target };
-
-  // `deriveFeasibleSize` expresses the leverage ceiling as margin x leverage;
-  // allocated capital is included so the plan-sized notional can only ever
-  // shrink the estimate relative to pricing at the ceiling, never grow it.
-  const ceiling = Math.min(
-    input.allocatedCapitalUsd,
-    input.maximumLeverage * input.allocatedCapitalUsd,
-    input.maximumGrossNotionalUsd,
-  );
-  // At least the exchange minimum — a target that needs less than the
-  // smallest legal trade would otherwise price the gate at a round trip no
-  // entry could take. Never above the ceiling, even when the minimum is the
-  // larger of the two: above the approved risk is not a size, it is a defect.
-  return {
-    notionalUsd: Math.min(Math.max(target.notionalUsd, input.minimumNotionalUsd), ceiling),
-    target,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Publish-time validation of a profit target
-// ---------------------------------------------------------------------------
-
-/**
- * How far the published target may sit from the arithmetic its basis claims
- * produced it, as a fraction.
- *
- * Wide enough for the rounding a harness does when it writes "about $7"; far
- * too narrow for a target that came from somewhere other than the measurement
- * next to it.
- */
-export const TARGET_BASIS_TOLERANCE = 0.05;
-
-/** Why a published profit target failed validation. */
-export const ProfitTargetDefect = Schema.Literals([
-  "target_basis_missing",
-  "target_basis_arithmetic_mismatch",
-]);
-export type ProfitTargetDefect = typeof ProfitTargetDefect.Type;
-
-/** The basis fields validation reads. Structurally a `ProfitTargetBasis`. */
-export interface ProfitTargetBasisView {
-  readonly measuredMoveUsd: number;
-  readonly referencePrice: number;
-  readonly positionNotionalUsd: number;
-  readonly insufficientVolatility?: boolean | undefined;
-}
-
-export interface ProfitTargetCheck {
-  /** Defects that must stop the publish. */
-  readonly rejections: ReadonlyArray<ProfitTargetDefect>;
-  /** Defects reported back in-band but allowed through. */
-  readonly warnings: ReadonlyArray<ProfitTargetDefect>;
-  /** One human-readable line per defect, in the order they appear above. */
-  readonly messages: ReadonlyArray<string>;
-}
-
-/**
- * Check a published target against the basis that claims to have produced it.
- *
- * Both defects reject. A missing basis means the target has no derivation at
- * all, and an arithmetic mismatch means the derivation next to it does not
- * produce it — in both cases the number the runtime is about to arm a watch at
- * is unexplained.
- *
- * What a trade costs is deliberately not graded here: cost is context the
- * wakeup and the structure read carry, not a publish gate (plan 29 step 3.1).
- */
-export function checkProfitTarget(input: {
-  readonly targetProfitUsd: number;
-  readonly basis: ProfitTargetBasisView | undefined;
-}): ProfitTargetCheck {
-  const rejections: Array<ProfitTargetDefect> = [];
-  const warnings: Array<ProfitTargetDefect> = [];
-  const messages: Array<string> = [];
-
-  if (input.basis === undefined) {
-    rejections.push("target_basis_missing");
-    messages.push(
-      "protection.targetProfitBasis is required: publish the measurement, timeframe, lookback, hold, and notional the target was derived from",
-    );
-    return { rejections, warnings, messages };
-  }
-
-  const basis = input.basis;
-
-  // A harness that stood down published the field to say so, not to derive a
-  // number from it — grading its arithmetic would reject the honest answer.
-  if (basis.insufficientVolatility !== true && basis.referencePrice > 0) {
-    const implied = (basis.measuredMoveUsd / basis.referencePrice) * basis.positionNotionalUsd;
-    const drift = Math.abs(input.targetProfitUsd - implied);
-    if (implied > 0 && drift > implied * TARGET_BASIS_TOLERANCE) {
-      rejections.push("target_basis_arithmetic_mismatch");
-      messages.push(
-        `targetProfitUsd ${input.targetProfitUsd.toFixed(2)} does not follow from the basis: ` +
-          `(measuredMoveUsd ${basis.measuredMoveUsd} / referencePrice ${basis.referencePrice}) x notional ` +
-          `${basis.positionNotionalUsd} = ${implied.toFixed(2)}`,
-      );
-    }
-  }
-
-  return { rejections, warnings, messages };
 }

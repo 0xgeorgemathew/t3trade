@@ -53,10 +53,7 @@ import {
   PROTECTION_RECONCILIATION,
   PROTECTION_SIZE_EPSILON,
 } from "@t3tools/trading-contracts/protection";
-import {
-  takeProfitLimitPrice,
-  type ProfitTargetPriceBasis,
-} from "@t3tools/trading-contracts/strategy";
+import { takeProfitLimitPrice } from "@t3tools/trading-contracts/strategy";
 
 import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
 
@@ -125,11 +122,15 @@ export interface TakeProfitInput {
   readonly masterAddress: string;
   readonly market: string;
   /**
-   * The active plan's target basis, or `null` when the plan published no
-   * usable target (no basis, a stand-down, or insufficient volatility). The
+   * The active plan's target — its take-profit price when it published one,
+   * else the USD rung priced off the position's entry — or `null` when the
+   * plan published no usable target (nothing published, or a stand-down). The
    * caller reads the plan; this service owns only the exchange convergence.
    */
-  readonly targetBasis: ProfitTargetPriceBasis | null;
+  readonly target: {
+    readonly takeProfitPrice: number | null;
+    readonly targetProfitUsd: number | null;
+  } | null;
   /**
    * Cloids of resting reduce-only orders the HARNESS placed itself — a
    * `patient` exit (plan 29 step 2.3) is one, and it is a reduce-only limit
@@ -251,6 +252,8 @@ export class TradingProtectionService extends Context.Service<
 interface CanonicalView {
   readonly positionSize: number;
   readonly referencePrice: number;
+  /** The position's entry price; 0 when the exchange reports none. */
+  readonly entryPrice: number;
   readonly openOrders: ReadonlyArray<AgentOpenOrder>;
 }
 
@@ -310,12 +313,17 @@ export const makeTradingProtectionService = Effect.gen(function* () {
 
       const position = snapshot.positions.find((p) => p.market === input.market);
       if (position === undefined || position.size === 0) {
-        return { positionSize: 0, referencePrice: 0, openOrders };
+        return { positionSize: 0, referencePrice: 0, entryPrice: 0, openOrders };
       }
       // Mark, derived the same way the reconciler derives it: the clearinghouse
       // position carries no mark field, but upnl = (mark − entry) × size.
       const markPx = position.entryPrice + position.unrealisedPnl / position.size;
-      return { positionSize: position.size, referencePrice: markPx, openOrders };
+      return {
+        positionSize: position.size,
+        referencePrice: markPx,
+        entryPrice: position.entryPrice,
+        openOrders,
+      };
     });
 
   const coverageOf = (input: ProtectionInput, view: CanonicalView): number =>
@@ -807,8 +815,10 @@ export const makeTradingProtectionService = Effect.gen(function* () {
       }
 
       const targetPrice = takeProfitLimitPrice({
-        basis: input.targetBasis,
+        takeProfitPrice: input.target?.takeProfitPrice ?? null,
+        targetProfitUsd: input.target?.targetProfitUsd ?? null,
         positionSize: view.positionSize,
+        entryPrice: view.entryPrice,
       });
 
       // --- no usable target: the plan withdrew its profit-taking ----------

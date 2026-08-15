@@ -152,17 +152,6 @@ const seedMission = Effect.gen(function* () {
         targetProfitUsd: 10,
         // Publishing checks the target against the basis it claims to come from:
         // (10 USD of price / 2,000 mark) x 2,000 of notional = 10 USD of PnL.
-        targetProfitBasis: {
-          measurement: "excursion_quantile",
-          timeframe: "1m",
-          lookbackBars: 120,
-          measuredMoveUsd: 10,
-          expectedHoldBars: 10,
-          referencePrice: 2_000,
-          targetPriceMovePercent: 0.5,
-          positionNotionalUsd: 2_000,
-          rationale: "10-bar p50 excursion over a 120-bar window",
-        },
       },
       exitConditions: [],
       abandonmentConditions: [],

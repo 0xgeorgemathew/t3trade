@@ -124,14 +124,14 @@ describe("calibrateTargets", () => {
     assert.match(result.recommendation, /not enough to calibrate/);
   });
 
-  it("grades a version whose basis claimed no hit rate without inventing one", () => {
+  it("grades a version that published no hit rate without inventing one", () => {
     const result = calibrate(many(MIN_CALIBRATION_TRADES, { claimedHitRatePercent: null }));
 
     const entry = result.entries[0];
     assert.equal(entry?.claimedHitRatePercent, undefined);
     assert.equal(entry?.observedHitRatePercent, 100);
     assert.equal(entry?.verdict, "as_claimed");
-    assert.match(entry?.note ?? "", /claimed no hit rate/);
+    assert.match(entry?.note ?? "", /no claimed hit rate was published/);
   });
 
   it("carries the stop-placement review beside the target grades", () => {

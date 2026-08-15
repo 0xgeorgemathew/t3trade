@@ -177,22 +177,23 @@ export const makeTradingQuoteService = Effect.gen(function* () {
     `.pipe(Effect.map((rows) => rows[0]?.run_id ?? null));
 
   /**
-   * The published plan's target and the move its basis claims will produce it.
+   * The published plan's target: the USD rung and the price it aims at, when
+   * the plan publishes either.
    *
-   * Read as two numbers rather than through the strategy decoder: a quote that
+   * Read as numbers rather than through the strategy decoder: a quote that
    * fails because a historical field no longer decodes would be a refusal about
-   * bookkeeping, and this is a sizing hint. Both null when the mission has
-   * published nothing, when the plan stood down, or when the basis is missing.
+   * bookkeeping, and this is a sizing hint. Null fields when the mission has
+   * published nothing, when the plan stood down, or when the fields are absent.
    */
-  const readTargetBasis = (missionId: string) =>
+  const readPlanTarget = (missionId: string) =>
     sql<{
       readonly target_profit_usd: number | null;
-      readonly measured_move_usd: number | null;
+      readonly take_profit_price: number | null;
       readonly stand_down_code: string | null;
     }>`
       SELECT
         json_extract(s.strategy_json, '$.protection.targetProfitUsd') AS target_profit_usd,
-        json_extract(s.strategy_json, '$.protection.targetProfitBasis.measuredMoveUsd') AS measured_move_usd,
+        json_extract(s.strategy_json, '$.protection.takeProfitPrice') AS take_profit_price,
         json_extract(s.strategy_json, '$.standDownCode') AS stand_down_code
       FROM momentum_strategy_versions s
       JOIN trading_missions m
@@ -281,19 +282,21 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       // sizing down does not make a target cheaper to reach, it makes it
       // unreachable, because the costs shrink with the notional and the target
       // does not. Every risk ceiling still binds above it.
-      const plan = yield* readTargetBasis(request.missionId);
+      const plan = yield* readPlanTarget(request.missionId);
       // Sized through the same composition the structure read's cost estimate
-      // uses (`targetNotionalForPlan`), so the quote path and the gating path
-      // cannot drift apart on what a target needs.
+      // prices from (`targetNotionalForPlan`), so the two cannot drift apart on
+      // what a target needs. The expected move is the distance from the entry
+      // being quoted to the plan's own take-profit price, so the lift applies
+      // only to plans that name the level they are aiming at.
       const targetNotional =
         plan === null ||
         plan.stand_down_code !== null ||
         plan.target_profit_usd === null ||
-        plan.measured_move_usd === null
+        plan.take_profit_price === null
           ? null
           : targetNotionalForPlan({
               targetProfitUsd: plan.target_profit_usd,
-              expectedPriceMoveUsd: plan.measured_move_usd,
+              expectedPriceMoveUsd: Math.abs(plan.take_profit_price - entryPrice),
               referencePrice: entryPrice,
               takerFeeBpsPerSide: takerFeeRateBps,
               halfSpreadUsd: Math.max(0, (bestAsk - bestBid) / 2),

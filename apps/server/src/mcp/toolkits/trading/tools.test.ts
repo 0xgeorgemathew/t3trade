@@ -102,8 +102,8 @@ it("advertises only the server-owned quote form for execution", () => {
 });
 
 // The publish description states the publish contract (versioning, what a
-// publish touches and does not, the checked target), not the target-derivation
-// methodology or doctrine — those live in the playbook.
+// publish touches and does not, where the target comes from), not the doctrine
+// — those live in the playbook.
 it("publish description states the publish contract, not the methodology", () => {
   const publish = TradingToolkit.tools[TRADING_PUBLISH_PLAN_TOOL].description ?? "";
 
@@ -111,9 +111,10 @@ it("publish description states the publish contract, not the methodology", () =>
   expect(publish).toContain("expectedVersion");
   // A publish supersedes the prior version's watches.
   expect(publish).toContain("supersede");
-  // The basis is checked at publish, against the round-trip cost.
-  expect(publish).toContain("targetProfitBasis");
-  expect(publish).toContain("round-trip cost");
+  // The target is derived off measured volatility; nothing grades it (plan 29
+  // step 3.2 took the basis ceremony out).
+  expect(publish).toContain("measured volatility");
+  expect(publish).not.toContain("targetProfitBasis");
   // But never the resting orders — that division of labor is the contract.
   expect(publish).toContain("resting orders");
   // How the harness records that no viable target exists.

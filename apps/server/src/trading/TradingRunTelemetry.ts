@@ -227,9 +227,6 @@ const readPlan = (
     const plan = JSON.parse(strategyJson) as {
       readonly mode?: unknown;
       readonly standDownCode?: unknown;
-      readonly protection?: {
-        readonly targetProfitBasis?: { readonly insufficientVolatility?: unknown };
-      };
       readonly entryPlan?: { readonly conditions?: unknown };
     };
     const conditions = plan.entryPlan?.conditions;
@@ -246,14 +243,8 @@ const readPlan = (
         : undefined;
     return {
       mode: typeof plan.mode === "string" ? plan.mode : null,
-      standDown:
-        explicitCode !== undefined ||
-        plan.protection?.targetProfitBasis?.insufficientVolatility === true,
-      standDownCode:
-        explicitCode ??
-        (plan.protection?.targetProfitBasis?.insufficientVolatility === true
-          ? "insufficient_volatility"
-          : undefined),
+      standDown: explicitCode !== undefined,
+      standDownCode: explicitCode,
       armedEntry: Array.isArray(conditions) && conditions.length > 0,
     };
   } catch {

@@ -898,31 +898,26 @@ const make = Effect.gen(function* () {
   // --- plan 29 step 2.5: keep a resting reduce-only take-profit on the book --
 
   /**
-   * The active plan's target basis, read as numbers rather than through the
-   * strategy decoder — the same trade-off `TradingQuoteService`'s target read
-   * makes: a reconciliation that refused to act because a historical prose
-   * field stopped decoding would leave a take-profit resting against a plan
-   * that had withdrawn it.
+   * The active plan's target, read as numbers rather than through the strategy
+   * decoder — the same trade-off `TradingQuoteService`'s target read makes: a
+   * reconciliation that refused to act because a historical prose field stopped
+   * decoding would leave a take-profit resting against a plan that had
+   * withdrawn it.
    *
-   * Null when the mission has published nothing, stood down, flagged
-   * insufficient volatility, or the basis is missing its numbers.
+   * Null when the mission has published nothing or stood down; the price rung
+   * is null when the plan published neither a take-profit price nor a target.
    */
-  const readPlanTargetBasis = (missionId: TradingMissionId) =>
+  const readPlanTarget = (missionId: TradingMissionId) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const rows = yield* sql<{
-        readonly reference_price: number | null;
-        readonly measured_move_usd: number | null;
-        readonly insufficient_volatility: number | null;
+        readonly take_profit_price: number | null;
+        readonly target_profit_usd: number | null;
         readonly stand_down_code: string | null;
       }>`
         SELECT
-          json_extract(s.strategy_json, '$.protection.targetProfitBasis.referencePrice')
-            AS reference_price,
-          json_extract(s.strategy_json, '$.protection.targetProfitBasis.measuredMoveUsd')
-            AS measured_move_usd,
-          json_extract(s.strategy_json, '$.protection.targetProfitBasis.insufficientVolatility')
-            AS insufficient_volatility,
+          json_extract(s.strategy_json, '$.protection.takeProfitPrice') AS take_profit_price,
+          json_extract(s.strategy_json, '$.protection.targetProfitUsd') AS target_profit_usd,
           json_extract(s.strategy_json, '$.standDownCode') AS stand_down_code
         FROM momentum_strategy_versions s
         JOIN trading_missions m
@@ -931,14 +926,9 @@ const make = Effect.gen(function* () {
       `;
       const row = rows[0];
       if (row === undefined || row.stand_down_code !== null) return null;
-      if (row.reference_price === null || row.measured_move_usd === null) return null;
-      // SQLite's json_extract reports a JSON true as 1.
-      if (row.insufficient_volatility !== null && row.insufficient_volatility !== 0) {
-        return null;
-      }
       return {
-        referencePrice: row.reference_price,
-        measuredMoveUsd: row.measured_move_usd,
+        takeProfitPrice: row.take_profit_price,
+        targetProfitUsd: row.target_profit_usd,
       };
     });
 
@@ -981,7 +971,7 @@ const make = Effect.gen(function* () {
       /** Varies the placement cloid across passes; watchdog passes use epoch seconds. */
       readonly executionSequence: number;
     }) {
-      const targetBasis = yield* readPlanTargetBasis(input.missionId);
+      const target = yield* readPlanTarget(input.missionId);
       const preserveCloids = yield* readHarnessRestingExitCloids({
         missionId: input.missionId,
         market: input.market,
@@ -992,7 +982,7 @@ const make = Effect.gen(function* () {
         executionSequence: input.executionSequence,
         masterAddress: input.masterAddress,
         market: input.market,
-        targetBasis,
+        target,
         preserveCloids,
       });
       yield* Effect.logInfo("trading take-profit reconciled", {

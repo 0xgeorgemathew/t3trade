@@ -277,10 +277,10 @@ it.effect("registers annotated tools and preserves authenticated request context
 /**
  * The publish that took ten round trips on 2026-08-14.
  *
- * Every field named here was rejected one at a time, in this order, across ten
- * `trading_publish_plan` calls: `timeframes` missing, then `timeframes[0]` an
- * object instead of a literal, then a condition's `description`, then five
- * separate keys of `targetProfitBasis`, then two `alternativesConsidered`
+ * Every field named here was rejected one at a time, in this order, across
+ * several `trading_publish_plan` calls: `timeframes` missing, then
+ * `timeframes[0]` an object instead of a literal, then a condition's
+ * `description`, then the management lists, then two `alternativesConsidered`
  * literals. One report naming all of them is one retry, not ten.
  */
 const publishWithManyIssues = {
@@ -306,11 +306,6 @@ const publishWithManyIssues = {
     protection: {
       stopMethod: "structure",
       targetProfitUsd: 6.03,
-      targetProfitBasis: {
-        measurement: "swing_range",
-        measuredMoveUsd: 179,
-        referencePrice: 62917,
-      },
     },
     exitConditions: [],
     abandonmentConditions: [],
@@ -326,8 +321,8 @@ it("reports every invalid publish parameter in one message", () => {
     TradingToolkit.tools.trading_publish_plan,
   )(publishWithManyIssues);
   expect(message).toBeDefined();
-  // The five that used to cost five separate calls, all in one answer.
-  for (const key of ["timeframes", "lookbackBars", "expectedHoldBars", "rationale", "verdict"]) {
+  // The fields that each used to cost a separate call, all in one answer.
+  for (const key of ["timeframes", "scaleInConditions", "direction", "verdict"]) {
     expect(message, `expected ${key} in the report`).toContain(key);
   }
 });

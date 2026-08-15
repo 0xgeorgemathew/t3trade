@@ -974,31 +974,6 @@ function PlanDisclosure({ plan }: { readonly plan: StrategyPlan }): ReactNode {
             </ul>
           </div>
         )}
-        {plan.basis === null ? null : (
-          <div className="flex flex-wrap gap-x-6 gap-y-1 pt-1 text-muted-foreground">
-            {plan.basis.measurement === null ? null : (
-              <span>
-                Measurement{" "}
-                <span className="tabular-nums text-foreground">{plan.basis.measurement}</span>
-              </span>
-            )}
-            {plan.basis.lookback === null ? null : (
-              <span>
-                Lookback <span className="tabular-nums text-foreground">{plan.basis.lookback}</span>
-              </span>
-            )}
-            {plan.basis.hold === null ? null : (
-              <span>
-                Hold <span className="tabular-nums text-foreground">{plan.basis.hold}</span>
-              </span>
-            )}
-            {plan.basis.hitRate === null ? null : (
-              <span>
-                Hit rate <span className="tabular-nums text-foreground">{plan.basis.hitRate}</span>
-              </span>
-            )}
-          </div>
-        )}
       </div>
     </details>
   );

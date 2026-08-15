@@ -38,7 +38,6 @@ import { recordStructureRead } from "../../../trading/TradingLevelHistory.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
-import { notionalToPricePlanCosts } from "@t3tools/trading-contracts/costs";
 import type { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 import {
@@ -1004,12 +1003,12 @@ const handlers = {
 
               // Plan 29 2.6 (plan 28 defect 5): the ceiling is the worst fill
               // the mission could possibly take, not the one it would take —
-              // on a thin book, every candidate was gated against it. When the
-              // current plan publishes a target with a basis, re-price at the
-              // notional that target needs, bounded by the authority ceilings
-              // — the same sizing arithmetic the quote path sizes an entry
-              // with. A flat mission, a stand-down, or a target no notional
-              // funds keeps the ceiling: there is nothing better to price at.
+              // on a thin book, every candidate was priced against it. When
+              // the current plan states an intended entry notional, re-price
+              // at that size, floored at the exchange minimum and capped by
+              // the ceiling the fallback priced at. A mission without a plan,
+              // a stand-down, or a plan that names no size keeps the ceiling:
+              // there is nothing better to price at.
               const strategies = yield* TradingStrategyService;
               const plan = yield* strategies.getCurrentStrategy(mission.id).pipe(
                 // A sizing hint is never worth the read: an unreadable plan
@@ -1017,27 +1016,16 @@ const handlers = {
                 Effect.catchCause(() => Effect.succeed(Option.none<TradingPlanState>())),
               );
               const currentPlan = Option.isSome(plan) ? plan.value : null;
-              const basis = currentPlan?.protection.targetProfitBasis;
-              const sizing =
+              const intended = currentPlan?.entryPlan.initialNotionalUsd;
+              const sized =
                 currentPlan === null ||
                 currentPlan.standDownCode !== undefined ||
-                basis === undefined
+                intended === undefined ||
+                intended <= 0
                   ? null
-                  : notionalToPricePlanCosts({
-                      targetProfitUsd: currentPlan.protection.targetProfitUsd,
-                      expectedPriceMoveUsd: basis.measuredMoveUsd,
-                      referencePrice: atCeiling.referencePrice,
-                      takerFeeBpsPerSide: atCeiling.takerFeeBpsPerSide,
-                      halfSpreadUsd: atCeiling.halfSpreadUsd,
-                      allocatedCapitalUsd: mission.authority.allocatedCapitalUsd,
-                      maximumLeverage: mission.authority.maximumLeverage,
-                      maximumGrossNotionalUsd: mission.authority.maximumGrossNotionalUsd,
-                      minimumNotionalUsd: MIN_NOTIONAL_USD,
-                    });
-              const sized =
-                sizing === null || sizing.notionalUsd === null ? null : sizing.notionalUsd;
-              // A target that needs the whole ceiling (or more, which the caps
-              // fold back to it) is already priced by the first estimate.
+                  : Math.min(Math.max(intended, MIN_NOTIONAL_USD), atCeiling.notionalUsd);
+              // A plan sized at (or past) the ceiling is already priced by the
+              // first estimate.
               if (sized === null || sized >= atCeiling.notionalUsd) return atCeiling;
               return yield* estimator.estimate({
                 market: input.market,

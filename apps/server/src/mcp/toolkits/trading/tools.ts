@@ -130,7 +130,7 @@ export const TradingGetMissionTool = Tool.make("trading_get_mission", {
 
 export const TradingPublishPlanTool = Tool.make("trading_publish_plan", {
   description:
-    "Publish the plan this mission runs against. `expectedVersion`: stale is rejected, acceptance increments it and supersedes the prior version's watches but not its resting orders. `targetProfitUsd` + `targetProfitBasis` must clear the round-trip cost. A declined entry publishes as a stand-down plan with `standDownCode`.",
+    "Publish the plan this mission runs against. `expectedVersion`: stale is rejected, acceptance increments it and supersedes the prior version's watches but not its resting orders. Derive `targetProfitUsd` off measured volatility over the intended hold; publish `takeProfitPrice` when the plan names a level. A declined entry publishes as a stand-down plan with `standDownCode`.",
   parameters: TradingPublishPlanInput,
   success: TradingPublishPlanResult,
   failure: TradingToolRejectedError,

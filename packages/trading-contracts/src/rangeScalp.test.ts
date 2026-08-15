@@ -3,19 +3,19 @@
  * of — the acceptance the `range_reversion` playbook in `./playbook.ts` is
  * written against (the doctrine moved out of `POC_DEFAULT_INSTRUCTION`).
  *
- * Every gate the prose states is arithmetic somewhere in this package:
- * `measureVolatility` publishes the range and where the mark sits in it,
- * `estimateTradingCosts` prices the crossing, and `checkProfitTarget` grades
- * the published target. This file walks a window shaped like the audited
- * two-hour ETH window — a $7.30 range oscillating on a ~46-minute cycle — from
- * the regime read to the publish, and pins both endings: the stand-down with
- * its arithmetic shown, and the edge entry that clears its costs.
+ * Every number the prose states is arithmetic somewhere in this package:
+ * `measureVolatility` publishes the range and where the mark sits in it, and
+ * `estimateTradingCosts` prices the crossing. This file walks a window shaped
+ * like the audited two-hour ETH window — a $7.30 range oscillating on a
+ * ~46-minute cycle — from the regime read to the published target, and pins
+ * both endings: the stand-down with its arithmetic shown, and the edge entry
+ * that pays its costs.
  *
  * @module RangeScalpAcceptance
  */
 import { describe, expect, it } from "@effect/vitest";
 
-import { checkProfitTarget, estimateTradingCosts, type CostEstimateInput } from "./costs.ts";
+import { estimateTradingCosts, type CostEstimateInput } from "./costs.ts";
 import type { MarketCandle } from "./market.ts";
 import { ACTIVE_TRADING_POLICY } from "./policy.ts";
 import { measureVolatility } from "./volatility.ts";
@@ -194,45 +194,11 @@ describe("the published target", () => {
   // 65% of the range, not the whole crossing: the far boundary rarely gets
   // touched and the scalp is not there to pick the last dollar.
   const measuredMoveUsd = RANGE_HEIGHT * CAPTURE_FRACTION;
-  const basis = {
-    measuredMoveUsd,
-    referencePrice,
-    // 1 ETH at the mark, matching the size the costs were estimated at.
-    positionNotionalUsd: referencePrice,
-  };
-  const targetProfitUsd = (measuredMoveUsd / referencePrice) * basis.positionNotionalUsd;
+  const positionNotionalUsd = referencePrice; // 1 ETH at the mark.
+  const targetProfitUsd = (measuredMoveUsd / referencePrice) * positionNotionalUsd;
 
   it("carries the discounted capture, not the full range height", () => {
     expect(targetProfitUsd).toBeCloseTo(4.745, 3);
     expect(targetProfitUsd).toBeLessThan(RANGE_HEIGHT);
-  });
-
-  it("publishes clean at the fee tier the range was cleared against", () => {
-    const checked = checkProfitTarget({ targetProfitUsd, basis });
-
-    expect([...checked.rejections]).toEqual([]);
-    expect([...checked.warnings]).toEqual([]);
-  });
-
-  // Cost is not graded at publish (plan 29 step 3.1): the same target a fee
-  // tier cannot pay rides through, and the observation's cost context is where
-  // the question is weighed.
-  it("publishes a thin target without a cost warning", () => {
-    const checked = checkProfitTarget({
-      targetProfitUsd: 1.7,
-      basis: { ...basis, measuredMoveUsd: 1.7 },
-    });
-
-    expect([...checked.rejections]).toEqual([]);
-    expect([...checked.warnings]).toEqual([]);
-  });
-
-  it("rejects a basis that claims the whole range as the move being taken", () => {
-    const checked = checkProfitTarget({
-      targetProfitUsd,
-      basis: { ...basis, measuredMoveUsd: RANGE_HEIGHT },
-    });
-
-    expect([...checked.rejections]).toEqual(["target_basis_arithmetic_mismatch"]);
   });
 });

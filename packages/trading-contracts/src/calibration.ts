@@ -87,7 +87,11 @@ export type TargetCalibrationVerdict = typeof TargetCalibrationVerdict.Type;
 export const TargetCalibrationEntry = Schema.Struct({
   strategyVersion: Schema.Number,
   targetProfitUsd: Schema.Number,
-  /** What the basis claimed, when it published one. A p50 claims 50. */
+  /**
+   * What the plan claimed, when it published one. Nothing publishes a claim
+   * since the target basis went away (plan 29 step 3.2); the field stays
+   * optional so the verdict logic keeps one shape.
+   */
   claimedHitRatePercent: Schema.optional(Schema.Number),
   tradeCount: Schema.Number,
   /** Trades whose best unrealised PnL reached the target at least once. */
@@ -191,7 +195,7 @@ const scoreOne = (
     return {
       ...withRate,
       verdict: "as_claimed",
-      note: `target of $${targetProfitUsd.toFixed(2)} was reached in ${observed}% of ${trades.length} trades; the basis claimed no hit rate to compare against`,
+      note: `target of $${targetProfitUsd.toFixed(2)} was reached in ${observed}% of ${trades.length} trades; no claimed hit rate was published to compare against`,
     };
   }
   if (observed < claimed - CALIBRATION_TOLERANCE_POINTS) {

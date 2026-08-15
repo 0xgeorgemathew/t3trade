@@ -113,17 +113,6 @@ export const boundStrategyProse = (
               "protection.targetProfitRationale",
             ),
           }),
-      ...(strategy.protection.targetProfitBasis === undefined
-        ? {}
-        : {
-            targetProfitBasis: {
-              ...strategy.protection.targetProfitBasis,
-              rationale: clip(
-                strategy.protection.targetProfitBasis.rationale,
-                "protection.targetProfitBasis.rationale",
-              ),
-            },
-          }),
     },
     exitConditions: clipConditions(strategy.exitConditions, "exitConditions"),
     abandonmentConditions: clipConditions(strategy.abandonmentConditions, "abandonmentConditions"),

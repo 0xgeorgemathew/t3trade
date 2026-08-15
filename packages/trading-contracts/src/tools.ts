@@ -37,7 +37,7 @@ import { Price, TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
 import { StopAdjustmentJustification, StopAdjustmentRefusalCode } from "./stopAdjustment.ts";
 import { TradingOrderIntent, TradingOrderTimeInForce } from "./execution.ts";
 import { FailureRecovery } from "./recovery.ts";
-import { tradingPlanAuthoredFields, TradingPlanState, ProfitTargetBasis } from "./strategy.ts";
+import { tradingPlanAuthoredFields, TradingPlanState } from "./strategy.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
 import { Playbook, TradingPlaybookName } from "./playbook.ts";
 
@@ -169,8 +169,6 @@ export const PublishedStrategySummary = Schema.Struct({
   /** Primary timeframe — `timeframes[0]` of that version. */
   timeframe: Schema.optional(Schema.String),
   targetProfitUsd: Schema.optional(Schema.Number),
-  /** The derivation published beside the target, when there was one. */
-  targetProfitBasis: Schema.optional(ProfitTargetBasis),
   /** The one-line belief that version was published on. */
   beliefSummary: Schema.optional(Schema.String),
 });
@@ -250,12 +248,6 @@ export type TradingPublishPlanInput = typeof TradingPublishPlanInput.Type;
 export const PublishTradingPlanRejection = Schema.Literals([
   "stale_strategy_version",
   "mission_not_active",
-  /**
-   * `protection.targetProfitBasis` was absent, or the target does not follow
-   * from the arithmetic the basis publishes. See `checkProfitTarget` in
-   * `./costs.ts`; `detail` carries which and why.
-   */
-  "target_not_justified",
 ]);
 export type PublishTradingPlanRejection = typeof PublishTradingPlanRejection.Type;
 
@@ -268,12 +260,10 @@ export const TradingPublishPlanResult = Schema.Union([
     supersededWatchIds: Schema.Array(TradingId),
     /**
      * Things wrong with the published strategy that did not stop the publish —
-     * today, a target that does not clear twice its round-trip cost.
+     * today, prose the server clipped to its published bound.
      *
-     * In-band rather than a rejection because the cost floor is modeled from
-     * the authority's fallback fee rate and cannot see the spread, so it is the
-     * rule most likely to be wrong about a real setup. The harness is told, and
-     * decides.
+     * In-band rather than a rejection: the plan is usable, and the harness is
+     * told what changed.
      */
     warnings: Schema.Array(Schema.String),
   }),

@@ -62,8 +62,6 @@ export {
   MomentumStrategyDirection,
   isWaitingLikeAction,
   TradingPlanState,
-  ProfitTargetBasis,
-  ProfitTargetMeasurement,
   TradingTimeframe,
 } from "@t3tools/trading-contracts/strategy";
 

@@ -357,107 +357,44 @@ const MomentumPositionManagement = Schema.Struct({
 });
 
 /**
- * Which measurement a profit target was read off - see `./volatility.ts`.
- *
- * `excursion_quantile` is the one to reach for by default: it is the move price
- * actually delivered over a holding period of this length in the recent window,
- * so a target set at its median has a hit rate behind it. The other three are
- * single-number summaries of the same window.
- */
-export const ProfitTargetMeasurement = Schema.Literals([
-  "atr",
-  "realized_volatility",
-  "swing_range",
-  "excursion_quantile",
-]);
-export type ProfitTargetMeasurement = typeof ProfitTargetMeasurement.Type;
-
-/**
- * The arithmetic that produced `targetProfitUsd`, published alongside it.
- *
- * This is the harness showing its work, not a form the server grades. The
- * target is a measurement carried through three steps — measured move →
- * percentage price move → USD on the notional — and recording all three is
- * what lets a later turn, and the user, see whether the number came from the
- * data or from nowhere.
- */
-export const ProfitTargetBasis = Schema.Struct({
-  measurement: ProfitTargetMeasurement,
-  /** The interval the measurement was taken on. */
-  timeframe: TradingTimeframe,
-  /** Bars the measurement looked back over. */
-  lookbackBars: Schema.Number,
-  /**
-   * The move that measurement says the instrument produces over
-   * `expectedHoldBars`, in USD of price.
-   */
-  measuredMoveUsd: Schema.Number,
-  /** How long the position is expected to be held, in bars of `timeframe`. */
-  expectedHoldBars: Schema.Number,
-  /** The price the target move is measured from — normally the current mark. */
-  referencePrice: Price,
-  /** The target as a percentage price move from `referencePrice`. */
-  targetPriceMovePercent: Schema.Number,
-  /** Margin x leverage: the notional `targetProfitUsd` is earned on. */
-  positionNotionalUsd: Schema.Number,
-  /**
-   * Share of historical windows of `expectedHoldBars` bars in which the move
-   * was available, when the measurement reports one (the excursion quantiles
-   * do: a median is 50).
-   */
-  historicalHitRatePercent: Schema.optional(Schema.Number),
-  /** Which measurement, over what lookback, and why the target is attainable. */
-  rationale: TradingText,
-  /**
-   * Set when the harness judges the window too quiet to support a target worth
-   * taking. Nothing downstream keys off it — it is how the harness records that
-   * it stood down rather than invented a number.
-   */
-  insufficientVolatility: Schema.optional(Schema.Boolean),
-});
-export type ProfitTargetBasis = typeof ProfitTargetBasis.Type;
-
-/**
- * The basis fields a take-profit limit price is derived from. Structurally the
- * same subset of `ProfitTargetBasis` that `checkProfitTarget` grades, so the
- * price the exchange rests and the arithmetic the publish proved cannot come
- * from different numbers.
- */
-export interface ProfitTargetPriceBasis {
-  readonly referencePrice: number;
-  readonly measuredMoveUsd: number;
-  readonly insufficientVolatility?: boolean | undefined;
-}
-
-/**
  * The price a resting reduce-only take-profit limit rests at (plan 29 step
- * 2.5), derived from the published basis and the position's direction.
+ * 2.5), derived from the plan's own target fields and the position.
  *
- * The plan states its target as a move — `measuredMoveUsd` away from
- * `referencePrice` — not as a price, so the price has to be derived
- * direction-aware: a long banks by selling ABOVE its reference, a short by
- * buying BELOW it. Getting the sign wrong is not a cosmetic defect; it would
- * rest a reduce-only limit on the losing side of the position where it fills
- * immediately at a loss.
+ * `protection.takeProfitPrice`, when the plan published one, IS the price.
+ * Otherwise the plan states its target as a USD rung, and the price is derived
+ * from the position's entry, direction-aware: a long banks by selling ABOVE
+ * its entry, a short by buying BELOW it. Getting the sign wrong is not a
+ * cosmetic defect; it would rest a reduce-only limit on the losing side of the
+ * position where it fills immediately at a loss.
  *
- * Returns `null` when no usable target exists — no basis, a basis that stood
- * down for insufficient volatility, non-positive reference or move, or no
- * position to derive a direction from. The caller treats `null` as "withdraw
- * any resting take-profit", never as "keep whatever is there".
+ * Returns `null` when no usable target exists — no published price, no rung a
+ * positive entry price and size can price, or no position to derive a
+ * direction from. The caller treats `null` as "withdraw any resting
+ * take-profit", never as "keep whatever is there".
  */
 export function takeProfitLimitPrice(input: {
-  readonly basis: ProfitTargetPriceBasis | null | undefined;
+  /** The plan's `protection.takeProfitPrice`, when it published one. */
+  readonly takeProfitPrice: number | null | undefined;
+  /** The plan's conservative target rung, in USD of profit. */
+  readonly targetProfitUsd: number | null | undefined;
   /** Signed canonical position size; positive long, negative short. */
   readonly positionSize: number;
+  /** The position's canonical entry price; null when the exchange reports none. */
+  readonly entryPrice: number | null | undefined;
 }): number | null {
-  const basis = input.basis;
-  if (basis === null || basis === undefined) return null;
-  if (basis.insufficientVolatility === true) return null;
-  if (!(basis.referencePrice > 0) || !(basis.measuredMoveUsd > 0)) return null;
   if (!(input.positionSize > 0) && !(input.positionSize < 0)) return null;
-  return input.positionSize > 0
-    ? basis.referencePrice + basis.measuredMoveUsd
-    : basis.referencePrice - basis.measuredMoveUsd;
+
+  if (input.takeProfitPrice !== null && input.takeProfitPrice !== undefined) {
+    return input.takeProfitPrice > 0 ? input.takeProfitPrice : null;
+  }
+
+  if (input.targetProfitUsd === null || input.targetProfitUsd === undefined) return null;
+  if (!(input.targetProfitUsd > 0)) return null;
+  if (input.entryPrice === null || input.entryPrice === undefined) return null;
+  if (!(input.entryPrice > 0)) return null;
+  const move = input.targetProfitUsd / Math.abs(input.positionSize);
+  if (!(move > 0)) return null;
+  return input.positionSize > 0 ? input.entryPrice + move : input.entryPrice - move;
 }
 
 export const MomentumProtection = Schema.Struct({
@@ -473,32 +410,20 @@ export const MomentumProtection = Schema.Struct({
    * wake is a decision point, not an instruction to close: the harness reads the
    * book and the momentum and either banks (close, or reduce and keep a
    * runner) or extends (republish at the next version with the base rung and a
-   * fresh basis). Treating it as an automatic close is what turns a deliberately
+   * fresh target). Treating it as an automatic close is what turns a deliberately
    * conservative estimate into a hard cap on every win.
    *
    * The number is gross of fees and funding — `pnl_above` fires on the
    * exchange's unrealised PnL — so it has to clear the round trip on its own.
    *
    * Since plan 29 step 2.5 the server ALSO rests a reduce-only ALO at the
-   * price this target's basis derives (see {@link takeProfitLimitPrice}), so
+   * price this target derives (see {@link takeProfitLimitPrice}), so
    * the profit can be taken as a maker while the position is unattended. The
    * `pnl_above` wake is unchanged and is still the decision point: the resting
    * order banks the published rung, and the wake is where extending it is
    * argued.
    */
   targetProfitUsd: PositiveUsdAmount,
-  /**
-   * Where `targetProfitUsd` came from — the measurement, the lookback, and the
-   * arithmetic. Read back to the harness on the next wake so it can tell
-   * whether the move it was waiting for is still the move the market is
-   * producing.
-   *
-   * Required on publish: `checkProfitTarget` (see `./costs.ts`) rejects a
-   * strategy whose target has no basis, or one the basis does not produce. It
-   * stays optional in the schema so strategies persisted before the check
-   * existed still decode.
-   */
-  targetProfitBasis: Schema.optional(ProfitTargetBasis),
   /**
    * The target ladder in prose: the conservative rung (published as
    * `targetProfitUsd`), the base rung the position is extended to on a

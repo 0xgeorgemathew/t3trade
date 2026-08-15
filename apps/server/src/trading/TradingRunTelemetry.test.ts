@@ -77,13 +77,13 @@ const standDownPlan = {
   mode: "stand_down",
   standDownCode: "insufficient_volatility",
   entryPlan: { conditions: [] },
-  protection: { targetProfitBasis: { insufficientVolatility: true } },
+  protection: { targetProfitUsd: 10 },
 };
 
 const waitingPlan = {
   mode: "breakout_continuation",
   entryPlan: { conditions: [{ priceLevel: 2_000 }] },
-  protection: { targetProfitBasis: { insufficientVolatility: false } },
+  protection: { targetProfitUsd: 10 },
 };
 
 const costStandDownPlan = {

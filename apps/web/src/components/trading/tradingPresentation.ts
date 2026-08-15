@@ -1037,25 +1037,6 @@ export function deriveReviewMarkers(
 }
 
 /**
- * The profit-target basis, flattened to the four lines the plan card shows.
- *
- * `targetProfitBasis` is the harness showing its work — measurement over a
- * lookback, expected hold, and the historical hit rate the median came from —
- * and is the most interesting thing on the card. Each slot maps one basis field
- * to a short string; null when the basis itself is absent or a field is unset.
- */
-export interface StrategyPlanBasis {
-  /** Which measurement produced the move, humanized (`excursion_quantile` → …). */
-  readonly measurement: string | null;
-  /** The interval and lookback the measurement was taken on, e.g. "5m · 60b". */
-  readonly lookback: string | null;
-  /** How long the position is expected to be held, in bars, e.g. "10b". */
-  readonly hold: string | null;
-  /** Share of historical windows the move was available in, e.g. "50%". */
-  readonly hitRate: string | null;
-}
-
-/**
  * The published trading plan, rendered as a display-only timeline card.
  *
  * Mirrors {@link deriveCompletionSummary}'s shape: a flat, render-ready object
@@ -1092,16 +1073,16 @@ export interface StrategyPlan {
    * The conservative rung of the target ladder. Required positive on the
    * contract — never null.
    *
-   * On a stand-down plan this is not a target at all: it is the minimum viable
-   * target the costs demanded, which the market did not offer. Read
+   * On a stand-down plan this is not a target at all: it is the threshold the
+   * costs demanded, which the market did not offer. Read
    * {@link StrategyPlan.isStandDown} before presenting it as something the
    * mission is aiming at.
    */
   readonly targetUsd: number;
   /**
-   * Whether this plan is a stand-down: the turn read the market, found no
-   * target worth taking after costs, and published that conclusion rather than
-   * inventing one (`targetProfitBasis.insufficientVolatility`).
+   * Whether this plan is a stand-down (`standDownCode` published): the turn
+   * read the market, found no target worth taking after costs, and published
+   * that conclusion rather than inventing one.
    *
    * Nothing is armed at `targetUsd` on such a plan — there is no position and
    * no `pnl_above` — so it is a threshold, not a level.
@@ -1109,7 +1090,6 @@ export interface StrategyPlan {
   readonly isStandDown: boolean;
   /** The full target ladder in prose; null when the harness published none. */
   readonly targetRationale: string | null;
-  readonly basis: StrategyPlanBasis | null;
   readonly maxLossUsd: number | null;
   readonly scaleInAllowed: boolean;
   readonly partialReductionAllowed: boolean;
@@ -1188,18 +1168,10 @@ export function deriveStrategyPlan(mission: {
       readonly stopPrice?: number | undefined;
       readonly targetProfitUsd: number;
       readonly targetProfitRationale?: string | undefined;
-      readonly targetProfitBasis?:
-        | {
-            readonly measurement: string;
-            readonly timeframe: string;
-            readonly lookbackBars: number;
-            readonly expectedHoldBars: number;
-            readonly historicalHitRatePercent?: number | undefined;
-            readonly insufficientVolatility?: boolean | undefined;
-          }
-        | undefined;
       readonly maximumPlannedLossUsd?: number | undefined;
     };
+    /** `standDownCode` on the plan, when the turn declined to trade. */
+    readonly standDownCode?: string | undefined;
     readonly abandonmentConditions: ReadonlyArray<unknown>;
   } | null;
 }): StrategyPlan | null {
@@ -1218,20 +1190,6 @@ export function deriveStrategyPlan(mission: {
       : stopPrice === undefined || stopPrice === null
         ? humanizeLiteral(stopMethod)
         : `${humanizeLiteral(stopMethod)} · ${formatPrice(stopPrice)}`;
-
-  const basisStruct = strategy.protection?.targetProfitBasis;
-  const basis: StrategyPlanBasis | null =
-    basisStruct === undefined
-      ? null
-      : {
-          measurement: humanizeLiteral(basisStruct.measurement),
-          lookback: `${basisStruct.timeframe} · ${basisStruct.lookbackBars}b`,
-          hold: `${basisStruct.expectedHoldBars}b`,
-          hitRate:
-            basisStruct.historicalHitRatePercent === undefined
-              ? null
-              : `${basisStruct.historicalHitRatePercent}%`,
-        };
 
   const plainSummary = strategy.plainSummary?.trim() ?? "";
 
@@ -1253,9 +1211,8 @@ export function deriveStrategyPlan(mission: {
     stopSummary,
     // Required positive on the contract (PositiveUsdAmount): it is never null.
     targetUsd: strategy.protection?.targetProfitUsd ?? 0,
-    isStandDown: basisStruct?.insufficientVolatility === true,
+    isStandDown: strategy.standDownCode !== undefined,
     targetRationale: strategy.protection?.targetProfitRationale ?? null,
-    basis,
     maxLossUsd: strategy.protection?.maximumPlannedLossUsd ?? null,
     scaleInAllowed: strategy.positionManagement?.scaleInAllowed ?? false,
     partialReductionAllowed: strategy.positionManagement?.partialReductionAllowed ?? false,

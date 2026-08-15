@@ -1,11 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
-  checkProfitTarget,
   costContextFromEstimate,
   estimateTradingCosts,
   notionalForProfitTarget,
-  notionalToPricePlanCosts,
   roundTripCostFractionOfNotional,
   targetNotionalForPlan,
   walkBook,
@@ -188,59 +186,6 @@ describe("estimateTradingCosts", () => {
   });
 });
 
-describe("checkProfitTarget", () => {
-  const basis = {
-    measuredMoveUsd: 7,
-    referencePrice: 2_000,
-    positionNotionalUsd: 2_000,
-  };
-
-  it("accepts a target that follows from its basis", () => {
-    // (7 / 2000) x 2000 = 7.00.
-    const check = checkProfitTarget({ targetProfitUsd: 7, basis });
-    expect(check.rejections).toEqual([]);
-    expect(check.warnings).toEqual([]);
-  });
-
-  it("rejects a target with no basis at all", () => {
-    const check = checkProfitTarget({ targetProfitUsd: 7, basis: undefined });
-    expect(check.rejections).toEqual(["target_basis_missing"]);
-    expect(check.messages[0]).toContain("targetProfitBasis");
-  });
-
-  it("rejects a target the basis next to it does not produce", () => {
-    const check = checkProfitTarget({ targetProfitUsd: 20, basis });
-    expect(check.rejections).toEqual(["target_basis_arithmetic_mismatch"]);
-  });
-
-  it("tolerates the rounding a harness does when it writes the number down", () => {
-    const check = checkProfitTarget({ targetProfitUsd: 7.2, basis });
-    expect(check.rejections).toEqual([]);
-  });
-
-  // The $1.70 that started all this was derived correctly and under its cost.
-  // Cost is not graded at publish any more (plan 29 step 3.1): a modest target
-  // rides through, and the observation's cost context is where it is weighed.
-  it("does not grade what the target is worth against its cost", () => {
-    const check = checkProfitTarget({
-      targetProfitUsd: 1.7,
-      basis: { measuredMoveUsd: 1.7, referencePrice: 2_000, positionNotionalUsd: 2_000 },
-    });
-    expect(check.rejections).toEqual([]);
-    expect(check.warnings).toEqual([]);
-  });
-
-  // Standing down is the answer the guidance asks for when the window is quiet;
-  // grading the arithmetic of a stand-down would reject the honest response.
-  it("does not grade the arithmetic of a declared stand-down", () => {
-    const check = checkProfitTarget({
-      targetProfitUsd: 5,
-      basis: { ...basis, measuredMoveUsd: 0, insufficientVolatility: true },
-    });
-    expect(check.rejections).toEqual([]);
-  });
-});
-
 // The fee-only round trip, priced by hand: two taker fills and nothing else.
 const feeOnlyRoundTripUsd = (notionalUsd: number, takerFeeBpsPerSide: number): number =>
   notionalUsd * (takerFeeBpsPerSide / 10_000) * 2;
@@ -403,55 +348,5 @@ describe("the sizing fraction and the estimate agree (plan 28 defect 5)", () => 
       estimate.roundTripFeeUsd + estimate.roundTripSpreadUsd,
       10,
     );
-  });
-});
-
-describe("notionalToPricePlanCosts — the notional a cost read is priced at (plan 29 2.6)", () => {
-  const sizingInput = {
-    targetProfitUsd: 20,
-    expectedPriceMoveUsd: 10,
-    referencePrice: 2_000,
-    takerFeeBpsPerSide: 5,
-    halfSpreadUsd: 0.1,
-    allocatedCapitalUsd: 10_000,
-    maximumLeverage: 3,
-    maximumGrossNotionalUsd: 30_000,
-    minimumNotionalUsd: 10,
-  };
-
-  it("prices at the notional the plan's target needs when every ceiling allows it", () => {
-    const sized = notionalToPricePlanCosts(sizingInput);
-    // $20 of target over the 0.39% net move from the block above.
-    expect(sized.notionalUsd).toBeCloseTo(20 / 0.0039, 6);
-    expect(sized.target.notionalUsd).toBeCloseTo(20 / 0.0039, 6);
-  });
-
-  it("caps at the approved capital when the target needs more than the mission may hold", () => {
-    const sized = notionalToPricePlanCosts({ ...sizingInput, allocatedCapitalUsd: 4_000 });
-    expect(sized.notionalUsd).toBe(4_000);
-    // The cap bounds the priced size; the target arithmetic is reported
-    // unmodified, so the caller can say the ceilings cannot fund the target.
-    expect(sized.target.notionalUsd).toBeCloseTo(20 / 0.0039, 6);
-  });
-
-  it("caps at margin x leverage when the mandate runs below 1x", () => {
-    const sized = notionalToPricePlanCosts({ ...sizingInput, maximumLeverage: 0.4 });
-    expect(sized.notionalUsd).toBe(4_000);
-  });
-
-  it("floors at the exchange minimum — no smaller trade exists to price", () => {
-    // $0.15 of target over a ~1.89% net move needs under $8 of notional.
-    const sized = notionalToPricePlanCosts({
-      ...sizingInput,
-      targetProfitUsd: 0.15,
-      expectedPriceMoveUsd: 40,
-    });
-    expect(sized.notionalUsd).toBe(10);
-  });
-
-  it("says null when no notional pays the target, so the caller keeps its ceiling", () => {
-    const sized = notionalToPricePlanCosts({ ...sizingInput, expectedPriceMoveUsd: 1 });
-    expect(sized.notionalUsd).toBeNull();
-    expect(sized.target.reason).toContain("no notional pays this target");
   });
 });
