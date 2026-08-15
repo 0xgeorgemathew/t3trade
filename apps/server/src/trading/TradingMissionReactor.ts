@@ -53,7 +53,11 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { setSessionProfile, clearSessionProfile } from "../provider/SessionProfile.ts";
 import type { PersistedWatch, TradingHarnessRunCause } from "./Schemas.ts";
-import { executionRefusedKey, executionSettledKey } from "./ExecutionRefusal.ts";
+import {
+  executionRefusedKey,
+  executionSettledKey,
+  workingOrderOutcomeKey,
+} from "./ExecutionRefusal.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { TradingExecutionReceipts } from "./TradingExecutionReceipts.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
@@ -66,6 +70,7 @@ import {
 } from "./HyperliquidExecutionService.ts";
 import { HyperliquidReconciler } from "./HyperliquidReconciler.ts";
 import { TradingProtectionService } from "./TradingProtectionService.ts";
+import { TradingWorkingOrderService } from "./TradingWorkingOrderService.ts";
 import { TradingEmergencyCloseService } from "./TradingEmergencyCloseService.ts";
 import { TradingControlService } from "./TradingControlService.ts";
 import { TradingBudgetReader } from "./TradingBudgetReader.ts";
@@ -247,6 +252,7 @@ const make = Effect.gen(function* () {
   const gateway = yield* HyperliquidGateway;
   const signerConfig = yield* InterimSignerConfig;
   const protection = yield* TradingProtectionService;
+  const workingOrders = yield* TradingWorkingOrderService;
   const providerRegistry = yield* ProviderRegistry;
   const emergency = yield* TradingEmergencyCloseService;
   const controls = yield* TradingControlService;
@@ -551,6 +557,12 @@ const make = Effect.gen(function* () {
         yield* announceStatus({ missionId, threadId, status });
         if (status === "revoked" || status === "completed") {
           yield* Effect.sync(() => clearSessionProfile(threadId));
+          yield* retireWorkingOrdersQuietly({
+            missionId,
+            tradingAccountId: mission.tradingAccountId,
+            market: mission.market,
+            reason: "the thread was settled",
+          });
         }
       }
       return;
@@ -578,6 +590,15 @@ const make = Effect.gen(function* () {
       from: ALL_MISSION_STATUSES.filter(isActiveMissionStatus),
       to: terminal,
       reason: "thread_settled",
+    });
+    // Whatever resting entry the mission left behind goes with it — a flat
+    // settle skips the close-and-revoke path that cancels entries for a
+    // position, and a patient entry must not outlive its mission.
+    yield* retireWorkingOrdersQuietly({
+      missionId,
+      tradingAccountId: mission.tradingAccountId,
+      market: mission.market,
+      reason: "the thread was settled",
     });
   });
 
@@ -700,6 +721,12 @@ const make = Effect.gen(function* () {
     // is released, and the row stays as the mission's permanent record.
     if (updated.status === "revoked" || updated.status === "completed") {
       yield* Effect.sync(() => clearSessionProfile(threadId));
+      yield* retireWorkingOrdersQuietly({
+        missionId,
+        tradingAccountId: mission.tradingAccountId,
+        market: mission.market,
+        reason: `the mission was ${updated.status}`,
+      });
     }
   });
 
@@ -1265,11 +1292,16 @@ const make = Effect.gen(function* () {
     });
 
     if (outcome.status !== undefined) {
-      yield* announceStatus({
-        missionId,
-        threadId,
-        status: outcome.status as TradingMissionStatus,
-      });
+      const status = outcome.status as TradingMissionStatus;
+      yield* announceStatus({ missionId, threadId, status });
+      if (status === "revoked" || status === "completed") {
+        yield* retireWorkingOrdersQuietly({
+          missionId,
+          tradingAccountId: mission.tradingAccountId,
+          market: mission.market,
+          reason: `the ${control} control ended the mission`,
+        });
+      }
     }
   });
 
@@ -1891,6 +1923,143 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Own the resting patient entry (plan 29 step 2.4).
+   *
+   * Runs on the same five-second cadence as the other guards and for the same
+   * reason: between harness turns nothing else watches a post-only entry, and
+   * an unowned one either goes stale at a price the market left or fills at
+   * the worst moment. The service decides (re-price / cross / abandon / do
+   * nothing); this pass supplies the mission's facts and tells the model what
+   * a terminal outcome did.
+   */
+  const guardWorkingOrder = Effect.fn("TradingMissionReactor.guardWorkingOrder")(function* () {
+    const active = yield* missions.findActiveMission(LOCAL_TRADING_USER_ID);
+    if (Option.isNone(active)) return;
+    const mission = active.value;
+
+    const missionId = TradingMissionId.make(mission.id);
+    const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+    const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+
+    const outcome = yield* workingOrders.reconcile({
+      missionId,
+      masterAddress,
+      market: mission.market,
+      missionStatus: mission.status,
+      nowMs,
+      allowedSlippageBps: (yield* iocSlippage.resolve).entryBps,
+    });
+
+    yield* Effect.logDebug("trading working order pass", {
+      missionId,
+      status: outcome.status,
+      cloid: outcome.cloid,
+      waitMillis: outcome.waitMillis,
+      repriceCount: outcome.repriceCount,
+      ...(outcome.detail === undefined ? {} : { detail: outcome.detail }),
+    });
+    if (outcome.status !== "crossed" && outcome.status !== "abandoned") return;
+
+    // Terminal outcomes are the model's business: one plain line, pending in
+    // the inbox, and a wake to let it re-decide. Keyed by the record's cloid
+    // so the reconciler's settle grace cannot queue the same line twice.
+    yield* inbox
+      .persist({
+        missionId,
+        category: "exchange",
+        deduplicationKey: workingOrderOutcomeKey(outcome.status, outcome.cloid ?? "unknown"),
+        payload: { status: outcome.status, cloid: outcome.cloid },
+        occurredAt: nowMs,
+        summary: outcome.summary ?? `patient entry ${outcome.status}`,
+      })
+      .pipe(Effect.ignore);
+
+    // A cross opened a position outside any turn, so the post-fill steps the
+    // wake's own execution path runs are this pass's to run: confirm the stop
+    // against canonical state (§17.5 escalates if it cannot — the grouped
+    // stop child went out with the entry, but §17.1 says a submission proves
+    // nothing), then arm the proximity wake and the take-profit. The mission
+    // then walks the same two legal edges an execution walks, so the
+    // position_open guards start watching what the cross opened.
+    if (outcome.status === "crossed" && outcome.placedIntent !== undefined) {
+      yield* protectIncrease({
+        missionId,
+        threadId: mission.harness.threadId as ThreadId,
+        intent: outcome.placedIntent,
+        masterAddress,
+      });
+      const wentExecuting = yield* advance({
+        missionId,
+        threadId: mission.harness.threadId as ThreadId,
+        from: ["waiting", "analysing"],
+        to: "executing",
+        reason: "working_order_crossed",
+      });
+      if (wentExecuting) {
+        yield* advance({
+          missionId,
+          threadId: mission.harness.threadId as ThreadId,
+          from: ["executing"],
+          to: "position_open",
+          reason: "working_order_crossed",
+        });
+      }
+    }
+
+    yield* coordinator.requestRun({ missionId, cause: "order_updated" }).pipe(Effect.ignore);
+  });
+
+  /**
+   * Withdraw a mission's resting working entries when its authority ends.
+   *
+   * The exhaustion block and the emergency close cancel increasing orders on
+   * their own; a flat settle and a plain revoke did not — a patient entry was
+   * left working a dead mission's market, which is exactly the unowned order
+   * the working loop exists to prevent. The line is still written to the
+   * inbox for the record; a terminal mission claims no further runs.
+   */
+  const retireWorkingOrdersQuietly = (input: {
+    readonly missionId: TradingMissionId;
+    readonly tradingAccountId: string;
+    readonly market: TradingMarket;
+    readonly reason: string;
+  }) =>
+    Effect.gen(function* () {
+      const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      const masterAddress = yield* missions.getMasterWalletAddress(input.tradingAccountId);
+      const outcome = yield* workingOrders.abandon({
+        missionId: input.missionId,
+        masterAddress,
+        market: input.market,
+        nowMs,
+      });
+      if (!outcome.found) return;
+      yield* inbox
+        .persist({
+          missionId: input.missionId,
+          category: "exchange",
+          deduplicationKey: workingOrderOutcomeKey("abandoned", outcome.cloid ?? "unknown"),
+          payload: { cloid: outcome.cloid, reason: input.reason },
+          occurredAt: nowMs,
+          summary: `patient entry withdrawn: ${input.reason}`,
+        })
+        .pipe(Effect.ignore);
+      yield* Effect.logInfo("trading withdrew a working entry on mission end", {
+        missionId: input.missionId,
+        cancelledCloids: outcome.cancelledCloids,
+        reason: input.reason,
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        warnWithCause(
+          "trading could not withdraw a working entry on mission end",
+          { missionId: input.missionId },
+          cause,
+        ),
+      ),
+    );
+
   yield* Effect.gen(function* () {
     while (true) {
       yield* Effect.sleep("5 seconds");
@@ -1907,6 +2076,13 @@ const make = Effect.gen(function* () {
           Cause.hasInterruptsOnly(cause)
             ? Effect.failCause(cause)
             : warnWithCause("trading take-profit watchdog pass failed", {}, cause),
+        ),
+      );
+      yield* guardWorkingOrder().pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : warnWithCause("trading working-order watchdog pass failed", {}, cause),
         ),
       );
     }

@@ -43,6 +43,7 @@ import { TradingWatchServiceLive } from "./TradingWatchService.ts";
 import { TradingBudgetReaderLive } from "./TradingBudgetReader.ts";
 import { TradingFillReconcilerLive } from "./TradingFillReconciler.ts";
 import { TradingProtectionServiceLive } from "./TradingProtectionService.ts";
+import { TradingWorkingOrderServiceLive } from "./TradingWorkingOrderService.ts";
 import { TradingEmergencyCloseServiceLive } from "./TradingEmergencyCloseService.ts";
 import { TradingControlServiceLive } from "./TradingControlService.ts";
 import { TradingCostEstimatorLive } from "./TradingCostEstimator.ts";
@@ -144,6 +145,15 @@ const TradingProtectionLayerLive = TradingProtectionServiceLive.pipe(
   Layer.provideMerge(TradingExecutionCore),
 );
 
+// Plan 29 step 2.4: the working-order loop re-places resting patient entries
+// through the constrained preview-free path on the execution service, so it
+// builds on the same core the protection service does. Plain `provide` (not
+// provideMerge): it sits inside the merge below, and re-exporting the core's
+// services there would make the build order ambiguous.
+const TradingWorkingOrderLayerLive = TradingWorkingOrderServiceLive.pipe(
+  Layer.provide(TradingExecutionCore),
+);
+
 // The control service sits on top of protection: `cancel_entries` routes
 // through `cancelEntriesWithProtection` (§17.3), so protection has to be built
 // first rather than merged alongside.
@@ -159,6 +169,9 @@ const TradingExecutionLayerLive = Layer.mergeAll(
   // the budget reader and the gateway the layers below supply, plus the inbox
   // the reactor records refusals in.
   TradingExecutionOutcomeLive.pipe(Layer.provide(TradingEventInboxLive)),
+  // The mission reactor's working-order guard pass; also the direct
+  // withdrawal the terminal transitions call.
+  TradingWorkingOrderLayerLive,
 ).pipe(Layer.provideMerge(TradingProtectionLayerLive));
 
 export const TradingLayerLive = Layer.mergeAll(

@@ -48,6 +48,7 @@ import { signL1ActionForWire } from "@t3tools/hyperliquid/Signing";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import { TradingOrderResult } from "@t3tools/trading-contracts/execution";
 import type { TradingWireOrder } from "@t3tools/trading-contracts/execution";
+import type { MarketBestBidOffer, ResolvedMarket } from "@t3tools/trading-contracts/market";
 import type {
   TradingExecutionRecord,
   TradingOrderIntent,
@@ -60,7 +61,7 @@ import {
   isPositionIncreasing,
 } from "@t3tools/trading-contracts/protection";
 
-import { InterimSignerConfig, InterimSignerError } from "./InterimSignerConfig.ts";
+import { InterimSigner, InterimSignerConfig, InterimSignerError } from "./InterimSignerConfig.ts";
 import { IocSlippageConfig } from "./IocSlippageConfig.ts";
 import { TradingPreviewService, type PreviewContext } from "./TradingPreviewService.ts";
 
@@ -195,6 +196,40 @@ export class HyperliquidExecutionService extends Context.Service<
       /** The limit price to rest at — the plan's derived target price. */
       readonly limitPrice: number;
     }) => Effect.Effect<ReadonlyArray<TradingOrderResult>, TradingExecutionError>;
+
+    /**
+     * Re-place an ALREADY-APPROVED working entry outside a harness turn (plan
+     * 29 step 2.4), WITHOUT a preview context.
+     *
+     * Unlike the three §14.7 paths above, this order CAN open exposure — an
+     * entry is the one action that does — so bypassing the §16.3 checklist is
+     * only honest because the caller passes an intent whose size, side, stop
+     * and market are IDENTICAL to a resting order a wake already pushed through
+     * that checklist (quote → preview → submit). The risk envelope was approved
+     * at quote time; the working loop may move the limit price (re-price) or
+     * the time-in-force (cross) and nothing else. `TradingWorkingOrderService`
+     * builds the intent from the approved execution record and asserts that
+     * equality before calling this — the constraint lives there, where the
+     * record is read, not here where it could not be checked.
+     *
+     * `reservedRiskUsd` is carried over from the original record's reservation
+     * rather than recomputed: the same size at the same stop reserves the same
+     * loss, and recomputing would invite a fee estimate to silently resize an
+     * envelope nobody re-approved.
+     *
+     * What is NOT bypassed: the signer, the nonce lane, precision, the exchange
+     * minimum notional, the `would_have_crossed` post-only guard, the
+     * mandatory-stop gate, and the execution record + risk reservation the
+     * budget and every cancel path (`blockForExhaustion`, `cancelEntries`, the
+     * emergency close) read to recognise the order as mission-owned.
+     */
+    readonly submitWorkingEntry: (input: {
+      readonly intent: TradingOrderIntent;
+      /** The original approval's reservation, carried not recomputed. */
+      readonly reservedRiskUsd: number;
+      /** Allowed slippage in bps for marketable IOC pricing (§15.4). */
+      readonly allowedSlippageBps: number;
+    }) => Effect.Effect<TradingExecutionRecord, TradingExecutionError, SqlClient.SqlClient>;
   }
 >()("t3/trading/HyperliquidExecutionService") {}
 
@@ -405,9 +440,284 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const iocSlippage = yield* IocSlippageConfig;
 
-  const submitOrder = (
-    input: ExecutionInput,
-  ): Effect.Effect<TradingExecutionRecord, TradingExecutionError, SqlClient.SqlClient> =>
+  /**
+   * Everything a submission does after its gate has spoken (§17.2 steps 4–9).
+   *
+   * `submitOrder` reaches here through the §16.3 preview; `submitWorkingEntry`
+   * reaches here through the envelope constraint its caller enforces. The tail
+   * is shared verbatim so the two paths cannot drift on mapping, the
+   * mandatory-stop gate, persistence, or inspection.
+   */
+  const submitIntent = Effect.fn("HyperliquidExecutionService.submitIntent")(function* (input: {
+    readonly intent: TradingOrderIntent;
+    /** The risk this submission reserves against the budget (§16.2 Eq 4). */
+    readonly reservedRiskUsd: number;
+    /** Allowed slippage in bps for marketable IOC pricing (§15.4). */
+    readonly allowedSlippageBps: number;
+    readonly nowMs: number;
+    readonly signer: InterimSigner;
+    readonly market: ResolvedMarket;
+    readonly bbo: MarketBestBidOffer;
+  }): Effect.fn.Return<TradingExecutionRecord, TradingExecutionError, SqlClient.SqlClient> {
+    const { intent, allowedSlippageBps, nowMs, signer, market, bbo } = input;
+
+    // --- 4. map the order (IOC/GTC/ALO, slippage, precision) ---------------
+    const wireOrder = yield* mapOrder({
+      intent,
+      bbo,
+      szDecimals: market.szDecimals,
+      allowedSlippageBps,
+      nowMs,
+    }).pipe(
+      Effect.mapError(
+        (e: HyperliquidOrderMapperError) =>
+          new TradingExecutionError({
+            stage: "order_mapping_failed",
+            detail: `${e.reason}${e.detail ? `: ${e.detail}` : ""}`,
+          }),
+      ),
+    );
+
+    // --- 4b. the mandatory-stop gate, second evaluation (§16.3 item 17) ----
+    // Preview already ran `checkStopInformation` against the harness's limit.
+    // This one runs against the price actually going on the wire — for a
+    // marketable IOC that is the BBO-derived limit, not the requested one —
+    // so an increase whose stop stopped making sense between preview and
+    // mapping is refused here rather than signed. Nothing has been persisted
+    // and no nonce has been spent at this point.
+    const stopGateInput = {
+      actionType: intent.actionType,
+      side: intent.side,
+      referencePrice: Number.parseFloat(wireOrder.limitPrice),
+      stop: intent.stop,
+    };
+    const stopDefect = checkStopInformation(stopGateInput);
+    if (stopDefect !== null) {
+      return yield* new TradingExecutionError({
+        stage: "missing_stop",
+        detail: describeStopGateDefect(stopDefect, stopGateInput),
+      });
+    }
+
+    // --- 4c. map the linked protective child, when this is an increase -----
+    //
+    // §17.2 step 3: the parent and its reduce-only stop may go out in one
+    // `normalTpsl` action. This is an optimisation and a linkage mechanism
+    // (§17.1) — submitting it proves nothing about whether the child is
+    // live, which is why the caller still runs protection reconciliation
+    // against canonical state afterwards.
+    //
+    // The child is sized to the REQUESTED size here because no fill has
+    // happened yet. Reconciliation resizes it to the canonical position, and
+    // that is the number the invariant is measured against.
+    const stop = intent.stop;
+    const linkedStop =
+      isPositionIncreasing(intent.actionType) && stop !== undefined
+        ? yield* mapProtectiveStop({
+            cloid: deriveCloid({
+              missionId: intent.missionId,
+              strategyVersion: intent.strategyVersion,
+              executionSequence: intent.executionSequence,
+              actionType: `${intent.actionType}${PROTECTION_CLOID_SUFFIX}`,
+            }),
+            coin: intent.market,
+            positionSize: intent.side === "buy" ? intent.size : -intent.size,
+            stopPrice: stop.stopPrice,
+            szDecimals: market.szDecimals,
+          }).pipe(
+            Effect.mapError(
+              (e: HyperliquidOrderMapperError) =>
+                new TradingExecutionError({
+                  stage: "order_mapping_failed",
+                  detail: `protective child: ${e.reason}${e.detail ? `: ${e.detail}` : ""}`,
+                }),
+            ),
+          )
+        : undefined;
+
+    // --- 5. persist the execution record + reservation (before signing) ----
+    const uuid = yield* crypto.randomUUIDv4.pipe(
+      Effect.mapError(() => new TradingExecutionError({ stage: "persist_failed", detail: "uuid" })),
+    );
+    const newExecutionId = `exec_${uuid}`;
+    const idempotencyKey = `idem_${intent.missionId}_${intent.executionSequence}_${intent.actionType}`;
+    const record: TradingExecutionRecord = {
+      executionId: newExecutionId,
+      missionId: intent.missionId,
+      strategyVersion: intent.strategyVersion,
+      executionSequence: intent.executionSequence,
+      actionType: intent.actionType,
+      cloid: wireOrder.cloid,
+      idempotencyKey,
+      market: intent.market,
+      side: intent.side,
+      size: intent.size,
+      limitPrice: Number.parseFloat(wireOrder.limitPrice),
+      timeInForce: wireOrder.timeInForce,
+      reduceOnly: wireOrder.reduceOnly,
+      signerAddress: signer.address as `0x${string}`,
+      status: "reserved",
+      orderResults: [],
+      createdAt: nowMs,
+      updatedAt: nowMs,
+      stopPrice: intent.stop?.stopPrice,
+      plannedLossAtStopUsd: intent.stop?.plannedLossAtStopUsd,
+    };
+    yield* persistExecutionRecord(record);
+
+    const sql = yield* SqlClient.SqlClient;
+    const persistedRows = yield* sql<{
+      readonly execution_id: string;
+      readonly status: TradingExecutionRecord["status"];
+      readonly order_results_json: string;
+      readonly updated_at: number;
+    }>`
+      SELECT execution_id, status, order_results_json, updated_at
+      FROM trading_execution_records
+      WHERE idempotency_key = ${idempotencyKey}
+    `.pipe(
+      Effect.mapError(
+        (cause) =>
+          new TradingExecutionError({
+            stage: "persist_failed",
+            detail: cause instanceof Error ? cause.message : String(cause),
+          }),
+      ),
+    );
+    const persisted = persistedRows[0];
+    if (persisted === undefined) {
+      return yield* new TradingExecutionError({
+        stage: "persist_failed",
+        detail: "execution record was not readable after insert",
+      });
+    }
+    const persistedExecutionId = persisted.execution_id;
+    const persistedOrderResults = yield* Schema.decodeUnknownEffect(OrderResultsJson)(
+      persisted.order_results_json,
+    ).pipe(Effect.orDie);
+    const persistedRecord = {
+      ...record,
+      executionId: persistedExecutionId,
+      status: persisted.status,
+      orderResults: persistedOrderResults,
+      updatedAt: persisted.updated_at,
+    } satisfies TradingExecutionRecord;
+    if (!PRE_SUBMISSION_STATUSES.includes(persisted.status)) {
+      return persistedRecord;
+    }
+
+    const reservation: TradingRiskReservation = {
+      reservationId: `res_${idempotencyKey}`,
+      missionId: intent.missionId,
+      executionId: persistedExecutionId,
+      cloid: wireOrder.cloid,
+      actionType: intent.actionType,
+      reservedRiskUsd: input.reservedRiskUsd,
+      status: "reserved",
+      reservedAt: nowMs,
+    };
+    yield* persistReservation(reservation);
+
+    // --- 6 + 7. sign in the nonce lane, then POST /exchange ----------------
+    const legs: ReadonlyArray<SubmittedLeg> =
+      linkedStop === undefined
+        ? [{ cloid: wireOrder.cloid, role: "entry" }]
+        : [
+            { cloid: wireOrder.cloid, role: "entry" },
+            { cloid: linkedStop.cloid, role: "protection" },
+          ];
+    const action =
+      linkedStop === undefined
+        ? buildOrderAction(wireOrder, market.assetIndex)
+        : buildGroupedEntryWithStopAction(wireOrder, linkedStop, market.assetIndex);
+    const signed = yield* nonceCoord
+      .runWithNonce((nonce) =>
+        Effect.gen(function* () {
+          const signature = signL1ActionForWire({
+            action,
+            nonce,
+            privateKey: signer.privateKeyBytes,
+            isTestnet: true,
+          });
+          return { action, nonce, signature } satisfies SignedAction;
+        }),
+      )
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingExecutionError({
+              stage: "sign_failed",
+              detail: cause instanceof Error ? cause.message : String(cause),
+            }),
+        ),
+      );
+
+    // Mark the record as submitted.
+    yield* updateExecutionRecord(persistedExecutionId, "submitted", [], yield* now());
+
+    const response = yield* exchange.submit(signed).pipe(
+      Effect.mapError(
+        (cause) =>
+          new TradingExecutionError({
+            stage: "submit_failed",
+            detail: cause instanceof Error ? cause.message : String(cause),
+          }),
+      ),
+    );
+
+    // --- 8. inspect EVERY per-order status ---------------------------------
+    const orderResults = yield* inspectOrderStatuses(response, legs, intent);
+
+    // --- 9. update the execution record with the result --------------------
+    //
+    // The ENTRY leg decides the record's status, not "some leg succeeded".
+    // In a grouped request the child can be rejected while the parent fills,
+    // and reading that as "accepted" across the batch is exactly the batch-
+    // atomicity assumption §17.1 forbids. A rejected child is recorded in
+    // `orderResults` and left for protection reconciliation to repair.
+    //
+    // A response that says `filled` is recorded as `filled`, not `accepted`.
+    // The exchange is the authority on the outcome of its own submit, and an
+    // IOC reports that outcome in the submit response itself — there is no
+    // later reconciliation question to leave open. Recording it as `accepted`
+    // parked every successful IOC in a non-terminal status forever: nothing
+    // in the system ever wrote `filled`, so the record stayed "in flight",
+    // its risk reservation stayed reserved, and preview item 16 refused every
+    // subsequent intent for the mission. `accepted` now means only what it
+    // says — acknowledged and resting on the book.
+    const entryResult = orderResults.find((r) => r.role !== "protection") ?? orderResults[0];
+    const finalStatus: TradingExecutionRecord["status"] =
+      entryResult?.status === "filled"
+        ? "filled"
+        : entryResult?.status === "resting"
+          ? "accepted"
+          : "rejected";
+    const updatedAt = yield* now();
+    yield* updateExecutionRecord(persistedExecutionId, finalStatus, orderResults, updatedAt);
+    if (finalStatus === "rejected") {
+      yield* releaseReservation(persistedExecutionId, updatedAt);
+    }
+
+    // What actually reached the exchange, and what it answered. Everything
+    // upstream of this line is intent; this is the one place an order becomes
+    // a fact, and it logged nothing at all.
+    yield* Effect.logInfo("trading order hit the wire", {
+      missionId: intent.missionId,
+      cloid: wireOrder.cloid,
+      actionType: intent.actionType,
+      side: wireOrder.side,
+      size: wireOrder.size,
+      limitPrice: wireOrder.limitPrice,
+      timeInForce: wireOrder.timeInForce,
+      reduceOnly: wireOrder.reduceOnly,
+      linkedStopPrice: linkedStop?.triggerPrice,
+      status: finalStatus,
+    });
+
+    return { ...persistedRecord, status: finalStatus, orderResults, updatedAt };
+  });
+
+  const submitOrder: HyperliquidExecutionService["Service"]["submitOrder"] = (input) =>
     Effect.gen(function* () {
       const { intent, previewContext, allowedSlippageBps } = input;
       const nowMs = yield* now();
@@ -449,262 +759,58 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
           ),
         );
 
-      // --- 4. map the order (IOC/GTC, slippage, precision) -------------------
-      const wireOrder = yield* mapOrder({
+      return yield* submitIntent({
         intent,
-        bbo: orderBook.bestBidOffer,
-        szDecimals: market.szDecimals,
+        reservedRiskUsd: previewResult.reservedRiskUsd,
         allowedSlippageBps,
         nowMs,
-      }).pipe(
-        Effect.mapError(
-          (e: HyperliquidOrderMapperError) =>
-            new TradingExecutionError({
-              stage: "order_mapping_failed",
-              detail: `${e.reason}${e.detail ? `: ${e.detail}` : ""}`,
-            }),
-        ),
-      );
-
-      // --- 4b. the mandatory-stop gate, second evaluation (§16.3 item 17) ----
-      // Preview already ran `checkStopInformation` against the harness's limit.
-      // This one runs against the price actually going on the wire — for a
-      // marketable IOC that is the BBO-derived limit, not the requested one —
-      // so an increase whose stop stopped making sense between preview and
-      // mapping is refused here rather than signed. Nothing has been persisted
-      // and no nonce has been spent at this point.
-      const stopGateInput = {
-        actionType: intent.actionType,
-        side: intent.side,
-        referencePrice: Number.parseFloat(wireOrder.limitPrice),
-        stop: intent.stop,
-      };
-      const stopDefect = checkStopInformation(stopGateInput);
-      if (stopDefect !== null) {
-        return yield* new TradingExecutionError({
-          stage: "missing_stop",
-          detail: describeStopGateDefect(stopDefect, stopGateInput),
-        });
-      }
-
-      // --- 4c. map the linked protective child, when this is an increase -----
-      //
-      // §17.2 step 3: the IOC parent and its reduce-only stop may go out in one
-      // `normalTpsl` action. This is an optimisation and a linkage mechanism
-      // (§17.1) — submitting it proves nothing about whether the child is
-      // live, which is why the caller still runs protection reconciliation
-      // against canonical state afterwards.
-      //
-      // The child is sized to the REQUESTED size here because no fill has
-      // happened yet. Reconciliation resizes it to the canonical position, and
-      // that is the number the invariant is measured against.
-      const stop = intent.stop;
-      const linkedStop =
-        isPositionIncreasing(intent.actionType) && stop !== undefined
-          ? yield* mapProtectiveStop({
-              cloid: deriveCloid({
-                missionId: intent.missionId,
-                strategyVersion: intent.strategyVersion,
-                executionSequence: intent.executionSequence,
-                actionType: `${intent.actionType}${PROTECTION_CLOID_SUFFIX}`,
-              }),
-              coin: intent.market,
-              positionSize: intent.side === "buy" ? intent.size : -intent.size,
-              stopPrice: stop.stopPrice,
-              szDecimals: market.szDecimals,
-            }).pipe(
-              Effect.mapError(
-                (e: HyperliquidOrderMapperError) =>
-                  new TradingExecutionError({
-                    stage: "order_mapping_failed",
-                    detail: `protective child: ${e.reason}${e.detail ? `: ${e.detail}` : ""}`,
-                  }),
-              ),
-            )
-          : undefined;
-
-      // --- 5. persist the execution record + reservation (before signing) ----
-      const uuid = yield* crypto.randomUUIDv4.pipe(
-        Effect.mapError(
-          () => new TradingExecutionError({ stage: "persist_failed", detail: "uuid" }),
-        ),
-      );
-      const newExecutionId = `exec_${uuid}`;
-      const idempotencyKey = `idem_${intent.missionId}_${intent.executionSequence}_${intent.actionType}`;
-      const record: TradingExecutionRecord = {
-        executionId: newExecutionId,
-        missionId: intent.missionId,
-        strategyVersion: intent.strategyVersion,
-        executionSequence: intent.executionSequence,
-        actionType: intent.actionType,
-        cloid: wireOrder.cloid,
-        idempotencyKey,
-        market: intent.market,
-        side: intent.side,
-        size: intent.size,
-        limitPrice: Number.parseFloat(wireOrder.limitPrice),
-        timeInForce: wireOrder.timeInForce,
-        reduceOnly: wireOrder.reduceOnly,
-        signerAddress: signer.address as `0x${string}`,
-        status: "reserved",
-        orderResults: [],
-        createdAt: nowMs,
-        updatedAt: nowMs,
-        stopPrice: intent.stop?.stopPrice,
-        plannedLossAtStopUsd: intent.stop?.plannedLossAtStopUsd,
-      };
-      yield* persistExecutionRecord(record);
-
-      const sql = yield* SqlClient.SqlClient;
-      const persistedRows = yield* sql<{
-        readonly execution_id: string;
-        readonly status: TradingExecutionRecord["status"];
-        readonly order_results_json: string;
-        readonly updated_at: number;
-      }>`
-        SELECT execution_id, status, order_results_json, updated_at
-        FROM trading_execution_records
-        WHERE idempotency_key = ${idempotencyKey}
-      `.pipe(
-        Effect.mapError(
-          (cause) =>
-            new TradingExecutionError({
-              stage: "persist_failed",
-              detail: cause instanceof Error ? cause.message : String(cause),
-            }),
-        ),
-      );
-      const persisted = persistedRows[0];
-      if (persisted === undefined) {
-        return yield* new TradingExecutionError({
-          stage: "persist_failed",
-          detail: "execution record was not readable after insert",
-        });
-      }
-      const persistedExecutionId = persisted.execution_id;
-      const persistedOrderResults = yield* Schema.decodeUnknownEffect(OrderResultsJson)(
-        persisted.order_results_json,
-      ).pipe(Effect.orDie);
-      const persistedRecord = {
-        ...record,
-        executionId: persistedExecutionId,
-        status: persisted.status,
-        orderResults: persistedOrderResults,
-        updatedAt: persisted.updated_at,
-      } satisfies TradingExecutionRecord;
-      if (!PRE_SUBMISSION_STATUSES.includes(persisted.status)) {
-        return persistedRecord;
-      }
-
-      const reservation: TradingRiskReservation = {
-        reservationId: `res_${idempotencyKey}`,
-        missionId: intent.missionId,
-        executionId: persistedExecutionId,
-        cloid: wireOrder.cloid,
-        actionType: intent.actionType,
-        reservedRiskUsd: previewResult.reservedRiskUsd,
-        status: "reserved",
-        reservedAt: nowMs,
-      };
-      yield* persistReservation(reservation);
-
-      // --- 6 + 7. sign in the nonce lane, then POST /exchange ----------------
-      const legs: ReadonlyArray<SubmittedLeg> =
-        linkedStop === undefined
-          ? [{ cloid: wireOrder.cloid, role: "entry" }]
-          : [
-              { cloid: wireOrder.cloid, role: "entry" },
-              { cloid: linkedStop.cloid, role: "protection" },
-            ];
-      const action =
-        linkedStop === undefined
-          ? buildOrderAction(wireOrder, market.assetIndex)
-          : buildGroupedEntryWithStopAction(wireOrder, linkedStop, market.assetIndex);
-      const signed = yield* nonceCoord
-        .runWithNonce((nonce) =>
-          Effect.gen(function* () {
-            const signature = signL1ActionForWire({
-              action,
-              nonce,
-              privateKey: signer.privateKeyBytes,
-              isTestnet: true,
-            });
-            return { action, nonce, signature } satisfies SignedAction;
-          }),
-        )
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new TradingExecutionError({
-                stage: "sign_failed",
-                detail: cause instanceof Error ? cause.message : String(cause),
-              }),
-          ),
-        );
-
-      // Mark the record as submitted.
-      yield* updateExecutionRecord(persistedExecutionId, "submitted", [], yield* now());
-
-      const response = yield* exchange.submit(signed).pipe(
-        Effect.mapError(
-          (cause) =>
-            new TradingExecutionError({
-              stage: "submit_failed",
-              detail: cause instanceof Error ? cause.message : String(cause),
-            }),
-        ),
-      );
-
-      // --- 8. inspect EVERY per-order status ---------------------------------
-      const orderResults = yield* inspectOrderStatuses(response, legs, intent);
-
-      // --- 9. update the execution record with the result --------------------
-      //
-      // The ENTRY leg decides the record's status, not "some leg succeeded".
-      // In a grouped request the child can be rejected while the parent fills,
-      // and reading that as "accepted" across the batch is exactly the batch-
-      // atomicity assumption §17.1 forbids. A rejected child is recorded in
-      // `orderResults` and left for protection reconciliation to repair.
-      //
-      // A response that says `filled` is recorded as `filled`, not `accepted`.
-      // The exchange is the authority on the outcome of its own submit, and an
-      // IOC reports that outcome in the submit response itself — there is no
-      // later reconciliation question to leave open. Recording it as `accepted`
-      // parked every successful IOC in a non-terminal status forever: nothing
-      // in the system ever wrote `filled`, so the record stayed "in flight",
-      // its risk reservation stayed reserved, and preview item 16 refused every
-      // subsequent intent for the mission. `accepted` now means only what it
-      // says — acknowledged and resting on the book.
-      const entryResult = orderResults.find((r) => r.role !== "protection") ?? orderResults[0];
-      const finalStatus: TradingExecutionRecord["status"] =
-        entryResult?.status === "filled"
-          ? "filled"
-          : entryResult?.status === "resting"
-            ? "accepted"
-            : "rejected";
-      const updatedAt = yield* now();
-      yield* updateExecutionRecord(persistedExecutionId, finalStatus, orderResults, updatedAt);
-      if (finalStatus === "rejected") {
-        yield* releaseReservation(persistedExecutionId, updatedAt);
-      }
-
-      // What actually reached the exchange, and what it answered. Everything
-      // upstream of this line is intent; this is the one place an order becomes
-      // a fact, and it logged nothing at all.
-      yield* Effect.logInfo("trading order hit the wire", {
-        missionId: intent.missionId,
-        cloid: wireOrder.cloid,
-        actionType: intent.actionType,
-        side: wireOrder.side,
-        size: wireOrder.size,
-        limitPrice: wireOrder.limitPrice,
-        timeInForce: wireOrder.timeInForce,
-        reduceOnly: wireOrder.reduceOnly,
-        linkedStopPrice: linkedStop?.triggerPrice,
-        status: finalStatus,
+        signer,
+        market,
+        bbo: orderBook.bestBidOffer,
       });
+    });
 
-      return { ...persistedRecord, status: finalStatus, orderResults, updatedAt };
+  // Plan 29 step 2.4: the preview-free working-entry replacement. The §16.3
+  // checklist's lease requirement cannot be met outside a harness turn; the
+  // envelope constraint that stands in for it is enforced by the caller. See
+  // the interface documentation for why that is the honest trade.
+  const submitWorkingEntry: HyperliquidExecutionService["Service"]["submitWorkingEntry"] = (
+    input,
+  ) =>
+    Effect.gen(function* () {
+      const { intent, allowedSlippageBps } = input;
+      const nowMs = yield* now();
+
+      const signerOpt = yield* signerConfig.resolve.pipe(
+        Effect.mapError(
+          (e: InterimSignerError) =>
+            new TradingExecutionError({ stage: "signer_not_configured", detail: e.reason }),
+        ),
+      );
+      if (signerOpt._tag === "None") {
+        return yield* new TradingExecutionError({ stage: "signer_not_configured" });
+      }
+      const signer = signerOpt.value;
+
+      const market = yield* gateway
+        .resolveMarket(intent.market)
+        .pipe(Effect.mapError(() => new TradingExecutionError({ stage: "market_unresolved" })));
+      // A fresh book is not optional here: the post-only re-price guard and
+      // the IOC cross price are both derived from it, and a working entry is
+      // being placed seconds after the last read, not in the same breath.
+      const orderBook = yield* gateway
+        .getOrderBook(intent.market)
+        .pipe(Effect.mapError(() => new TradingExecutionError({ stage: "market_unresolved" })));
+
+      return yield* submitIntent({
+        intent,
+        reservedRiskUsd: input.reservedRiskUsd,
+        allowedSlippageBps,
+        nowMs,
+        signer,
+        market,
+        bbo: orderBook.bestBidOffer,
+      });
     });
 
   // §16.4 exhaustion cancel: sign and submit a cancel-by-cloid for one resting
@@ -1091,6 +1197,7 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
     submitProtectiveStop,
     submitReduceOnlyIoc,
     submitReduceOnlyAlo,
+    submitWorkingEntry,
   });
 });
 

@@ -388,6 +388,7 @@ import { TradingEventInboxLive } from "../src/trading/TradingEventInbox.ts";
 import { TradingExecutionGuardLive } from "../src/trading/TradingExecutionGuard.ts";
 import { TradingFillReconcilerLive } from "../src/trading/TradingFillReconciler.ts";
 import { TradingProtectionServiceLive } from "../src/trading/TradingProtectionService.ts";
+import { TradingWorkingOrderServiceLive } from "../src/trading/TradingWorkingOrderService.ts";
 import { TradingEmergencyCloseServiceLive } from "../src/trading/TradingEmergencyCloseService.ts";
 import { TradingControlServiceLive } from "../src/trading/TradingControlService.ts";
 import { TradingBudgetReaderLive } from "../src/trading/TradingBudgetReader.ts";
@@ -473,11 +474,19 @@ const tradingProtectionForTest = TradingProtectionServiceLive.pipe(
   Layer.provideMerge(tradingExecutionCore),
 );
 
+// Plan 29 step 2.4: the working-order loop, same place runtimeLayer.ts builds
+// it — on the execution core, beside the protection service. Plain `provide`
+// (not provideMerge): it sits inside the merge below.
+const tradingWorkingOrderForTest = TradingWorkingOrderServiceLive.pipe(
+  Layer.provide(tradingExecutionCore),
+);
+
 const tradingLayerForTest = Layer.mergeAll(
   TradingExecutionGuardLive,
   TradingFillReconcilerLive,
   TradingEmergencyCloseServiceLive,
   TradingControlServiceLive,
+  tradingWorkingOrderForTest,
 ).pipe(Layer.provideMerge(tradingProtectionForTest));
 
 // --- layer composition ------------------------------------------------------

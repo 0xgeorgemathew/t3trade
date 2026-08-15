@@ -23,3 +23,16 @@ export const executionRefusedKey = (executionSequence: number): string =>
  */
 export const executionSettledKey = (executionSequence: number): string =>
   `execution_settled:${executionSequence}`;
+
+/**
+ * The inbox key a working-order terminal outcome is recorded under (plan 29
+ * step 2.4).
+ *
+ * Keyed by the approved record's cloid rather than a timestamp: an abandoned
+ * entry keeps its `accepted` record for up to the reconciler's one-minute
+ * grace, and a loop that passes every five seconds would otherwise report the
+ * same abandonment a dozen times before the record settled. The cloid makes
+ * every report after the first a duplicate the inbox collapses.
+ */
+export const workingOrderOutcomeKey = (outcome: "crossed" | "abandoned", cloid: string): string =>
+  `working_order_${outcome}:${cloid}`;
