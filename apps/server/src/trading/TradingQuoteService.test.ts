@@ -65,6 +65,13 @@ const stubGateway = Layer.succeed(HyperliquidGateway, {
   getPosition: unusedRead,
   getOpenOrders: unusedRead,
   getTakerFeeRateBps: () => Effect.succeed({ feeBps: 4.5, observedAt: 1_000 }),
+  getUserFeeRatesBps: () =>
+    Effect.succeed({
+      takerFeeBps: 4.5,
+      makerFeeBps: 4.5,
+      observedAt: 1_000,
+      makerRateSource: "hyperliquid_user_fees",
+    }),
 } as unknown as (typeof HyperliquidGateway)["Service"]);
 
 const layer = it.layer(
