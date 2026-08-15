@@ -102,9 +102,8 @@ it("advertises only the server-owned quote form for execution", () => {
 });
 
 // The publish description states the publish contract (versioning, what a
-// publish touches and does not, the checked basis), not the target-derivation
-// methodology that now lives in the playbook. The doctrine prose used to live
-// here; what remains is the contract the runtime actually enforces.
+// publish touches and does not, the checked target), not the target-derivation
+// methodology or doctrine — those live in the playbook.
 it("publish description states the publish contract, not the methodology", () => {
   const publish = TradingToolkit.tools[TRADING_PUBLISH_PLAN_TOOL].description ?? "";
 
@@ -112,38 +111,33 @@ it("publish description states the publish contract, not the methodology", () =>
   expect(publish).toContain("expectedVersion");
   // A publish supersedes the prior version's watches.
   expect(publish).toContain("supersede");
-  // The basis is checked at publish, so the description must say what the check
-  // actually is rather than only asking for the field.
+  // The basis is checked at publish, against the round-trip cost.
   expect(publish).toContain("targetProfitBasis");
-  expect(publish).toContain("(measuredMoveUsd / referencePrice) x positionNotionalUsd");
-  // A target wake is a decision, not a close order.
-  expect(publish).toContain("DECISION POINT");
-  // The one allowed cross-reference: the target must clear its round-trip cost.
-  expect(publish).toContain("trading_estimate_costs");
+  expect(publish).toContain("round-trip cost");
+  // But never the resting orders — that division of labor is the contract.
+  expect(publish).toContain("resting orders");
   // How the harness records that no viable target exists.
-  expect(publish).toContain("insufficientVolatility");
-  // The doctrine is gone — the two-timeframe measurement procedure is not.
+  expect(publish).toContain("standDownCode");
+  // The doctrine is gone.
   expect(publish).not.toContain("MEASURE TWO TIMEFRAMES");
 });
 
-// The volatility tool still carries its own methodology, which the publish
-// description no longer duplicates.
-it("keeps the measure-volatility description pointing at the round-trip cost", () => {
+// The volatility tool carries its own measurement contract; the caveat that
+// matters is that every figure is gross of costs.
+it("keeps the measure-volatility description honest about costs and data", () => {
   const measure = TradingToolkit.tools[TRADING_MEASURE_VOLATILITY_TOOL].description ?? "";
-  expect(measure).toContain("higherTimeframeVolatility");
-  // Every figure this tool reports is gross, so it has to hand the reader on to
-  // the one place the round trip is actually priced.
-  expect(measure).toContain("GROSS");
-  expect(measure).toContain("trading_estimate_costs");
+  expect(measure).toContain("horizons[]");
+  expect(measure).toContain("gross of costs");
+  expect(measure).toContain("sufficientData");
 });
 
 // The cost floor is no longer only prose: `trading_estimate_costs` computes it
-// from the live fee rate and book, and the publish path checks the target
-// against a basis. The description is what points the harness at both.
+// from the live fee rate and book. The description names the total and the
+// floor it exists to produce.
 it("points the cost tool at the floor it exists to compute", () => {
   const costs = TradingToolkit.tools[TRADING_ESTIMATE_COSTS_TOOL].description ?? "";
+  expect(costs).toContain("roundTripUsd");
   expect(costs).toContain("minimumViableTargetUsd");
-  expect(costs).toContain("GROSS");
   expect(costs).toContain("degraded");
 });
 
@@ -158,11 +152,14 @@ it("points the research reads at the fields that carry the answer", () => {
   // The entry-location discount, which nothing else measures.
   expect(momentum).toContain("lastImpulse");
   expect(momentum).toContain("alignment");
+  // The close-versus-wick distinction every breakout rule turns on.
+  expect(momentum).toContain("wickOnly");
+  expect(momentum).toContain("candidates");
 
   const history = TradingToolkit.tools[TRADING_GET_TRADE_HISTORY_TOOL].description ?? "";
-  // Orders, not the partials the exchange reports them as.
-  expect(history).toContain("ORDERS");
-  expect(history).toContain("netPnlUsd");
+  // Fills arrive as partials; the harness reads orders and flat-to-flat pairs.
+  expect(history).toContain("aggregate into orders");
+  expect(history).toContain("roundTrips");
   // Each order scored against the target it was actually published under.
   expect(history).toContain("targetProfitUsd");
 });
@@ -172,14 +169,17 @@ it("points the research reads at the fields that carry the answer", () => {
 // carries the answer.
 it("points the calibration read at the verdict it exists to produce", () => {
   const calibration = TradingToolkit.tools[TRADING_GET_TARGET_CALIBRATION_TOOL].description ?? "";
-  // The distinction the whole read turns on.
-  expect(calibration).toContain("REACHED");
+  // The distinction the whole read turns on: touched, not banked.
+  expect(calibration).toContain("touched");
   expect(calibration).toContain("observedHitRatePercent");
   expect(calibration).toContain("claimedHitRatePercent");
   expect(calibration).toContain("recommendation");
 
   const mission = TradingToolkit.tools[TRADING_GET_MISSION_TOOL].description ?? "";
-  expect(mission).toContain("strategyHistory");
+  // Authority numbers are ceilings, and an ended mission is reported, not
+  // hidden.
+  expect(mission).toContain("ceilings");
+  expect(mission).toContain("lastMission");
 });
 
 // Re-levelling used to be cancel-then-register, with the side being re-levelled
@@ -193,22 +193,20 @@ it("tells the harness how to move a level rather than add one", () => {
   expect(register).toContain("ADDITION");
 });
 
-// The bounded stop tool is only safe because the harness can read WHY a move
-// was refused and correct it. A description that names the tool without naming
-// the rules leaves it guessing, and a guessing agent retries the same refusal.
+// The bounded stop tool is only safe because a refusal costs nothing and the
+// harness can read which bound it hit. The numbers behind each bound live in
+// the server, not the description — what must survive is the bounds
+// themselves and the free retry.
 it("names the bounds trading_adjust_stop actually enforces", () => {
   const adjust = TradingToolkit.tools[TRADING_ADJUST_STOP_TOOL].description ?? "";
-  // Where it sits relative to the unbounded primitive.
-  expect(adjust).toContain("trading_execute");
-  // The five policy rules, in the codes the result reports them under.
-  expect(adjust).toContain("risk_envelope");
-  expect(adjust).toContain("step_too_large");
-  expect(adjust).toContain("atr_mismatch");
-  expect(adjust).toContain("noise_floor");
-  expect(adjust).toContain("breakeven_ratchet");
-  expect(adjust).toContain("adjustment_budget");
+  // The risk line: no move past what entry approval signed off on.
+  expect(adjust).toContain("approved stop");
+  // And the other named bounds.
+  expect(adjust).toContain("noise floor");
+  expect(adjust).toContain("never back below entry");
+  expect(adjust).toContain("rate-limited");
   // A refusal costs nothing, which is what makes trying one safe.
-  expect(adjust).toContain("Refused leaves the resting stop untouched");
+  expect(adjust).toContain("A refusal leaves the resting stop untouched");
 });
 
 it("marks reading as safe and publishing as non-idempotent", () => {
@@ -233,57 +231,31 @@ it("marks reading as safe and publishing as non-idempotent", () => {
   });
 });
 
-// A description says what the tool returns and what each field means — not when
-// to call it, what to conclude, or another tool's contract. Keep the whole
-// toolkit on a budget so a verbose description cannot quietly creep back in:
-// no single description over 1,300 chars, the total under 11,400, and the tool
-// count pinned at 20.
+// A description says what the tool returns and the non-obvious behaviors —
+// not rejection-code enumerations, cross-tool walkthroughs, formatting
+// instructions, arithmetic, or parameters the schema already defines. Those
+// belong to the runtime and the schemas, and restating them here just burns
+// context on every turn.
 //
-// The total was 10,000 while there were 19 tools. Plan 24's
-// `trading_adjust_stop` is the 20th, and it pays for itself: the eight refusal
-// codes it enumerates are the tool's actual contract, and an agent that cannot
-// read them tries the same refused move again. The per-tool cap is unchanged —
-// that is the rule that actually stops verbosity; the total only tracks how
-// many tools there are.
-//
-// Plan 25 bought the last 200: `trading_publish_plan` now states that a
-// declined entry still publishes (a turn that stood down silently left the
-// mission with no thesis and no watches, so nothing woke it again), and
-// `trading_estimate_costs` asks for rates to be quoted with their units — an
-// operator read "4.5" as $4.50 and there was nothing in the tool to prevent it.
-// Steps 3 and 4 of the viability plan bought the next 1,800. `trading_quote_entry`
-// is the 21st tool, and it exists because the eight fields it derives were eight
-// ways for a correct read of the market to die on the way to an order — its own
-// description pays part of itself back by shortening `trading_execute`'s entry
-// half. `trading_get_market_structure` gained the setup evidence that used to be
-// prose in the playbooks: the touch counts, the range stability, and the
-// close-versus-wick distinction every breakout rule already turned on.
-//
-// Step 5 adds the last three: `trading_close_position`, `trading_reduce_position`
-// and `trading_cancel_order`. They are cheap to describe precisely because there
-// is nothing to describe — a close takes no arguments at all — and what their
-// descriptions do buy is the sentence a harness most needs, which is that an
-// exit works in every state an entry does not.
-//
-// Plan 27 spends inside the same envelope rather than growing it: the structure
-// read's description was rewritten tighter to make room for the regime verdict,
-// the new per-timeframe features, and the `candidates[]` tournament table; the
-// publish description pays for `plainSummary` and `alternativesConsidered[]` by
-// dropping sentences the playbooks already carry; and the quote description's
-// noise-floor rule is one sentence because the rule itself lives in
-// `trading_adjust_stop`'s.
+// Plan 29 Step 1.3 cut the toolkit from ~15,000 to under 6,000 description
+// chars on that rule; the budgets below keep it there. The per-tool cap sits
+// above the measured maximum so small edits do not trip it, but any new
+// enumeration will.
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 
   expect(tools.length, "expected exactly 24 trading tools").toBe(24);
 
   const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
-  expect(total, "total description chars must stay under 15,000").toBeLessThan(15_000);
+  expect(total, "total description chars must stay under 6,000").toBeLessThan(6_000);
 
   for (const tool of tools) {
     const len = (tool.description ?? "").length;
-    expect(len, `${tool.name} description is ${len} chars, must be <= 1,300`).toBeLessThanOrEqual(
-      1_300,
+    // Measured max at the plan-29 shrink: 350 chars
+    // (trading_get_market_structure). 400 leaves edit headroom, not room for
+    // a new field glossary.
+    expect(len, `${tool.name} description is ${len} chars, must be <= 400`).toBeLessThanOrEqual(
+      400,
     );
   }
 });
