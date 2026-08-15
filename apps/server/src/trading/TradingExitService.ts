@@ -18,6 +18,7 @@
 import { resolveExitSize } from "@t3tools/trading-contracts/exit";
 import { deriveQuoteLimitPrice } from "@t3tools/trading-contracts/quote";
 import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
+import { urgencyToOrderPreference, type TradingUrgency } from "@t3tools/trading-contracts/strategy";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import * as Context from "effect/Context";
@@ -42,6 +43,12 @@ export interface ExitRequest {
   readonly fraction?: number | undefined;
   /** The resting order a `cancel` withdraws. */
   readonly cloid?: string | undefined;
+  /**
+   * How urgently a `close`/`reduce` should land. Defaults to `now` (crossing
+   * IOC); `patient` rests reduce-only at the near side as a maker order.
+   * Meaningless to a `cancel`, which places no order.
+   */
+  readonly urgency?: TradingUrgency | undefined;
 }
 
 export type ExitPreparation =
@@ -191,12 +198,16 @@ export const makeTradingExitService = Effect.gen(function* () {
         return refused(sizing.refusal, sizing.detail);
       }
 
-      // An exit crosses. A reduce-only order that rests is a reduce-only order
-      // that does not happen, and the whole reason to have these tools is that
-      // the exit lands.
+      // An exit defaults to crossing: a reduce-only order that rests is a
+      // reduce-only order that does not happen, and the whole reason to have
+      // these tools is that the exit lands. A patient exit opts out
+      // deliberately — it rests reduce-only at the near side as a maker order,
+      // keeping the exit able to never happen in exchange for not paying the
+      // spread.
+      const orderPreference = urgencyToOrderPreference(request.urgency ?? "now");
       const limitPrice = deriveQuoteLimitPrice({
         side: sizing.side,
-        orderPreference: "marketable_ioc",
+        orderPreference,
         bestBid,
         bestAsk,
         slippageBps: (yield* iocSlippage.resolve).entryBps,
@@ -210,7 +221,7 @@ export const makeTradingExitService = Effect.gen(function* () {
         actionType: sizing.promotedToClose ? "close" : request.kind,
         side: sizing.side,
         size: sizing.size,
-        orderPreference: "marketable_ioc",
+        orderPreference,
         limitPrice,
       };
       return {

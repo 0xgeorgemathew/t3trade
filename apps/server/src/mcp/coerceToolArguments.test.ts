@@ -280,7 +280,7 @@ describe("coerceToolArguments", () => {
           sizeEth: "0.01",
           notionalUsd: "250.5",
           actionType: "open",
-          orderPreference: "resting_limit",
+          urgency: "patient",
         }),
       ).toEqual({
         missionId: "mission_1",
@@ -290,7 +290,7 @@ describe("coerceToolArguments", () => {
         sizeEth: 0.01,
         notionalUsd: 250.5,
         actionType: "open",
-        orderPreference: "resting_limit",
+        urgency: "patient",
       });
     });
 

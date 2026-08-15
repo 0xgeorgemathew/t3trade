@@ -236,4 +236,15 @@ describe("TradingQuoteEntryInput", () => {
     );
     assert.doesNotThrow(() => decode({ market: "ETH", side: "buy", stopPrice: 1_900, sizeEth: 1 }));
   });
+
+  it("defaults urgency to now, and accepts an explicit patient", () => {
+    const decode = Schema.decodeUnknownSync(TradingQuoteEntryInput);
+    const base = { market: "ETH", side: "buy", stopPrice: 1_900 } as const;
+
+    // The harness states urgency, never a time-in-force: an omitted one is a
+    // request to cross now.
+    assert.strictEqual(decode(base).urgency, "now");
+    assert.strictEqual(decode({ ...base, urgency: "patient" }).urgency, "patient");
+    assert.throws(() => decode({ ...base, urgency: "eventually" }));
+  });
 });

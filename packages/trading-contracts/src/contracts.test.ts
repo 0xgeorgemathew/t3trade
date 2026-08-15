@@ -203,6 +203,40 @@ describe("trading contracts decode published shapes", () => {
     expect(decodeStrategy(strategy).timeframes).toEqual(["5m", "15m"]);
   });
 
+  it("decodes an entry plan that states urgency into the preference it means", () => {
+    // The harness states urgency, never a time-in-force: `patient` becomes a
+    // post-only preference, and an omitted one means `now`.
+    const patient = decodeStrategy({
+      ...strategy,
+      entryPlan: { ...strategy.entryPlan, orderPreference: undefined, urgency: "patient" },
+    });
+    expect(patient.entryPlan.orderPreference).toBe("post_only");
+    expect("urgency" in patient.entryPlan).toBe(false);
+
+    const neither = decodeStrategy({
+      ...strategy,
+      entryPlan: { ...strategy.entryPlan, orderPreference: undefined },
+    });
+    expect(neither.entryPlan.orderPreference).toBe("marketable_ioc");
+  });
+
+  it("decodes a persisted entry plan's explicit preference untouched", () => {
+    // Every row in momentum_strategy_versions carries `orderPreference`; it is
+    // the stored representation, and re-decoding must not reinterpret it.
+    expect(decodeStrategy(strategy).entryPlan.orderPreference).toBe("marketable_ioc");
+    const resting = decodeStrategy({
+      ...strategy,
+      entryPlan: { ...strategy.entryPlan, orderPreference: "resting_limit" },
+    });
+    expect(resting.entryPlan.orderPreference).toBe("resting_limit");
+    // An explicit preference wins over an urgency that disagrees with it.
+    const both = decodeStrategy({
+      ...strategy,
+      entryPlan: { ...strategy.entryPlan, urgency: "patient" },
+    });
+    expect(both.entryPlan.orderPreference).toBe("marketable_ioc");
+  });
+
   it("decodes a range_reversion strategy as itself, not as a continuation mode", () => {
     const rangeScalp = decodeStrategy({
       ...strategy,

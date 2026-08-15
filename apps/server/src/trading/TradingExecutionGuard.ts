@@ -332,7 +332,16 @@ export const makeTradingExecutionGuard = Effect.gen(function* () {
         actionType,
         side: position.size > 0 ? ("sell" as const) : ("buy" as const),
         size: submittedSize,
-        orderPreference: "marketable_ioc" as const,
+        // Exits cross by default, so anything but an explicit patient exit is
+        // forced to a marketable IOC here. A `post_only` intent is the one
+        // deliberate exception — the exit service priced it at the near side
+        // for exactly that — and it passes through to a reduce-only ALO.
+        // Every other path into this function (and the emergency close, which
+        // never comes through it) stays IOC.
+        orderPreference:
+          intent.orderPreference === "post_only"
+            ? ("post_only" as const)
+            : ("marketable_ioc" as const),
         reduceOnly: true,
       };
       // Reduce-only exits are permitted under exhaustion (§16.4).

@@ -13,6 +13,7 @@ import {
   type TradingRequestEntryInput,
 } from "@t3tools/trading-contracts/tools";
 import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
+import type { TradingUrgency } from "@t3tools/trading-contracts/strategy";
 import { classifyFailure, type FailureRecovery } from "@t3tools/trading-contracts/recovery";
 import { CommandId, ThreadId, TradingMissionId } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
@@ -554,6 +555,7 @@ const executeExit = (request: {
   readonly sizeEth?: number | undefined;
   readonly fraction?: number | undefined;
   readonly cloid?: string | undefined;
+  readonly urgency?: TradingUrgency | undefined;
 }) =>
   Effect.gen(function* () {
     const { mission } = yield* resolveBoundCall(request.missionId);
@@ -662,7 +664,7 @@ const handlers = {
         sizeEth: input.sizeEth,
         notionalUsd: input.notionalUsd,
         actionType: input.actionType,
-        orderPreference: input.orderPreference,
+        urgency: input.urgency,
       });
     }),
 
@@ -675,7 +677,12 @@ const handlers = {
    * rather than through `trading_execute`'s intent.
    */
   trading_close_position: (input) =>
-    executeExit({ missionId: input.missionId, kind: "close", market: input.market }),
+    executeExit({
+      missionId: input.missionId,
+      kind: "close",
+      market: input.market,
+      urgency: input.urgency,
+    }),
 
   trading_reduce_position: (input) =>
     executeExit({
@@ -684,6 +691,7 @@ const handlers = {
       market: input.market,
       sizeEth: input.sizeEth,
       fraction: input.fraction,
+      urgency: input.urgency,
     }),
 
   trading_cancel_order: (input) =>

@@ -360,7 +360,7 @@ export const TradingCancelWatchTool = Tool.make("trading_cancel_watch", {
 
 export const TradingQuoteEntryTool = Tool.make("trading_quote_entry", {
   description:
-    "Price and size one entry: the server derives a crossing limit and the largest size every risk ceiling allows — that is the approved trade. Too large gets a smaller quote plus `constrainedBy`. Quotes expire in 90s; executing one twice returns the same execution. Refuses stops inside the noise floor.",
+    "Price and size one entry: the server derives the limit and the largest size every risk ceiling allows — that is the approved trade. `urgency` defaults to `now` (cross immediately); `patient` rests at the near side as a maker order. Too large gets a smaller quote plus `constrainedBy`. Quotes expire in 90s; executing one twice returns the same execution. Refuses stops inside the noise floor.",
   parameters: TradingQuoteEntryInput,
   success: TradingQuoteEntryResult,
   failure: TradingToolRejectedError,
@@ -417,7 +417,7 @@ export const TradingAdjustStopTool = Tool.make("trading_adjust_stop", {
 
 export const TradingClosePositionTool = Tool.make("trading_close_position", {
   description:
-    "Flatten the mission's whole position now; takes no size or side. The server derives side and size from the canonical position and sends a crossing reduce-only IOC. Works in states an entry does not (entries switched off, loss budget exhausted, mission blocked). Reports `remainingSize` from the reconciled position.",
+    "Flatten the mission's whole position now; takes no size or side. The server derives side and size from the canonical position and sends a reduce-only order that crosses immediately, or rests at the near side when `urgency` is `patient`. Works in states an entry does not (entries switched off, loss budget exhausted, mission blocked). Reports `remainingSize` from the reconciled position.",
   parameters: TradingClosePositionInput,
   success: TradingRequestEntryResult,
   failure: TradingToolRejectedError,
@@ -431,7 +431,7 @@ export const TradingClosePositionTool = Tool.make("trading_close_position", {
 
 export const TradingReducePositionTool = Tool.make("trading_reduce_position", {
   description:
-    "Take part of the position off by size or fraction. The server derives the closing side, clamps to what is held, and sends a crossing reduce-only IOC — it cannot reverse or increase exposure. If what would remain is under the exchange minimum, the whole position closes instead.",
+    'Take part of the position off by size or fraction. The server derives the closing side, clamps to what is held, and sends a reduce-only order that crosses (`urgency: "patient"` rests it at the near side) — it cannot reverse or increase exposure. If what would remain is under the exchange minimum, the whole position closes instead.',
   parameters: TradingReducePositionInput,
   success: TradingRequestEntryResult,
   failure: TradingToolRejectedError,

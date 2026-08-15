@@ -360,3 +360,65 @@ reduceLayer("TradingExecutionGuard — reduce-only error taxonomy", (it) => {
     }),
   );
 });
+
+// ===========================================================================
+// What a reduce-only exit goes out as. The guard owns the last word on the
+// wire intent: exits cross by default, and the one deliberate exception is a
+// patient exit — a post-only intent the exit service already priced at the
+// near side. These capture the intent the guard hands the exchange.
+// ===========================================================================
+
+/** The intent the guard last submitted, captured by the recording stub. */
+let submittedIntent: ExecutionInput["intent"] | undefined;
+
+const recordingExecution = Layer.succeed(HyperliquidExecutionService, {
+  // The guard reads nothing from the submission's result, so the stub only
+  // records the intent it was handed; the layer-level cast keeps the shape
+  // loose the same way the rejecting stub above does.
+  submitOrder: (input: ExecutionInput) =>
+    Effect.sync(() => {
+      submittedIntent = input.intent;
+    }),
+  submitCancel: () => Effect.die("submitCancel is not part of the reduce path"),
+} as unknown as HyperliquidExecutionService["Service"]);
+
+const recordingLayer = it.layer(
+  TradingExecutionGuardLive.pipe(
+    Layer.provideMerge(stubMissions),
+    Layer.provideMerge(recordingExecution),
+    Layer.provideMerge(answeringReconciler),
+    Layer.provideMerge(stubGateway),
+    Layer.provideMerge(stubInfo),
+    Layer.provideMerge(NodeSqliteClient.layerMemory()),
+  ),
+);
+
+recordingLayer("TradingExecutionGuard — urgency on a reduce-only exit", (it) => {
+  it.effect("forces a crossing IOC on every exit but a deliberate patient one", () =>
+    Effect.gen(function* () {
+      const guard = yield* TradingExecutionGuard;
+
+      // The default, unchanged: whatever else the intent carried, an exit
+      // crosses. A resting limit is forced to a marketable IOC here.
+      yield* guard.reduceOnlySized({
+        ...reduceInput,
+        intent: { ...reduceInput.intent, orderPreference: "resting_limit" },
+      });
+      assert.equal(submittedIntent?.orderPreference, "marketable_ioc");
+      assert.equal(submittedIntent?.reduceOnly, true);
+
+      // The one exception: a post-only intent is a patient exit, priced at the
+      // near side upstream, and it goes out as a reduce-only ALO — not an IOC.
+      yield* guard.reduceOnlySized({
+        ...reduceInput,
+        intent: { ...reduceInput.intent, orderPreference: "post_only", limitPrice: 2_990 },
+      });
+      assert.equal(submittedIntent?.orderPreference, "post_only");
+      assert.equal(submittedIntent?.reduceOnly, true);
+      // The near-side price the exit service derived survives the guard.
+      assert.equal(submittedIntent?.limitPrice, 2_990);
+      // The side still comes from the canonical position, never the intent.
+      assert.equal(submittedIntent?.side, "sell");
+    }),
+  );
+});

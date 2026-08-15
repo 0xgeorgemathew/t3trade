@@ -17,9 +17,10 @@
  *
  * @module TradingExit
  */
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import { TradingId, TradingMarket } from "./primitives.ts";
+import { TradingUrgency } from "./strategy.ts";
 
 export const TRADING_CLOSE_POSITION_TOOL = "trading_close_position";
 export const TRADING_REDUCE_POSITION_TOOL = "trading_reduce_position";
@@ -33,10 +34,19 @@ const missionBound = {
   missionId: Schema.optional(TradingId),
 } as const;
 
+/**
+ * How urgently an exit should land. Defaults to `now`, which crosses the spread
+ * immediately; `patient` rests at the near side as a reduce-only maker order
+ * that may never fill. The harness never names a time-in-force — the server
+ * maps urgency to one and the execution result reports what went out.
+ */
+const UrgencyWithDefault = TradingUrgency.pipe(Schema.withDecodingDefault(Effect.succeed("now")));
+
 export const TradingClosePositionInput = Schema.Struct({
   ...missionBound,
   /** Defaults to the market the mission is mandated to. */
   market: Schema.optional(TradingMarket),
+  urgency: UrgencyWithDefault,
 });
 export type TradingClosePositionInput = typeof TradingClosePositionInput.Type;
 
@@ -56,6 +66,7 @@ export const TradingReducePositionInput = Schema.Struct({
   fraction: Schema.optional(
     Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(1)),
   ),
+  urgency: UrgencyWithDefault,
 }).check(
   Schema.makeFilter((input) => {
     const named = Number(input.sizeEth !== undefined) + Number(input.fraction !== undefined);

@@ -21,10 +21,10 @@
  *
  * @module TradingQuote
  */
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { TradingOrderSide } from "./execution.ts";
 import { Price, TradingId, TradingMarket, UnixMillis, UsdAmount } from "./primitives.ts";
-import { MomentumOrderPreference } from "./strategy.ts";
+import { MomentumOrderPreference, TradingUrgency } from "./strategy.ts";
 
 export const TRADING_QUOTE_ENTRY_TOOL = "trading_quote_entry";
 
@@ -87,8 +87,13 @@ export const TradingQuoteEntryInput = Schema.Struct({
   notionalUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
   /** Defaults to `open`. */
   actionType: Schema.optional(QuotableActionType),
-  /** Defaults to `marketable_ioc`. */
-  orderPreference: Schema.optional(MomentumOrderPreference),
+  /**
+   * How urgently the entry should land. Defaults to `now`, which crosses the
+   * spread immediately; `patient` rests at the near side as a maker order that
+   * may never fill. The harness never names a time-in-force — the server maps
+   * urgency to one and the execution result reports what went out.
+   */
+  urgency: TradingUrgency.pipe(Schema.withDecodingDefault(Effect.succeed("now"))),
 }).check(
   Schema.makeFilter(
     (input) =>
@@ -114,7 +119,7 @@ export const ExecutableQuote = Schema.Struct({
   market: TradingMarket,
   side: TradingOrderSide,
   actionType: QuotableActionType,
-  orderPreference: MomentumOrderPreference,
+  urgency: TradingUrgency,
 
   /** The versions and lease this quote was cut against; execution re-checks them. */
   strategyVersion: Schema.Number,
@@ -131,7 +136,7 @@ export const ExecutableQuote = Schema.Struct({
   constrainedBy: QuoteSizeConstraint,
   notionalUsd: UsdAmount,
 
-  /** Derived from the live BBO — for `marketable_ioc`, a price that crosses. */
+  /** Derived from the live BBO — crossing for `now`, the near side for `patient`. */
   limitPrice: Price,
   bestBid: Price,
   bestAsk: Price,

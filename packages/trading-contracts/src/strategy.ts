@@ -209,6 +209,24 @@ export const MomentumOrderPreference = Schema.Literals([
 ]);
 export type MomentumOrderPreference = typeof MomentumOrderPreference.Type;
 
+/**
+ * How urgently the harness wants an order to land — the vocabulary it is given
+ * in place of a time-in-force.
+ *
+ * `now` crosses the spread and takes liquidity; `patient` rests at the near
+ * side as a maker order that may never fill. The execution layer maps urgency
+ * to an order preference and then to a wire time-in-force (`ioc` or `alo`); the
+ * harness never names either, and the execution result reports the TIF that
+ * actually went out.
+ */
+export const TradingUrgency = Schema.Literals(["now", "patient"]);
+export type TradingUrgency = typeof TradingUrgency.Type;
+
+/** `now` crosses (a marketable IOC); `patient` rests post-only (ALO on the wire). */
+export function urgencyToOrderPreference(urgency: TradingUrgency): MomentumOrderPreference {
+  return urgency === "patient" ? "post_only" : "marketable_ioc";
+}
+
 export const MomentumStrategyAction = Schema.Literals([
   "analysing",
   "waiting",
@@ -247,22 +265,89 @@ const MomentumBelief = Schema.Struct({
   evidence: Schema.Array(TradingText),
 });
 
-const MomentumEntryPlan = Schema.Struct({
+/**
+ * The entry plan as the harness authors it: urgency in, orderPreference out.
+ *
+ * The harness states how urgently it wants entries under this plan to land; it
+ * does not name a time-in-force. `orderPreference` remains the accepted and the
+ * persisted form: every plan document already in `momentum_strategy_versions`
+ * carries it, the web client renders it, and a publish that names it explicitly
+ * still gets exactly what it named. A publish that names only `urgency` gets
+ * the preference it derives, and what is persisted — and re-decoded on every
+ * later read — is the preference, so the stored shape is unchanged for either
+ * kind of author.
+ */
+const MomentumEntryPlanWire = Schema.Struct({
   /**
    * Optional on input, always present on the decoded value.
    *
-   * A required key the harness omits is not a smaller mistake than a wrong
-   * value — the Effect toolkit rejects the whole `trading_publish_plan` call
-   * with `Missing key`, which costs the turn and tells the user nothing. This
+   * A required key the harness omits is not a smaller mistake than a wrong value
+   * — the Effect toolkit rejects the whole `trading_publish_plan` call with
+   * `Missing key`, which costs the turn and tells the user nothing useful. This
    * is one of the two prose keys the harness has actually been observed
    * omitting; the publish handler fills an empty one from the belief summary.
    */
   explanation: OmittableProse,
   initialNotionalUsd: Schema.optional(UsdAmount),
   maximumIntendedNotionalUsd: Schema.optional(UsdAmount),
-  orderPreference: MomentumOrderPreference,
+  /** How urgently entries under this plan should land. Defaults to `now`. */
+  urgency: Schema.optional(TradingUrgency),
+  /** The persisted form of urgency. An explicitly named value wins over one derived from `urgency`. */
+  orderPreference: Schema.optional(MomentumOrderPreference),
   conditions: Schema.Array(AgentConditionInput),
 });
+
+/** What a published plan's entry leg carries once decoded: no urgency, always a preference. */
+const MomentumEntryPlanStored = Schema.Struct({
+  explanation: TradingText,
+  initialNotionalUsd: Schema.optional(UsdAmount),
+  maximumIntendedNotionalUsd: Schema.optional(UsdAmount),
+  orderPreference: MomentumOrderPreference,
+  conditions: Schema.Array(AgentConditionDescription),
+});
+
+const MomentumEntryPlan = MomentumEntryPlanWire.pipe(
+  Schema.decodeTo(
+    MomentumEntryPlanStored,
+    SchemaTransformation.transformOrFail({
+      // The one derivation: an explicit preference (every persisted row, and a
+      // publish that still names one) passes through untouched; otherwise the
+      // urgency maps, with `now` the default when both were omitted. Conditions
+      // arrive already decoded to objects by the wire union, so prose-string
+      // conditions are normalised here too.
+      decode: (
+        wire: typeof MomentumEntryPlanWire.Type,
+      ): Effect.Effect<typeof MomentumEntryPlanStored.Encoded> =>
+        Effect.succeed({
+          explanation: wire.explanation,
+          ...(wire.initialNotionalUsd === undefined
+            ? {}
+            : { initialNotionalUsd: wire.initialNotionalUsd }),
+          ...(wire.maximumIntendedNotionalUsd === undefined
+            ? {}
+            : { maximumIntendedNotionalUsd: wire.maximumIntendedNotionalUsd }),
+          orderPreference: wire.orderPreference ?? urgencyToOrderPreference(wire.urgency ?? "now"),
+          conditions: wire.conditions,
+        }),
+      // Encode drops urgency: the persisted document carries the preference it
+      // derived and nothing else, exactly the shape every existing row has.
+      encode: (
+        plan: typeof MomentumEntryPlanStored.Encoded,
+      ): Effect.Effect<typeof MomentumEntryPlanWire.Type> =>
+        Effect.succeed({
+          explanation: plan.explanation,
+          ...(plan.initialNotionalUsd === undefined
+            ? {}
+            : { initialNotionalUsd: plan.initialNotionalUsd }),
+          ...(plan.maximumIntendedNotionalUsd === undefined
+            ? {}
+            : { maximumIntendedNotionalUsd: plan.maximumIntendedNotionalUsd }),
+          orderPreference: plan.orderPreference,
+          conditions: plan.conditions,
+        }),
+    }),
+  ),
+);
 
 const MomentumPositionManagement = Schema.Struct({
   scaleInAllowed: Schema.Boolean,

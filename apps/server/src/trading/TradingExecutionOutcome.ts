@@ -17,7 +17,11 @@
  *
  * @module TradingExecutionOutcome
  */
-import type { TradingOrderResult, TradingRequestEntryResult } from "@t3tools/trading-contracts";
+import type {
+  TradingOrderResult,
+  TradingOrderTimeInForce,
+  TradingRequestEntryResult,
+} from "@t3tools/trading-contracts";
 import { evaluateLossBudget } from "@t3tools/trading-contracts/loss-accounting";
 import { classifyFailureMessage } from "@t3tools/trading-contracts/recovery";
 import * as Context from "effect/Context";
@@ -85,6 +89,8 @@ interface RecordRow {
   readonly order_results_json: string;
   /** The limit the server placed — for an IOC, derived from BBO, not the intent. */
   readonly limit_price: number;
+  /** The TIF the order went out with — the server's answer to the urgency asked. */
+  readonly time_in_force: string;
 }
 
 /**
@@ -111,7 +117,8 @@ const make = Effect.gen(function* () {
   const findRecord = (missionId: string, executionSequence: number) =>
     Effect.gen(function* () {
       const rows = yield* sql<RecordRow>`
-        SELECT execution_id, cloid, action_type, status, order_results_json, limit_price
+        SELECT execution_id, cloid, action_type, status, order_results_json, limit_price,
+               time_in_force
         FROM trading_execution_records
         WHERE mission_id = ${missionId} AND execution_sequence = ${executionSequence}
         ORDER BY updated_at DESC
@@ -257,6 +264,9 @@ const make = Effect.gen(function* () {
           // The limit the server placed, so the harness can see the crossing
           // bound its IOC was priced with rather than the one it asked for.
           limitPrice: record.limit_price,
+          // The TIF the urgency became — the harness never names one, so this
+          // is the only place it learns whether the order crossed or rested.
+          timeInForce: record.time_in_force as TradingOrderTimeInForce,
           ...(avgFillPrice === null ? {} : { avgFillPrice }),
         } satisfies TradingRequestEntryResult;
       }

@@ -198,6 +198,49 @@ layer("TradingExitService", (it) => {
     }),
   );
 
+  it.effect("rests a patient close reduce-only at the near side instead of crossing", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const exits = yield* TradingExitService;
+      const prepared = yield* exits.prepare({
+        missionId: "mission_1",
+        kind: "close",
+        urgency: "patient",
+      });
+
+      assert.strictEqual(prepared.outcome, "ready");
+      if (prepared.outcome !== "ready") return;
+      const intent = prepared.intent;
+      // The urgency becomes a post-only preference; the mapper turns that into
+      // a reduce-only ALO on the wire. The price is the near side of the book
+      // — the ask for a sell — so the order rests as maker.
+      assert.strictEqual(intent.orderPreference, "post_only");
+      assert.strictEqual(intent.limitPrice, 2_000.5);
+      assert.strictEqual(intent.reduceOnly, true);
+      assert.strictEqual(intent.size, 0.5);
+    }),
+  );
+
+  it.effect("rests a patient reduce at the near side too", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const exits = yield* TradingExitService;
+      const prepared = yield* exits.prepare({
+        missionId: "mission_1",
+        kind: "reduce",
+        fraction: 0.5,
+        urgency: "patient",
+      });
+
+      assert.strictEqual(prepared.outcome, "ready");
+      if (prepared.outcome !== "ready") return;
+      assert.strictEqual(prepared.intent.orderPreference, "post_only");
+      assert.strictEqual(prepared.intent.limitPrice, 2_000.5);
+      assert.strictEqual(prepared.intent.actionType, "reduce");
+      assert.strictEqual(prepared.intent.size, 0.25);
+    }),
+  );
+
   it.effect("takes a fraction off and leaves the rest", () =>
     Effect.gen(function* () {
       yield* seed();

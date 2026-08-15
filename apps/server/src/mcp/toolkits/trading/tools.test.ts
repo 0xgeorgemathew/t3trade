@@ -259,3 +259,21 @@ it("keeps every description on a budget", () => {
     );
   }
 });
+
+// Plan 29 Step 2.3: the harness speaks urgency, never a time-in-force. The
+// write tools' descriptions are where it learns that vocabulary, so they name
+// `urgency` and none of them names the execution-layer words the server owns.
+it("teaches urgency and keeps time-in-force vocabulary out of the descriptions", () => {
+  for (const tool of Object.values(TradingToolkit.tools)) {
+    expect(tool.description ?? "", tool.name).not.toContain("IOC");
+    expect(tool.description ?? "", tool.name).not.toContain("time-in-force");
+  }
+
+  const quote = TradingToolkit.tools[TRADING_QUOTE_ENTRY_TOOL].description ?? "";
+  expect(quote).toContain("urgency");
+  expect(quote).toContain("patient");
+  const close = TradingToolkit.tools[TRADING_CLOSE_POSITION_TOOL].description ?? "";
+  expect(close).toContain("urgency");
+  const reduce = TradingToolkit.tools[TRADING_REDUCE_POSITION_TOOL].description ?? "";
+  expect(reduce).toContain("urgency");
+});

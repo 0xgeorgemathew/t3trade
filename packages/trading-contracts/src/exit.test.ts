@@ -7,7 +7,12 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Schema } from "effect";
 
-import { resolveExitSize, TradingReducePositionInput, type ExitSizingInput } from "./exit.ts";
+import {
+  resolveExitSize,
+  TradingClosePositionInput,
+  TradingReducePositionInput,
+  type ExitSizingInput,
+} from "./exit.ts";
 
 const base = (overrides: Partial<ExitSizingInput> = {}): ExitSizingInput => ({
   positionSize: 0.5,
@@ -108,5 +113,20 @@ describe("TradingReducePositionInput", () => {
     assert.throws(() => decode({}));
     assert.throws(() => decode({ sizeEth: 0.1, fraction: 0.5 }));
     assert.doesNotThrow(() => decode({ fraction: 0.5 }));
+  });
+
+  it("defaults urgency to now, and accepts an explicit patient", () => {
+    const decode = Schema.decodeUnknownSync(TradingReducePositionInput);
+    assert.strictEqual(decode({ fraction: 0.5 }).urgency, "now");
+    assert.strictEqual(decode({ fraction: 0.5, urgency: "patient" }).urgency, "patient");
+  });
+});
+
+describe("TradingClosePositionInput", () => {
+  it("takes nothing but the mission and an optional urgency, defaulting to now", () => {
+    const decode = Schema.decodeUnknownSync(TradingClosePositionInput);
+    assert.strictEqual(decode({}).urgency, "now");
+    assert.strictEqual(decode({ urgency: "patient" }).urgency, "patient");
+    assert.throws(() => decode({ urgency: "whenever" }));
   });
 });

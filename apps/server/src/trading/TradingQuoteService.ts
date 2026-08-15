@@ -32,7 +32,11 @@ import {
   type TradingQuoteEntryResult,
 } from "@t3tools/trading-contracts/quote";
 import type { TradingOrderIntent, TradingOrderSide } from "@t3tools/trading-contracts/execution";
-import type { MomentumOrderPreference } from "@t3tools/trading-contracts/strategy";
+import {
+  urgencyToOrderPreference,
+  type MomentumOrderPreference,
+  type TradingUrgency,
+} from "@t3tools/trading-contracts/strategy";
 import { evaluateLossBudget } from "@t3tools/trading-contracts/loss-accounting";
 import {
   analyseMomentum,
@@ -68,7 +72,12 @@ export interface QuoteRequest {
   readonly sizeEth?: number | undefined;
   readonly notionalUsd?: number | undefined;
   readonly actionType?: QuotableActionType | undefined;
-  readonly orderPreference?: MomentumOrderPreference | undefined;
+  /**
+   * How urgently the entry should land, in the harness's vocabulary. Mapped to
+   * the internal order preference below; the persisted column stays the
+   * preference, so no DB shape changes with this.
+   */
+  readonly urgency?: TradingUrgency | undefined;
 }
 
 /**
@@ -237,7 +246,11 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       });
       const budget = evaluateLossBudget(budgetInput);
 
-      const orderPreference = request.orderPreference ?? "marketable_ioc";
+      // The harness states urgency, never a preference: `now` crosses, `patient`
+      // rests post-only. Everything downstream — the derived limit, the intent,
+      // the persisted row — speaks the preference this one mapping produces.
+      const urgency = request.urgency ?? "now";
+      const orderPreference = urgencyToOrderPreference(urgency);
       const bbo = orderBook.bestBidOffer;
       const bestBid = bbo.bidPrice;
       const bestAsk = bbo.askPrice;
@@ -463,7 +476,7 @@ export const makeTradingQuoteService = Effect.gen(function* () {
         market: request.market,
         side: request.side,
         actionType,
-        orderPreference,
+        urgency,
         strategyVersion: mission.strategyVersion,
         authorityVersion: mission.authorityVersion,
         harnessRunId,

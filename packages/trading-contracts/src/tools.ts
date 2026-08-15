@@ -35,7 +35,7 @@ import { ObservedVolatility } from "./volatility.ts";
 import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./mission.ts";
 import { Price, TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
 import { StopAdjustmentJustification, StopAdjustmentRefusalCode } from "./stopAdjustment.ts";
-import { TradingOrderIntent } from "./execution.ts";
+import { TradingOrderIntent, TradingOrderTimeInForce } from "./execution.ts";
 import { FailureRecovery } from "./recovery.ts";
 import { tradingPlanAuthoredFields, TradingPlanState, ProfitTargetBasis } from "./strategy.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
@@ -412,6 +412,16 @@ export const TradingRequestEntryResult = Schema.Struct({
    * between the fills T3 reported and the price column in the Hyperliquid UI.
    */
   limitPrice: Schema.optional(Schema.Number),
+  /**
+   * The time-in-force the order actually went out with — `ioc` when it crossed,
+   * `alo` when it rested as maker, `gtc` for a resting limit.
+   *
+   * The harness asks in urgency, never in TIF; this is the server's answer for
+   * what that urgency became on the wire, so what was done can be told apart
+   * from what was asked. Absent when no order was placed (a refusal, or an
+   * outcome still unknown).
+   */
+  timeInForce: Schema.optional(TradingOrderTimeInForce),
   /**
    * Size-weighted average price of the fills recorded under this execution's
    * cloid, when any filled. This is what the position was actually opened or

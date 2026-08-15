@@ -213,6 +213,65 @@ describe("mapOrder", () => {
       expect(a.cloid).toMatch(/^0x[0-9a-f]{32}$/);
     }),
   );
+
+  it.effect("carries a normal-path intent's reduce-only flag to the wire", () =>
+    Effect.gen(function* () {
+      // A patient exit is a reduce-only order through this same path — the
+      // emergency close bypasses the mapper, so `r` on the wire is set here or
+      // nowhere.
+      const order = yield* mapOrder({
+        intent: baseIntent({ actionType: "close", side: "sell", reduceOnly: true }),
+        bbo: FRESH_BBO(1_000),
+        szDecimals: 4,
+        allowedSlippageBps: 50,
+        nowMs: 1_000,
+      });
+      expect(order.reduceOnly).toBe(true);
+
+      const leg = (buildOrderAction(order, 2).orders as unknown[])[0] as Record<string, unknown>;
+      expect(leg.r).toBe(true);
+
+      // And an entry intent stays r: false — the flag is threaded, not forced.
+      const entry = yield* mapOrder({
+        intent: baseIntent({}),
+        bbo: FRESH_BBO(1_000),
+        szDecimals: 4,
+        allowedSlippageBps: 50,
+        nowMs: 1_000,
+      });
+      expect(entry.reduceOnly).toBe(false);
+      expect(
+        ((buildOrderAction(entry, 2).orders as unknown[])[0] as Record<string, unknown>).r,
+      ).toBe(false);
+    }),
+  );
+
+  it.effect("maps a reduce-only post-only intent to a resting ALO that can only reduce", () =>
+    Effect.gen(function* () {
+      // Urgency "patient" on an exit: reduce-only AND maker. The wire order has
+      // to carry both — `r: true` so it can never cross through flat into a
+      // reversal, and Alo so it rests rather than takes.
+      const order = yield* mapOrder({
+        intent: baseIntent({
+          actionType: "close",
+          side: "sell",
+          reduceOnly: true,
+          orderPreference: "post_only",
+          limitPrice: 1_891.5,
+        }),
+        bbo: FRESH_BBO(1_000),
+        szDecimals: 4,
+        allowedSlippageBps: 50,
+        nowMs: 1_000,
+      });
+      expect(order.timeInForce).toBe("alo");
+      expect(order.reduceOnly).toBe(true);
+
+      const leg = (buildOrderAction(order, 2).orders as unknown[])[0] as Record<string, unknown>;
+      expect(leg.r).toBe(true);
+      expect(leg.t).toEqual({ limit: { tif: "Alo" } });
+    }),
+  );
 });
 
 describe("buildOrderAction / buildCancelByCloidAction", () => {
