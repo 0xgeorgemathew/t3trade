@@ -537,3 +537,104 @@ export const readEnrichmentEvidence = (sql: Sql, input?: { readonly missionId?: 
       ),
     ),
   );
+
+/**
+ * One closed trade with the entry quote it joins to — the raw material for a
+ * session's economics (plan 29 step 0.2). Same quote join `readEntryGovernance`
+ * uses: the newest consumed `open` quote at or shortly before the position
+ * opened. A trade with no joinable quote still counts, it just cannot
+ * contribute to the entry-side spread and slippage splits.
+ */
+export interface SessionTrade {
+  readonly netPnlUsd: number;
+  readonly feesPaidUsd: number;
+  readonly size: number;
+  readonly entryPrice: number | null;
+  readonly direction: string;
+  readonly entryQuote: { readonly bestBid: number; readonly bestAsk: number } | null;
+}
+
+/** The mission's closed trades, newest close first, with their entry quotes. */
+export const readSessionTrades = (sql: Sql, input: { readonly missionId: string }) =>
+  Effect.gen(function* () {
+    const rows = yield* sql<{
+      readonly net_pnl: number;
+      readonly fees_paid: number;
+      readonly size: number;
+      readonly entry_price: number | null;
+      readonly direction: string;
+      readonly best_bid: number | null;
+      readonly best_ask: number | null;
+    }>`
+      SELECT t.net_pnl, t.fees_paid, t.size, t.entry_price, t.direction,
+             q.best_bid, q.best_ask
+      FROM trading_closed_trades t
+      LEFT JOIN trading_entry_quotes q ON q.quote_id = (
+        SELECT q2.quote_id FROM trading_entry_quotes q2
+        WHERE q2.mission_id = t.mission_id
+          AND q2.action_type = 'open'
+          AND q2.consumed_at IS NOT NULL
+          AND q2.consumed_at <= t.opened_at + 60000
+        ORDER BY q2.consumed_at DESC
+        LIMIT 1
+      )
+      WHERE t.mission_id = ${input.missionId}
+      ORDER BY t.closed_at DESC
+    `;
+    return rows.map(
+      (row): SessionTrade => ({
+        netPnlUsd: row.net_pnl,
+        feesPaidUsd: row.fees_paid,
+        size: row.size,
+        entryPrice: row.entry_price,
+        direction: row.direction,
+        entryQuote:
+          row.best_bid !== null && row.best_ask !== null
+            ? { bestBid: row.best_bid, bestAsk: row.best_ask }
+            : null,
+      }),
+    );
+  });
+
+/** A session's wake counts — plan 29 step 0.2's activity half. */
+export interface SessionWakeCounts {
+  /** Every harness run the mission ever started, settled or not. */
+  readonly wakes: number;
+  /** Runs that neither published a plan nor attempted an execution. */
+  readonly noOpWakes: number;
+  /** The stricter count: settled runs whose outcome was `no_decision`. */
+  readonly noDecisionWakes: number;
+  /**
+   * Plan versions published. Counted from `momentum_strategy_versions` rather
+   * than SUM(published_plan) over runs: every accepted publish inserts a
+   * version row (supersede-on-publish), so the table is the authoritative
+   * count.
+   */
+  readonly planVersionsPublished: number;
+}
+
+export const readSessionWakes = (sql: Sql, input: { readonly missionId: string }) =>
+  Effect.gen(function* () {
+    const runs = yield* sql<{
+      readonly wakes: number;
+      readonly no_op_wakes: number;
+      readonly no_decision_wakes: number;
+    }>`
+      SELECT COUNT(*) AS wakes,
+             SUM(CASE WHEN published_plan = 0 AND execute_attempted = 0 THEN 1 ELSE 0 END)
+               AS no_op_wakes,
+             SUM(CASE WHEN outcome = 'no_decision' THEN 1 ELSE 0 END) AS no_decision_wakes
+      FROM trading_harness_runs
+      WHERE mission_id = ${input.missionId}
+    `;
+    const versions = yield* sql<{ readonly plan_versions: number }>`
+      SELECT COUNT(*) AS plan_versions FROM momentum_strategy_versions
+      WHERE mission_id = ${input.missionId}
+    `;
+    return {
+      wakes: runs[0]?.wakes ?? 0,
+      noOpWakes: runs[0]?.no_op_wakes ?? 0,
+      noDecisionWakes: runs[0]?.no_decision_wakes ?? 0,
+      planVersionsPublished: versions[0]?.plan_versions ?? 0,
+    } satisfies SessionWakeCounts;
+  });

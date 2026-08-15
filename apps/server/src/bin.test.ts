@@ -22,11 +22,14 @@ import * as HttpServer from "effect/unstable/http/HttpServer";
 import * as HttpApi from "effect/unstable/httpapi/HttpApi";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import * as CliError from "effect/unstable/cli/CliError";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as TestConsole from "effect/testing/TestConsole";
 import { Command } from "effect/unstable/cli";
 
 import { cli, makeCli } from "./bin.ts";
 import * as ServerConfig from "./config.ts";
+import { runMigrations } from "./persistence/Migrations.ts";
+import * as NodeSqliteClient from "./persistence/NodeSqliteClient.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
@@ -168,6 +171,49 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
       }).pipe(Effect.provide(Layer.mergeAll(appLayer, NodeServices.layer))),
     );
   });
+
+// A minimal file-backed session for the session-report command. The read and
+// formatting paths are covered by sessionReport.test.ts; this fixture only has
+// to be real enough to prove the CLI wiring, including the read-only open.
+const seedSessionReportDatabase = (databasePath: string) =>
+  Effect.gen(function* () {
+    yield* runMigrations();
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`DELETE FROM trading_entry_quotes`;
+    yield* sql`DELETE FROM trading_closed_trades`;
+    yield* sql`DELETE FROM trading_harness_runs`;
+    yield* sql`DELETE FROM momentum_strategy_versions`;
+    yield* sql`DELETE FROM trading_missions`;
+    yield* sql`
+      INSERT INTO trading_missions (
+        mission_id, user_id, trading_account_id, instruction, market, strategy_family,
+        harness_json, status, control_json, authority_version, strategy_version, version,
+        created_at, updated_at
+      ) VALUES ('mission_cli', 'local', 'acct_1', 'Trade ETH', 'ETH', 'momentum',
+        '{}', 'waiting', '{}', 3, 1, 1, 0, ${10 * 60_000})
+    `;
+    yield* sql`
+      INSERT INTO trading_harness_runs (
+        run_id, mission_id, cause, status, started_at, created_at,
+        outcome, stand_down_code, published_plan, execute_attempted
+      ) VALUES ('run_cli', 'mission_cli', 'scheduled_reassessment', 'completed', 1000, 1000,
+        'entered', NULL, 1, 1)
+    `;
+    yield* sql`
+      INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+      VALUES ('mission_cli', 1, '{}', 1000)
+    `;
+    // 5 net on 2000 notional is the 25 bps headline; no quote was recorded, so
+    // the entry-side split must say n/a rather than zero.
+    yield* sql`
+      INSERT INTO trading_closed_trades (
+        mission_id, market, opened_at, closed_at, hold_millis, direction, size,
+        entry_price, exit_price, realized_pnl, fees_paid, net_pnl,
+        peak_unrealised_pnl, trough_unrealised_pnl, giveback_from_peak, fill_count
+      ) VALUES ('mission_cli', 'ETH', 0, ${5 * 60_000}, ${5 * 60_000}, 'long', 1,
+        2000, 2001, 6, 1, 5, 8, -2, 2, 1)
+    `;
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: databasePath })));
 
 it.layer(NodeServices.layer)("bin cli parsing", (it) => {
   it.effect("accepts the built-in lowercase log-level flag values", () =>
@@ -607,5 +653,30 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
       }
       assert.equal(optionError.option, "--dev-url");
     }),
+  );
+
+  it.effect("prints a session's numbers through the session-report command", () =>
+    Effect.gen(function* () {
+      const baseDir = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-cli-session-report-test-"),
+      );
+      NodeFS.mkdirSync(NodePath.join(baseDir, "userdata"), { recursive: true });
+      yield* seedSessionReportDatabase(NodePath.join(baseDir, "userdata", "state.sqlite"));
+
+      yield* runCliWithRuntime(["session-report", "--base-dir", baseDir]);
+      const output = (yield* TestConsole.logLines).join("\n");
+
+      assert.include(output, "mission: mission_cli (ETH, created 1970-01-01T00:00:00.000Z)");
+      assert.include(output, "trades: 1");
+      assert.include(output, "net bps per trade: 25");
+      assert.include(
+        output,
+        "cost fees: 5 bps of entry notional (round trip; 1 of 1 trades priced)",
+      );
+      assert.include(output, "cost spread, entry side: n/a (0 of 1 trades with entry quotes)");
+      assert.include(output, "cost spread/slippage, exit side: n/a (no exit quotes recorded)");
+      assert.include(output, "plan versions published: 1");
+      assert.include(output, "wakes taken: 1");
+    }).pipe(Effect.provide(Layer.mergeAll(CliRuntimeLayer, TestConsole.layer))),
   );
 });
