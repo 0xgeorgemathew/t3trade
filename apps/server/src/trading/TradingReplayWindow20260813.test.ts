@@ -94,16 +94,14 @@ describe("the window under the policy in force (D2)", () => {
     const candidate = {
       ...TRADING_POLICY_V1,
       version: 99,
-      label: "candidate: earlier trend calls, cheaper targets",
+      label: "candidate: earlier trend calls, cheaper rungs",
       momentum: {
         ...TRADING_POLICY_V1.momentum,
-        entryCostMultiple: 1.5,
         targetCostMultiple: 1.5,
         directionScoreThreshold: 0.1,
       },
       rangeReversion: {
         ...TRADING_POLICY_V1.rangeReversion,
-        entryHeightCostMultiple: 1.8,
         heightCostMultiple: 1.8,
       },
     };

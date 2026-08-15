@@ -24,7 +24,11 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
-import type { TradingCostEstimate } from "@t3tools/trading-contracts/costs";
+import {
+  costContextFromEstimate,
+  type TradingCostContext,
+  type TradingCostEstimate,
+} from "@t3tools/trading-contracts/costs";
 import { runtimeTimeframe, type TradingTimeframe } from "@t3tools/trading-contracts/strategy";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 import type { ObservedVolatility } from "@t3tools/trading-contracts/volatility";
@@ -474,6 +478,7 @@ export const renderBoundedWakeup = (
     },
     observedVolatility: current.observedVolatility,
     positionCosts: current.positionCosts,
+    costContext: current.costContext,
     strategy: {
       version: current.activeStrategy.version,
       mode: current.activeStrategy.mode,
@@ -642,6 +647,35 @@ const make = Effect.gen(function* () {
       );
   };
 
+  /**
+   * The one cost line a flat wake carries — plan 29 step 3.1.
+   *
+   * Priced at the plan's intended entry notional when the plan names one, else
+   * at the mission's allocated capital: a notional the mission could actually
+   * trade, stated in the line itself. Context for the entry question, never a
+   * gate; a failed read costs the field, never the wake. Holding wakes carry
+   * `positionCosts` instead.
+   */
+  const costFlatWakeup = (
+    market: string,
+    intendedNotionalUsd: number | null,
+    defaultNotionalUsd: number,
+    masterAddress: string,
+    fallbackTakerFeeBpsPerSide: number,
+  ): Effect.Effect<TradingCostContext | null> =>
+    costs
+      .estimate({
+        market,
+        masterAddress: masterAddress as `0x${string}`,
+        notionalUsd: intendedNotionalUsd ?? defaultNotionalUsd,
+        fallbackTakerFeeBpsPerSide,
+      })
+      .pipe(
+        Effect.map(costContextFromEstimate),
+        Effect.provideService(HyperliquidGateway, gateway),
+        Effect.catchCause(() => Effect.succeed(null)),
+      );
+
   const resolveTriggeringWatch = (
     watchId: string | undefined,
   ): Effect.Effect<Option.Option<PersistedWatch>, ComposeWakeupError> =>
@@ -723,8 +757,10 @@ const make = Effect.gen(function* () {
       // Both enrichments, concurrently, and both optional. Neither can fail the
       // compose: a wakeup that arrives without its second timeframe is worse
       // than one that arrives with it, and far better than one that never
-      // arrives at all.
-      const [higherTimeframeVolatility, positionCosts] = yield* Effect.all(
+      // arrives at all. A flat wake gets its one cost line here too — the
+      // plan's intended entry notional when the plan names one, else the
+      // allocated capital.
+      const [higherTimeframeVolatility, positionCosts, costContext] = yield* Effect.all(
         [
           measureHigherTimeframe(
             mission.market,
@@ -736,6 +772,18 @@ const make = Effect.gen(function* () {
             address,
             mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
           ),
+          position.size === 0
+            ? costFlatWakeup(
+                mission.market,
+                activeStrategy.entryPlan.initialNotionalUsd &&
+                  activeStrategy.entryPlan.initialNotionalUsd > 0
+                  ? activeStrategy.entryPlan.initialNotionalUsd
+                  : null,
+                mission.authority.allocatedCapitalUsd,
+                address,
+                mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
+              )
+            : Effect.succeed<TradingCostContext | null>(null),
         ],
         { concurrency: "unbounded" },
       );
@@ -815,7 +863,7 @@ const make = Effect.gen(function* () {
       // rather than living only in the playbook the run may not call.
       const strategyReview =
         position.size === 0
-          ? "FLAT — the field is open: momentum, range_reversion, opening_range, ema_cross, and rsi_reversion are all candidates again, and `candidates[]` carries each setup with its own cost arithmetic. Weigh each against one gate — is the expected move over the intended hold bigger than the round trip is worth? — and take the one that clears it by the most, or none of them if none do."
+          ? "FLAT — the field is open: momentum, range_reversion, opening_range, ema_cross, and rsi_reversion are all candidates again, and `candidates[]` carries each setup with its own cost arithmetic. Weigh each against one question — is the expected move over the intended hold bigger than the round trip is worth? (`costContext` prices it) — and take the one that answers it best, or none of them if none do."
           : undefined;
 
       // Holding: the turn belongs to the position, not to the thesis. See
@@ -850,6 +898,7 @@ const make = Effect.gen(function* () {
         observedVolatility,
         ...(higherTimeframeVolatility === null ? {} : { higherTimeframeVolatility }),
         ...(positionCosts === null ? {} : { positionCosts }),
+        ...(costContext === null ? {} : { costContext }),
         activeStrategy,
         strategyAgeMillis: Math.max(0, occurredAt - activeStrategy.updatedAt),
         armedWatches,

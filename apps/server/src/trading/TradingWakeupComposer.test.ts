@@ -128,6 +128,9 @@ let requestedIntervals: Array<string> = [];
 /** The size the cost estimator was asked to price, or null when it was not called. */
 let costedSize: number | null = null;
 
+/** The notional the cost estimator was asked to price, or null for a size-based call. */
+let costedNotional: number | null = null;
+
 const stubGateway = Layer.succeed(HyperliquidGateway)({
   getMarketSnapshot: () =>
     Effect.succeed({
@@ -185,17 +188,21 @@ const stubGateway = Layer.succeed(HyperliquidGateway)({
 /**
  * A cost estimate that only has to be recognisable. The arithmetic is proven in
  * `costs.test.ts`; what these tests pin is that the composer prices the size it
- * actually holds, and does not price anything while flat.
+ * actually holds, and prices the reference notional while flat.
  */
 const stubCosts = Layer.succeed(TradingCostEstimator)({
-  estimate: (input: { readonly sizeEth?: number | undefined }) =>
+  estimate: (input: {
+    readonly sizeEth?: number | undefined;
+    readonly notionalUsd?: number | undefined;
+  }) =>
     Effect.sync(() => {
       costedSize = input.sizeEth ?? null;
+      costedNotional = input.notionalUsd ?? null;
       // The real arithmetic on a one-level book: the wakeup is encoded through
       // the contract schema, so a partial estimate would not survive the trip.
       return estimateTradingCosts({
         market: "ETH",
-        sizeEth: input.sizeEth ?? 0,
+        sizeEth: input.sizeEth ?? (input.notionalUsd === undefined ? 0 : input.notionalUsd / MARK),
         referencePrice: MARK,
         takerFeeBpsPerSide: 5,
         feeRateSource: "hyperliquid_user_fees",
@@ -405,16 +412,45 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
-  it.effect("prices no round trip while the mission is flat", () =>
+  it.effect("carries the one cost line while flat, priced at the plan's intended entry", () =>
     Effect.gen(function* () {
       positionSize = 0;
       costedSize = null;
+      costedNotional = null;
       const wakeup = yield* compose();
 
+      // No position: nothing to price on a size. The plan names a $200 intended
+      // entry notional, and the flat line prices that, not a position.
       assert.equal(wakeup.positionCosts, undefined);
-      // Not merely absent from the wakeup — never asked for. There is no size to
-      // cost, and `trading_estimate_costs` owns the hypothetical.
       assert.equal(costedSize, null);
+      assert.equal(costedNotional, 200);
+
+      const context = wakeup.costContext;
+      assert.ok(context !== undefined);
+      assert.equal(context.referenceNotionalUsd, 200);
+      // Two taker fills at 5 bps on $200 (0.20) plus the $2 spread crossed on
+      // 0.05 ETH twice (0.10): 0.30, which is 15 bps of the reference notional.
+      assert.closeTo(context.roundTripUsd, 0.3, 1e-9);
+      assert.closeTo(context.roundTripBps, 15, 1e-9);
+    }),
+  );
+
+  it.effect("prices the flat cost line at the allocated capital when no plan notional exists", () =>
+    Effect.gen(function* () {
+      positionSize = 0;
+      costedNotional = null;
+      const wakeup = yield* composeFull({
+        activeStrategy: {
+          ...strategy,
+          entryPlan: {
+            ...strategy.entryPlan,
+            initialNotionalUsd: undefined,
+          },
+        } as unknown as TradingPlanState,
+      }).pipe(Effect.map((composed) => composed.wakeup));
+
+      assert.equal(costedNotional, 1_000);
+      assert.equal(wakeup.costContext?.referenceNotionalUsd, 1_000);
     }),
   );
 
@@ -422,6 +458,7 @@ layer("TradingWakeupComposer", (it) => {
     Effect.gen(function* () {
       positionSize = -1.25;
       costedSize = null;
+      costedNotional = null;
       const wakeup = yield* compose();
       positionSize = 0;
 
@@ -431,6 +468,10 @@ layer("TradingWakeupComposer", (it) => {
       // A short is costed at its absolute size: the round trip does not care
       // which way round the two fills go.
       assert.equal(costedSize, 1.25);
+      // Holding, the real exit on the real size replaces the flat reference
+      // line — the wake carries one cost figure, priced on what is held.
+      assert.equal(costedNotional, null);
+      assert.equal(wakeup.costContext, undefined);
     }),
   );
 

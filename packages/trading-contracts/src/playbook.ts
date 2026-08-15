@@ -94,8 +94,8 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
       "Take `observedVolatility` and trading_get_market_structure and decide which of two markets you are in. TRENDING: the excursion quantiles are asymmetric (favourableUp and favourableDown differ materially at the same horizon), `directionScore` is away from zero, `atrExpansionRatio` is above 1, and the mark sits near a window extreme. RANGING: `excursionSymmetryRatio` is near 1, the swing range has been stable across the window, `directionScore` is near zero, and `positionInRangePercent` is near 50. The structure read now applies these criteria in code and returns the result as `regime`: `classification` is the verdict, `evidence[]` the measured features that voted for it, `conflicts[]` every feature pair that disagreed. Start from that verdict rather than re-deriving it; you may overrule it, but only by naming which piece of its evidence you read differently and why.",
       "Two of its features exist because the long window lies during a grind: `recentDirectionScore` (last 30 bars) turns before the 120-bar score does, and `swingHighDriftUsd`/`swingLowDriftUsd` catch a range holding its height while both bounds slide one way. A stable `rangeStabilityPercent` with material same-direction drift is a grind, not a range — that disagreement appears in `conflicts[]` and is a transition to name, not evidence to average away.",
       "Trending takes the momentum procedure; ranging takes the range scalp. State the classification and the evidence for it in `belief.regime` when the turn's decision rests on it.",
-      "trading_get_market_structure now does the assembling for you: `setups[]` is every setup its own measurements support, best score first, each with the `level` to arm and `closeConfirmed` saying which watch type evaluates it. An empty `setups[]` on a turn where the market reads clean is real evidence of no edge; a scored setup you decline is a decision to state your reason for. Read it as evidence, not as permission — the entry gates below still have to clear.",
-      "`candidates[]` on the same read is `setups[]` joined with each candidate's own cost gate at the current book — the available move, its multiple of the break-even move, whether it clears the gate its playbook demands, and the distance to its trigger. No-trade is one of the options, every turn.",
+      "trading_get_market_structure now does the assembling for you: `setups[]` is every setup its own measurements support, best score first, each with the `level` to arm and `closeConfirmed` saying which watch type evaluates it. An empty `setups[]` on a turn where the market reads clean is real evidence of no edge; a scored setup you decline is a decision to state your reason for. Read it as evidence, not as permission — the playbook procedures below still decide how an entry is taken.",
+      "`candidates[]` on the same read is `setups[]` joined with what each candidate costs to take at the current book — the available move, its multiple of the break-even move, and the distance to its trigger. No-trade is one of the options, every turn.",
     ],
     gates: [],
     standDownIf: [
@@ -123,14 +123,12 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
       "In a range, bias to a quick exit. On entry arm `pnl_above` at the conservative rung and `pnl_below` at the level that says the range broke rather than held. On a profit-target wake in a range regime the DEFAULT IS TO BANK: ranges mean-revert, so extension is the trend play and taking it here gives the capture back. Extend only if the regime just reclassified as trending, and say so.",
     ],
     gates: [
-      "Then check the range is worth trading: call trading_estimate_costs fresh at the size you intend, and require range height >= " +
-        policy.rangeReversion.entryHeightCostMultiple +
-        "x `breakEvenPriceMoveUsd`. That is the entry test. A range above " +
+      "Then ask the one question costs answer: is the height you can capture bigger than the round trip? Call trading_estimate_costs fresh at the size you intend and hold the capture (60-70% of the height) against `roundTripUsd`. A range whose height is above " +
         policy.rangeReversion.heightCostMultiple +
-        "x is one worth working repeatedly rather than scalping once, which is a sizing and re-entry decision, not a permission.",
+        "x the round trip is one worth working repeatedly rather than scalping once, which is a sizing and re-entry decision, not a permission.",
     ],
     standDownIf: [
-      "If it is not, stand down and show the arithmetic — the height, the break-even move, and the multiple you got.",
+      "If the capture cannot pay the round trip, stand down and show the arithmetic — the height, the round trip, and the multiple you got.",
       "A BOUNDARY RE-DRAWN IN THE SAME DIRECTION IS NOT A NEW RANGE. The wakeup's `previousStructureRead` carries the bounds the last read measured; if this read's boundary sits materially lower (or higher) than the last one's on the same side, the range is walking and the walk is the trade. Two consecutive re-draws the same way is a stand-down for the boundary on the walked-away side — name the drift instead of scalping it.",
       "A LEVEL THAT HAS ALREADY FAILED IS EVIDENCE, NOT A FRESH BOUNDARY. Read the wakeup's `levelHistory` before arming: a level with 2+ `closedThrough` events is a boundary the market has already gone through twice, and a level with a `stopOuts` entry has already ended one of this mission's trades against the thesis. Do not arm or enter at either without stating explicitly why this time is different.",
       "THE REGIME VERDICT NAMES THE FAILING SIDE. When `regime.classification` is `transition` and the conflicting evidence points against the boundary you are about to trade (drift or recent score into it), stand down on that side — a reversion entry into the side the transition is leaving is the stop-out the 2026-08-13 review counted three of.",
@@ -149,14 +147,12 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
       "A BREAK OF YOUR OWN ARMED LEVEL IS THE SIGNAL — TAKE IT OR RETIRE THE LEVEL. When a `price_cross` wake fires at a level your published plan named as the trigger, the entry check is the break itself: a candle on your thesis timeframe closing through the level with the ATR expanding. Do not demand full multi-timeframe alignment on that wake — alignment is measured over 120-bar windows and mathematically CANNOT have turned by the time a fresh break is one candle old; requiring it means never taking the breakout you armed for. The higher timeframe's job here is narrower: it vetoes the entry only when it points the OPPOSITE way with conviction, not when it is flat. If the break fails your entry check (a wick through the level that closes back inside), say so — and if the same level has now failed twice, move it or stand the mission down explicitly rather than re-arming the identical trap a third time.",
     ],
     gates: [
-      "Then check the move against its cost, ONCE, at the entry. Call trading_estimate_costs at your size and hold the move on offer against `minimumViableTargetUsd` — " +
-        policy.momentum.entryCostMultiple +
-        "x the round trip. That is the whole entry test: above it the trade is worth taking, and the question of which rung to bank at is a question for the position, not for the flat turn deciding whether to have one. `preferredTargetUsd` (" +
+      "Then ask the one question costs answer, ONCE, at the entry: call trading_estimate_costs at your size and hold the move on offer against the round trip — is the expected move over your intended hold bigger than the round trip is worth? If it is, the trade is worth taking, and the question of which rung to bank at is a question for the position, not for the flat turn deciding whether to have one. `preferredTargetUsd` (" +
         policy.momentum.targetCostMultiple +
-        "x) is the rung to AIM at, never a precondition — waiting for the market to pre-pay the ideal target is how a session of available trades goes untaken.",
+        "x the round trip) is the rung to AIM at, never a precondition — waiting for the market to pre-pay the ideal target is how a session of available trades goes untaken.",
     ],
     standDownIf: [
-      "If the move on offer does not clear the entry multiple, say so and stand down rather than inventing a target. That is a real refusal — but it is the only one costs justify, and it is about this setup, not about the session.",
+      "If the move on offer cannot pay the round trip, say so and stand down rather than inventing a target. That is a real refusal — but it is the only one costs justify, and it is about this setup, not about the session.",
     ],
   },
   {
@@ -172,12 +168,10 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
       "Stop at the opposite edge of the opening range; target one range height in the break direction. Publish the same basis the other modes do — `measurement` `swing_range`, `measuredMoveUsd` the range height, the arithmetic checked at publish.",
     ],
     gates: [
-      "Range height must clear the round-trip move the way the range scalp's does: call trading_estimate_costs at the size you intend and require height >= " +
-        policy.openingRange.entryHeightCostMultiple +
-        "x `breakEvenPriceMoveUsd`.",
+      "The range height has to pay for the break the way the range scalp's capture does: call trading_estimate_costs at the size you intend and weigh the height against the round trip it reports.",
     ],
     standDownIf: [
-      "If the opening range height is below the break-even move, stand down and show the arithmetic — a range too small to pay its costs is not an ORB, it is noise.",
+      "If the opening range height is below the round trip, stand down and show the arithmetic — a range too small to pay its costs is not an ORB, it is noise.",
     ],
   },
   {
@@ -194,19 +188,17 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
       'ARM THE FAST EMA AS A `candle_close`, NOT A `price_cross`. Price oscillates around its own average all day; only a bar CLOSING beyond the fast EMA says the cross is being traded. Publish the condition with `confirmation: "close"` and register a `candle_close` watch at `ema.fastUsd` on the thesis timeframe.',
       "Derive the target the way every other mode does — off measured volatility over the expected hold, published in `protection.targetProfitBasis` with the arithmetic checked at publish. A cross has no range height and no impulse of its own to be paid out of, so the move it is played for is " +
         policy.emaCross.targetAtrMultiple +
-        "x ATR, which is what `candidates[]` prices its cost gate against. Measure it rather than assume it: if the ATR says the move is smaller than that, the smaller number is the one to publish.",
+        "x ATR, which is what `candidates[]` prices its cost against. Measure it rather than assume it: if the ATR says the move is smaller than that, the smaller number is the one to publish.",
       "Stop beyond the SLOW EMA, plus the noise floor. That is the level that says the cross was wrong — not a dollar offset, and not the fast EMA, which price is expected to trade back through while the bias holds.",
       "The cross is also the exit thesis: a close back through the fast EMA against the bias is the first warning, and a re-cross of the pair is the thesis over. Publish both as exit conditions rather than holding on the target alone.",
     ],
     gates: [
-      "Call trading_estimate_costs fresh at the size you intend and require the expected move (" +
+      "Call trading_estimate_costs fresh at the size you intend and weigh the expected move (" +
         policy.emaCross.targetAtrMultiple +
-        "x ATR) to be worth at least " +
-        policy.emaCross.entryCostMultiple +
-        "x `breakEvenPriceMoveUsd`. `candidates[]` has already computed this row for you — read `costMultiple` and `clearsCostGate` there rather than re-deriving them.",
+        "x ATR) against the round trip — `candidates[]` carries the same row as `costMultiple`, so read it there rather than re-deriving it.",
     ],
     standDownIf: [
-      "If the expected move does not clear the entry multiple, stand down on THIS candidate and show the arithmetic — a cross that cannot pay its costs says nothing about the range boundary two dollars away.",
+      "If the expected move cannot pay the round trip, stand down on THIS candidate and show the arithmetic — a cross that cannot pay its costs says nothing about the range boundary two dollars away.",
       "A CROSS INSIDE A RANGE IS NOISE. When `regime.classification` is `ranging` and the swing range has held its height, the pair will cross at every oscillation and each crossing is the middle of the range — the worst entry the range offers. Trade the boundary instead, and say that is what you are doing.",
     ],
   },
@@ -226,9 +218,7 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
       "Bank at the conservative rung. A reversion that reaches the middle has delivered exactly what it promised; holding it for a reversal is trading a different strategy with this one's stop.",
     ],
     gates: [
-      "Require half the swing range to be worth at least " +
-        policy.rsiReversion.entryCostMultiple +
-        "x `breakEvenPriceMoveUsd` at the size you intend — `candidates[]` prices this row for you.",
+      "Weigh the capture against the round trip at the size you intend — `candidates[]` carries the same row as `costMultiple`.",
       "Require the extreme to be FRESH: no more than " +
         policy.rsiReversion.maxExtremeAgeBars +
         " bars old. An oscillator that has been pinned at 75 for forty bars is measuring a trend, not a stretch.",
@@ -262,7 +252,7 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
       "PLACE THE STOP BEYOND THE LEVEL THAT INVALIDATES THE THESIS, then add the noise floor — max(2x the half-spread, 0.35x ATR) — as margin. Never a bare dollar offset from entry: a stop that is not anchored to the structure that would prove the thesis wrong is anchored to nothing, and one inside the noise floor is a scheduled exit, not protection. trading_quote_entry refuses a stop inside the floor, the same rule trading_adjust_stop already enforces.",
       "SIZE THE POSITION TO THE RISK CEILING, NOT TO YOUR NERVE. Unless the mandate names a notional, omit `sizeEth`/`notionalUsd` on trading_quote_entry and take the size the server quotes, or size down only for a reason you can name. The ceilings — gross notional, leverage, planned loss, loss budget — ARE the risk policy, and a size well inside them is not a safer version of the thesis, it is the same thesis paid a fraction as much: the spread, the minimum tick, the round trip and the turn it cost are all the same. `constrainedBy` says which ceiling bound the quote.",
       'SIZE THE NOTIONAL TO THE TARGET, NOT THE TARGET TO THE NOTIONAL. The target is a USD figure, the move is a percentage, and the round trip is also a percentage of notional — so the notional is what converts one into the other: notional x (expected move % - round trip %) = the target. Sizing DOWN does not make a target cheaper to reach, it makes it arithmetically unreachable, because the costs shrink with the position and the target does not. trading_quote_entry now does this for you: it reads the published target and its basis, works out the notional that pays it after costs at the current book, and lifts a too-small request up to it — bounded by every risk ceiling, which still bind. `constrainedBy: "target_notional"` is the quote saying it did so. When the warnings say the ceilings could not fund the target, that is a target to re-cut off the move the market is actually producing, or a trade to take for a nearer rung — it is NOT a reason to decline a setup that cleared every gate.',
-      "COSTS ARE AN EXIT INSTRUMENT, NOT AN ENTRY VETO. Before entry they answer one question — does the move on offer clear `minimumViableTargetUsd` — and that question is asked once. Once the position is on they are the instrument you manage with: `positionCosts` on every holding wake prices the round trip on the size you actually hold, so `unrealisedPnl` minus what is left of that round trip is what banking now is really worth, and `preferredTargetUsd` is the rung to hold an extension against. The market is not being predicted here; it is being read for what it is currently paying.",
+      "COSTS ARE CONTEXT BEFORE THE ENTRY AND AN INSTRUMENT AFTER IT. Before entry they answer one question — is the expected move over your intended hold bigger than the round trip — and that question is asked once. Once the position is on they are the instrument you manage with: `positionCosts` on every holding wake prices the round trip on the size you actually hold, so `unrealisedPnl` minus what is left of that round trip is what banking now is really worth, and `preferredTargetUsd` is the rung to hold an extension against. The market is not being predicted here; it is being read for what it is currently paying.",
       "DEFEND WHAT IS OPEN, AND DO NOT LEAVE THE MOVE BEHIND. On every wake with a position, do three things before anything else: read `drawdownFromPeakUsd` against `peakUnrealisedPnl` to see what has already been handed back, trail the stop with trading_adjust_stop when structure has moved in your favour (`trail_peak` behind the newest swing, `breakeven` once the move covers the round trip), and keep a `pnl_giveback` armed under the peak whenever the position is in profit — not only when you decide to extend. A profit-target wake is a decision point: bank when the regime says mean-reversion or the structure ahead is thin, extend when the leg is still expanding and the higher timeframe agrees, and either way say which and arm what wakes you next. Extending with no giveback watch bets the whole open profit on the next leg.",
       "GIVE THE TRADE ROOM TO BE RIGHT. A stop is not tightened because the position is uncomfortable — every stop-out inside the noise floor is a fee paid for nothing. The floor (max(2x half-spread, 0.35x ATR)) is the minimum, not the target: anchor the stop beyond the level that would actually prove the thesis wrong and add the floor as margin. When ATR expands under an open position, `volatility_room` is a legitimate adjustment back toward the entry's approved stop — that envelope is yours to use, and using it is not loosening risk, it is refusing to hand the trade to a wick.",
       "When a position closes you are woken one more time with a review of it — how long it was held, what it realised net of fees, what it was worth at its best and its worst. Spend that turn on it: call trading_get_trade_history and trading_get_target_calibration, say plainly whether the thesis held and whether the target was the right rung, and let that decide whether to re-enter. Do not re-enter in the same turn you close. Open the review with two or three sentences in the same plain register as the plan's `plainSummary` — what happened and what you will do next, no field names, no scores — so the thread reads as a story a non-trader can follow.",

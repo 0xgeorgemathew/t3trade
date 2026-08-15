@@ -12,7 +12,7 @@
 import { Schema } from "effect";
 import { AgentAccountSnapshot, AgentNetPosition } from "./account-snapshot.ts";
 import { TradingAuthority } from "./authority.ts";
-import { TradingCostEstimate } from "./costs.ts";
+import { TradingCostContext, TradingCostEstimate } from "./costs.ts";
 import { AgentMarketSnapshot, MarketHistory } from "./market.ts";
 import { TradingHarnessRunCause } from "./mission.ts";
 import { TradingId, TradingText, UnixMillis } from "./primitives.ts";
@@ -219,12 +219,9 @@ export const TradingHarnessWakeup = Schema.Struct({
    * One timeframe is not enough to set a target from: this is the primary
    * timeframe only. `higherTimeframeVolatility` below carries the second one, so
    * the pair is already here and a `trading_measure_volatility` call is only
-   * needed for a third. Nothing here is netted of fees —
-   * call `trading_estimate_costs` for what the round trip actually costs at
-   * your size, and hold the target against the `minimumViableTargetUsd` it
-   * reports. A target published without a matching
-   * `protection.targetProfitBasis`, or one the basis does not produce, is
-   * rejected at publish.
+   * needed for a third. Nothing here is netted of fees — `costContext` below
+   * carries the round trip at a stated reference notional, and
+   * `trading_estimate_costs` prices a hypothetical size exactly.
    */
   observedVolatility: ObservedVolatility,
   /**
@@ -244,13 +241,24 @@ export const TradingHarnessWakeup = Schema.Struct({
    * What the round trip on the CURRENT position costs, at the size actually
    * held, from the live fee rate and book.
    *
-   * Present only while a position is open — flat, there is no size to cost, and
-   * `trading_estimate_costs` is there for a hypothetical one. On a profit-target
+   * Present only while a position is open — flat, the bounded `costContext`
+   * line below carries the reference round trip instead. On a profit-target
    * wake this is the number the bank-or-extend decision turns on: the unrealised
    * PnL beside it is gross, and `roundTripUsd` is what closing will take out of
    * it. Absent when the cost read failed; `degraded` marks a partial one.
    */
   positionCosts: Schema.optional(TradingCostEstimate),
+  /**
+   * The one cost line a flat wake carries: the estimated round trip in USD and
+   * bps at a stated reference notional — the plan's intended entry notional
+   * when a plan names one, else the mission's allocated capital.
+   *
+   * Context for the single question — is the expected move over the intended
+   * hold bigger than the round trip? — and never a gate (plan 29 step 3.1).
+   * Absent while a position is open (`positionCosts` prices the exit on the
+   * size actually held there) and when the cost read failed.
+   */
+  costContext: Schema.optional(TradingCostContext),
   /**
    * Every watch still armed for this mission, with the distance from the
    * current mark for the two types that carry a level.

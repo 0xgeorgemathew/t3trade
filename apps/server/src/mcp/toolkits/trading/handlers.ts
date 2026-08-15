@@ -35,7 +35,6 @@ import { TradingStrategyService } from "../../../trading/TradingStrategyService.
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
 import { allocateExecutionSequence } from "../../../trading/TradingExecutionSequence.ts";
 import { recordStructureRead } from "../../../trading/TradingLevelHistory.ts";
-import { recordViableCandidateSeen } from "../../../trading/TradingRunTelemetry.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
@@ -978,8 +977,8 @@ const handlers = {
         );
       }
 
-      // The tournament table (plan 27 E1): each setup joined with its
-      // playbook's cost gate at the current book. The estimate is priced at
+      // The tournament table (plan 27 E1): each setup joined with what it
+      // costs to take at the current book. The estimate is priced at
       // the size the mission would actually take — the current plan's target
       // notional when it publishes one, the allocated capital otherwise — and
       // its absence costs the multiples, never the read.
@@ -1070,17 +1069,6 @@ const handlers = {
                   },
             )
           : candidates;
-
-      // Plan 27 I3: if this read put a candidate through its cost gate, mark
-      // the open run — a later stand-down on this turn is then a refusal of a
-      // tradeable field, which is the count the activity evidence exists for.
-      // Best-effort: telemetry never costs the read.
-      if (mission !== null && candidates.some((candidate) => candidate.clearsCostGate === true)) {
-        yield* Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient;
-          yield* recordViableCandidateSeen(sql, mission.id);
-        }).pipe(Effect.catchCause(() => Effect.void));
-      }
 
       return { ...structure, candidates: pricedCandidates };
     }),

@@ -14,7 +14,6 @@ import {
   recordExchangeOutcome,
   recordExecutionRefusal,
   recordToolCall,
-  recordViableCandidateSeen,
   settleRunDecision,
 } from "./TradingRunTelemetry.ts";
 
@@ -343,13 +342,13 @@ layer("TradingRunTelemetry", (it) => {
         )
       `;
 
-      // Run 1 saw a candidate clear its gate, then stood down anyway.
-      yield* recordViableCandidateSeen(sql, MISSION);
+      // Run 1 stood down; run 2 stood down on an empty field — discipline, not
+      // a failure. (The viable-candidate split died with the cost gate,
+      // plan 29 step 3.1; both count the same way now.)
       yield* sql`
         UPDATE trading_harness_runs SET outcome = 'no_setup', status = 'completed'
         WHERE run_id = 'run_1'
       `;
-      // Run 2 stood down on an empty field — discipline, not a failure.
       yield* sql`
         INSERT INTO trading_harness_runs (
           run_id, mission_id, cause, status, started_at, created_at, outcome
@@ -362,21 +361,7 @@ layer("TradingRunTelemetry", (it) => {
       assert.strictEqual(activity.tradesPerSession, 1);
       assert.strictEqual(activity.timeInMarketPercent, 30);
       assert.strictEqual(activity.standDownRuns, 2);
-      assert.strictEqual(activity.standDownsWithViableCandidate, 1);
-      assert.include(activity.reason, "cleared its cost gate");
-    }),
-  );
-
-  it.effect("records a viable candidate only onto an open run", () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* seed();
-      yield* sql`UPDATE trading_harness_runs SET status = 'completed' WHERE run_id = 'run_1'`;
-
-      yield* recordViableCandidateSeen(sql, MISSION);
-
-      const run = yield* readRun;
-      assert.strictEqual(run.viable_candidate_seen, null);
+      assert.include(activity.reason, "2 grounded stand-down");
     }),
   );
 });

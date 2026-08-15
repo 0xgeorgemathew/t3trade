@@ -1,14 +1,17 @@
 /**
  * The numbers the strategy is allowed to argue about, in one versioned place.
  *
- * Six thresholds decide whether a setup is a trade: how decisive a directional
- * score has to be, how many round trips a target must be worth, how much bigger
- * than its break-even move a range must be, how close to a boundary an entry
- * counts as a boundary entry, when a session stops taking new entries, and how
- * long a losing streak sits out. All six were true constants — three in
- * `momentum.ts`, one in `costs.ts`, and two written only into playbook prose —
- * so the same value could be tightened in the arithmetic and left stale in the
- * doctrine the harness actually reads, and nothing would notice.
+ * The thresholds here decide whether a setup reads as a trade: how decisive a
+ * directional score has to be, how much a range is worth working, how close to
+ * a boundary an entry counts as a boundary entry, when a session stops taking
+ * new entries, and how long a losing streak sits out. They were true constants
+ * — some in `momentum.ts`, some written only into playbook prose — so the same
+ * value could be tightened in the arithmetic and left stale in the doctrine
+ * the harness actually reads, and nothing would notice.
+ *
+ * What a trade costs is deliberately not among them any more: plan 29 step 3.1
+ * took the entry cost multiples out, and cost survives as context the
+ * observation carries, never as a gate.
  *
  * Collecting them changes no behaviour: {@link TRADING_POLICY_V1} is the
  * numbers as they already were, to the digit. What it buys is the ability to
@@ -24,18 +27,6 @@
 
 /** How momentum decides a target is worth its costs. */
 export interface MomentumPolicy {
-  /**
-   * How many round trips the move on offer has to be worth before an entry is
-   * allowed at all.
-   *
-   * One round trip is break-even before slippage and funding, so the gate has
-   * to sit above 1 — but only far enough above it that the trade is not a coin
-   * flip for the exchange's benefit. It is deliberately NOT
-   * {@link MomentumPolicy.targetCostMultiple}: holding the entry to the rung
-   * the trade is aiming for is how a loop that is supposed to take many small
-   * trades ends up taking none.
-   */
-  readonly entryCostMultiple: number;
   /**
    * How many round trips a target is aiming to be worth — the rung to bank at,
    * not a precondition for entering.
@@ -55,12 +46,6 @@ export interface MomentumPolicy {
 /** How the range scalp decides a range is a range, and worth trading. */
 export interface RangePolicy {
   /**
-   * Range height as a multiple of the break-even price move, required to
-   * enter. Higher than momentum's because a scalp takes only part of the
-   * crossing, so the height has to pay for a capture of 60-70% of it.
-   */
-  readonly entryHeightCostMultiple: number;
-  /**
    * The height a range is worth working rather than merely taking one scalp
    * out of. Not a gate — the number the management turns argue against.
    */
@@ -78,7 +63,6 @@ export interface RangePolicy {
 
 /** The opening-range break, which shares the range's arithmetic. */
 export interface OpeningRangePolicy {
-  readonly entryHeightCostMultiple: number;
   readonly heightCostMultiple: number;
   readonly minBoundaryTouches: number;
 }
@@ -91,8 +75,6 @@ export interface OpeningRangePolicy {
  * expectancy after costs like every other candidate.
  */
 export interface EmaCrossPolicy {
-  /** Round trips the expected move must be worth to enter. */
-  readonly entryCostMultiple: number;
   /**
    * Oldest a cross may be, in bars, and still be the reason for the entry.
    *
@@ -107,7 +89,7 @@ export interface EmaCrossPolicy {
   readonly minSpreadAtrRatio: number;
   /**
    * The move a fresh cross is played for, in ATRs. This is what the candidate
-   * offers the cost gate — an EMA cross has no range height and no impulse of
+   * offers the cost read — an EMA cross has no range height and no impulse of
    * its own to be paid out of.
    */
   readonly targetAtrMultiple: number;
@@ -115,8 +97,6 @@ export interface EmaCrossPolicy {
 
 /** How the RSI-band reversion decides a market is stretched rather than trending. */
 export interface RsiReversionPolicy {
-  /** Round trips the expected move must be worth to enter. */
-  readonly entryCostMultiple: number;
   /**
    * How long an extreme may have held, in bars, before it is a trend rather
    * than a stretch. Forty bars of overbought is a market being bought, and
@@ -200,35 +180,29 @@ export const TRADING_POLICY_V1: TradingPolicy = {
   version: 1,
   label: "as-shipped baseline; the constants before they were collected",
   momentum: {
-    // As shipped, the entry gate and the target rung were one number.
-    entryCostMultiple: 2,
     targetCostMultiple: 2,
     directionScoreThreshold: 0.15,
   },
   rangeReversion: {
-    entryHeightCostMultiple: 2.2,
     heightCostMultiple: 2.2,
     edgePercent: 20,
     stabilityPercent: 30,
     minBoundaryTouches: 2,
   },
   openingRange: {
-    entryHeightCostMultiple: 2.2,
     heightCostMultiple: 2.2,
     minBoundaryTouches: 2,
   },
   // The indicator strategies did not exist at V1. Their numbers are stated at
-  // the same entry gates their structural cousins had here, so a replay of V1
+  // the same shape their structural cousins had here, so a replay of V1
   // against V2 compares the same rules moving rather than a strategy appearing
   // out of nowhere with looser ones.
   emaCross: {
-    entryCostMultiple: 2,
     maxCrossAgeBars: 5,
     minSpreadAtrRatio: 0.15,
     targetAtrMultiple: 3,
   },
   rsiReversion: {
-    entryCostMultiple: 2.2,
     maxExtremeAgeBars: 5,
     targetSwingFraction: 0.5,
   },
@@ -252,52 +226,18 @@ export const TRADING_POLICY_V1: TradingPolicy = {
 };
 
 /**
- * The entry gates separated from the target rungs.
+ * The one number v2 moved that survives: unmandated entries are floored at
+ * half the ceiling the risk policy allows.
  *
- * V1 held an entry to the rung the trade was aiming for: a setup whose
- * available move was not worth two round trips could not be taken at all. On a
- * fee-and-spread cost base that is a demand for a move most of the day does
- * not offer, and the loop it produced spent its sessions publishing arithmetic
- * about trades it declined. The objective is many small positive-expectancy
- * trades, and a move worth 1.3 round trips taken repeatedly is that objective;
- * a move worth 2 waited for is not.
- *
- * What did NOT move: nothing here touches a stop, a risk ceiling, a loss
- * budget, or the noise floor. The only thing loosened is how much profit has
- * to be visible in advance before the harness is allowed to go and find out.
- * The 2x rung survives as the target the trade aims at once it is on, which is
- * where costs belong — deciding whether the profit in hand is worth the exit
- * that realises it.
+ * V2 also separated the entry cost gates from the target rungs; plan 29
+ * step 3.1 then removed the entry gates outright, so those numbers no longer
+ * exist here. Cost is context the wakeup and the structure read carry, not a
+ * precondition for entering — the rungs a trade aims at are untouched.
  */
 export const TRADING_POLICY_V2: TradingPolicy = {
   ...TRADING_POLICY_V1,
   version: 2,
-  label: "entry gates separated from target rungs; unmandated size floored",
-  momentum: {
-    ...TRADING_POLICY_V1.momentum,
-    entryCostMultiple: 1.3,
-  },
-  rangeReversion: {
-    ...TRADING_POLICY_V1.rangeReversion,
-    // A scalp takes 60-70% of the crossing, so the height still has to clear
-    // more than a breakout's leg does to pay the same round trip.
-    entryHeightCostMultiple: 1.6,
-  },
-  openingRange: {
-    ...TRADING_POLICY_V1.openingRange,
-    entryHeightCostMultiple: 1.6,
-  },
-  // Same separation of entry gate from target rung the two above got: a cross
-  // worth 1.3 round trips taken repeatedly is the objective, and a reversion
-  // still has to clear more because it takes only part of the crossing.
-  emaCross: {
-    ...TRADING_POLICY_V1.emaCross,
-    entryCostMultiple: 1.3,
-  },
-  rsiReversion: {
-    ...TRADING_POLICY_V1.rsiReversion,
-    entryCostMultiple: 1.6,
-  },
+  label: "unmandated size floored; entry cost gates later removed (plan 29)",
   session: {
     ...TRADING_POLICY_V1.session,
     entrySizeFloorFractionOfCeiling: 0.5,
@@ -457,13 +397,6 @@ export interface ActivityEvidence {
   readonly timeInMarketPercent: number;
   /** Runs that ended in a grounded stand-down. */
   readonly standDownRuns: number;
-  /**
-   * Of those, runs where the structure read had put at least one candidate
-   * that cleared its cost gate on the table — the quick-trades objective's
-   * reportable failure mode. Standing down on an empty field is discipline;
-   * standing down repeatedly on a tradeable one is the loop not doing its job.
-   */
-  readonly standDownsWithViableCandidate: number;
   readonly reason: string;
 }
 
@@ -475,13 +408,12 @@ const round1Percent = (value: number): number => Math.round(value * 10) / 10;
  * Measurement, never a gate: nothing trades off this. It exists so the
  * quick-trades objective (many small positive-expectancy trades over one
  * perfect one) has numbers to be argued from — how often the loop trades, how
- * much of its life it spends in the market, and how many of its refusals
- * happened while a candidate had already cleared its cost gate.
+ * much of its life it spends in the market, and how often it grounds a
+ * stand-down.
  */
 export function assessActivity(input: {
   readonly sessions: ReadonlyArray<ActivitySession>;
   readonly standDownRuns: number;
-  readonly standDownsWithViableCandidate: number;
 }): ActivityEvidence {
   const sessions = input.sessions.length;
   const trades = input.sessions.reduce((sum, session) => sum + session.trades, 0);
@@ -503,8 +435,7 @@ export function assessActivity(input: {
       ? "no sessions recorded yet — activity has nothing to measure"
       : `${sessions} session(s), ${trades} trade(s) (${tradesPerSession} per session), ` +
         `in the market ${timeInMarketPercent}% of the time; ` +
-        `${input.standDownRuns} grounded stand-down(s), ${input.standDownsWithViableCandidate} ` +
-        `of them with a candidate that had already cleared its cost gate — those are the wakes to explain`;
+        `${input.standDownRuns} grounded stand-down(s)`;
 
   return {
     sessions,
@@ -512,7 +443,6 @@ export function assessActivity(input: {
     tradesPerSession,
     timeInMarketPercent,
     standDownRuns: input.standDownRuns,
-    standDownsWithViableCandidate: input.standDownsWithViableCandidate,
     reason,
   };
 }

@@ -204,7 +204,7 @@ export const TradingMeasureVolatilityTool = Tool.make("trading_measure_volatilit
 
 export const TradingEstimateCostsTool = Tool.make("trading_estimate_costs", {
   description:
-    "Cost a round trip at a given size from the live fee rate and book. Returns `roundTripFeeUsd` (two taker fills), `roundTripSpreadUsd`, `roundTripSlippageUsd`, and their total `roundTripUsd`. `minimumViableTargetUsd` is the entry floor. `degraded` true means part of the book was unread: the total is a lower bound.",
+    "Cost a round trip at a given size from the live fee rate and book. Returns `roundTripFeeUsd` (two taker fills), `roundTripSpreadUsd`, `roundTripSlippageUsd`, and their total `roundTripUsd` — context for whether the expected move pays, never a gate. `degraded` true means part of the book was unread: the total is a lower bound.",
   parameters: TradingEstimateCostsInput,
   success: TradingCostEstimate,
   failure: TradingToolRejectedError,
@@ -218,7 +218,7 @@ export const TradingEstimateCostsTool = Tool.make("trading_estimate_costs", {
 
 export const TradingGetMarketStructureTool = Tool.make("trading_get_market_structure", {
   description:
-    "Directional structure across 1m/5m/15m/1h: per-timeframe `directionScore` (-1..1), `pivotTrend`, `atrExpansionRatio`, `lastImpulse`, `breakout` (a `wickOnly` break does not count), plus `alignment`, a `regime` label with evidence and conflicts, and `candidates[]` — setups scored against the live cost gate; absent cost fields mean unknown, not free.",
+    "Directional structure across 1m/5m/15m/1h: per-timeframe `directionScore` (-1..1), `pivotTrend`, `atrExpansionRatio`, `lastImpulse`, `breakout` (a `wickOnly` break does not count), plus `alignment`, a `regime` label with evidence and conflicts, and `candidates[]` — each scored setup joined with the live cost of taking it; absent cost fields mean unknown, not free.",
   parameters: TradingGetMarketStructureInput,
   success: MarketStructure,
   failure: TradingToolRejectedError,

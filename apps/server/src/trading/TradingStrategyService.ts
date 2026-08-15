@@ -16,7 +16,6 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { pocRiskPolicyDefaults } from "@t3tools/trading-contracts/authority";
 import { checkProfitTarget } from "@t3tools/trading-contracts/costs";
 
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
@@ -223,12 +222,12 @@ const makeTradingStrategyService = Effect.gen(function* () {
       // itself — it arms a `pnl_above` watch at it — so it is the one number
       // worth checking before the publish lands. `checkProfitTarget` rejects a
       // target with no derivation and one its own derivation does not produce;
-      // the cost floor only warns, and rides back in-band. See `costs.ts`.
+      // what the trade costs is not graded here (plan 29 step 3.1). See
+      // `costs.ts`.
       const protection = input.strategy.protection;
       const check = checkProfitTarget({
         targetProfitUsd: protection.targetProfitUsd,
         basis: protection.targetProfitBasis,
-        takerFeeBpsPerSide: pocRiskPolicyDefaults.fallbackTakerFeeBpsPerSide,
       });
       if (check.rejections.length > 0) {
         return {
@@ -308,8 +307,8 @@ const makeTradingStrategyService = Effect.gen(function* () {
         strategy,
         strategyVersion: version,
         supersededWatchIds: superseded.map((row) => row.watch_id),
-        // Everything that was not worth refusing the publish over: a target
-        // below twice its round-trip cost, and any prose the server clipped.
+        // Everything that was not worth refusing the publish over: the basis
+        // messages that rode along, and any prose the server clipped.
         warnings: [...check.messages, ...proseWarnings],
       } as const;
     });

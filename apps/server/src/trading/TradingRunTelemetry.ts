@@ -460,27 +460,10 @@ export const readEntryGovernance = (sql: Sql, input?: { readonly missionId?: str
   });
 
 /**
- * Mark the mission's open run as having seen a viable candidate — plan 27 I3.
- *
- * Called from the structure read when at least one tournament candidate
- * cleared its cost gate. If the run then ends in a stand-down, that is the
- * refusal the activity evidence counts: the field was tradeable and the loop
- * declined it. No open run (a read outside a turn) records nothing.
- */
-export const recordViableCandidateSeen = (sql: Sql, missionId: string) =>
-  Effect.gen(function* () {
-    const runId = yield* openRunIdForMission(sql, missionId);
-    if (runId === null) return;
-    yield* sql`
-      UPDATE trading_harness_runs SET viable_candidate_seen = 1 WHERE run_id = ${runId}
-    `;
-  });
-
-/**
  * Activity as a measurement — plan 27 I3: how often the loop trades, how much
- * of its life it spends holding, and how many grounded stand-downs happened
- * with a candidate already through its cost gate. A session is a mission;
- * with settled missions kept (H1), the read spans the whole record.
+ * of its life it spends holding, and how often it grounds a stand-down. A
+ * session is a mission; with settled missions kept (H1), the read spans the
+ * whole record.
  */
 export const readActivityEvidence = (sql: Sql, input?: { readonly missionId?: string }) =>
   Effect.gen(function* () {
@@ -501,13 +484,8 @@ export const readActivityEvidence = (sql: Sql, input?: { readonly missionId?: st
       GROUP BY m.mission_id
     `;
 
-    const standDowns = yield* sql<{
-      readonly stand_downs: number;
-      readonly with_viable_candidate: number;
-    }>`
-      SELECT
-        COUNT(*) AS stand_downs,
-        SUM(CASE WHEN viable_candidate_seen = 1 THEN 1 ELSE 0 END) AS with_viable_candidate
+    const standDowns = yield* sql<{ readonly stand_downs: number }>`
+      SELECT COUNT(*) AS stand_downs
       FROM trading_harness_runs
       WHERE outcome IN ('no_setup', 'blocked_by_data')
         AND (${missionId} IS NULL OR mission_id = ${missionId})
@@ -520,7 +498,6 @@ export const readActivityEvidence = (sql: Sql, input?: { readonly missionId?: st
         heldMillis: row.held_millis,
       })),
       standDownRuns: standDowns[0]?.stand_downs ?? 0,
-      standDownsWithViableCandidate: standDowns[0]?.with_viable_candidate ?? 0,
     });
   });
 

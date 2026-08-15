@@ -2,14 +2,12 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   checkProfitTarget,
+  costContextFromEstimate,
   estimateTradingCosts,
-  feeOnlyRoundTripUsd,
   notionalForProfitTarget,
   notionalToPricePlanCosts,
   roundTripCostFractionOfNotional,
   targetNotionalForPlan,
-  ENTRY_COST_MULTIPLE,
-  PROFIT_TARGET_COST_MULTIPLE,
   walkBook,
   type CostEstimateInput,
 } from "./costs.ts";
@@ -77,8 +75,8 @@ describe("estimateTradingCosts", () => {
     expect(estimate.roundTripSlippageUsd).toBe(0);
     expect(estimate.roundTripUsd).toBeCloseTo(3, 10);
     expect(estimate.breakEvenPriceMoveUsd).toBeCloseTo(3, 10);
-    // The entry floor is 1.3 round trips; the rung the trade aims at is 2.
-    expect(estimate.minimumViableTargetUsd).toBeCloseTo(3.9, 10);
+    // The rung the trade aims at is 2 round trips; nothing gates on cost any
+    // more (plan 29 step 3.1).
     expect(estimate.preferredTargetUsd).toBeCloseTo(6, 10);
     expect(estimate.degraded).toBe(false);
   });
@@ -197,56 +195,39 @@ describe("checkProfitTarget", () => {
     positionNotionalUsd: 2_000,
   };
 
-  it("accepts a target that follows from its basis and clears the floor", () => {
-    // (7 / 2000) x 2000 = 7.00, and the fee-only floor is 2.00.
-    const check = checkProfitTarget({
-      targetProfitUsd: 7,
-      basis,
-      takerFeeBpsPerSide: 5,
-    });
+  it("accepts a target that follows from its basis", () => {
+    // (7 / 2000) x 2000 = 7.00.
+    const check = checkProfitTarget({ targetProfitUsd: 7, basis });
     expect(check.rejections).toEqual([]);
     expect(check.warnings).toEqual([]);
   });
 
   it("rejects a target with no basis at all", () => {
-    const check = checkProfitTarget({
-      targetProfitUsd: 7,
-      basis: undefined,
-      takerFeeBpsPerSide: 5,
-    });
+    const check = checkProfitTarget({ targetProfitUsd: 7, basis: undefined });
     expect(check.rejections).toEqual(["target_basis_missing"]);
     expect(check.messages[0]).toContain("targetProfitBasis");
   });
 
   it("rejects a target the basis next to it does not produce", () => {
-    const check = checkProfitTarget({
-      targetProfitUsd: 20,
-      basis,
-      takerFeeBpsPerSide: 5,
-    });
+    const check = checkProfitTarget({ targetProfitUsd: 20, basis });
     expect(check.rejections).toEqual(["target_basis_arithmetic_mismatch"]);
   });
 
   it("tolerates the rounding a harness does when it writes the number down", () => {
-    const check = checkProfitTarget({
-      targetProfitUsd: 7.2,
-      basis,
-      takerFeeBpsPerSide: 5,
-    });
+    const check = checkProfitTarget({ targetProfitUsd: 7.2, basis });
     expect(check.rejections).toEqual([]);
   });
 
-  // The $1.70 that started all this: derived correctly, and under the ~$2.00 it
-  // cost to open and close. It warns rather than rejects until a testnet soak.
-  it("warns, without rejecting, when the target does not clear twice its cost", () => {
+  // The $1.70 that started all this was derived correctly and under its cost.
+  // Cost is not graded at publish any more (plan 29 step 3.1): a modest target
+  // rides through, and the observation's cost context is where it is weighed.
+  it("does not grade what the target is worth against its cost", () => {
     const check = checkProfitTarget({
       targetProfitUsd: 1.7,
       basis: { measuredMoveUsd: 1.7, referencePrice: 2_000, positionNotionalUsd: 2_000 },
-      takerFeeBpsPerSide: 5,
     });
     expect(check.rejections).toEqual([]);
-    expect(check.warnings).toEqual(["target_below_cost_floor"]);
-    expect(check.messages[0]).toContain("round-trip cost");
+    expect(check.warnings).toEqual([]);
   });
 
   // Standing down is the answer the guidance asks for when the window is quiet;
@@ -255,46 +236,56 @@ describe("checkProfitTarget", () => {
     const check = checkProfitTarget({
       targetProfitUsd: 5,
       basis: { ...basis, measuredMoveUsd: 0, insufficientVolatility: true },
-      takerFeeBpsPerSide: 5,
     });
     expect(check.rejections).toEqual([]);
   });
 });
 
-describe("feeOnlyRoundTripUsd", () => {
-  it("is two taker fills and nothing else", () => {
-    expect(feeOnlyRoundTripUsd(2_000, 5)).toBeCloseTo(2, 10);
-    expect(feeOnlyRoundTripUsd(2_000, 5) * PROFIT_TARGET_COST_MULTIPLE).toBeCloseTo(4, 10);
-  });
-});
+// The fee-only round trip, priced by hand: two taker fills and nothing else.
+const feeOnlyRoundTripUsd = (notionalUsd: number, takerFeeBpsPerSide: number): number =>
+  notionalUsd * (takerFeeBpsPerSide / 10_000) * 2;
 
 // Plan 27 I4: the quick-trades objective runs on ~$1,000 test wallets, so the
-// arithmetic has to close at that equity — a minimum viable target the fee
-// floor demands must fit comfortably inside the mandate's risk budget, or
-// every "no trade" would be the fees' fault rather than the market's.
+// arithmetic has to close at that equity — the round trip itself must fit
+// comfortably inside the mandate's risk budget, or every trade starts a
+// fifteenth of the way to its stop.
 describe("quick-trades sizing sanity at $1,000 equity (plan 27 I4)", () => {
   // The POC mandate at $1,000: $20 planned risk per position, $3,000 gross
   // notional cap, 5 bps fallback taker fee per side (authority.ts §10.4).
   const PLANNED_RISK_USD = 20;
   const FALLBACK_TAKER_FEE_BPS = 5;
 
-  it("keeps the fee-floor target well inside the risk budget at 1x capital", () => {
+  it("keeps the fee-only round trip well inside the risk budget at 1x capital", () => {
     const roundTripUsd = feeOnlyRoundTripUsd(1_000, FALLBACK_TAKER_FEE_BPS);
     expect(roundTripUsd).toBeCloseTo(1, 10);
-    const minimumViableTargetUsd = roundTripUsd * ENTRY_COST_MULTIPLE;
-    // $1.30 of target against a $20 risk cap: fees are a fifteenth of the
+    // $1.00 of fees against a $20 risk cap: fees are a twentieth of the
     // budget, not the reason to stand down.
-    expect(minimumViableTargetUsd).toBeCloseTo(1.3, 10);
-    expect(minimumViableTargetUsd).toBeLessThanOrEqual(PLANNED_RISK_USD / 5);
+    expect(roundTripUsd).toBeLessThanOrEqual(PLANNED_RISK_USD / 5);
   });
 
   it("stays fee-viable even at the full gross-notional cap", () => {
     const roundTripUsd = feeOnlyRoundTripUsd(3_000, FALLBACK_TAKER_FEE_BPS);
-    const minimumViableTargetUsd = roundTripUsd * ENTRY_COST_MULTIPLE;
-    // $3.90 at $3,000 notional still clears inside the $20 planned risk, so
-    // the sizing constants need no D2-gated adjustment for the small wallet.
-    expect(minimumViableTargetUsd).toBeCloseTo(3.9, 10);
-    expect(minimumViableTargetUsd).toBeLessThan(PLANNED_RISK_USD);
+    expect(roundTripUsd).toBeCloseTo(3, 10);
+    expect(roundTripUsd).toBeLessThan(PLANNED_RISK_USD);
+  });
+});
+
+// The one-line context a flat wakeup carries (plan 29 step 3.1): USD and bps
+// at a stated reference notional, and nothing else.
+describe("costContextFromEstimate", () => {
+  it("reduces an estimate to the bounded line", () => {
+    const estimate = estimateTradingCosts(input());
+    const context = costContextFromEstimate(estimate);
+
+    expect(context.referenceNotionalUsd).toBe(2_000);
+    expect(context.roundTripUsd).toBeCloseTo(3, 10);
+    // 3 USD on 2,000 of notional is 15 bps.
+    expect(context.roundTripBps).toBeCloseTo(15, 10);
+    expect(Object.keys(context).sort()).toEqual([
+      "referenceNotionalUsd",
+      "roundTripBps",
+      "roundTripUsd",
+    ]);
   });
 });
 

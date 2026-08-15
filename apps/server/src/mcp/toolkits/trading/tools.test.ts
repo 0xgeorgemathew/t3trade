@@ -131,14 +131,14 @@ it("keeps the measure-volatility description honest about costs and data", () =>
   expect(measure).toContain("sufficientData");
 });
 
-// The cost floor is no longer only prose: `trading_estimate_costs` computes it
-// from the live fee rate and book. The description names the total and the
-// floor it exists to produce.
-it("points the cost tool at the floor it exists to compute", () => {
+// The cost tool is context, not a gate (plan 29 step 3.1): the description
+// names the total it exists to produce and the honesty flag, and no floor.
+it("points the cost tool at the total it exists to compute", () => {
   const costs = TradingToolkit.tools[TRADING_ESTIMATE_COSTS_TOOL].description ?? "";
   expect(costs).toContain("roundTripUsd");
-  expect(costs).toContain("minimumViableTargetUsd");
   expect(costs).toContain("degraded");
+  expect(costs).toContain("never a gate");
+  expect(costs).not.toContain("minimumViableTargetUsd");
 });
 
 // The two Phase 2 reads exist to answer questions the harness was previously

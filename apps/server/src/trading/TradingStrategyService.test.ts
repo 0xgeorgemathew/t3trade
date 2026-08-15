@@ -451,10 +451,10 @@ layer("trading_publish_plan (§14.3)", (it) => {
   );
 
   // The $1.70 on ~$2,000 of notional that started all this: derived correctly
-  // and under the ~$2.00 it cost to open and close. The cost floor is modeled
-  // from the fallback fee rate and cannot see the spread, so it reports itself
-  // in-band rather than refusing the publish.
-  it.effect("accepts a below-cost target but says so in the warnings", () =>
+  // and under the ~$2.00 it cost to open and close. Cost is not graded at
+  // publish any more (plan 29 step 3.1) — a below-cost target rides through
+  // clean, and the observation's cost context is where it is weighed.
+  it.effect("accepts a below-cost target with no cost warning", () =>
     Effect.gen(function* () {
       yield* setup;
       const strategies = yield* TradingStrategyService;
@@ -480,8 +480,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
 
       assert.equal(result.outcome, "accepted");
       if (result.outcome === "accepted") {
-        assert.equal(result.warnings.length, 1);
-        assert.match(result.warnings[0] ?? "", /round-trip cost/);
+        assert.equal(result.warnings.length, 0);
       }
     }),
   );

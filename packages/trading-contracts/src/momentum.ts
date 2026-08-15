@@ -388,15 +388,15 @@ export const MarketRegime = Schema.Struct({
 export type MarketRegime = typeof MarketRegime.Type;
 
 /**
- * One row of the strategy tournament — a scored setup joined with its
- * playbook's cost gate and the distance to its trigger.
+ * One row of the strategy tournament — a scored setup joined with the cost of
+ * taking it and the distance to its trigger.
  *
- * The playbooks each state a gate ("range height >= 2.2x the break-even
- * move"); this is every candidate held against its own gate in one table, so
- * the turn that picks a strategy compares the whole field instead of the one
- * setup it happened to look at. Evidence, never permission: `clearsCostGate`
- * false does not stop anything, and the harness still writes its own reason
- * for the candidate it runs and the ones it declines.
+ * Every candidate in one table, so the turn that picks a strategy compares the
+ * whole field instead of the one setup it happened to look at. Evidence, never
+ * permission: nothing compares `costMultiple` against anything any more (plan
+ * 29 step 3.1) — it is the context the single question reads, *is the expected
+ * move bigger than the round trip?*, and the harness still writes its own
+ * reason for the candidate it runs and the ones it declines.
  */
 export const StrategyCandidate = Schema.Struct({
   /** The playbook the candidate belongs to — same literals as `CandidateSetup.kind`. */
@@ -427,13 +427,9 @@ export const StrategyCandidate = Schema.Struct({
   /**
    * `availableMoveUsd` over the break-even price move at the current book.
    * Absent when no cost estimate was readable — absence is "unknown", never
-   * "free".
+   * "free". Context, not a gate.
    */
   costMultiple: Schema.optional(Schema.Number),
-  /** The multiple the candidate's own playbook gate demands. */
-  requiredCostMultiple: Schema.Number,
-  /** `costMultiple >= requiredCostMultiple`. Absent with `costMultiple`. */
-  clearsCostGate: Schema.optional(Schema.Boolean),
   /** The setup's own rationale, carried through so the row stands alone. */
   note: Schema.String,
 });
@@ -449,10 +445,10 @@ export const MarketStructure = Schema.Struct({
   /** Every setup the measurements support, best score first. Often empty. */
   setups: Schema.Array(CandidateSetup),
   /**
-   * The tournament view of `setups[]`: each candidate joined with its
-   * playbook's cost gate at the current book — see {@link StrategyCandidate}.
-   * Attached by the structure read when it can price the gate; the pure
-   * analysis leaves it absent.
+   * The tournament view of `setups[]`: each candidate joined with the cost of
+   * taking it at the current book — see {@link StrategyCandidate}. Attached by
+   * the structure read when it can price one; the pure analysis leaves it
+   * absent.
    */
   candidates: Schema.optional(Schema.Array(StrategyCandidate)),
 });
@@ -1640,37 +1636,14 @@ function availableMoveUsd(
 }
 
 /**
- * The cost multiple each kind's own playbook gate demands to ENTER.
- *
- * The entry gate, deliberately, and not the rung the trade aims at: a
- * tournament scored against the target rung reports a field of candidates that
- * are all "below their gate" on any market that is not trending hard, and a
- * loop reading that table declines all day.
- */
-function requiredCostMultiple(kind: CandidateSetup["kind"], policy: TradingPolicy): number {
-  switch (kind) {
-    case "range_reversion":
-      return policy.rangeReversion.entryHeightCostMultiple;
-    case "opening_range_break":
-      return policy.openingRange.entryHeightCostMultiple;
-    case "momentum_breakout":
-    case "trend_continuation":
-      return policy.momentum.entryCostMultiple;
-    case "ema_cross":
-      return policy.emaCross.entryCostMultiple;
-    case "rsi_reversion":
-      return policy.rsiReversion.entryCostMultiple;
-  }
-}
-
-/**
- * Join every scored setup with its playbook's cost gate — the tournament
+ * Join every scored setup with the cost of taking it — the tournament
  * table the classify turn compares candidates on.
  *
  * `cost` is the break-even price move at the current book, from a fresh cost
  * estimate; pass `null` when none was readable and the rows carry distance
  * and score but no multiple. Rows keep the `setups[]` order (best score
- * first). Pure arithmetic: nothing here decides anything.
+ * first). Pure arithmetic: nothing here decides anything, and nothing compares
+ * the multiple against a requirement — cost is context (plan 29 step 3.1).
  */
 export function compareCandidates(
   structure: Pick<MarketStructure, "timeframes" | "setups">,
@@ -1682,7 +1655,6 @@ export function compareCandidates(
   return structure.setups.map((setup) => {
     const frame = frameByInterval.get(setup.interval);
     const move = availableMoveUsd(setup, frame, policy);
-    const required = requiredCostMultiple(setup.kind, policy);
     const breakEven = cost?.breakEvenPriceMoveUsd;
     const multiple =
       move !== undefined && breakEven !== undefined && breakEven > 0 ? move / breakEven : undefined;
@@ -1697,8 +1669,6 @@ export function compareCandidates(
       distanceToTriggerUsd: frame === undefined ? 0 : Math.abs(setup.level - frame.referencePrice),
       ...(move === undefined ? {} : { availableMoveUsd: move }),
       ...(multiple === undefined ? {} : { costMultiple: multiple }),
-      requiredCostMultiple: required,
-      ...(multiple === undefined ? {} : { clearsCostGate: multiple >= required }),
       note: setup.rationale,
     };
   });

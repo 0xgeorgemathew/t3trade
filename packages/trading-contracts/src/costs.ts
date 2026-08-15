@@ -1,5 +1,6 @@
 /**
- * What a round trip costs, and whether a published target clears it.
+ * What a round trip costs, and whether a published target follows from its
+ * basis.
  *
  * The harness could measure volatility precisely and still publish a target
  * below break-even, because nothing it could read told it what a trade costs.
@@ -20,18 +21,6 @@ import { Schema } from "effect";
 import { FreshnessMeta, OrderBookLevel } from "./market.ts";
 import { ACTIVE_TRADING_POLICY } from "./policy.ts";
 import { ExchangeMarket, Price, UnixMillis } from "./primitives.ts";
-
-/**
- * How many round trips a target has to be worth before an entry is allowed.
- *
- * One round trip is break-even before slippage and funding, so the gate sits
- * above 1 — far enough that the trade is not taken for the exchange's benefit,
- * near enough that the moves a fast market actually offers clear it.
- *
- * Read from the policy in force rather than written here, so a calibrated
- * version moves this check and the doctrine that describes it together.
- */
-export const ENTRY_COST_MULTIPLE = ACTIVE_TRADING_POLICY.momentum.entryCostMultiple;
 
 /**
  * How many round trips the target a trade is AIMING at should be worth.
@@ -116,12 +105,6 @@ export const TradingCostEstimate = Schema.Struct({
   breakEvenPriceMoveUsd: Schema.Number,
   breakEvenPriceMovePercent: Schema.Number,
   /**
-   * The smallest profit target worth entering for on this size:
-   * `ENTRY_COST_MULTIPLE x roundTripUsd`, gross, the way `pnl_above` measures
-   * it. A target above this is a trade to take.
-   */
-  minimumViableTargetUsd: Schema.Number,
-  /**
    * The rung the target is aiming at: `PROFIT_TARGET_COST_MULTIPLE x
    * roundTripUsd`. Not a gate — the number to bank at, and to hold an
    * extension against once the position is on.
@@ -143,6 +126,35 @@ export const TradingCostEstimate = Schema.Struct({
   notes: Schema.Array(Schema.String),
 });
 export type TradingCostEstimate = typeof TradingCostEstimate.Type;
+
+/**
+ * The one cost line a flat wakeup carries — plan 29 step 3.1.
+ *
+ * Cost stopped being a gate; it survives as context, and the context has to be
+ * bounded: the round trip as USD and as bps of a stated reference notional, and
+ * nothing else. The reference notional is the plan's intended entry notional
+ * when a plan names one, else the mission's allocated capital — the line always
+ * says which it was priced at.
+ */
+export const TradingCostContext = Schema.Struct({
+  /** The notional the round trip was priced at. */
+  referenceNotionalUsd: Schema.Number,
+  /** The taker/taker round trip at that notional, in USD. */
+  roundTripUsd: Schema.Number,
+  /** The same cost in basis points of the reference notional. */
+  roundTripBps: Schema.Number,
+});
+export type TradingCostContext = typeof TradingCostContext.Type;
+
+/** Reduce a full estimate to the bounded context line a wakeup carries. */
+export function costContextFromEstimate(estimate: TradingCostEstimate): TradingCostContext {
+  return {
+    referenceNotionalUsd: estimate.notionalUsd,
+    roundTripUsd: estimate.roundTripUsd,
+    roundTripBps:
+      estimate.notionalUsd > 0 ? (estimate.roundTripUsd / estimate.notionalUsd) * 10_000 : 0,
+  };
+}
 
 /**
  * What walking one side of the book costs beyond its touch price.
@@ -302,7 +314,6 @@ export function estimateTradingCosts(input: CostEstimateInput): TradingCostEstim
     breakEvenPriceMoveUsd,
     breakEvenPriceMovePercent:
       input.referencePrice > 0 ? (breakEvenPriceMoveUsd / input.referencePrice) * 100 : 0,
-    minimumViableTargetUsd: roundTripUsd * ENTRY_COST_MULTIPLE,
     preferredTargetUsd: roundTripUsd * PROFIT_TARGET_COST_MULTIPLE,
     measuredAt: input.measuredAt,
     freshness: input.freshness,
@@ -461,8 +472,8 @@ export interface PlanCostSizing {
  *
  * The market-structure read used to price its estimate at the mission's
  * approved ceiling, which on a thin book walks the worst fill the mission
- * could possibly take and then gates every candidate against it. When the
- * current plan publishes a target with a basis, the size the mission would
+ * could possibly take and then priced every candidate's cost against it. When
+ * the current plan publishes a target with a basis, the size the mission would
  * actually take is the notional that target needs — bounded by the same
  * notional ceilings `deriveFeasibleSize` caps a real entry with, plus the
  * approved capital the fallback prices at, so a plan-sized estimate is never
@@ -512,18 +523,6 @@ export function notionalToPricePlanCosts(input: {
 // ---------------------------------------------------------------------------
 
 /**
- * The fee-only round trip, for a caller with no book in hand.
- *
- * Publish validation runs on a strategy, not on a market read, so this is all
- * it can honestly compute: fees on both fills and nothing else. It is a floor
- * on the floor — the real round trip also pays the spread and the walk — which
- * is the right direction for a gate to err in.
- */
-export function feeOnlyRoundTripUsd(notionalUsd: number, takerFeeBpsPerSide: number): number {
-  return notionalUsd * (takerFeeBpsPerSide / 10_000) * 2;
-}
-
-/**
  * How far the published target may sit from the arithmetic its basis claims
  * produced it, as a fraction.
  *
@@ -537,7 +536,6 @@ export const TARGET_BASIS_TOLERANCE = 0.05;
 export const ProfitTargetDefect = Schema.Literals([
   "target_basis_missing",
   "target_basis_arithmetic_mismatch",
-  "target_below_cost_floor",
 ]);
 export type ProfitTargetDefect = typeof ProfitTargetDefect.Type;
 
@@ -559,25 +557,19 @@ export interface ProfitTargetCheck {
 }
 
 /**
- * Check a published target against the basis that claims to have produced it,
- * and against what the trade costs.
+ * Check a published target against the basis that claims to have produced it.
  *
- * Two of the three defects reject. A missing basis means the target has no
- * derivation at all, and an arithmetic mismatch means the derivation next to it
- * does not produce it — in both cases the number the runtime is about to arm a
- * watch at is unexplained.
+ * Both defects reject. A missing basis means the target has no derivation at
+ * all, and an arithmetic mismatch means the derivation next to it does not
+ * produce it — in both cases the number the runtime is about to arm a watch at
+ * is unexplained.
  *
- * The cost floor only warns. It is the newest of the three rules and the one
- * most likely to be wrong about a real setup (it sees fees but not the spread,
- * and it cannot see the exit the harness actually intends), so it reports
- * itself in-band and lets the publish through until a testnet soak says it can
- * be trusted to reject. That escalation is the point of separating the two
- * lists.
+ * What a trade costs is deliberately not graded here: cost is context the
+ * wakeup and the structure read carry, not a publish gate (plan 29 step 3.1).
  */
 export function checkProfitTarget(input: {
   readonly targetProfitUsd: number;
   readonly basis: ProfitTargetBasisView | undefined;
-  readonly takerFeeBpsPerSide: number;
 }): ProfitTargetCheck {
   const rejections: Array<ProfitTargetDefect> = [];
   const warnings: Array<ProfitTargetDefect> = [];
@@ -606,21 +598,6 @@ export function checkProfitTarget(input: {
           `${basis.positionNotionalUsd} = ${implied.toFixed(2)}`,
       );
     }
-  }
-
-  // The floor is the ENTRY multiple, not the target rung: a published target
-  // between the two is a trade worth taking that happens to be aiming at a
-  // nearer rung than the ideal, and warning about it taught the harness to
-  // read every modest target as a defect.
-  const floor =
-    feeOnlyRoundTripUsd(basis.positionNotionalUsd, input.takerFeeBpsPerSide) * ENTRY_COST_MULTIPLE;
-  if (input.targetProfitUsd < floor) {
-    warnings.push("target_below_cost_floor");
-    messages.push(
-      `targetProfitUsd ${input.targetProfitUsd.toFixed(2)} is below ${ENTRY_COST_MULTIPLE}x the round-trip cost ` +
-        `(${floor.toFixed(2)} on ${basis.positionNotionalUsd} of notional at ${input.takerFeeBpsPerSide} bps/side, before spread and slippage) — ` +
-        "the target is gross, so it has to clear the round trip on its own",
-    );
   }
 
   return { rejections, warnings, messages };

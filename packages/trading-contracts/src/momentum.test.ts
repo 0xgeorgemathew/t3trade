@@ -18,7 +18,6 @@ import {
   findPivots,
   MIN_MOMENTUM_BARS,
 } from "./momentum.ts";
-import { ACTIVE_TRADING_POLICY } from "./policy.ts";
 
 /** A bar with a given close and a fixed range around it. */
 const bar = (close: number, spread = 1): MarketCandle => ({
@@ -209,28 +208,29 @@ describe("compareCandidates", () => {
       frames: [{ interval: "1m", candles: descendingZigzag() }],
     });
 
-  it("joins each setup with its playbook's cost gate at the given book", () => {
+  it("joins each setup with the cost of taking it at the given book", () => {
     const rows = compareCandidates(structure(), { breakEvenPriceMoveUsd: 2 });
     const row = rows.find((candidate) => candidate.strategy === "trend_continuation");
 
     assert.ok(row !== undefined);
     assert.equal(row.direction, "down");
     // The continuation rides the last impulse: 101 → 84 is 17 USD of move,
-    // 8.5x a 2 USD break-even, against the momentum ENTRY gate — the rung the
-    // trade aims at is a management number and does not gate the table.
+    // 8.5x a 2 USD break-even. The multiple is context for the entry question,
+    // never a gate — no row carries a requirement any more (plan 29 step 3.1).
     assert.closeTo(row.availableMoveUsd ?? 0, 17, 1e-9);
     assert.closeTo(row.costMultiple ?? 0, 8.5, 1e-9);
-    assert.equal(row.requiredCostMultiple, ACTIVE_TRADING_POLICY.momentum.entryCostMultiple);
-    assert.equal(row.clearsCostGate, true);
+    assert.equal("requiredCostMultiple" in row, false);
+    assert.equal("clearsCostGate" in row, false);
     // The last close is 90 (end of the 86..90 recovery); the trigger is 84.
     assert.closeTo(row.distanceToTriggerUsd, 6, 1e-9);
   });
 
-  it("fails the gate when the move cannot pay the multiple", () => {
+  it("carries a thin multiple as a number, not a verdict", () => {
     const rows = compareCandidates(structure(), { breakEvenPriceMoveUsd: 15 });
     const row = rows.find((candidate) => candidate.strategy === "trend_continuation");
-    // 17 / 15 = 1.13, under the entry multiple the momentum playbook demands.
-    assert.equal(row?.clearsCostGate, false);
+    // 17 / 15 = 1.13: a near-break-even trade, reported as arithmetic for the
+    // turn to weigh rather than as a failed gate.
+    assert.closeTo(row?.costMultiple ?? 0, 17 / 15, 1e-9);
   });
 
   it("reports unknown costs as absent rather than free", () => {
@@ -238,9 +238,7 @@ describe("compareCandidates", () => {
     const row = rows[0];
     assert.ok(row !== undefined);
     assert.equal(row.costMultiple, undefined);
-    assert.equal(row.clearsCostGate, undefined);
     // Everything that needs no book still answers.
-    assert.ok(row.requiredCostMultiple > 0);
     assert.ok(row.note.length > 0);
   });
 });
