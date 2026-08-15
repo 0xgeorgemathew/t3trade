@@ -215,7 +215,6 @@ export function MissionLivePanel({
     mission.position !== null && mission.position.size !== 0 ? mission.position : null;
   const strategy = mission.strategy;
   const plan = deriveStrategyPlan(mission);
-  const protection = strategy?.protection;
 
   // Mark price: the 3s mission poll is fresher than the 15s candle feed, so it
   // wins. Falling back to the position snapshot's mark keeps the figure present
@@ -224,16 +223,15 @@ export function MissionLivePanel({
 
   const entryPrice = position?.entryPrice ?? null;
   // The stop is a property of an exposure, not of the plan that intends one.
-  // `strategy.protection` survives the position that it protected — it is still
-  // on the mission after the close, and often after the next republish — so
-  // drawing it unconditionally left a stop rule hanging on the chart across a
-  // flat mission, at a price nothing was protecting any more.
-  const stopPrice = position === null ? null : (protection?.stopPrice ?? null);
-  // A stand-down's `targetProfitUsd` is the target the costs demanded and the
-  // market did not offer. Drawing a target line at it would put a level on the
-  // chart for a trade that was explicitly declined, so it is read as a
-  // threshold in the plan summary and nowhere else.
-  const targetProfitUsd = plan?.isStandDown === true ? null : (protection?.targetProfitUsd ?? null);
+  // The stop leg survives the position that it protected — it is still on the
+  // mission after the close, and often after the next republish — so drawing it
+  // unconditionally left a stop rule hanging on the chart across a flat
+  // mission, at a price nothing was protecting any more.
+  const stopPrice = position === null ? null : (strategy?.stop.price ?? null);
+  // A stand-aside plan names no target, and drawing a target line from any
+  // other figure on it would put a level on the chart for a trade that was
+  // explicitly declined.
+  const targetProfitUsd = plan?.isStandDown === true ? null : (strategy?.target.profitUsd ?? null);
   const targetPrice =
     entryPrice !== null && targetProfitUsd !== null && position !== null
       ? deriveTargetPrice(entryPrice, targetProfitUsd, position.size)
@@ -723,9 +721,9 @@ function ArmedHeader({
   readonly nextReassessmentAt: number | null;
 }): ReactNode {
   const countdown = formatReassessmentCountdown(nextReassessmentAt);
-  // The plain-language summary is the headline; the technical thesis is the
-  // fallback for plans published before it existed.
-  const headline = plan?.plainSummary ?? plan?.thesis ?? null;
+  // The narrative is the headline: setup, regime, and the plan in plain terms
+  // are one field now.
+  const headline = plan?.because ?? null;
   return (
     <>
       <span className="inline-flex flex-none items-center gap-1.5 rounded-full border border-armed/40 bg-armed/10 px-2 py-px text-[11px] font-medium text-armed">
@@ -925,14 +923,10 @@ function PlanDisclosure({ plan }: { readonly plan: StrategyPlan }): ReactNode {
   return (
     <details className="border-t border-border/40 px-3 py-2 text-xs sm:px-4">
       <summary className="cursor-pointer select-none text-muted-foreground">
-        View full plan · v{plan.version} · {plan.modeLabel}
+        View full plan · v{plan.version} · {plan.isStandDown ? "standing aside" : plan.planPhase}
       </summary>
       <div className="mt-2 space-y-1">
-        {plan.plainSummary === null ? null : (
-          <PlanField label="In plain terms" value={plan.plainSummary} />
-        )}
-        {plan.thesis === null ? null : <PlanField label="Thesis" value={plan.thesis} />}
-        {plan.regime === null ? null : <PlanField label="Regime" value={plan.regime} />}
+        {plan.because === null ? null : <PlanField label="Why" value={plan.because} />}
         {plan.entryTriggers.length === 0 ? null : (
           <PlanField label="Entry trigger" value={plan.entryTriggers.join("; ")} />
         )}
@@ -941,39 +935,16 @@ function PlanDisclosure({ plan }: { readonly plan: StrategyPlan }): ReactNode {
           <PlanField label="Initial size" value={formatUsd(plan.initialSizeUsd)} />
         )}
         {plan.stopSummary === null ? null : <PlanField label="Stop" value={plan.stopSummary} />}
-        <PlanField
-          label={plan.isStandDown ? "Not viable" : "Target"}
-          value={
-            plan.isStandDown
-              ? `needs ≥ ${formatUsd(plan.targetUsd)} to arm`
-              : formatUsd(plan.targetUsd)
-          }
-        />
+        {plan.targetUsd === null ? null : (
+          <PlanField label="Target" value={formatUsd(plan.targetUsd)} />
+        )}
         {plan.maxLossUsd === null ? null : (
           <PlanField label="Max loss" value={formatUsd(plan.maxLossUsd)} />
         )}
-        <PlanField
-          label="Scaling"
-          value={`Scale-in ${plan.scaleInAllowed ? "allowed" : "not allowed"} · Partial exit ${
-            plan.partialReductionAllowed ? "allowed" : "not allowed"
-          }`}
-        />
         {plan.invalidation.length === 0 ? null : (
           <PlanField label="Invalidation" value={plan.invalidation.join("; ")} />
         )}
-        {plan.targetRationale === null ? null : (
-          <PlanField label="Why this target" value={plan.targetRationale} />
-        )}
-        {plan.alternatives.length === 0 ? null : (
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-            <span className="w-24 flex-none text-muted-foreground">Also considered</span>
-            <ul className="min-w-0 flex-1 list-disc space-y-0.5 pl-4 text-foreground">
-              {plan.alternatives.map((line) => (
-                <li key={line}>{line}</li>
-              ))}
-            </ul>
-          </div>
-        )}
+        <PlanField label="Reassess after" value={`${plan.reassessMinutes} min untriggered`} />
       </div>
     </details>
   );

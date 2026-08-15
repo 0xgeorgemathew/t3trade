@@ -709,7 +709,7 @@ describe("completion summary", () => {
   it("compares the result against the planned risk when a strategy was published", () => {
     const summary = deriveCompletionSummary({
       result: { ...result, realizedPnlUsd: -18 },
-      strategy: { protection: { maximumPlannedLossUsd: 20 } },
+      strategy: { stop: { maximumPlannedLossUsd: 20 } },
     });
     expect(summary.plannedLossUsd).toBe(20);
     // Net -24 against a planned -20: 4 worse than planned.
@@ -798,7 +798,7 @@ describe("mission history (plan 27 H3)", () => {
     threadId: "thread_h3",
     market: "ETH",
     status: "completed" as TradingMissionStatus,
-    strategy: { direction: "long" },
+    strategy: { intent: "long" },
     result: {
       realizedPnlUsd: 25,
       feesPaidUsd: 2,
@@ -820,6 +820,14 @@ describe("mission history (plan 27 H3)", () => {
     expect(row.feesLabel).toBe("$2");
     expect(row.durationLabel).toBe("45m 0s");
     expect(row.settledAtIso).toBe("2026-08-13T07:00:00.000Z");
+  });
+
+  it("labels a stand-aside mission in the direction column", () => {
+    // The intent is the direction column's whole source now; a mission that
+    // never entered reads as the side it never took.
+    expect(
+      deriveMissionHistoryRow({ ...settledMission, strategy: { intent: "stand_aside" } }).direction,
+    ).toBe("stand aside");
   });
 
   it("omits direction and duration a mission never had", () => {
@@ -976,48 +984,31 @@ describe("deriveWakeupCard", () => {
 });
 
 describe("deriveStrategyPlan", () => {
-  // A strategy mirroring the contract shape, accessed structurally — the same
-  // way the projection hands it to the derivation.
+  // A plan mirroring the eight-field contract shape, accessed structurally —
+  // the same way the projection hands it to the derivation.
   const strategy = {
-    mode: "breakout_continuation",
-    timeframes: ["1m", "5m"],
-    belief: {
-      summary: "Trend up; buy the first pullback.",
-      regime: "Trending",
-      confidence: 0.7,
-      evidence: ["directionScore positive"],
-    },
-    entryPlan: {
-      explanation: "Wait for a pullback to the 1m ema.",
-      orderPreference: "marketable_ioc",
-      initialNotionalUsd: 500,
-      conditions: [
+    market: "ETH",
+    intent: "long",
+    entry: {
+      triggers: [
         { description: "1m candle closes above 1860", timeframe: "1m", priceLevel: 1860 },
         { description: "mark reclaims the ema" },
       ],
+      urgency: "patient",
+      initialNotionalUsd: 500,
     },
-    positionManagement: {
-      scaleInAllowed: true,
-      scaleInConditions: [],
-      partialReductionAllowed: false,
-      trailingMethod: "previous_swing_low",
-    },
-    protection: {
-      stopMethod: "previous_swing_low",
-      stopPrice: 1840,
-      targetProfitUsd: 18.5,
-      targetProfitRationale: "Conservative 1864 · Base 1880 · Extension 1900.",
+    stop: {
+      method: "previous_swing_low",
+      price: 1840,
       maximumPlannedLossUsd: 20,
     },
-    abandonmentConditions: [
-      { description: "1m candle closes back below 1855" },
-      { description: "mark loses the ema and rolls over" },
-    ],
-    // Authoring the brand-only fields the projection carries but the derivation
-    // does not read: their presence confirms the structural read ignores them.
+    target: { profitUsd: 18.5 },
+    invalidation: ["1m candle closes back below 1855", "mark loses the ema and rolls over"],
+    reassess: { afterMinutes: 45 },
+    because: "Trend up on the 1m (directionScore positive); buy the first pullback.",
   } as const;
 
-  const mission = { strategyVersion: 3, strategy };
+  const mission = { strategyVersion: 3, position: null, strategy };
 
   it("returns null before a strategy has been published", () => {
     expect(deriveStrategyPlan({ strategyVersion: 0, strategy: null })).toBeNull();
@@ -1025,63 +1016,26 @@ describe("deriveStrategyPlan", () => {
 
   it("reads the version off the mission, not the strategy", () => {
     // strategyVersion is the mission's mirror of the published version; the
-    // card header shows it as v{n}. Reading it off the strategy would render a
-    // stale figure the moment a new publish landed.
+    // card header shows it as v{n}. The plan document carries none of its own.
     expect(deriveStrategyPlan(mission)?.version).toBe(3);
   });
 
-  it("humanizes the mode label without branching on its value", () => {
-    // mode is free text — render it, never test it.
-    expect(deriveStrategyPlan(mission)?.modeLabel).toBe("breakout continuation");
+  it("carries the narrative as the one prose field, and null when none was published", () => {
+    expect(deriveStrategyPlan(mission)?.because).toBe(
+      "Trend up on the 1m (directionScore positive); buy the first pullback.",
+    );
+
+    // The schema decodes an omitted because to "" — the card must not render
+    // an empty headline.
+    const without = deriveStrategyPlan({
+      strategyVersion: 1,
+      position: null,
+      strategy: { ...strategy, because: "  " },
+    })!;
+    expect(without.because).toBeNull();
   });
 
-  it("carries the plain summary when one was published, and null otherwise", () => {
-    const withSummary = deriveStrategyPlan({
-      strategyVersion: 1,
-      strategy: { ...strategy, plainSummary: "The market is climbing; I plan to buy a dip." },
-    })!;
-    expect(withSummary.plainSummary).toBe("The market is climbing; I plan to buy a dip.");
-
-    // Pre-plainSummary rows decode the field to "" — the card must fall back
-    // to the technical thesis, not render an empty headline.
-    const withEmpty = deriveStrategyPlan({
-      strategyVersion: 1,
-      strategy: { ...strategy, plainSummary: "  " },
-    })!;
-    expect(withEmpty.plainSummary).toBeNull();
-    expect(deriveStrategyPlan(mission)?.plainSummary).toBeNull();
-  });
-
-  it("renders considered alternatives as display lines and drops malformed rows", () => {
-    const plan = deriveStrategyPlan({
-      strategyVersion: 1,
-      strategy: {
-        ...strategy,
-        alternativesConsidered: [
-          {
-            strategy: "range_reversion",
-            direction: "short",
-            verdict: "fails_gates",
-            reason: "height 1.4x the break-even move",
-          },
-          {
-            strategy: "momentum_breakout",
-            direction: "none",
-            verdict: "no_setup",
-            reason: "no confirmed close",
-          },
-          { reason: "no strategy named" },
-        ],
-      },
-    })!;
-    expect(plan.alternatives).toEqual([
-      "range reversion short — fails gates: height 1.4x the break-even move",
-      "momentum breakout — no setup: no confirmed close",
-    ]);
-    expect(deriveStrategyPlan(mission)?.alternatives).toEqual([]);
-  });
-
-  it("flattens entry conditions and abandonment into prose lists", () => {
+  it("flattens entry triggers and invalidation into prose lists", () => {
     const plan = deriveStrategyPlan(mission)!;
     expect(plan.entryTriggers).toEqual(["1m candle closes above 1860", "mark reclaims the ema"]);
     expect(plan.invalidation).toEqual([
@@ -1090,22 +1044,26 @@ describe("deriveStrategyPlan", () => {
     ]);
   });
 
-  // The condition union's string branch is an input affordance only; the
+  // The trigger union's string branch is an input affordance only; the
   // persisted/encoded form is always { description }. A bare string here would
   // be malformed, and the guard returns null rather than rendering it raw.
-  it("ignores a condition element that is not the decoded object shape", () => {
+  it("ignores a trigger element that is not the decoded object shape", () => {
     const plan = deriveStrategyPlan({
       strategyVersion: 1,
+      position: null,
       strategy: {
         ...strategy,
-        abandonmentConditions: [
-          { description: "1m candle closes back below 1855" },
-          "bare prose string",
-          { noDescription: true },
-        ],
+        entry: {
+          ...strategy.entry,
+          triggers: [
+            { description: "1m candle closes above 1860" },
+            "bare prose string",
+            { noDescription: true },
+          ],
+        },
       },
     })!;
-    expect(plan.invalidation).toEqual(["1m candle closes back below 1855"]);
+    expect(plan.entryTriggers).toEqual(["1m candle closes above 1860"]);
   });
 
   it("combines the stop method and price into one readable line", () => {
@@ -1115,51 +1073,65 @@ describe("deriveStrategyPlan", () => {
   it("falls back to the method alone when no stop price is set", () => {
     const plan = deriveStrategyPlan({
       strategyVersion: 1,
-      strategy: { ...strategy, protection: { ...strategy.protection, stopPrice: undefined } },
+      position: null,
+      strategy: { ...strategy, stop: { ...strategy.stop, price: undefined } },
     })!;
     expect(plan.stopSummary).toBe("previous swing low");
   });
 
-  // targetProfitUsd is a PositiveUsdAmount on the contract — required — so it is
-  // never null on the plan. The card formats it as USD without null-guarding.
-  it("carries the required profit target as a number, never null", () => {
+  // The target leg is optional on the new document: a plan that named no rung
+  // reads null, and so does every stand-aside.
+  it("carries the profit target when the plan named one, null when it did not", () => {
     expect(deriveStrategyPlan(mission)?.targetUsd).toBe(18.5);
+    expect(
+      deriveStrategyPlan({
+        strategyVersion: 1,
+        position: null,
+        strategy: { ...strategy, target: {} },
+      })?.targetUsd,
+    ).toBeNull();
   });
 
-  it("reads the target ladder rationale for the disclosure", () => {
-    expect(deriveStrategyPlan(mission)?.targetRationale).toBe(
-      "Conservative 1864 · Base 1880 · Extension 1900.",
-    );
-  });
-
-  // The stand-down publish: the turn read the market, found nothing worth
-  // taking after costs, and recorded that. `targetProfitUsd` is then the target
-  // the costs DEMANDED, not one the mission is aiming at, and the flag is what
-  // stops the panel from drawing it as a level on a trade that was declined.
-  it("flags a stand-down plan from its code, so its target reads as a threshold", () => {
+  // The stand-aside publish: the turn read the market, found nothing worth
+  // taking after costs, and recorded that — as the intent, not a code on a
+  // trade plan. The flag is what stops the panel from drawing a target level
+  // on a trade that was declined.
+  it("flags a stand-aside plan from its intent", () => {
     const plan = deriveStrategyPlan({
       strategyVersion: 1,
-      strategy: {
-        ...strategy,
-        protection: {
-          ...strategy.protection,
-          targetProfitUsd: 8.6,
-        },
-        standDownCode: "insufficient_volatility",
-      },
+      position: null,
+      strategy: { ...strategy, intent: "stand_aside" },
     })!;
     expect(plan.isStandDown).toBe(true);
-    expect(plan.targetUsd).toBe(8.6);
   });
 
-  it("does not flag an ordinary plan as a stand-down", () => {
+  it("does not flag an ordinary plan as a stand-aside", () => {
     expect(deriveStrategyPlan(mission)?.isStandDown).toBe(false);
   });
 
-  it("reports the scaling flags as allowed / not allowed", () => {
-    const plan = deriveStrategyPlan(mission)!;
-    expect(plan.scaleInAllowed).toBe(true);
-    expect(plan.partialReductionAllowed).toBe(false);
+  it("derives the phase from what the mission holds, not from a named action", () => {
+    // Flat is waiting; a position is holding — the two states the old
+    // nine-value currentAction collapsed to (plan 29 step 4.4).
+    expect(deriveStrategyPlan(mission)?.planPhase).toBe("waiting");
+    expect(deriveStrategyPlan({ ...mission, position: { size: 0 } })?.planPhase).toBe("waiting");
+    expect(deriveStrategyPlan({ ...mission, position: { size: -0.3 } })?.planPhase).toBe("holding");
+  });
+
+  it("humanizes the entry urgency as the order-type line", () => {
+    // urgency is the only order knob the model names now; the old
+    // orderPreference echo is gone.
+    expect(deriveStrategyPlan(mission)?.orderType).toBe("patient");
+    expect(
+      deriveStrategyPlan({
+        strategyVersion: 1,
+        position: null,
+        strategy: { ...strategy, entry: { ...strategy.entry, urgency: "now" } },
+      })?.orderType,
+    ).toBe("now");
+  });
+
+  it("carries the reassess window the plan declared", () => {
+    expect(deriveStrategyPlan(mission)?.reassessMinutes).toBe(45);
   });
 
   it("formats the initial size and max loss as plain USD figures on the plan", () => {
@@ -1705,7 +1677,7 @@ describe("deriveUpNextItems", () => {
         ...flatMission,
         inFlightExecution: { limitPrice: 1_901 },
         position: { size: 1, entryPrice: 1_900, unrealisedPnl: 0 },
-        strategy: { protection: { stopPrice: 1_890 } },
+        strategy: { stop: { price: 1_890 } },
         watches: [
           watch(
             "w-time",
@@ -1786,10 +1758,10 @@ describe("deriveUpNextItems", () => {
     const items = deriveUpNextItems(
       {
         ...flatMission,
+        // Flat is the waiting phase now — there is no named action to gate on.
         strategy: {
-          currentAction: "waiting",
-          entryPlan: {
-            conditions: [
+          entry: {
+            triggers: [
               { description: "enter if price reclaims 1899", priceLevel: 1_899 },
               { description: "abandon if the 1m closes under 1880", priceLevel: 1_880 },
             ],
@@ -1818,8 +1790,7 @@ describe("deriveUpNextItems", () => {
         ...flatMission,
         position: { size: 1, entryPrice: 1_900, unrealisedPnl: 0 },
         strategy: {
-          currentAction: "holding",
-          entryPlan: { conditions: [{ description: "…", priceLevel: 1_899 }] },
+          entry: { triggers: [{ description: "…", priceLevel: 1_899 }] },
         },
       },
       NOW,

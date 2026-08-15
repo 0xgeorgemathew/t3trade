@@ -147,17 +147,16 @@ function Strategy({ mission }: { mission: OrchestrationTradingMission }) {
   }
 
   return (
-    <SettingsSection title={`Strategy v${mission.strategyVersion}`}>
-      <Field label="Name" value={strategy.name} />
-      <Field label="Mode" value={humanizeLiteral(strategy.mode)} />
-      <Field label="Direction" value={strategy.direction} />
-      <Field label="Timeframes" value={strategy.timeframes.join(", ")} />
-      <Field label="Current action" value={strategy.currentAction} />
-      <Field label="Order preference" value={strategy.entryPlan.orderPreference} />
-      <Field label="Stop method" value={strategy.protection.stopMethod} />
-      <Field label="Target" value={`+$${strategy.protection.targetProfitUsd}`} />
-      <p className="px-3 pt-2 text-sm text-muted-foreground sm:px-4">{strategy.belief.summary}</p>
-      <p className="px-3 pb-2 text-sm text-muted-foreground sm:px-4">{strategy.explanation}</p>
+    <SettingsSection title={`Plan v${mission.strategyVersion}`}>
+      <Field label="Market" value={strategy.market} />
+      <Field label="Intent" value={strategy.intent} />
+      <Field label="Entry urgency" value={strategy.entry.urgency} />
+      <Field label="Stop method" value={strategy.stop.method} />
+      {strategy.target.profitUsd === undefined ? null : (
+        <Field label="Target" value={`+$${strategy.target.profitUsd}`} />
+      )}
+      <Field label="Reassess after" value={`${strategy.reassess.afterMinutes} min`} />
+      <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">{strategy.because}</p>
     </SettingsSection>
   );
 }

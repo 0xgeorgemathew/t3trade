@@ -1,12 +1,11 @@
 import type {
   MarketWatch,
-  MomentumStrategyAction,
   PersistedWatch,
   PersistedWatchStatus,
   TradingMissionStatus,
   TradingTimeframe,
 } from "@t3tools/trading-contracts";
-import { findUnarmedEntryConditions, isWaitingLikeAction } from "@t3tools/trading-contracts";
+import { findUnarmedEntryConditions, planPhase } from "@t3tools/trading-contracts";
 
 /** The ten §11.1 statuses, as the workspace names them. */
 export const MISSION_STATUS_LABELS: Record<TradingMissionStatus, string> = {
@@ -901,7 +900,7 @@ export interface MissionHistoryRow {
   readonly missionId: string;
   readonly threadId: string;
   readonly market: string;
-  /** "long" / "short" / "both" from the published plan; null when none was. */
+  /** "Long" / "Short" / "Stand aside" from the published plan; null when none was. */
   readonly direction: string | null;
   readonly statusLabel: string;
   readonly netUsd: number;
@@ -926,7 +925,7 @@ export function deriveMissionHistoryRow(mission: {
   readonly threadId: string;
   readonly market: string;
   readonly status: TradingMissionStatus;
-  readonly strategy: { readonly direction: string } | null;
+  readonly strategy: { readonly intent: string } | null;
   readonly result: {
     readonly realizedPnlUsd: number;
     readonly feesPaidUsd: number;
@@ -947,7 +946,7 @@ export function deriveMissionHistoryRow(mission: {
     missionId: mission.id,
     threadId: mission.threadId,
     market: mission.market,
-    direction: mission.strategy === null ? null : humanizeLiteral(mission.strategy.direction),
+    direction: mission.strategy === null ? null : humanizeLiteral(mission.strategy.intent),
     statusLabel: MISSION_STATUS_LABELS[mission.status],
     netUsd: net,
     netLabel: formatSignedUsd(net),
@@ -967,7 +966,7 @@ export function deriveCompletionSummary(mission: {
     readonly lastFillAt: string | null;
   };
   readonly strategy: {
-    readonly protection: { readonly maximumPlannedLossUsd?: number | undefined };
+    readonly stop: { readonly maximumPlannedLossUsd?: number | undefined };
   } | null;
 }): CompletionSummary {
   const { result } = mission;
@@ -980,7 +979,7 @@ export function deriveCompletionSummary(mission: {
       ? null
       : Date.parse(result.lastFillAt) - Date.parse(result.firstFillAt);
 
-  const plannedLossUsd = mission.strategy?.protection.maximumPlannedLossUsd ?? null;
+  const plannedLossUsd = mission.strategy?.stop.maximumPlannedLossUsd ?? null;
 
   return {
     realizedPnlUsd: result.realizedPnlUsd,
@@ -1046,89 +1045,50 @@ export function deriveReviewMarkers(
 export interface StrategyPlan {
   /** `mission.strategyVersion` — the version the harness published. */
   readonly version: number;
-  /** The free-text mode label, humanized for display. */
-  readonly modeLabel: string;
   /**
-   * The plan in plain language — the headline a non-trader reads. Null on
-   * strategies published before the field existed (or decoded to ""); the
-   * card falls back to the technical thesis.
+   * The narrative: setup, indicators, regime, and the plan in plain terms, in
+   * one field. Null when the harness published none (decodes as "").
    */
-  readonly plainSummary: string | null;
-  /**
-   * The tournament's other candidates, one render-ready line each:
-   * "range_reversion short — fails gates: height 1.4x the break-even move".
-   * Empty when the publish recorded none.
-   */
-  readonly alternatives: ReadonlyArray<string>;
-  readonly thesis: string | null;
-  readonly regime: string | null;
-  /** Each entry condition's prose description; empty when none were published. */
+  readonly because: string | null;
+  /** Each entry trigger's prose description; empty when none were published. */
   readonly entryTriggers: ReadonlyArray<string>;
-  /** The order preference, humanized (`marketable_ioc` → …). */
+  /** How urgently the plan wants its entry to land, humanized ("now"/"patient"). */
   readonly orderType: string | null;
   readonly initialSizeUsd: number | null;
   /** "{method} · {price}" when a price was set, else just the method. */
   readonly stopSummary: string | null;
   /**
-   * The conservative rung of the target ladder. Required positive on the
-   * contract — never null.
-   *
-   * On a stand-down plan this is not a target at all: it is the threshold the
-   * costs demanded, which the market did not offer. Read
-   * {@link StrategyPlan.isStandDown} before presenting it as something the
-   * mission is aiming at.
+   * The plan's stated profit rung, when it named one. Null on a plan that
+   * named none — including every stand-aside, where there is no target at all.
    */
-  readonly targetUsd: number;
+  readonly targetUsd: number | null;
   /**
-   * Whether this plan is a stand-down (`standDownCode` published): the turn
-   * read the market, found no target worth taking after costs, and published
-   * that conclusion rather than inventing one.
-   *
-   * Nothing is armed at `targetUsd` on such a plan — there is no position and
-   * no `pnl_above` — so it is a threshold, not a level.
+   * Whether this plan stood aside (`intent: "stand_aside"`): the turn read the
+   * market, found nothing worth taking after costs, and published that
+   * conclusion rather than inventing a target. Nothing is armed at
+   * `targetUsd` on such a plan — there is no position and no `pnl_above`.
    */
   readonly isStandDown: boolean;
-  /** The full target ladder in prose; null when the harness published none. */
-  readonly targetRationale: string | null;
   readonly maxLossUsd: number | null;
-  readonly scaleInAllowed: boolean;
-  readonly partialReductionAllowed: boolean;
-  /** Each abandonment condition's prose description; empty when none. */
+  /** Each invalidation condition's prose; empty when none. */
   readonly invalidation: ReadonlyArray<string>;
-  /** The strategy's timeframes, for an optional header chip. */
-  readonly timeframes: ReadonlyArray<string>;
+  /** How much longer an untriggered plan stays fresh, in minutes. */
+  readonly reassessMinutes: number;
+  /**
+   * The plan's phase, derived from what the mission holds: flat is waiting on
+   * a trigger, a position is holding (plan 29 step 4.4's two-state model).
+   */
+  readonly planPhase: "waiting" | "holding";
 }
 
 /**
- * Read the prose description off a condition the harness published.
+ * Read the prose description off a trigger the harness published.
  *
  * `AgentConditionInput` is a union of the full object and a bare string; after
  * decode the persisted form is always `{ description }`, but the TS type is the
  * union, so a structural guard is what reaches `.description` safely. Anything
  * the guard rejects returns null rather than a guess.
  */
-/**
- * One considered alternative as a display line, or null on a malformed row.
- *
- * Structural like {@link readConditionDescription}: the contract type is never
- * imported, so a row with extra fields still renders and one missing the
- * basics is dropped rather than guessed at.
- */
-function readAlternativeLine(alternative: unknown): string | null {
-  if (typeof alternative !== "object" || alternative === null) return null;
-  const row = alternative as {
-    readonly strategy?: unknown;
-    readonly direction?: unknown;
-    readonly verdict?: unknown;
-    readonly reason?: unknown;
-  };
-  if (typeof row.strategy !== "string" || typeof row.reason !== "string") return null;
-  const direction =
-    typeof row.direction === "string" && row.direction !== "none" ? ` ${row.direction}` : "";
-  const verdict = typeof row.verdict === "string" ? ` — ${humanizeLiteral(row.verdict)}` : "";
-  return `${humanizeLiteral(row.strategy)}${direction}${verdict}: ${row.reason}`;
-}
-
 function readConditionDescription(condition: unknown): string | null {
   if (typeof condition !== "object" || condition === null) return null;
   if (!("description" in condition)) return null;
@@ -1145,45 +1105,37 @@ function readConditionDescription(condition: unknown): string | null {
  */
 export function deriveStrategyPlan(mission: {
   readonly strategyVersion: number;
+  /** The mission's position snapshot; absent or flat means the plan is waiting. */
+  readonly position?: { readonly size: number } | null;
   readonly strategy: {
-    readonly mode: string;
-    readonly timeframes: ReadonlyArray<string>;
-    readonly plainSummary?: string | undefined;
-    readonly alternativesConsidered?: ReadonlyArray<unknown> | undefined;
-    readonly belief: {
-      readonly summary: string;
-      readonly regime: string;
-    };
-    readonly entryPlan: {
-      readonly conditions: ReadonlyArray<unknown>;
-      readonly orderPreference: string;
+    readonly intent: string;
+    readonly entry: {
+      readonly triggers: ReadonlyArray<unknown>;
+      readonly urgency: string;
       readonly initialNotionalUsd?: number | undefined;
     };
-    readonly positionManagement: {
-      readonly scaleInAllowed: boolean;
-      readonly partialReductionAllowed: boolean;
-    };
-    readonly protection: {
-      readonly stopMethod: string;
-      readonly stopPrice?: number | undefined;
-      readonly targetProfitUsd: number;
-      readonly targetProfitRationale?: string | undefined;
+    readonly stop: {
+      readonly method: string;
+      readonly price?: number | undefined;
       readonly maximumPlannedLossUsd?: number | undefined;
     };
-    /** `standDownCode` on the plan, when the turn declined to trade. */
-    readonly standDownCode?: string | undefined;
-    readonly abandonmentConditions: ReadonlyArray<unknown>;
+    readonly target: {
+      readonly profitUsd?: number | undefined;
+    };
+    readonly invalidation: ReadonlyArray<unknown>;
+    readonly reassess: { readonly afterMinutes: number };
+    readonly because?: string | undefined;
   } | null;
 }): StrategyPlan | null {
   const strategy = mission.strategy;
   if (strategy === null) return null;
 
-  const entryTriggers = (strategy.entryPlan?.conditions ?? [])
+  const entryTriggers = (strategy.entry?.triggers ?? [])
     .map(readConditionDescription)
     .filter((value): value is string => value !== null);
 
-  const stopMethod = strategy.protection?.stopMethod ?? null;
-  const stopPrice = strategy.protection?.stopPrice ?? null;
+  const stopMethod = strategy.stop?.method ?? null;
+  const stopPrice = strategy.stop?.price ?? null;
   const stopSummary =
     stopMethod === null
       ? null
@@ -1191,35 +1143,26 @@ export function deriveStrategyPlan(mission: {
         ? humanizeLiteral(stopMethod)
         : `${humanizeLiteral(stopMethod)} · ${formatPrice(stopPrice)}`;
 
-  const plainSummary = strategy.plainSummary?.trim() ?? "";
+  const because = strategy.because?.trim() ?? "";
 
   return {
     version: mission.strategyVersion,
-    modeLabel: humanizeLiteral(strategy.mode),
-    plainSummary: plainSummary === "" ? null : plainSummary,
-    alternatives: (strategy.alternativesConsidered ?? [])
-      .map(readAlternativeLine)
-      .filter((value): value is string => value !== null),
-    thesis: strategy.belief?.summary ?? null,
-    regime: strategy.belief?.regime ?? null,
+    because: because === "" ? null : because,
     entryTriggers,
     orderType:
-      strategy.entryPlan?.orderPreference === undefined
-        ? null
-        : humanizeLiteral(strategy.entryPlan.orderPreference),
-    initialSizeUsd: strategy.entryPlan?.initialNotionalUsd ?? null,
+      strategy.entry?.urgency === undefined ? null : humanizeLiteral(strategy.entry.urgency),
+    initialSizeUsd: strategy.entry?.initialNotionalUsd ?? null,
     stopSummary,
-    // Required positive on the contract (PositiveUsdAmount): it is never null.
-    targetUsd: strategy.protection?.targetProfitUsd ?? 0,
-    isStandDown: strategy.standDownCode !== undefined,
-    targetRationale: strategy.protection?.targetProfitRationale ?? null,
-    maxLossUsd: strategy.protection?.maximumPlannedLossUsd ?? null,
-    scaleInAllowed: strategy.positionManagement?.scaleInAllowed ?? false,
-    partialReductionAllowed: strategy.positionManagement?.partialReductionAllowed ?? false,
-    invalidation: (strategy.abandonmentConditions ?? [])
-      .map(readConditionDescription)
-      .filter((value): value is string => value !== null),
-    timeframes: strategy.timeframes,
+    targetUsd: strategy.target?.profitUsd ?? null,
+    isStandDown: strategy.intent === "stand_aside",
+    maxLossUsd: strategy.stop?.maximumPlannedLossUsd ?? null,
+    invalidation: (strategy.invalidation ?? []).filter(
+      (line): line is string => typeof line === "string",
+    ),
+    reassessMinutes: strategy.reassess?.afterMinutes ?? 90,
+    // The phase the nine-value `currentAction` pretended to be: flat is
+    // waiting, holding is holding.
+    planPhase: planPhase(mission.position?.size ?? 0),
   };
 }
 
@@ -1434,9 +1377,8 @@ export function deriveUpNextItems(
       readonly unrealisedPnl: number;
     } | null;
     readonly strategy: {
-      readonly currentAction?: string | undefined;
-      readonly entryPlan?: { readonly conditions?: ReadonlyArray<unknown> | undefined } | undefined;
-      readonly protection?: { readonly stopPrice?: number | undefined } | undefined;
+      readonly entry?: { readonly triggers?: ReadonlyArray<unknown> | undefined } | undefined;
+      readonly stop?: { readonly price?: number | undefined } | undefined;
     } | null;
   },
   nowMillis: number,
@@ -1461,7 +1403,7 @@ export function deriveUpNextItems(
   // The stop is a standing future event, not just a line on the chart: it is
   // the one thing on this list that ends the trade without the agent acting.
   const stops: UpNextItem[] = [];
-  const stopPrice = mission.strategy?.protection?.stopPrice;
+  const stopPrice = mission.strategy?.stop?.price;
   if (stopPrice !== undefined && position !== null && position.size !== 0) {
     const entry = position.entryPrice;
     const risk =
@@ -1566,17 +1508,18 @@ export function deriveUpNextItems(
   // make a pill: an armed trigger is already in the list above, and showing it
   // twice would say the mission is watching two things when it is watching one.
   const entries: UpNextItem[] = [];
-  const currentAction = mission.strategy?.currentAction;
-  const isWaiting =
-    currentAction !== undefined && isWaitingLikeAction(currentAction as MomentumStrategyAction);
-  // Flat is `size === 0`, not `position === null`: a closed position leaves its
-  // snapshot row behind zeroed, and the wakeup composer gates on the same test.
-  if ((position === null || position.size === 0) && isWaiting) {
-    const conditions = (mission.strategy?.entryPlan?.conditions ?? []).flatMap((condition) => {
-      const hint = readConditionHint(condition);
+  // The phase the nine-value `currentAction` used to carry, derived from what
+  // the mission holds: flat is waiting, a position is holding (plan 29 step
+  // 4.4). Flat is `size === 0`, not `position === null`: a closed position
+  // leaves its snapshot row behind zeroed, and the wakeup composer gates on the
+  // same test.
+  const isWaiting = position === null || planPhase(position.size) === "waiting";
+  if (isWaiting) {
+    const triggers = (mission.strategy?.entry?.triggers ?? []).flatMap((trigger) => {
+      const hint = readConditionHint(trigger);
       return hint === null ? [] : [hint];
     });
-    const unarmed = findUnarmedEntryConditions({ conditions, watches: mission.watches });
+    const unarmed = findUnarmedEntryConditions({ conditions: triggers, watches: mission.watches });
     for (const condition of unarmed) {
       entries.push({
         key: `entry:${condition.priceLevel}`,
