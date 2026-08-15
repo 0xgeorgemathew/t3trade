@@ -1,0 +1,2457 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>T3 Trade Tools — Deep Technical Architecture, Wire Protocols & Complete Catalog</title>
+    <style>
+      :root {
+        --bg-primary: #070a12;
+        --bg-secondary: #0d1322;
+        --bg-tertiary: #162035;
+        --bg-card: #111a2e;
+        --bg-card-hover: #17233d;
+        --border-color: #233352;
+        --border-subtle: #1a2740;
+
+        --text-primary: #f8fafc;
+        --text-secondary: #94a3b8;
+        --text-muted: #64748b;
+
+        --accent-cyan: #06b6d4;
+        --accent-cyan-glow: rgba(6, 182, 212, 0.2);
+        --accent-emerald: #10b981;
+        --accent-emerald-glow: rgba(16, 185, 129, 0.2);
+        --accent-amber: #f59e0b;
+        --accent-amber-glow: rgba(245, 158, 11, 0.2);
+        --accent-rose: #f43f5e;
+        --accent-rose-glow: rgba(244, 63, 94, 0.2);
+        --accent-indigo: #6366f1;
+        --accent-indigo-glow: rgba(99, 102, 241, 0.2);
+        --accent-purple: #a855f7;
+
+        --font-sans:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        --font-mono:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+          monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        background-color: var(--bg-primary);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        overflow-x: hidden;
+      }
+
+      a {
+        color: var(--accent-cyan);
+        text-decoration: none;
+        transition: color 0.2s ease;
+      }
+      a:hover {
+        color: #38bdf8;
+      }
+
+      .container {
+        max-width: 1440px;
+        margin: 0 auto;
+        padding: 0 1.5rem;
+      }
+
+      /* Header */
+      header {
+        border-bottom: 1px solid var(--border-color);
+        background: rgba(7, 10, 18, 0.92);
+        backdrop-filter: blur(14px);
+        position: sticky;
+        top: 0;
+        z-index: 100;
+      }
+
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 72px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-weight: 800;
+        font-size: 1.25rem;
+        letter-spacing: -0.02em;
+      }
+
+      .brand-badge {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        background: linear-gradient(135deg, var(--accent-cyan), var(--accent-indigo));
+        padding: 3px 9px;
+        border-radius: 6px;
+        color: #ffffff;
+        font-weight: 700;
+      }
+
+      .nav-links {
+        display: flex;
+        gap: 1.5rem;
+        align-items: center;
+      }
+
+      .nav-links a {
+        color: var(--text-secondary);
+        font-size: 0.88rem;
+        font-weight: 600;
+        transition: color 0.15s;
+      }
+      .nav-links a:hover,
+      .nav-links a.active {
+        color: var(--text-primary);
+      }
+
+      /* Hero */
+      .hero {
+        padding: 4.5rem 0 3.5rem;
+        border-bottom: 1px solid var(--border-subtle);
+      }
+
+      .hero-tag {
+        font-size: 0.78rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--accent-cyan);
+        margin-bottom: 0.75rem;
+        display: block;
+      }
+
+      .hero-title {
+        font-size: 3rem;
+        font-weight: 800;
+        line-height: 1.15;
+        letter-spacing: -0.03em;
+        margin-bottom: 1.25rem;
+        max-width: 1000px;
+      }
+
+      .hero-gradient {
+        background: linear-gradient(135deg, #38bdf8 0%, #818cf8 50%, #c084fc 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+
+      .hero-lead {
+        font-size: 1.15rem;
+        color: var(--text-secondary);
+        max-width: 950px;
+        line-height: 1.75;
+        margin-bottom: 2.5rem;
+      }
+
+      .hero-metrics {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 1.25rem;
+      }
+
+      .metric-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 12px;
+        padding: 1.25rem 1.5rem;
+        position: relative;
+      }
+
+      .metric-card::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 4px;
+        height: 100%;
+        background: var(--accent-cyan);
+        border-radius: 4px 0 0 4px;
+      }
+
+      .metric-value {
+        font-size: 1.8rem;
+        font-weight: 800;
+        font-family: var(--font-mono);
+        color: #ffffff;
+        margin-bottom: 0.25rem;
+      }
+
+      .metric-label {
+        font-size: 0.8rem;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-weight: 600;
+      }
+
+      /* Section Styling */
+      section {
+        padding: 4.5rem 0;
+        border-top: 1px solid var(--border-subtle);
+      }
+
+      .section-header {
+        margin-bottom: 2.5rem;
+      }
+
+      .section-tag {
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--accent-cyan);
+        margin-bottom: 0.5rem;
+        display: block;
+      }
+
+      .section-title {
+        font-size: 2.2rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        margin-bottom: 0.75rem;
+      }
+
+      .section-subtitle {
+        font-size: 1.05rem;
+        color: var(--text-secondary);
+        max-width: 950px;
+        line-height: 1.7;
+      }
+
+      /* System Architecture: Subtle Boundary Diagram */
+      .arch-container {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 16px;
+        padding: 2.5rem;
+        position: relative;
+      }
+
+      .arch-grid {
+        display: grid;
+        grid-template-columns: 1fr 1.35fr 1.05fr;
+        gap: 2rem;
+        position: relative;
+      }
+
+      .arch-box {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-subtle);
+        border-radius: 12px;
+        padding: 1.75rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        position: relative;
+      }
+
+      .arch-box.highlight {
+        border-color: var(--accent-cyan);
+        box-shadow: 0 0 30px var(--accent-cyan-glow);
+      }
+
+      .arch-box-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid var(--border-subtle);
+      }
+
+      .arch-icon {
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.1rem;
+        background: var(--bg-tertiary);
+      }
+
+      .arch-box-title {
+        font-size: 1.05rem;
+        font-weight: 700;
+      }
+
+      .arch-box-subtitle {
+        font-size: 0.78rem;
+        color: var(--text-muted);
+      }
+
+      .arch-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+      }
+
+      .arch-item {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 0.85rem 1rem;
+        font-size: 0.82rem;
+      }
+
+      .arch-item-title {
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 0.2rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .arch-item-desc {
+        font-size: 0.75rem;
+        color: var(--text-secondary);
+        line-height: 1.45;
+      }
+
+      .arch-arrow {
+        position: absolute;
+        top: 50%;
+        right: -18px;
+        transform: translateY(-50%);
+        width: 36px;
+        height: 2px;
+        background: linear-gradient(90deg, var(--border-color), var(--accent-cyan));
+        z-index: 10;
+      }
+
+      /* INTERACTIVE HARNESS ↔ TOOL FLOW LAB */
+      .flow-lab {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 16px;
+        overflow: hidden;
+      }
+
+      .flow-tabs {
+        display: flex;
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border-color);
+        overflow-x: auto;
+      }
+
+      .flow-tab {
+        padding: 1.25rem 1.75rem;
+        background: transparent;
+        border: none;
+        color: var(--text-secondary);
+        font-size: 0.92rem;
+        font-weight: 700;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        border-bottom: 2px solid transparent;
+        transition: all 0.2s ease;
+        white-space: nowrap;
+      }
+
+      .flow-tab:hover {
+        color: var(--text-primary);
+        background: rgba(255, 255, 255, 0.02);
+      }
+
+      .flow-tab.active {
+        color: var(--accent-cyan);
+        border-bottom-color: var(--accent-cyan);
+        background: var(--bg-card);
+      }
+
+      .flow-badge {
+        font-size: 0.7rem;
+        padding: 2px 7px;
+        border-radius: 4px;
+        background: var(--bg-tertiary);
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+      }
+
+      .flow-tab.active .flow-badge {
+        background: var(--accent-cyan-glow);
+        color: var(--accent-cyan);
+      }
+
+      .flow-body {
+        padding: 2.5rem;
+        display: grid;
+        grid-template-columns: 1fr 1.3fr;
+        gap: 2.5rem;
+      }
+
+      .flow-summary-box {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-subtle);
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+      }
+
+      .flow-summary-title {
+        font-size: 1.2rem;
+        font-weight: 800;
+        color: #ffffff;
+        margin-bottom: 0.5rem;
+      }
+
+      .flow-summary-desc {
+        font-size: 0.9rem;
+        color: var(--text-secondary);
+        line-height: 1.65;
+      }
+
+      .flow-steps-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.85rem;
+      }
+
+      .flow-step-btn {
+        display: flex;
+        align-items: center;
+        gap: 1.25rem;
+        padding: 1.1rem 1.25rem;
+        border-radius: 10px;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-subtle);
+        color: var(--text-primary);
+        text-align: left;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        width: 100%;
+      }
+
+      .flow-step-btn:hover {
+        border-color: var(--border-color);
+        background: var(--bg-tertiary);
+      }
+
+      .flow-step-btn.active {
+        border-color: var(--accent-cyan);
+        background: var(--bg-card-hover);
+        box-shadow: 0 0 20px var(--accent-cyan-glow);
+        transform: translateX(4px);
+      }
+
+      .flow-step-num {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: var(--font-mono);
+        font-size: 0.85rem;
+        font-weight: 800;
+        background: var(--bg-tertiary);
+        color: var(--text-secondary);
+        flex-shrink: 0;
+      }
+
+      .flow-step-btn.active .flow-step-num {
+        background: var(--accent-cyan);
+        color: var(--bg-primary);
+      }
+
+      .flow-step-info {
+        flex: 1;
+      }
+
+      .flow-step-label {
+        font-size: 0.92rem;
+        font-weight: 700;
+        color: #ffffff;
+      }
+
+      .flow-step-tool {
+        font-size: 0.78rem;
+        font-family: var(--font-mono);
+        color: var(--accent-cyan);
+        margin-top: 2px;
+      }
+
+      /* Protocol Inspector */
+      .protocol-inspector {
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+      }
+
+      .protocol-card {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-subtle);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+
+      .protocol-card-header {
+        padding: 0.85rem 1.25rem;
+        background: rgba(0, 0, 0, 0.3);
+        border-bottom: 1px solid var(--border-subtle);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 0.82rem;
+        font-weight: 700;
+      }
+
+      .protocol-badge {
+        font-size: 0.7rem;
+        font-family: var(--font-mono);
+        padding: 2px 8px;
+        border-radius: 4px;
+      }
+
+      .badge-harness {
+        background: var(--accent-indigo-glow);
+        color: #818cf8;
+        border: 1px solid rgba(99, 102, 241, 0.3);
+      }
+      .badge-tool {
+        background: var(--accent-cyan-glow);
+        color: #38bdf8;
+        border: 1px solid rgba(6, 182, 212, 0.3);
+      }
+      .badge-internal {
+        background: var(--accent-emerald-glow);
+        color: #34d399;
+        border: 1px solid rgba(16, 185, 129, 0.3);
+      }
+      .badge-sql {
+        background: var(--accent-amber-glow);
+        color: #fbbf24;
+        border: 1px solid rgba(245, 158, 11, 0.3);
+      }
+
+      .protocol-content {
+        padding: 1.25rem;
+        font-size: 0.86rem;
+        line-height: 1.6;
+        color: var(--text-secondary);
+      }
+
+      .protocol-code {
+        background: #060911;
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 1rem;
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+        color: #e2e8f0;
+        overflow-x: auto;
+        line-height: 1.55;
+        margin-top: 0.5rem;
+      }
+
+      /* 24 Tools Catalog */
+      .catalog-filters {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 2rem;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .search-box {
+        position: relative;
+        flex: 1;
+        max-width: 450px;
+      }
+
+      .search-input {
+        width: 100%;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 0.8rem 1rem 0.8rem 2.5rem;
+        color: var(--text-primary);
+        font-size: 0.9rem;
+        outline: none;
+        transition: all 0.2s ease;
+      }
+
+      .search-input:focus {
+        border-color: var(--accent-cyan);
+        box-shadow: 0 0 12px var(--accent-cyan-glow);
+      }
+
+      .search-icon {
+        position: absolute;
+        left: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-muted);
+      }
+
+      .filter-btn-group {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+
+      .filter-btn {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        color: var(--text-secondary);
+        padding: 7px 15px;
+        border-radius: 20px;
+        font-size: 0.82rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+
+      .filter-btn:hover {
+        color: var(--text-primary);
+        border-color: var(--border-subtle);
+      }
+
+      .filter-btn.active {
+        background: var(--accent-cyan);
+        border-color: var(--accent-cyan);
+        color: var(--bg-primary);
+        font-weight: 700;
+        box-shadow: 0 2px 10px var(--accent-cyan-glow);
+      }
+
+      .tools-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(440px, 1fr));
+        gap: 1.75rem;
+      }
+
+      .tool-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 14px;
+        padding: 1.75rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+        transition: all 0.25s ease;
+      }
+
+      .tool-card:hover {
+        border-color: var(--accent-cyan);
+        transform: translateY(-3px);
+        box-shadow: 0 15px 30px -10px rgba(0, 0, 0, 0.6);
+      }
+
+      .tool-card-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+      }
+
+      .tool-card-name {
+        font-family: var(--font-mono);
+        font-size: 1.1rem;
+        font-weight: 800;
+        color: #ffffff;
+        word-break: break-all;
+      }
+
+      .tool-card-title {
+        font-size: 0.82rem;
+        color: var(--text-muted);
+        margin-top: 3px;
+      }
+
+      .tool-tag {
+        font-size: 0.7rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        padding: 3px 8px;
+        border-radius: 4px;
+        white-space: nowrap;
+      }
+
+      .tag-strat {
+        background: rgba(99, 102, 241, 0.15);
+        color: #818cf8;
+        border: 1px solid rgba(99, 102, 241, 0.3);
+      }
+      .tag-mkt {
+        background: rgba(6, 182, 212, 0.15);
+        color: #38bdf8;
+        border: 1px solid rgba(6, 182, 212, 0.3);
+      }
+      .tag-acc {
+        background: rgba(168, 85, 247, 0.15);
+        color: #c084fc;
+        border: 1px solid rgba(168, 85, 247, 0.3);
+      }
+      .tag-wtch {
+        background: rgba(245, 158, 11, 0.15);
+        color: #fbbf24;
+        border: 1px solid rgba(245, 158, 11, 0.3);
+      }
+      .tag-exec {
+        background: rgba(16, 185, 129, 0.15);
+        color: #34d399;
+        border: 1px solid rgba(16, 185, 129, 0.3);
+      }
+
+      .tool-traits {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      .trait-badge {
+        font-size: 0.7rem;
+        font-family: var(--font-mono);
+        padding: 2px 6px;
+        border-radius: 3px;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-subtle);
+        color: var(--text-muted);
+      }
+
+      .trait-badge.active {
+        color: var(--accent-cyan);
+        border-color: rgba(6, 182, 212, 0.3);
+      }
+
+      /* Explanation Sections */
+      .tool-explainer {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-subtle);
+        border-radius: 10px;
+        padding: 1.15rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.85rem;
+      }
+
+      .explain-block {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .explain-label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--accent-cyan);
+      }
+
+      .explain-text {
+        font-size: 0.86rem;
+        color: var(--text-secondary);
+        line-height: 1.5;
+      }
+
+      .explain-text strong {
+        color: #ffffff;
+      }
+
+      /* Deep Mechanics Drawer */
+      .mechanics-drawer {
+        border-top: 1px solid var(--border-subtle);
+        padding-top: 0.85rem;
+      }
+
+      .mechanics-summary {
+        cursor: pointer;
+        font-size: 0.82rem;
+        font-weight: 700;
+        color: var(--accent-indigo);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        user-select: none;
+      }
+
+      .mechanics-summary:hover {
+        color: #818cf8;
+      }
+
+      .mechanics-content {
+        margin-top: 0.85rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.85rem;
+        font-size: 0.82rem;
+        color: var(--text-secondary);
+      }
+
+      .schema-box {
+        background: #060911;
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        padding: 0.75rem;
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        color: #94a3b8;
+        overflow-x: auto;
+        line-height: 1.5;
+      }
+
+      /* Deep Technical Section */
+      .tech-deep-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 16px;
+        padding: 2.5rem;
+        margin-bottom: 2.5rem;
+      }
+
+      .tech-title {
+        font-size: 1.35rem;
+        font-weight: 800;
+        color: #ffffff;
+        margin-bottom: 1rem;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .tech-desc {
+        font-size: 0.92rem;
+        color: var(--text-secondary);
+        line-height: 1.7;
+        margin-bottom: 1.5rem;
+      }
+
+      .checklist-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.84rem;
+        margin: 1rem 0;
+      }
+
+      .checklist-table th {
+        text-align: left;
+        padding: 10px 14px;
+        background: var(--bg-tertiary);
+        color: var(--text-secondary);
+        border-bottom: 1px solid var(--border-color);
+        font-weight: 700;
+      }
+
+      .checklist-table td {
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border-subtle);
+        color: var(--text-secondary);
+      }
+
+      .check-code {
+        font-family: var(--font-mono);
+        color: var(--accent-cyan);
+        font-weight: 700;
+      }
+
+      .formula-banner {
+        background: #060911;
+        border: 1px solid var(--border-color);
+        border-left: 4px solid var(--accent-cyan);
+        border-radius: 8px;
+        padding: 1.25rem 1.5rem;
+        font-family: var(--font-mono);
+        font-size: 0.88rem;
+        color: var(--accent-cyan);
+        margin: 1.25rem 0;
+        overflow-x: auto;
+      }
+
+      .formula-explanation {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1.25rem;
+        margin-top: 1rem;
+      }
+
+      .formula-item {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+        padding: 1rem;
+        font-size: 0.82rem;
+        line-height: 1.55;
+      }
+
+      .formula-item-title {
+        font-weight: 700;
+        color: #ffffff;
+        margin-bottom: 4px;
+        font-family: var(--font-mono);
+      }
+
+      footer {
+        border-top: 1px solid var(--border-color);
+        padding: 3.5rem 0;
+        color: var(--text-muted);
+        font-size: 0.85rem;
+        text-align: center;
+        background: var(--bg-secondary);
+      }
+
+      @media (max-width: 1024px) {
+        .hero-title {
+          font-size: 2.4rem;
+        }
+        .arch-grid {
+          grid-template-columns: 1fr;
+        }
+        .flow-body {
+          grid-template-columns: 1fr;
+        }
+        .formula-explanation {
+          grid-template-columns: 1fr;
+        }
+        .hero-metrics {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+
+      @media (max-width: 640px) {
+        .tools-grid {
+          grid-template-columns: 1fr;
+        }
+        .hero-metrics {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Navigation -->
+    <header>
+      <div class="container nav-inner">
+        <div class="brand">
+          <span>T3 Trade</span>
+          <span class="brand-badge">Tool System v1.0</span>
+        </div>
+        <nav class="nav-links">
+          <a href="#overview">Overview</a>
+          <a href="#architecture">Architecture</a>
+          <a href="#harness-flow">Harness ↔ Tool Flow</a>
+          <a href="#catalog">24 Tools Catalog</a>
+          <a href="#technical-deep-dive">Technical Deep Dive</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="container">
+      <!-- Hero Section -->
+      <section class="hero" id="overview">
+        <span class="hero-tag">Deterministic Autonomous Architecture</span>
+        <h1 class="hero-title">
+          The 24 Injected Tools of <span class="hero-gradient">T3 Trade</span>
+        </h1>
+        <p class="hero-lead">
+          T3 Trade injects 24 typed tools into AI agent harnesses (Claude Code, OpenAI Codex,
+          Cursor, Grok, OpenCode). The tools serve as a clean, deterministic abstraction
+          layer—completely shielding the AI agent from raw database queries, exchange API
+          signatures, nonce coordination, and low-level state reconciliation.
+        </p>
+
+        <div class="hero-metrics">
+          <div class="metric-card">
+            <div class="metric-value">24</div>
+            <div class="metric-label">Injected Tools</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-value">7</div>
+            <div class="metric-label">Turn Gate Checks</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-value">17</div>
+            <div class="metric-label">Pre-Execution Checks</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-value">0</div>
+            <div class="metric-label">Upstream Complexity</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Architecture Section -->
+      <section id="architecture">
+        <div class="section-header">
+          <span class="section-tag">System Boundaries</span>
+          <h2 class="section-title">The Tool Layer as the Pure Abstraction Barrier</h2>
+          <p class="section-subtitle">
+            Upstream complexities are abstracted away behind the 24 tools. The harness only ever
+            interacts with typed Effect schemas, while the tool handlers enforce authorization,
+            session leases, mathematical safety gates, and atomic exchange state synchronization.
+          </p>
+        </div>
+
+        <div class="arch-container">
+          <div class="arch-grid">
+            <!-- Column 1: Harnesses -->
+            <div class="arch-box">
+              <div class="arch-box-header">
+                <div class="arch-icon">🤖</div>
+                <div>
+                  <div class="arch-box-title">AI Agent Harnesses</div>
+                  <div class="arch-box-subtitle">Strategy & Decision Making</div>
+                </div>
+              </div>
+              <div class="arch-list">
+                <div class="arch-item">
+                  <div class="arch-item-title">Claude Code / Anthropic</div>
+                  <div class="arch-item-desc">
+                    Runs under strict tool lock (no filesystem/terminal access in trading sessions).
+                  </div>
+                </div>
+                <div class="arch-item">
+                  <div class="arch-item-title">Codex & Cursor</div>
+                  <div class="arch-item-desc">
+                    Receives <code>DECISION_CONTRACT</code> prepended to turn wakeups.
+                  </div>
+                </div>
+                <div class="arch-item">
+                  <div class="arch-item-title">Grok & OpenCode</div>
+                  <div class="arch-item-desc">
+                    Connects via standard first-party MCP endpoint <code>t3-trade</code>.
+                  </div>
+                </div>
+              </div>
+              <div class="arch-arrow"></div>
+            </div>
+
+            <!-- Column 2: T3 Trade Tools Layer -->
+            <div class="arch-box highlight">
+              <div class="arch-box-header">
+                <div
+                  class="arch-icon"
+                  style="color: var(--accent-cyan); background: var(--accent-cyan-glow)"
+                >
+                  ⚡
+                </div>
+                <div>
+                  <div class="arch-box-title">T3 Trade Tools Layer</div>
+                  <div class="arch-box-subtitle">The 24 Typed Effect Boundaries</div>
+                </div>
+              </div>
+              <div class="arch-list">
+                <div class="arch-item" style="border-left: 3px solid var(--accent-indigo)">
+                  <div class="arch-item-title">Strategy & Mission (3)</div>
+                  <div class="arch-item-desc">
+                    Mandate ceilings, verified target basis, and deterministic playbooks.
+                  </div>
+                </div>
+                <div class="arch-item" style="border-left: 3px solid var(--accent-cyan)">
+                  <div class="arch-item-title">Market Intelligence (7)</div>
+                  <div class="arch-item-desc">
+                    Multi-TF trend scores, ATR volatility, L2 depth, and round-trip cost gates.
+                  </div>
+                </div>
+                <div class="arch-item" style="border-left: 3px solid var(--accent-purple)">
+                  <div class="arch-item-title">Account & Calibration (5)</div>
+                  <div class="arch-item-desc">
+                    Flat-to-flat trade history, target accuracy grading, and peak uPnL memory.
+                  </div>
+                </div>
+                <div class="arch-item" style="border-left: 3px solid var(--accent-amber)">
+                  <div class="arch-item-title">Reactive Watches (3)</div>
+                  <div class="arch-item-desc">
+                    Exact-once triggers (price, candle close, PnL giveback) for sleeping agents.
+                  </div>
+                </div>
+                <div class="arch-item" style="border-left: 3px solid var(--accent-emerald)">
+                  <div class="arch-item-title">Execution & Exits (6)</div>
+                  <div class="arch-item-desc">
+                    Pre-checked quotes, single-token execution, anti-dust exits, and dynamic stops.
+                  </div>
+                </div>
+              </div>
+              <div class="arch-arrow"></div>
+            </div>
+
+            <!-- Column 3: Abstracted Core Engine -->
+            <div class="arch-box">
+              <div class="arch-box-header">
+                <div
+                  class="arch-icon"
+                  style="color: var(--accent-emerald); background: var(--accent-emerald-glow)"
+                >
+                  🛡️
+                </div>
+                <div>
+                  <div class="arch-box-title">Abstracted Upstream Core</div>
+                  <div class="arch-box-subtitle">Hidden from the AI Harness</div>
+                </div>
+              </div>
+              <div class="arch-list">
+                <div class="arch-item">
+                  <div class="arch-item-title">17-Point Preview Engine</div>
+                  <div class="arch-item-desc">
+                    Eq-4 risk reservation ledger and cumulative loss accounting.
+                  </div>
+                </div>
+                <div class="arch-item">
+                  <div class="arch-item-title">Nonce Lane & EIP-712</div>
+                  <div class="arch-item-desc">
+                    Single permit serial signing and deterministic cloid generation.
+                  </div>
+                </div>
+                <div class="arch-item">
+                  <div class="arch-item-title">Hyperliquid L1 Reconciler</div>
+                  <div class="arch-item-desc">
+                    2-second state synchronization and fill deduplication.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Interactive Harness ↔ Tool Flow -->
+      <section id="harness-flow">
+        <div class="section-header">
+          <span class="section-tag">Interactive Communication Flow</span>
+          <h2 class="section-title">What Happens Between the Harness and the Tools</h2>
+          <p class="section-subtitle">
+            Select an interactive trading lifecycle flow below to trace the exact request, internal
+            abstraction, and typed response exchanged between the AI harness and the T3 Trade tool
+            layer.
+          </p>
+        </div>
+
+        <div class="flow-lab">
+          <div class="flow-tabs">
+            <button class="flow-tab active" onclick="selectFlow(0)">
+              <span>1. Tournament & Precision Entry</span>
+              <span class="flow-badge">Decision Loop</span>
+            </button>
+            <button class="flow-tab" onclick="selectFlow(1)">
+              <span>2. Reactive Trigger & Stop Defense</span>
+              <span class="flow-badge">Event Loop</span>
+            </button>
+            <button class="flow-tab" onclick="selectFlow(2)">
+              <span>3. Scale-Out & Anti-Dust Flattening</span>
+              <span class="flow-badge">Exit Loop</span>
+            </button>
+            <button class="flow-tab" onclick="selectFlow(3)">
+              <span>4. Disciplined Stand-Down Filter</span>
+              <span class="flow-badge">Chop Loop</span>
+            </button>
+          </div>
+
+          <div class="flow-body">
+            <!-- Left: Flow Stepper -->
+            <div>
+              <div class="flow-summary-box">
+                <h3 class="flow-summary-title" id="flow-title">1. Tournament & Precision Entry</h3>
+                <p class="flow-summary-desc" id="flow-desc">
+                  The harness wakes, reads multi-timeframe structure, runs a strategy tournament
+                  against cost gates, publishes an audited plan, requests a server-clamped quote,
+                  and executes atomically.
+                </p>
+              </div>
+
+              <div class="flow-steps-list" id="flow-steps-list">
+                <!-- Dynamically populated -->
+              </div>
+            </div>
+
+            <!-- Right: Protocol Inspector -->
+            <div class="protocol-inspector">
+              <!-- Harness Request -->
+              <div class="protocol-card">
+                <div class="protocol-card-header">
+                  <span style="color: #818cf8">Step A: What the Harness Sends</span>
+                  <span class="protocol-badge badge-harness">Harness Intent</span>
+                </div>
+                <div class="protocol-content">
+                  <div id="proto-harness-intent">
+                    The harness supplies its analysis arguments to the tool.
+                  </div>
+                  <div class="protocol-code" id="proto-harness-args">{ "market": "ETH" }</div>
+                </div>
+              </div>
+
+              <!-- Tool Internal Abstraction -->
+              <div class="protocol-card" style="border-color: var(--accent-cyan)">
+                <div class="protocol-card-header">
+                  <span style="color: #38bdf8">Step B: What the Tool Does (Abstracted Away)</span>
+                  <span class="protocol-badge badge-tool">Tool Abstraction</span>
+                </div>
+                <div class="protocol-content">
+                  <div id="proto-tool-action">
+                    The tool validates capability, queries live L2 order book, and executes
+                    calculation.
+                  </div>
+                </div>
+              </div>
+
+              <!-- Tool Response -->
+              <div class="protocol-card">
+                <div class="protocol-card-header">
+                  <span style="color: #34d399">Step C: What is Returned to the Harness</span>
+                  <span class="protocol-badge badge-internal">Typed Response</span>
+                </div>
+                <div class="protocol-content">
+                  <div id="proto-tool-response-desc">
+                    Clean, structured output returned to the AI context.
+                  </div>
+                  <div class="protocol-code" id="proto-tool-response">{ "status": "ok" }</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Complete 24 Tools Catalog -->
+      <section id="catalog">
+        <div class="section-header">
+          <span class="section-tag">Comprehensive Catalog</span>
+          <h2 class="section-title">All 24 T3 Trade Tools Explained</h2>
+          <p class="section-subtitle">
+            Every tool is defined in <code>@t3tools/trading-contracts</code> and implemented in
+            <code>apps/server/src/mcp/toolkits/trading</code>. Explore their surface purpose,
+            internal abstraction logic, and exact interfaces.
+          </p>
+        </div>
+
+        <div class="catalog-filters">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input
+              type="text"
+              class="search-input"
+              id="catalog-search"
+              placeholder="Search any tool name, function, or keyword..."
+              oninput="handleSearch()"
+            />
+          </div>
+          <div class="filter-btn-group">
+            <button class="filter-btn active" onclick="filterCatalog('all')">All (24)</button>
+            <button class="filter-btn" onclick="filterCatalog('strategy')">
+              Strategy & Mandate (3)
+            </button>
+            <button class="filter-btn" onclick="filterCatalog('market')">
+              Market Intelligence (7)
+            </button>
+            <button class="filter-btn" onclick="filterCatalog('account')">
+              Account & History (5)
+            </button>
+            <button class="filter-btn" onclick="filterCatalog('watch')">
+              Reactive Watches (3)
+            </button>
+            <button class="filter-btn" onclick="filterCatalog('execution')">
+              Execution & Exits (6)
+            </button>
+          </div>
+        </div>
+
+        <div class="tools-grid" id="tools-grid">
+          <!-- 24 Tools rendered here -->
+        </div>
+      </section>
+
+      <!-- Deep Technical Overview Section -->
+      <section id="technical-deep-dive">
+        <div class="section-header">
+          <span class="section-tag">Rigorous Engineering Reference</span>
+          <h2 class="section-title">Technical Deep Dive & System Invariants</h2>
+          <p class="section-subtitle">
+            Exhaustive specification of the mathematical models, concurrency control, turn
+            coordination gates, place-and-confirm execution pipeline, and state reconciliation
+            invariants implemented in T3 Trade.
+          </p>
+        </div>
+
+        <!-- 1. Turn Coordinator & 7 Pre-Run Gates -->
+        <div class="tech-deep-card">
+          <div class="tech-title">
+            <span>🔄 §12.3 TradingTurnCoordinator & The 7 Pre-Run Gates</span>
+          </div>
+          <p class="tech-desc">
+            <code>TradingTurnCoordinator</code> acts as the strict serial gateway between an
+            observed market/watch event and a started harness run. To guarantee zero concurrent runs
+            on the same mission, the coordinator runs 7 ordered checks before acquiring the decision
+            lease in SQLite:
+          </p>
+          <table class="checklist-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Pre-Run Check</th>
+                <th>Implementation Invariant</th>
+                <th>Outcome if Blocked</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>1</td>
+                <td class="check-code">Mission Active</td>
+                <td>
+                  <code>isActiveMissionStatus(mission.status)</code>: Must be in operative status
+                  (not terminated/revoked).
+                </td>
+                <td><code>blocked: mission_not_active</code></td>
+              </tr>
+              <tr>
+                <td>2</td>
+                <td class="check-code">Provider Binding Present</td>
+                <td>
+                  <code>mission.harness.threadId</code> must be non-empty and bound to an operative
+                  thread.
+                </td>
+                <td><code>blocked: provider_binding_missing</code></td>
+              </tr>
+              <tr>
+                <td>3</td>
+                <td class="check-code">Provider Available</td>
+                <td><code>mission.harness.status !== "unavailable"</code>.</td>
+                <td><code>blocked: provider_unavailable</code></td>
+              </tr>
+              <tr>
+                <td>4</td>
+                <td class="check-code">Single-Lease Acquisition</td>
+                <td>
+                  Atomic <code>INSERT INTO trading_harness_runs</code> with partial unique index
+                  <code>idx_trading_harness_runs_one_active_per_mission</code>.
+                </td>
+                <td><code>queued_behind_active_run</code> (Gracefully drops duplicate wakes)</td>
+              </tr>
+              <tr>
+                <td>5</td>
+                <td class="check-code">Account Ready</td>
+                <td>Trading master wallet and account state record resolved.</td>
+                <td><code>blocked: account_unavailable</code></td>
+              </tr>
+              <tr>
+                <td>6</td>
+                <td class="check-code">Claim Pending Inbox Events</td>
+                <td>
+                  <code>TradingEventInbox.claimPending</code>: Atomic flip to
+                  <code>included_in_run</code> prevents stale duplicate wakeups.
+                </td>
+                <td>Events claimed into wakeup payload</td>
+              </tr>
+              <tr>
+                <td>7</td>
+                <td class="check-code">Strategy & Authority Versions</td>
+                <td>
+                  Loads current strategy and authority. Non-strategy runs only permitted for
+                  bootstrap / scheduled reassessment / user messages.
+                </td>
+                <td><code>blocked: no_active_strategy</code></td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="tech-desc" style="margin-top: 1rem">
+            <strong>Watcher Fiber Lifecycle:</strong> Upon successful lease acquisition, a detached
+            fiber runs <code>watchTurnEndAndRelease</code>, streaming domain events and waiting for
+            the first <code>thread.session-set</code> event where the session leaves
+            <code>"running"</code> without an active turn (matching statuses: <code>idle</code>,
+            <code>ready</code>, <code>interrupted</code>, <code>stopped</code>, <code>error</code>).
+            When detected, the fiber closes telemetry with <code>settleRunDecision</code>, marks
+            claimed inbox events <code>consumed</code>, releases the SQLite lease, and calls
+            <code>ensureNotDeaf</code> to automatically arm staleness coverage floors.
+          </p>
+        </div>
+
+        <!-- 2. The 17-Point Pre-Execution Checklist -->
+        <div class="tech-deep-card">
+          <div class="tech-title">
+            <span>🛡️ §16.3 The 17-Point Pre-Execution Risk Invariant Checklist</span>
+          </div>
+          <p class="tech-desc">
+            Before any position-increasing intent is signed,
+            <code>TradingPreviewService.previewOrder</code> executes 17 distinct invariant checks in
+            listed, load-bearing order. This service is a pure, side-effect-free evaluator over
+            reconciled truth.
+          </p>
+          <table class="checklist-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Invariant Tag</th>
+                <th>Evaluation Logic & Failure Conditions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>1</td>
+                <td class="check-code">mission_active</td>
+                <td>
+                  <code>ctx.mission.status === "executing" || "position_open"</code>. Rejects paused
+                  or terminated missions.
+                </td>
+              </tr>
+              <tr>
+                <td>2</td>
+                <td class="check-code">entries_allowed</td>
+                <td>
+                  <code
+                    >ctx.mission.control.entriesAllowed && !mission.status.includes("blocked")</code
+                  >.
+                </td>
+              </tr>
+              <tr>
+                <td>3</td>
+                <td class="check-code">strategy_version_current</td>
+                <td>
+                  <code>intent.strategyVersion === ctx.currentStrategyVersion</code> (Optimistic
+                  versioning lock).
+                </td>
+              </tr>
+              <tr>
+                <td>4</td>
+                <td class="check-code">authority_version_current</td>
+                <td>
+                  <code>ctx.expectedAuthorityVersion === ctx.currentAuthorityVersion</code>
+                  (Prevents stale risk ceilings).
+                </td>
+              </tr>
+              <tr>
+                <td>5</td>
+                <td class="check-code">harness_run_owns_lease</td>
+                <td>
+                  <code>ctx.activeHarnessRunId === ctx.requestingHarnessRunId</code>. Rejects
+                  actions from expired turns.
+                </td>
+              </tr>
+              <tr>
+                <td>6</td>
+                <td class="check-code">direction_permitted</td>
+                <td>
+                  Validates <code>allowedDirections</code> ('long'/'short'),
+                  <code>allowDirectionReversal</code>, and <code>allowScaleIn</code>.
+                </td>
+              </tr>
+              <tr>
+                <td>7</td>
+                <td class="check-code">market_is_eth</td>
+                <td>
+                  <code>intent.market === ctx.mission.market</code> (Enforces single-asset mandate).
+                </td>
+              </tr>
+              <tr>
+                <td>8</td>
+                <td class="check-code">execution_wallet_approved</td>
+                <td>
+                  <code>ctx.approvedExecutionWalletAddress !== null</code> (Interim signer armed
+                  address resolution).
+                </td>
+              </tr>
+              <tr>
+                <td>9</td>
+                <td class="check-code">account_and_bbo_fresh</td>
+                <td>
+                  BBO age $\le 2000\text{ms}$; Account snapshot age $\le 5000\text{ms}$. Rejects
+                  stale market data.
+                </td>
+              </tr>
+              <tr>
+                <td>10</td>
+                <td class="check-code">size_and_price_valid</td>
+                <td><code>intent.size > 0 && intent.limitPrice > 0</code>.</td>
+              </tr>
+              <tr>
+                <td>11</td>
+                <td class="check-code">exchange_minimum_met</td>
+                <td>
+                  $\text{notional} = \text{size} \times \text{limitPrice} \ge \$10.00$ Hyperliquid
+                  protocol minimum.
+                </td>
+              </tr>
+              <tr>
+                <td>12</td>
+                <td class="check-code">leverage_within_limits</td>
+                <td>
+                  $(\text{existingNotional} + \text{proposedNotional}) / \text{allocatedCapital} \le
+                  \text{maximumLeverage}$.
+                </td>
+              </tr>
+              <tr>
+                <td>13</td>
+                <td class="check-code">gross_notional_within_authority</td>
+                <td>
+                  $\text{existingNotional} + \text{proposedNotional} \le
+                  \text{maximumGrossNotionalUsd}$.
+                </td>
+              </tr>
+              <tr>
+                <td>14</td>
+                <td class="check-code">planned_loss_within_per_position_ceiling</td>
+                <td>$\text{plannedLossAtStop} \le \text{maximumPlannedRiskPerPositionUsd}$.</td>
+              </tr>
+              <tr>
+                <td>15</td>
+                <td class="check-code">reservations_plus_proposed_within_budget</td>
+                <td>
+                  Evaluates Eq-4 ledger: $\text{proposedReservation} \le
+                  \text{remainingCumulativeLossBudget}$.
+                </td>
+              </tr>
+              <tr>
+                <td>16</td>
+                <td class="check-code">no_conflicting_execution_pending</td>
+                <td>
+                  Ensures no prior execution record is in flight in <code>submitted</code> or
+                  <code>pending</code> state.
+                </td>
+              </tr>
+              <tr>
+                <td>17</td>
+                <td class="check-code">valid_stop_defined</td>
+                <td>
+                  <code>checkStopInformation</code> verifies mandatory stop presence, side
+                  correctness, and noise floor.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 3. Eq-4 Risk Ledger Mathematics -->
+        <div class="tech-deep-card">
+          <div class="tech-title">
+            <span>📐 §16.2 Cumulative Loss Budgeting & The Six Risk Equations</span>
+          </div>
+          <p class="tech-desc">
+            T3 Trade enforces a deterministic, closed-form loss accounting system where worst-case
+            stop-out loss, exchange taker fees, and slippage buffers are reserved
+            <em>before</em> any cryptographic signature is produced.
+          </p>
+
+          <div class="formula-banner">
+            Eq 1: realizedMissionResultUsd = closedPnlUsd + netFundingUsd - allPaidTradingFeesUsd<br />
+            Eq 2: realizedLossUsedUsd = max(0, -realizedMissionResultUsd)<br />
+            Eq 3: openPositionRiskUsd = max(0, estimatedLossFromWeightedEntryToStopUsd) +
+            unpaidExitFeeUsd + stopSlippageReserveUsd<br />
+            Eq 4: pendingEntryRiskUsd = plannedLossAtStopUsd + estimatedEntryFeeUsd +
+            estimatedExitFeeUsd + stopSlippageReserveUsd<br />
+            Eq 5: lossBudgetUsedUsd = realizedLossUsedUsd + Σ(openPositionRiskUsd) +
+            Σ(pendingEntryRiskUsd)<br />
+            Eq 6: remainingCumulativeLossUsd = max(0, maximumCumulativeLossUsd - lossBudgetUsedUsd)
+          </div>
+
+          <div class="formula-explanation">
+            <div class="formula-item">
+              <div class="formula-item-title">Missing Stop Semantics (Eq 3)</div>
+              When <code>stopPrice</code> is undefined on an open position, directional loss
+              contributes $0$ (unknown, not zero-priced). A missing stop is never substituted with
+              $0$, which would book the entire position notional as risk and exhaust capital
+              immediately.
+            </div>
+            <div class="formula-item">
+              <div class="formula-item-title">Anti Double-Counting of Fees</div>
+              Paid entry fees reside inside <code>realizedMissionResultUsd</code>; they are never
+              double-counted as unpaid open position risk. A queued entry reserves both entry and
+              exit fees; a filled position reserves only the unpaid exit fee.
+            </div>
+            <div class="formula-item">
+              <div class="formula-item-title">Asymmetric Profit Expansion</div>
+              <code>positivePnlExpandsLossBudget = false</code>. Trading profits reduce
+              <code>realizedLossUsedUsd</code> toward $0$, but never expand
+              <code>maximumCumulativeLossUsd</code> beyond the user's hard mandate ceiling.
+            </div>
+            <div class="formula-item">
+              <div class="formula-item-title">Exhaustion Lock (§16.4)</div>
+              When <code>remainingCumulativeLossUsd <= 0</code>, all position-increasing orders are
+              blocked, mission transitions to <code>blocked: cumulative_loss_limit</code>, and only
+              reduce-only closing orders and stop improvements are accepted.
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. Deterministic Cloid & Monotonic Nonce Permit Lane -->
+        <div class="tech-deep-card">
+          <div class="tech-title">
+            <span>🔑 Deterministic Client Order ID (Cloid) & Nonce Permits</span>
+          </div>
+          <p class="tech-desc">
+            To achieve total idempotency across network disconnects and node restarts, client order
+            IDs are derived deterministically using SHA-256:
+          </p>
+          <div class="formula-banner">
+            cloid = hex(SHA-256(missionId ‖ strategyVersion ‖ executionSequence ‖
+            actionType)[0..15])
+          </div>
+          <p class="tech-desc">
+            <strong>Single-Permit Nonce Lane:</strong> All signed exchange actions (orders,
+            cancellations) pass through <code>HyperliquidNonceCoordinator</code>. The coordinator
+            maintains a serialized FIFO permit lane to guarantee strictly monotonic nonces without
+            racing. If an out-of-order nonce error is detected from the L1 gateway, the coordinator
+            automatically fast-forwards the monotonic nonce baseline to
+            <code>exchangeTimestamp + 1</code>.
+          </p>
+        </div>
+
+        <!-- 5. Dynamic Stop Policy Invariants -->
+        <div class="tech-deep-card">
+          <div class="tech-title">
+            <span>🛡️ Dynamic Stop Policy & The 7 Mathematical Invariants</span>
+          </div>
+          <p class="tech-desc">
+            When <code>trading_adjust_stop</code> is called,
+            <code>TradingStopAdjustmentService</code> evaluates 7 mathematical safety invariants
+            before issuing a place-and-confirm replacement:
+          </p>
+          <div class="formula-explanation">
+            <div class="formula-item">
+              <div class="formula-item-title">1. Breakeven Ratchet</div>
+              If the current resting stop has already crossed the entry price into profit territory,
+              any new stop must satisfy $\text{newStop} \ge \text{entryPrice}$ (for longs) or
+              $\text{newStop} \le \text{entryPrice}$ (for shorts). A winning trade cannot regress
+              into risk.
+            </div>
+            <div class="formula-item">
+              <div class="formula-item-title">2. Max Step Constraint</div>
+              Adjustment step is bounded: $|\text{newStop} - \text{currentStop}| \le \min(0.5 \times
+              \text{ATR}, 0.25 \times \text{currentStopDistance})$. Prevents jarring leaps that risk
+              immediate wick-outs.
+            </div>
+            <div class="formula-item">
+              <div class="formula-item-title">3. Noise Floor Minimum</div>
+              Stop distance to mark must clear market microstructure noise: $|\text{mark} -
+              \text{newStop}| \ge \max(2 \times \text{halfSpread}, 0.35 \times \text{ATR})$.
+            </div>
+            <div class="formula-item">
+              <div class="formula-item-title">4. Server ATR Cross-Validation</div>
+              The harness's submitted <code>observedAtrUsd</code> is cross-checked against the
+              server's rolling 14-bar ATR: $|\text{observedAtr} - \text{serverAtr}| /
+              \text{serverAtr} \le 30\%$.
+            </div>
+            <div class="formula-item">
+              <div class="formula-item-title">5. Target Encroachment Guard</div>
+              The stop cannot encroach closer than $50\%$ of the entry-to-profit-target corridor,
+              preventing premature profit clipping.
+            </div>
+            <div class="formula-item">
+              <div class="formula-item-title">6. Rate Limiting & Budget</div>
+              Maximum 8 adjustments per position lifetime. Rate-limited to at most 1 adjustment per
+              3 primary timeframe bars.
+            </div>
+          </div>
+        </div>
+
+        <!-- 6. Reactive Watch Evaluator & Coverage Floors -->
+        <div class="tech-deep-card">
+          <div class="tech-title">
+            <span>⏱️ Reactive Watch Evaluator & Automatic Deaf-Prevention Floors</span>
+          </div>
+          <p class="tech-desc">
+            <code>WatchEvaluator</code> provides an event-driven wakeup engine for sleeping
+            harnesses:
+          </p>
+          <p class="tech-desc">
+            • <strong>Dual Stream Architecture:</strong> Subscribes to Hyperliquid L1 WebSocket
+            candle feeds (1m, 3m, 5m, 15m, 1h) and executes a 2-second periodic sweep for
+            <code>price_cross</code> and <code>scheduled_reassessment</code> triggers.<br />
+            • <strong>Atomic State Transition:</strong> Firing flips watch status from
+            <code>active → triggered</code> in SQLite and writes an inbox deduplication key
+            (<code>type:watchId:...</code>).<br />
+            • <strong>Deaf-Prevention Coverage Floor:</strong> When a turn completes,
+            <code>ensureNotDeaf</code> evaluates whether the position is protected on both sides. If
+            no watch is armed, the system automatically registers a
+            <code>scheduled_reassessment</code> staleness floor, preventing silent abandonment.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="container">
+        <p>
+          T3 Trade Autonomous Architecture • Deterministic Effect/Schema Tool System • 24 Injected
+          Tools
+        </p>
+      </div>
+    </footer>
+
+    <script>
+      // Complete 24 Tools Database with How it Works, Abstractions, and Schemas
+      const TOOLS = [
+        {
+          id: "trading_get_mission",
+          name: "trading_get_mission",
+          title: "Get trading mission",
+          category: "strategy",
+          tagClass: "tag-strat",
+          readonly: true,
+          destructive: false,
+          idempotent: true,
+          what: "Reads the active mission mandate, authority limits, risk policy, strategy history, active watches, and pending execution locks.",
+          why: "Gives the harness its complete operational boundaries so it never attempts to risk more capital than authorized or trade while a prior order is pending.",
+          when: "Called at the start of every single turn immediately upon waking.",
+          howItWorks:
+            "Resolves the calling session's thread-binding in SQLite, loads the mission record, retrieves historical strategy versions, active watches, and checks if any execution locks are held.",
+          inputSchema: "{ missionId?: string }",
+          outputSchema:
+            "TradingGetMissionResult { bound: boolean, authority: TradingAuthority, strategyVersion: number, watches: PersistedWatch[], pendingExecutions: string[] }",
+        },
+        {
+          id: "trading_publish_plan",
+          name: "trading_publish_plan",
+          title: "Publish trading plan",
+          category: "strategy",
+          tagClass: "tag-strat",
+          readonly: false,
+          destructive: false,
+          idempotent: false,
+          what: "Commits the harness's thesis, verified profit target, tournament candidates considered, and plain English summary to durable storage.",
+          why: "Guarantees accountability. The server mathematically verifies that the target profit matches the basis within 5% and clears round-trip costs before accepting.",
+          when: "Required at the end of every analysis turn—even if declining to trade (using a structured stand-down code).",
+          howItWorks:
+            "Validates expectedVersion against the database (optimistic locking), checks targetProfitBasis arithmetic, calculates minimum viable target, supersedes prior watches, dispatches status event to WebSocket clients, and increments strategyVersion.",
+          inputSchema:
+            "{ expectedVersion: number, plainSummary: string, protection: { targetProfitUsd: number, targetProfitBasis: object }, alternativesConsidered?: object[], standDownCode?: string }",
+          outputSchema:
+            "TradingPublishPlanResult { outcome: 'accepted' | 'rejected', strategyVersion: number, supersededWatchIds: string[] }",
+        },
+        {
+          id: "trading_get_playbook",
+          name: "trading_get_playbook",
+          title: "Get playbook",
+          category: "strategy",
+          tagClass: "tag-strat",
+          readonly: true,
+          destructive: false,
+          idempotent: true,
+          what: "Fetches static, deterministic gameplans: classify, momentum, range_reversion, opening_range, or standing_rules.",
+          why: "Supplies the harness with explicit, rule-based entry gates, procedures, and stand-down rules so it never relies on hallucinated trading heuristics.",
+          when: "Called when evaluating specific market setups to verify that all entry conditions and cost gates are met.",
+          howItWorks:
+            "Performs an in-memory lookup over the canonical PLAYBOOKS constant array and returns the structured ruleset.",
+          inputSchema:
+            "{ name: 'classify' | 'momentum' | 'range_reversion' | 'opening_range' | 'standing_rules' }",
+          outputSchema:
+            "Playbook { name: string, whenItApplies: string, procedure: string[], gates: string[], standDownIf: string[] }",
+        },
+        {
+          id: "trading_resolve_market",
+          name: "trading_resolve_market",
+          title: "Resolve market",
+          category: "market",
+          tagClass: "tag-mkt",
+          readonly: true,
+          destructive: false,
+          idempotent: true,
+          what: "Discovers canonical exchange identifiers, size decimals, and max leverage from live Hyperliquid metadata.",
+          why: "Prevents hardcoding asset indices or precision decimals that can dynamically shift on the exchange.",
+          when: "Called on startup or when inspecting new trading pairs.",
+          howItWorks:
+            "Queries the HyperliquidGateway metadata cache, matches the coin symbol, extracts szDecimals and max leverage, and returns the canonical contract descriptor.",
+          inputSchema: "{ market: string }",
+          outputSchema:
+            "ResolvedMarket { market: string, assetIndex: number, szDecimals: number, maxLeverage: number, isAvailable: boolean }",
+        },
+        {
+          id: "trading_get_market_snapshot",
+          name: "trading_get_market_snapshot",
+          title: "Get market snapshot",
+          category: "market",
+          tagClass: "tag-mkt",
+          readonly: true,
+          destructive: false,
+          idempotent: true,
+          what: "Reads live mark price, mid price, best bid/offer (BBO), 8h funding rate, open interest, and 24h volume.",
+          why: "Provides immediate price context with strict freshness guarantees (2s BBO freshness, 5s asset context).",
+          when: "Called before pricing orders or checking real-time price action.",
+          howItWorks:
+            "Queries the low-latency WebSocket gateway cache, computes the best bid/ask, and verifies timestamp freshness.",
+          inputSchema: "{ market: string }",
+          outputSchema:
+            "AgentMarketSnapshot { markPrice: number, bestBid: number, bestAsk: number, fundingRate8h: number, openInterestEth: number, freshness: object }",
+        },
+        {
+          id: "trading_get_market_history",
+          name: "trading_get_market_history",
+          title: "Get market history",
+          category: "market",
+          tagClass: "tag-mkt",
+          readonly: true,
+          destructive: false,
+          idempotent: true,
+          what: "Retrieves bounded OHLCV candlestick records for intervals from 1 minute to 1 hour (up to 500 bars).",
+          why: "Allows calculating technical patterns and price actions directly without relying on third-party charting APIs.",
+          when: "Used during market analysis to study historical price swings and support/resistance levels.",
+          howItWorks:
+            "Fetches historical bars from the gateway, trims to the requested maxBars ceiling (up to 500), and flags finalized closed candles.",
+          inputSchema:
+            "{ market: string, interval: '1m' | '3m' | '5m' | '15m' | '1h', maxBars?: number, startTime?: number, endTime?: number }",
+          outputSchema:
+            "MarketHistory { market: string, interval: string, candleCount: number, lastFinalizedClose: number, candles: Candle[] }",
+        },
+        {
+          id: "trading_measure_volatility",
+          name: "trading_measure_volatility",
+          title: "Measure volatility",
+          category: "market",
+          tagClass: "tag-mkt",
+          readonly: true,
+          destructive: false,
+          idempotent: true,
+          what: "Measures Average True Range (ATR), Realized Volatility % per bar, swing bounds, and move percentiles (p25/p50/p75).",
+          why: "Determines realistic profit targets and stop distances based on actual market speed, not arbitrary guesses.",
+          when: "Called whenever calculating position stops and verifying that expected moves exceed noise.",
+          howItWorks:
+            "Reads historical candle history, runs standard true range calculations over 14 bars, calculates log-return standard deviation, and projects historical forward excursions across multiple hold horizons.",
+          inputSchema:
+            "{ market: string, interval: string, lookbackBars?: number, holdBars?: number[] }",
+          outputSchema:
+            "ObservedVolatility { atrUsd: number, atrPercent: number, realizedVolatilityPercentPerBar: number, swingHighUsd: number, swingLowUsd: number, horizons: Horizon[] }",
+        },
+        {
+          id: "trading_estimate_costs",
+          name: "trading_estimate_costs",
+          title: "Estimate trading costs",
+          category: "market",
+          tagClass: "tag-mkt",
+          readonly: true,
+          destructive: false,
+          idempotent: true,
+          what: "Computes total round-trip costs: taker fees for entry/exit, crossing bid-ask spread, and book-walking slippage.",
+          why: "Establishes the non-negotiable minimum viable profit target (2x round trip) so the agent never trades when costs consume profits.",
+          when: "Called before sizing any trade to verify that the expected edge is profitable after real exchange friction.",
+          howItWorks:
+            "Reads wallet tier fee rates, inspects live L2 order book depth, calculates spread delta and slippage for the requested size, and returns exact breakeven price distance.",
+          inputSchema: "{ market: string, sizeEth?: number, notionalUsd?: number }",
+          outputSchema:
+            "TradingCostEstimate { roundTripFeeUsd: number, roundTripSpreadUsd: number, roundTripSlippageUsd: number, roundTripUsd: number, breakEvenPriceMoveUsd: number, minimumViableTargetUsd: number }",
+        },
+        {
+          id: "trading_get_market_structure",
+          name: "trading_get_market_structure",
+          title: "Get market structure",
+          category: "market",
+          tagClass: "tag-mkt",
+          readonly: true,
+          destructive: false,
+          idempotent: true,
+          what: "Analyzes directional trend scores across 1m/5m/15m/1h, pivot runs, regime classification, and candidate setups joined with cost gates.",
+          why: "Acts as the strategy tournament engine, showing which setups clear cost gates and identifying market regimes.",
+          when: "Called at the core of the tournament step to decide whether to trade momentum, range reversion, or stand down.",
+          howItWorks:
+            "Concurrently reads 4 timeframe candle streams, computes direction travel ratios, detects trailing pivot highs/lows, determines trending vs ranging regime, and joins each setup with cost multiples.",
+          inputSchema: "{ market: string, intervals?: string[], lookbackBars?: number }",
+          outputSchema:
+            "MarketStructure { regime: { classification: 'trending' | 'ranging' | 'transition', evidence: string[], conflicts: string[] }, candidates: Candidate[] }",
+        },
+        {
+          id: "trading_get_order_book",
+          name: "trading_get_order_book",
+          title: "Get order book",
+          category: "market",
+          tagClass: "tag-mkt",
+          readonly: true,
+          destructive: false,
+          idempotent: true,
+          what: "Reads the current Level 2 order book up to 20 levels deep on bid and ask sides with exact volumes.",
+          why: "Enables measuring microstructure liquidity and checking for liquidity walls near entry or stop levels.",
+          when: "Used when fine-tuning limit prices or estimating slippage on larger position sizes.",
+          howItWorks:
+            "Pulls depth data from the WebSocket L2 book cache and computes cumulative liquidity per side.",
+          inputSchema: "{ market: string }",
+          outputSchema:
+            "OrderBook { market: string, bids: [price, size][], asks: [price, size][], freshness: object }",
+        },
+        {
+          id: "trading_get_account_state",
+          name: "trading_get_account_state",
+          title: "Get account state",
+          category: "account",
+          tagClass: "tag-acc",
+          readonly: true,
+          destructive: false,
+          idempotent: true,
+          what: "Reads total portfolio equity, margin used, and available withdrawable collateral on the master wallet.",
+          why: "Informs position sizing by showing exactly how much free collateral is currently unencumbered.",
+          when: "Called when calculating maximum feasible position sizes before submitting entry quotes.",
+          howItWorks:
+            "Resolves master wallet address for the mission's trading account and queries canonical margin state from the exchange.",
+          inputSchema: "{ missionId?: string }",
+          outputSchema:
+            "AgentAccountSnapshot { accountValueUsd: number, marginUsedUsd: number, withdrawableUsd: number, openPositionsCount: number }",
+        },
+        {
+          id: "trading_get_position",
+          name: "trading_get_position",
+          title: "Get position",
+          category: "account",
+          tagClass: "tag-acc",
+          readonly: true,
+          destructive: false,
+          idempotent: true,
+          what: "Reads active signed position size, entry price, unrealized PnL, peak profit high-water mark, and drawdown from peak.",
+          why: "Allows the agent to manage active trades with awareness of whether profit is giving back from its highest point.",
+          when: "Called whenever managing active exposure or deciding whether to adjust stops or take profit.",
+          howItWorks:
+            "Reads exchange position state and joins it with T3's local reconciler high-water mark memory to compute peakUnrealisedPnl and drawdownFromPeakUsd.",
+          inputSchema: "{ market: string, missionId?: string }",
+          outputSchema:
+            "AgentNetPosition { market: string, sizeEth: number, side: 'long' | 'short', entryPrice: number, unrealisedPnlUsd: number, peakUnrealisedPnlUsd?: number, drawdownFromPeakUsd?: number }",
+        },
+        {
+          id: "trading_get_open_orders",
+          name: "trading_get_open_orders",
+          title: "Get open orders",
+          category: "account",
+          tagClass: "tag-acc",
+          readonly: true,
+          destructive: false,
+          idempotent: true,
+          what: "Lists all resting limit orders and stops on the exchange book, with client order IDs (cloid).",
+          why: "Ensures the agent knows which orders are still active before placing new ones or cancelling stale orders.",
+          when: "Called to inspect resting protection or clean up resting limit orders after a plan update.",
+          howItWorks:
+            "Queries exchange resting orders for the master wallet and filters down to active limit and stop orders.",
+          inputSchema: "{ missionId?: string }",
+          outputSchema:
+            "AgentOpenOrder[] [ { exchangeOrderId: string, cloid?: string, side: 'buy' | 'sell', limitPrice: number, sizeEth: number, status: string, reduceOnly: boolean } ]",
+        },
+        {
+          id: "trading_get_trade_history",
+          name: "trading_get_trade_history",
+          title: "Get trade history",
+          category: "account",
+          tagClass: "tag-acc",
+          readonly: true,
+          destructive: false,
+          idempotent: true,
+          what: "Reads completed orders, aggregated partial fills, realized PnL, fee impacts, and flat-to-flat round trips.",
+          why: "Evaluates trading performance over time and flags if exchange fees are consuming excessive gross profits.",
+          when: "Called during post-trade reviews and strategy reassessments.",
+          howItWorks:
+            "Queries local trading_fills and trading_execution_records tables, groups partial fills into logical orders, pairs flat-to-flat round trips, and computes fee share metrics.",
+          inputSchema: "{ missionId?: string, limit?: number }",
+          outputSchema:
+            "TradingTradeHistory { orderCount: number, totalRealizedPnlUsd: number, totalFeesPaidUsd: number, recentFeeShareOfGrossPercent: number, roundTrips: RoundTrip[] }",
+        },
+        {
+          id: "trading_get_target_calibration",
+          name: "trading_get_target_calibration",
+          title: "Get target calibration",
+          category: "account",
+          tagClass: "tag-acc",
+          readonly: true,
+          destructive: false,
+          idempotent: true,
+          what: "Audits published profit targets against actual price peaks reached by trades to detect optimistic bias.",
+          why: "Tells the agent whether its targets are realistic or whether it consistently targets too high and gives back gains.",
+          when: "Called to calibrate future profit target sizes based on historical hit rate verdicts.",
+          howItWorks:
+            "Compares targetProfitUsd across strategy versions against peakUnrealisedPnl recorded by the reconciler and classifies calibration into optimistic, conservative, or as_claimed.",
+          inputSchema: "{ missionId?: string }",
+          outputSchema:
+            "TargetCalibration { sampleSize: number, verdict: 'optimistic' | 'conservative' | 'as_claimed' | 'insufficient_sample', observedHitRatePercent: number, recommendation: string }",
+        },
+        {
+          id: "trading_register_watch",
+          name: "trading_register_watch",
+          title: "Register watch",
+          category: "watch",
+          tagClass: "tag-wtch",
+          readonly: false,
+          destructive: false,
+          idempotent: false,
+          what: "Arms single-fire reactive triggers (price_cross, candle_close, pnl_above, pnl_below, pnl_giveback).",
+          why: "Allows the agent to sleep between market events and wake up instantly when price or PnL crosses critical thresholds.",
+          when: "Called after publishing a plan to monitor entry levels, stop proximity, or profit targets.",
+          howItWorks:
+            "Inserts watch row in database, handles atomic replacement if replacesWatchId is set, dispatches orchestration event, and registers predicate with WatchEvaluator loop.",
+          inputSchema:
+            "{ type: 'price_cross' | 'candle_close' | 'pnl_above' | 'pnl_below' | 'pnl_giveback', market: string, price?: number, interval?: string, valueUsd?: number, replacesWatchId?: string }",
+          outputSchema:
+            "TradingRegisterWatchResult { outcome: 'registered', watch: PersistedWatch, replaced?: PersistedWatch }",
+        },
+        {
+          id: "trading_list_watches",
+          name: "trading_list_watches",
+          title: "List watches",
+          category: "watch",
+          tagClass: "tag-wtch",
+          readonly: true,
+          destructive: false,
+          idempotent: true,
+          what: "Lists all registered watches for the mission, showing active, triggered, superseded, and cancelled statuses.",
+          why: "Provides visibility into all standing sensor triggers.",
+          when: "Used to inspect current trigger coverage or check which trigger caused a wake.",
+          howItWorks: "Reads all persisted watches for the bound mission ordered by creation time.",
+          inputSchema: "{ missionId?: string }",
+          outputSchema:
+            "TradingListWatchesResult { activeCount: number, watches: PersistedWatch[] }",
+        },
+        {
+          id: "trading_cancel_watch",
+          name: "trading_cancel_watch",
+          title: "Cancel watch",
+          category: "watch",
+          tagClass: "tag-wtch",
+          readonly: false,
+          destructive: false,
+          idempotent: false,
+          what: "Disarms an active watch by ID.",
+          why: "Cleans up outdated trigger levels when a thesis changes or when levels are moved.",
+          when: "Called when updating invalidation levels or retiring obsolete watches.",
+          howItWorks:
+            "Updates watch status to 'cancelled' in database and dispatches cancellation event to orchestration engine.",
+          inputSchema: "{ watchId: string, missionId?: string }",
+          outputSchema:
+            "TradingCancelWatchResult { outcome: 'cancelled' | 'rejected', watch?: PersistedWatch, reason?: string }",
+        },
+        {
+          id: "trading_quote_entry",
+          name: "trading_quote_entry",
+          title: "Quote an entry",
+          category: "execution",
+          tagClass: "tag-exec",
+          readonly: false,
+          destructive: false,
+          idempotent: false,
+          what: "Requests a server-calculated entry quote with automatic size clamping, crossing limit calculation, and risk pre-checks.",
+          why: "Relieves the agent of error-prone sizing arithmetic and returns a guaranteed single-use 90s token.",
+          when: "Called immediately prior to executing an entry.",
+          howItWorks:
+            "Reads live BBO, verifies stop distance > noise floor, sizes position within leverage and risk ceilings, runs 17-point preview checklist, creates Eq-4 reservation, and generates 90s quoteId.",
+          inputSchema:
+            "{ market: string, side: 'buy' | 'sell', stopPrice: number, sizeEth?: number, notionalUsd?: number }",
+          outputSchema:
+            "TradingQuoteEntryResult { outcome: 'quoted' | 'refused', quoteId: string, feasibleSizeEth: number, limitPrice: number, plannedLossUsd: number, expiresInSeconds: 90, constrainedBy?: string }",
+        },
+        {
+          id: "trading_execute",
+          name: "trading_execute",
+          title: "Execute trading intent",
+          category: "execution",
+          tagClass: "tag-exec",
+          readonly: false,
+          destructive: true,
+          idempotent: true,
+          what: "Submits a pre-checked quote token to the Hyperliquid signing lane for atomic execution.",
+          why: "Eliminates duplicate order submissions and guarantees the trade executes exactly as quoted.",
+          when: "Called right after receiving an accepted quote from trading_quote_entry.",
+          howItWorks:
+            "Consumes quote token, derives deterministic cloid, submits through serialized nonce lane, signs phantom-agent EIP-712 packet, awaits exchange receipt, and reconciles position state.",
+          inputSchema: "{ quoteId: string, missionId?: string }",
+          outputSchema:
+            "TradingRequestEntryResult { status: 'filled' | 'accepted' | 'rejected' | 'failed', cloid: string, avgFillPrice?: number, filledSizeEth?: number, budget: object }",
+        },
+        {
+          id: "trading_close_position",
+          name: "trading_close_position",
+          title: "Close position",
+          category: "execution",
+          tagClass: "tag-exec",
+          readonly: false,
+          destructive: true,
+          idempotent: false,
+          what: "Instantly flattens the entire position with zero required parameters using a crossing reduce-only order.",
+          why: "Emergency fail-safe: works even if entry budgets are exhausted or new entries are blocked.",
+          when: "Called when a position hits an invalidation or when market regime breaks down.",
+          howItWorks:
+            "Reads canonical position size, derives opposing closing side, prices crossing IOC order, executes reduce-only order through nonce lane, and awaits flat confirmation.",
+          inputSchema: "{ market?: string, missionId?: string }",
+          outputSchema:
+            "TradingRequestEntryResult { status: 'filled', action: 'close', closedSizeEth: number, remainingSizeEth: 0, realizedPnlUsd: number }",
+        },
+        {
+          id: "trading_reduce_position",
+          name: "trading_reduce_position",
+          title: "Reduce position",
+          category: "execution",
+          tagClass: "tag-exec",
+          readonly: false,
+          destructive: true,
+          idempotent: false,
+          what: "Scales out of a position by exact size or fractional amount (e.g. 0.5 for 50%), with automatic anti-dust protection.",
+          why: "Enables partial profit taking while automatically closing the full position if remainder is under exchange minimum ($10).",
+          when: "Called upon reaching intermediate profit targets to de-risk.",
+          howItWorks:
+            "Clamps requested size to held position, tests residual position value against $10 exchange minimum (auto-promotes to 100% close if dust), and executes reduce-only IOC.",
+          inputSchema:
+            "{ market?: string, sizeEth?: number, fraction?: number, missionId?: string }",
+          outputSchema:
+            "TradingRequestEntryResult { status: 'filled', action: 'reduce', reducedSizeEth: number, remainingSizeEth: number, realizedPnlUsd: number, detail?: string }",
+        },
+        {
+          id: "trading_cancel_order",
+          name: "trading_cancel_order",
+          title: "Cancel resting order",
+          category: "execution",
+          tagClass: "tag-exec",
+          readonly: false,
+          destructive: true,
+          idempotent: true,
+          what: "Cancels a resting limit order on the exchange using its unique client order ID (cloid).",
+          why: "Allows withdrawing stale limit orders that were not filled.",
+          when: "Called when market moves away from an unfilled entry setup.",
+          howItWorks:
+            "Signs cancelByCloid action through nonce permit lane, submits to Hyperliquid, and releases any associated Eq-4 risk reservations.",
+          inputSchema: "{ cloid: string, missionId?: string }",
+          outputSchema:
+            "TradingRequestEntryResult { status: 'succeeded', action: 'cancel', cloid: string }",
+        },
+        {
+          id: "trading_adjust_stop",
+          name: "trading_adjust_stop",
+          title: "Adjust stop",
+          category: "execution",
+          tagClass: "tag-exec",
+          readonly: false,
+          destructive: true,
+          idempotent: true,
+          what: "Moves the resting stop-loss inside strict safety boundaries (breakeven ratchet, max step limits, and noise floors).",
+          why: "Protects accumulated gains safely without risking premature stop-outs from market noise or widening risk.",
+          when: "Called when trailing a stop behind a winning trade as new support pivots form.",
+          howItWorks:
+            "Evaluates 7 dynamic stop policy rules, executes place-and-confirm replacement of the resting stop, updates planned loss reservations, and announces stop move on WebSocket stream.",
+          inputSchema:
+            "{ market: string, newStopPrice: number, observedAtrUsd: number, expectedVersion: number, justification: string, missionId?: string }",
+          outputSchema:
+            "TradingAdjustStopResult { status: 'adjusted' | 'refused', previousStop: number, newStop: number, stopDistanceUsd: number, plannedLossAtStopUsd: number, remainingAdjustments: number, refusalCode?: string }",
+        },
+      ];
+
+      // Flow Scenarios Definition
+      const FLOWS = [
+        {
+          title: "1. Tournament & Precision Entry",
+          desc: "The harness wakes, reads multi-timeframe structure, runs a strategy tournament against cost gates, publishes an audited plan, requests a server-clamped quote, and executes atomically.",
+          steps: [
+            {
+              name: "1. Read Market Structure & Candidates",
+              tool: "trading_get_market_structure",
+              harnessArgs: '{ "market": "ETH" }',
+              harnessIntent:
+                "The harness requests multi-timeframe directional scores and scored setup candidates.",
+              toolAction:
+                "Tool queries 4 candle timeframes concurrently, computes pivot sequences, determines trending vs ranging regime, joins each setup with cost multiples, and records structure memory in SQLite.",
+              toolResponseDesc:
+                "Returns classified regime ('trending') and setup tournament table with cost multiple clearances.",
+              toolResponse:
+                '{\n  "regime": { "classification": "trending", "evidence": ["15m and 1h aligned positive (+0.74, +0.68)"] },\n  "candidates": [\n    { "strategy": "momentum", "direction": "long", "setupScore": 0.88, "costMultiple": 15.5, "clearsCostGate": true },\n    { "strategy": "range_reversion", "direction": "short", "clearsCostGate": false, "disqualificationReason": "Regime trending" }\n  ]\n}',
+            },
+            {
+              name: "2. Estimate Round-Trip Friction",
+              tool: "trading_estimate_costs",
+              harnessArgs: '{ "market": "ETH", "notionalUsd": 10000 }',
+              harnessIntent:
+                "The harness checks exact fees, bid/ask spread, and book slippage for its planned trade size.",
+              toolAction:
+                "Tool walks the live L2 order book, applies wallet taker fee rates, and computes minimumViableTargetUsd (2x round-trip floor).",
+              toolResponseDesc:
+                "Returns round-trip cost breakdown ($6.50) and the mandatory profit target floor ($13.00).",
+              toolResponse:
+                '{\n  "roundTripFeeUsd": 4.50,\n  "roundTripSpreadUsd": 1.20,\n  "roundTripSlippageUsd": 0.80,\n  "roundTripUsd": 6.50,\n  "minimumViableTargetUsd": 13.00\n}',
+            },
+            {
+              name: "3. Publish Validated Plan",
+              tool: "trading_publish_plan",
+              harnessArgs:
+                '{\n  "expectedVersion": 4,\n  "plainSummary": "ETH breaking out with strong volume. Planning long entry on candle close above $2,660 aiming for $120 target.",\n  "protection": {\n    "targetProfitUsd": 120.00,\n    "targetProfitBasis": { "measuredMoveUsd": 32.00, "referencePrice": 2650.00, "positionNotionalUsd": 10000 }\n  }\n}',
+              harnessIntent:
+                "The harness commits its trade thesis, plain English summary, and profit calculation.",
+              toolAction:
+                "Tool enforces optimistic concurrency (expectedVersion == 4), mathematically audits that targetProfitUsd matches basis within 5%, verifies target exceeds cost floor, supersedes old watches, and increments strategyVersion.",
+              toolResponseDesc: "Plan committed to database; broadcasts status event to UI.",
+              toolResponse:
+                '{\n  "outcome": "accepted",\n  "strategyVersion": 5,\n  "supersededWatchIds": ["watch-old-01"]\n}',
+            },
+            {
+              name: "4. Request Server-Sized Quote",
+              tool: "trading_quote_entry",
+              harnessArgs:
+                '{\n  "market": "ETH",\n  "side": "buy",\n  "stopPrice": 2615.00,\n  "notionalUsd": 10000\n}',
+              harnessIntent:
+                "The harness provides its intended side, stop price, and nominal size.",
+              toolAction:
+                "Tool verifies stop distance > noise floor, clamps size against 4 risk ceilings, calculates crossing limit price from live BBO, runs 17 preview checks, establishes Eq-4 risk reservation, and generates a single-use 90s quote token.",
+              toolResponseDesc:
+                "Returns guaranteed quote token with exact feasible size and planned loss.",
+              toolResponse:
+                '{\n  "outcome": "quoted",\n  "quoteId": "quote-9921-eth",\n  "feasibleSizeEth": 3.77,\n  "limitPrice": 2653.00,\n  "plannedLossUsd": 143.26,\n  "expiresInSeconds": 90,\n  "constrainedBy": "planned_loss_ceiling"\n}',
+            },
+            {
+              name: "5. Execute via Single Quote Token",
+              tool: "trading_execute",
+              harnessArgs: '{ "quoteId": "quote-9921-eth" }',
+              harnessIntent: "The harness executes the trade simply by presenting the quoteId.",
+              toolAction:
+                "Tool consumes quote atomically (preventing double submission), derives deterministic cloid, acquires FIFO nonce permit, signs phantom-agent EIP-712 order, submits to Hyperliquid, and awaits fill receipt.",
+              toolResponseDesc:
+                "Returns execution outcome with average fill price, cloid, and updated risk budget.",
+              toolResponse:
+                '{\n  "status": "filled",\n  "cloid": "0x89e210bfa...",\n  "avgFillPrice": 2652.45,\n  "filledSizeEth": 3.77,\n  "budget": { "remainingCumulativeLossUsd": 856.74, "exhausted": false }\n}',
+            },
+          ],
+        },
+        {
+          title: "2. Reactive Trigger & Stop Defense",
+          desc: "The harness arms price triggers and sleeps. When market crosses the trigger, the harness wakes and trails its resting stop-loss past breakeven under mathematical ratchet guards.",
+          steps: [
+            {
+              name: "1. Arm Reactive Watch",
+              tool: "trading_register_watch",
+              harnessArgs:
+                '{\n  "type": "price_cross",\n  "market": "ETH",\n  "price": 2665.00,\n  "direction": "above"\n}',
+              harnessIntent:
+                "The harness arms a trigger level at $2,665 so it can sleep until price moves favorably.",
+              toolAction:
+                "Tool creates durable watch in SQLite, dispatches orchestration event, and registers predicate with the 2-second reconciler evaluator.",
+              toolResponseDesc: "Watch registered as active.",
+              toolResponse:
+                '{\n  "outcome": "registered",\n  "watch": { "id": "watch-trail-01", "type": "price_cross", "price": 2665.00, "status": "active" }\n}',
+            },
+            {
+              name: "2. Adjust Stop Past Breakeven",
+              tool: "trading_adjust_stop",
+              harnessArgs:
+                '{\n  "market": "ETH",\n  "newStopPrice": 2645.00,\n  "observedAtrUsd": 18.50,\n  "expectedVersion": 5,\n  "justification": "Trailing stop above breakeven as 15m pivot forms at $2,645"\n}',
+              harnessIntent:
+                "The harness wakes upon trigger and moves its stop to lock in profits.",
+              toolAction:
+                "Tool evaluates 7 safety invariants: verifies breakeven ratchet (never widens risk), checks step size <= min(0.5 ATR, 25% stop dist), checks server ATR match <= 30%, places replacement stop on exchange, cancels old stop upon confirmation, and resizes Eq-4 reservation.",
+              toolResponseDesc:
+                "Returns updated stop level, 0 planned loss, and remaining adjustment budget.",
+              toolResponse:
+                '{\n  "status": "adjusted",\n  "previousStop": 2615.00,\n  "newStop": 2645.00,\n  "plannedLossAtStopUsd": 0.00,\n  "remainingAdjustments": 7\n}',
+            },
+          ],
+        },
+        {
+          title: "3. Scale-Out & Anti-Dust Flattening",
+          desc: "As profit targets are approached, the harness de-risks by taking partial profits. When the trend exhausts, it calls emergency close to flatten with zero parameters.",
+          steps: [
+            {
+              name: "1. Scale Out 50% Position",
+              tool: "trading_reduce_position",
+              harnessArgs: '{ "market": "ETH", "fraction": 0.5 }',
+              harnessIntent: "The harness asks to take half of its position off the table.",
+              toolAction:
+                "Tool reads canonical position size (3.77 ETH), computes closing half (1.88 ETH), tests residual value ($5,015 > $10 dust threshold), prices crossing limit off live BBO, and submits reduce-only order.",
+              toolResponseDesc: "Returns filled partial reduction and updated remaining size.",
+              toolResponse:
+                '{\n  "status": "filled",\n  "action": "reduce",\n  "reducedSizeEth": 1.88,\n  "remainingSizeEth": 1.89,\n  "realizedPnlUsd": 38.40\n}',
+            },
+            {
+              name: "2. Emergency Full Flatten",
+              tool: "trading_close_position",
+              harnessArgs: '{ "market": "ETH" }',
+              harnessIntent: "The harness issues an emergency zero-parameter close order.",
+              toolAction:
+                "Tool reads exact open position, derives opposite closing side, bypasses entry restrictions (loss limits, pause flags), and executes crossing reduce-only IOC.",
+              toolResponseDesc: "Returns flat confirmation with realized PnL.",
+              toolResponse:
+                '{\n  "status": "filled",\n  "action": "close",\n  "closedSizeEth": 1.89,\n  "remainingSizeEth": 0.0,\n  "realizedPnlUsd": 42.10\n}',
+            },
+          ],
+        },
+        {
+          title: "4. Disciplined Stand-Down Filter",
+          desc: "In compressed market chop, expected moves fail the 2x round-trip cost gate. The harness publishes an explicit stand-down and arms invalidation levels to avoid burning fees.",
+          steps: [
+            {
+              name: "1. Evaluate Cost Gate",
+              tool: "trading_estimate_costs",
+              harnessArgs: '{ "market": "ETH", "notionalUsd": 10000 }',
+              harnessIntent:
+                "The harness evaluates whether expected market volatility exceeds trading friction.",
+              toolAction:
+                "Tool measures round-trip friction ($8.50) and compares against observed ATR ($6.20).",
+              toolResponseDesc:
+                "Reports that minimum viable target ($17.00) exceeds expected swing move.",
+              toolResponse:
+                '{\n  "roundTripUsd": 8.50,\n  "minimumViableTargetUsd": 17.00,\n  "status": "costs_exceed_volatility"\n}',
+            },
+            {
+              name: "2. Publish Structured Stand-Down",
+              tool: "trading_publish_plan",
+              harnessArgs:
+                '{\n  "expectedVersion": 5,\n  "standDownCode": "insufficient_volatility",\n  "plainSummary": "Market compressed in tight $6 chop. Minimum viable target ($17) exceeds volatility. Standing down until range expands.",\n  "alternativesConsidered": [{ "strategy": "momentum", "verdict": "declined", "reason": "failed_cost_gate" }]\n}',
+              harnessIntent: "The harness declines to trade and publishes its reasoning.",
+              toolAction:
+                "Tool validates standDownCode, sets insufficientVolatility flag, commits rationale, and updates status to 'waiting'.",
+              toolResponseDesc: "Stand-down accepted and published.",
+              toolResponse: '{\n  "outcome": "accepted",\n  "strategyVersion": 6\n}',
+            },
+            {
+              name: "3. Arm Breakout Invalidation Sensor",
+              tool: "trading_register_watch",
+              harnessArgs:
+                '{\n  "type": "candle_close",\n  "market": "ETH",\n  "price": 2675.00,\n  "direction": "above"\n}',
+              harnessIntent:
+                "The harness arms a trigger at the chop boundary so it only wakes if volatility returns.",
+              toolAction: "Tool registers single-fire candle close trigger.",
+              toolResponseDesc: "Watch armed; agent sleeps until market breaks out.",
+              toolResponse:
+                '{\n  "outcome": "registered",\n  "watch": { "id": "watch-break-01", "status": "active" }\n}',
+            },
+          ],
+        },
+      ];
+
+      let currentFlowIdx = 0;
+      let currentStepIdx = 0;
+      let activeCatalogFilter = "all";
+
+      function selectFlow(index) {
+        currentFlowIdx = index;
+        currentStepIdx = 0;
+
+        document.querySelectorAll(".flow-tab").forEach((t, i) => {
+          t.classList.toggle("active", i === index);
+        });
+
+        const flow = FLOWS[index];
+        document.getElementById("flow-title").innerText = flow.title;
+        document.getElementById("flow-desc").innerText = flow.desc;
+
+        renderFlowSteps();
+        updateProtocolInspector();
+      }
+
+      function renderFlowSteps() {
+        const flow = FLOWS[currentFlowIdx];
+        const list = document.getElementById("flow-steps-list");
+
+        list.innerHTML = flow.steps
+          .map(
+            (s, i) => `
+        <button class="flow-step-btn ${i === currentStepIdx ? "active" : ""}" onclick="setFlowStep(${i})">
+          <div class="flow-step-num">${i + 1}</div>
+          <div class="flow-step-info">
+            <div class="flow-step-label">${s.name}</div>
+            <div class="flow-step-tool">⚡ ${s.tool}</div>
+          </div>
+        </button>
+      `,
+          )
+          .join("");
+      }
+
+      function setFlowStep(stepIndex) {
+        currentStepIdx = stepIndex;
+        renderFlowSteps();
+        updateProtocolInspector();
+      }
+
+      function updateProtocolInspector() {
+        const step = FLOWS[currentFlowIdx].steps[currentStepIdx];
+        document.getElementById("proto-harness-intent").innerText = step.harnessIntent;
+        document.getElementById("proto-harness-args").innerText = step.harnessArgs;
+        document.getElementById("proto-tool-action").innerText = step.toolAction;
+        document.getElementById("proto-tool-response-desc").innerText = step.toolResponseDesc;
+        document.getElementById("proto-tool-response").innerText = step.toolResponse;
+      }
+
+      function renderCatalog() {
+        const grid = document.getElementById("tools-grid");
+        const search = document.getElementById("catalog-search").value.toLowerCase();
+
+        const filtered = TOOLS.filter((t) => {
+          const matchesFilter = activeCatalogFilter === "all" || t.category === activeCatalogFilter;
+          const matchesSearch =
+            t.name.toLowerCase().includes(search) ||
+            t.title.toLowerCase().includes(search) ||
+            t.what.toLowerCase().includes(search) ||
+            t.why.toLowerCase().includes(search);
+          return matchesFilter && matchesSearch;
+        });
+
+        grid.innerHTML = filtered
+          .map(
+            (t) => `
+        <div class="tool-card">
+          <div class="tool-card-top">
+            <div>
+              <div class="tool-card-name">${t.name}</div>
+              <div class="tool-card-title">${t.title}</div>
+            </div>
+            <span class="tool-tag ${t.tagClass}">${t.category}</span>
+          </div>
+
+          <div class="tool-traits">
+            <span class="trait-badge ${t.readonly ? "active" : ""}">${t.readonly ? "Readonly" : "State-Modifying"}</span>
+            <span class="trait-badge ${t.destructive ? "active" : ""}">${t.destructive ? "Destructive" : "Safe"}</span>
+            <span class="trait-badge ${t.idempotent ? "active" : ""}">${t.idempotent ? "Idempotent" : "Non-Idempotent"}</span>
+          </div>
+
+          <div class="tool-explainer">
+            <div class="explain-block">
+              <span class="explain-label">What It Does</span>
+              <div class="explain-text">${t.what}</div>
+            </div>
+            <div class="explain-block">
+              <span class="explain-label">Why It Exists</span>
+              <div class="explain-text">${t.why}</div>
+            </div>
+            <div class="explain-block">
+              <span class="explain-label">When To Call</span>
+              <div class="explain-text"><strong>${t.when}</strong></div>
+            </div>
+          </div>
+
+          <div class="mechanics-drawer">
+            <details>
+              <summary class="mechanics-summary">
+                <span>Under the Hood & Schemas</span>
+                <span>▼</span>
+              </summary>
+              <div class="mechanics-content">
+                <div>
+                  <strong style="color: #ffffff;">How It Works Internally:</strong>
+                  <p style="margin-top: 2px;">${t.howItWorks}</p>
+                </div>
+                <div>
+                  <strong style="color: #38bdf8;">Input Parameters:</strong>
+                  <div class="schema-box">${t.inputSchema}</div>
+                </div>
+                <div>
+                  <strong style="color: #34d399;">Output Schema:</strong>
+                  <div class="schema-box">${t.outputSchema}</div>
+                </div>
+              </div>
+            </details>
+          </div>
+        </div>
+      `,
+          )
+          .join("");
+      }
+
+      function filterCatalog(category) {
+        activeCatalogFilter = category;
+        document.querySelectorAll(".filter-btn").forEach((b) => b.classList.remove("active"));
+        event.target.classList.add("active");
+        renderCatalog();
+      }
+
+      function handleSearch() {
+        renderCatalog();
+      }
+
+      document.addEventListener("DOMContentLoaded", () => {
+        selectFlow(0);
+        renderCatalog();
+      });
+    </script>
+  </body>
+</html>
