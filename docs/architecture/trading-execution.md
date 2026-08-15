@@ -227,6 +227,14 @@ loss within per-position ceiling; existing reservations + proposed risk
 within cumulative-loss budget; no conflicting execution pending; valid stop
 defined. **Reserve before signing; reconcile after every state change.**
 
+_Implementation note (plan-29 §3.3):_ the entry preview in
+`TradingPreviewService` runs 14 of these 17 rows. The three it dropped —
+strategy version current, authority version current, and the market row on
+the entry side — were permission and discipline ceremony rather than
+questions about whether the order itself is correct, the same reasoning the
+exit checklist already applies. Exits still enforce the market row: an exit
+must land in the mission's mandated market.
+
 **Exhaustion (§16.4):** when `remainingCumulativeLossUsd ≤ 0` — cancel all
 position-increasing orders; block entries, scale-ins, reversals, re-entry;
 preserve valid reduce-only protection; permit only protection improvement,

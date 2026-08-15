@@ -135,10 +135,11 @@ export function classifyFailure(failure: ClassifiableFailure): FailureRecovery {
 
     case "TradingPreviewRejection":
       // A refused check is a verdict about this intent, not about the
-      // connection. Two of them are worth re-quoting rather than abandoning:
-      // both are about numbers that were current a moment ago.
-      return failure.reason === "account_and_bbo_fresh" ||
-        failure.reason === "strategy_version_current"
+      // connection. One of them is worth re-quoting rather than abandoning:
+      // it is about numbers that were current a moment ago. The other
+      // historical re-quote — a stale strategy version — left the checklist
+      // with plan-29 §3.3.
+      return failure.reason === "account_and_bbo_fresh"
         ? permanent("re_quote", `preview_${failure.reason}`)
         : permanent("stand_down", `preview_${failure.reason ?? "rejected"}`);
 

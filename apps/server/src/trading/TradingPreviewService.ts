@@ -1,10 +1,12 @@
 /**
  * trading_preview_order — the §16.3 position-increase checklist, in order.
  *
- * Before any position-increasing action is signed, T3 runs the full 17-item
- * checklist from risk §16.3 in its listed order. Every item has a rejection
- * reason; a rejection test pins each. Risk is reserved BEFORE signing and
- * reconciled after every state change.
+ * Before any position-increasing action is signed, T3 runs the checklist from
+ * risk §16.3 in its listed order — 14 of its 17 rows: the three discipline
+ * rows (strategy version, authority version, entry-side market mandate) were
+ * retired by plan-29 §3.3. Every item has a rejection reason; a rejection
+ * test pins each. Risk is reserved BEFORE signing and reconciled after every
+ * state change.
  *
  * This service is pure validation over already-loaded state. It reads no
  * exchange and mutates no tables — it returns either the validated preview
@@ -33,15 +35,12 @@ import {
 } from "@t3tools/trading-contracts/protection";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
 
-/** One of the 17 §16.3 checklist items, in order, plus the exit-only item. */
+/** One of the 14 §16.3 checklist items the entry list runs, in order, plus the exit-only items. */
 export const PREVIEW_CHECKLIST_ITEMS = [
   "mission_active",
   "entries_allowed",
-  "strategy_version_current",
-  "authority_version_current",
   "harness_run_owns_lease",
   "direction_permitted",
-  "market_is_eth",
   "execution_wallet_approved",
   "account_and_bbo_fresh",
   "size_and_price_valid",
@@ -61,6 +60,12 @@ export const PREVIEW_CHECKLIST_ITEMS = [
    * harness then tries to satisfy by changing its size.
    */
   "position_exists",
+  /**
+   * Exit-only since plan-29 §3.3: the entry list no longer polices which
+   * market an increase may take, but an exit must still land in the mission's
+   * mandated market — it is the one way the exposure is actually removed.
+   */
+  "market_is_eth",
 ] as const;
 export type PreviewChecklistItem = (typeof PREVIEW_CHECKLIST_ITEMS)[number];
 
@@ -92,14 +97,22 @@ export interface PendingExecution {
 /** State the checklist inspects. All of it is already-reconciled truth. */
 export interface PreviewContext {
   readonly mission: TradingMission;
-  /** The harness run's published strategy version; must match the intent. */
+  /**
+   * The harness run's published strategy version. No preview item reads this
+   * since plan-29 §3.3 retired `strategy_version_current`; it is carried for
+   * the Phase 5 cleanup rather than re-widened into a gate.
+   */
   readonly currentStrategyVersion: number;
-  /** The authority version the mission currently holds. */
+  /**
+   * The authority version the mission currently holds. No preview item reads
+   * this since plan-29 §3.3 retired `authority_version_current`.
+   */
   readonly currentAuthorityVersion: number;
   /**
    * The authority version the requesting harness run observed when it decided
-   * (§18 optimistic versioning). Must equal `currentAuthorityVersion`, else a
-   * stale run is rejected before it mutates durable state.
+   * (§18 optimistic versioning). Preview stopped comparing it to
+   * `currentAuthorityVersion` when `authority_version_current` was retired
+   * (plan-29 §3.3); the lease check still ties the decision to a live run.
    */
   readonly expectedAuthorityVersion: number;
   /** The harness run id that owns the decision lease for this mission. */
@@ -142,7 +155,7 @@ export interface PreviewContext {
   readonly nowMs: number;
 }
 
-/** A validated preview — the intent cleared all 17 items. */
+/** A validated preview — the intent cleared all 14 items. */
 export interface TradingPreview {
   readonly intent: TradingOrderIntent;
   /** The USD risk this execution must reserve before signing. */
@@ -162,7 +175,7 @@ const reject = (
   detail: string,
 ): Effect.Effect<never, TradingPreviewRejection> => new TradingPreviewRejection({ item, detail });
 
-// --- the 17 checks, in spec order ----------------------------------------
+// --- the 14 checks, in spec order -----------------------------------------
 
 const isActive: Check = (_intent, ctx) =>
   ctx.mission.status === "executing" || ctx.mission.status === "position_open"
@@ -176,25 +189,6 @@ const entriesAllowed: Check = (_intent, ctx) =>
   ctx.mission.control.entriesAllowed && !ctx.mission.status.includes("blocked")
     ? Effect.void
     : reject("entries_allowed", "mission control disallows entries or mission is blocked");
-
-const strategyVersionCurrent: Check = (intent, ctx) =>
-  intent.strategyVersion === ctx.currentStrategyVersion
-    ? Effect.void
-    : reject(
-        "strategy_version_current",
-        `intent v${intent.strategyVersion} ≠ current v${ctx.currentStrategyVersion}`,
-      );
-
-const authorityVersionCurrent: Check = (_intent, ctx) =>
-  // §18 optimistic versioning: the harness run decided against
-  // `expectedAuthorityVersion`; if the mission has since moved to a newer
-  // authority, the run is stale and must not mutate durable state.
-  ctx.expectedAuthorityVersion === ctx.currentAuthorityVersion
-    ? Effect.void
-    : reject(
-        "authority_version_current",
-        `intent saw authority v${ctx.expectedAuthorityVersion} ≠ current v${ctx.currentAuthorityVersion}`,
-      );
 
 const harnessRunOwnsLease: Check = (_intent, ctx) =>
   ctx.activeHarnessRunId !== null && ctx.activeHarnessRunId === ctx.requestingHarnessRunId
@@ -263,6 +257,8 @@ const directionPermitted: Check = (intent, ctx) => {
 
 // The checklist-item key predates the BTC mandate and is kept for spec/log
 // continuity: the check is "the intent trades the mission's mandated market".
+// Exit-only since plan-29 §3.3 — the entry list stopped policing the market,
+// but an exit still has to land in the mandated one.
 const marketIsEth: Check = (intent, ctx) =>
   intent.market === ctx.mission.market
     ? Effect.void
@@ -430,11 +426,8 @@ const validStopDefined: Check = (intent, _ctx) => {
 const CHECKS: ReadonlyArray<{ item: PreviewChecklistItem; run: Check }> = [
   { item: "mission_active", run: isActive },
   { item: "entries_allowed", run: entriesAllowed },
-  { item: "strategy_version_current", run: strategyVersionCurrent },
-  { item: "authority_version_current", run: authorityVersionCurrent },
   { item: "harness_run_owns_lease", run: harnessRunOwnsLease },
   { item: "direction_permitted", run: directionPermitted },
-  { item: "market_is_eth", run: marketIsEth },
   { item: "execution_wallet_approved", run: executionWalletApproved },
   { item: "account_and_bbo_fresh", run: accountAndBboFresh },
   { item: "size_and_price_valid", run: sizeAndPriceValid },
@@ -462,6 +455,13 @@ const CHECKS: ReadonlyArray<{ item: PreviewChecklistItem; run: Check }> = [
 // The exit list below keeps every check that is about whether this exit can be
 // executed correctly, and drops every check that is about whether more exposure
 // should be permitted.
+//
+// Plan-29 §3.3 applied the same reasoning a second time, to the entry list
+// itself: `strategy_version_current`, `authority_version_current` and the
+// entry half of `market_is_eth` were permission and discipline ceremony — was
+// the model obeying its own bookkeeping? — not questions about whether the
+// order itself is correct. Every check about the order — size, leverage, loss,
+// wallet, freshness, concurrency, the stop — is exactly where it was.
 
 /**
  * A mission that can still act on the exchange.
@@ -552,9 +552,9 @@ export class TradingPreviewService extends Context.Service<
 /**
  * Pure preview — the checklist this intent's action type actually calls for.
  *
- * An increase runs all 17 §16.3 items in their listed order. An exit runs the
- * eight that are about executing it correctly; see `EXIT_CHECKS` for why the
- * other nine do not apply to something that removes exposure.
+ * An increase runs the 14 §16.3 items in their listed order. An exit runs the
+ * nine that are about executing it correctly; see `EXIT_CHECKS` for why the
+ * rest do not apply to something that removes exposure.
  */
 export const previewOrder = (
   intent: TradingOrderIntent,

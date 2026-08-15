@@ -166,20 +166,34 @@ describe("previewOrder — §16.3 checklist", () => {
     }),
   );
 
-  it.effect("item 3: rejects a stale strategy version (strategy_version_current)", () =>
+  // --- §16.3 rows 3, 4 and 7: the retired discipline checks (plan-29 §3.3) --
+  //
+  // These three used to reject an entry. They asked whether the model was
+  // obeying its own bookkeeping, not whether the order was correct, and the
+  // entry preview now admits them. The exit path keeps its own copy of the
+  // market row.
+
+  it.effect("retired item 3: admits an entry whose strategy version is stale", () =>
     Effect.gen(function* () {
-      const item = yield* rejectionItem(goodIntent({ strategyVersion: 2 }), goodCtx(now));
-      expect(item).toBe("strategy_version_current");
+      const preview = yield* previewOrder(goodIntent({ strategyVersion: 2 }), goodCtx(now));
+      expect(preview.intent.strategyVersion).toBe(2);
     }),
   );
 
-  it.effect("item 4: rejects a stale authority version (authority_version_current)", () =>
+  it.effect("retired item 4: admits an entry whose authority version went stale", () =>
     Effect.gen(function* () {
-      const item = yield* rejectionItem(
+      const preview = yield* previewOrder(
         goodIntent(),
         goodCtx(now, { currentAuthorityVersion: 2, expectedAuthorityVersion: 1 }),
       );
-      expect(item).toBe("authority_version_current");
+      expect(preview.intent.missionId).toBe("mission_1");
+    }),
+  );
+
+  it.effect("retired item 7: admits an entry outside the mission's mandated market", () =>
+    Effect.gen(function* () {
+      const preview = yield* previewOrder(goodIntent({ market: "BTC" }), goodCtx(now));
+      expect(preview.intent.market).toBe("BTC");
     }),
   );
 
@@ -211,13 +225,6 @@ describe("previewOrder — §16.3 checklist", () => {
         }),
       );
       expect(item).toBe("direction_permitted");
-    }),
-  );
-
-  it.effect("item 7: rejects an intent for a market the mission is not mandated to", () =>
-    Effect.gen(function* () {
-      const item = yield* rejectionItem(goodIntent({ market: "BTC" }), goodCtx(now));
-      expect(item).toBe("market_is_eth");
     }),
   );
 
@@ -684,7 +691,22 @@ describe("exits under entry restrictions", () => {
     }),
   );
 
-  it.effect("an entry still runs every one of the 17 checks", () =>
+  it.effect("still refuses an exit in a market the mission is not mandated to", () =>
+    Effect.gen(function* () {
+      // The entry list stopped policing the market (plan-29 §3.3); the exit
+      // list did not. An exit is the one way exposure is removed, so it has
+      // to land in the mandated market.
+      const rejection = yield* previewOrder(
+        exitIntent({ market: "BTC" }),
+        goodCtx(now, {
+          budget: { ...goodCtx(now).budget, openPositions: [openLong()] as never },
+        }),
+      ).pipe(Effect.flip);
+      expect(rejection.item).toBe("market_is_eth");
+    }),
+  );
+
+  it.effect("an entry still runs every one of the 14 checks", () =>
     Effect.gen(function* () {
       // The exit list is chosen by action type, so the entry path must be
       // untouched by it — including the two items exits drop first.
