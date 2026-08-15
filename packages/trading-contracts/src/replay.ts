@@ -221,7 +221,16 @@ export function evaluateSetup(input: {
   if ((frame.atrExpansionRatio ?? 0) <= 1) {
     return declinedEvaluation("atr_not_expanding");
   }
-  const setup = input.candidates.find((candidate) => candidate.kind !== "range_reversion");
+  // Named positively, not as "anything that is not a range". The setup finder
+  // also scores the indicator strategies (`ema_cross`, `rsi_reversion`), and a
+  // negative filter would have relabelled one of those as a momentum breakout
+  // and graded it against the momentum playbook's gates.
+  const setup = input.candidates.find(
+    (candidate) =>
+      candidate.kind === "momentum_breakout" ||
+      candidate.kind === "trend_continuation" ||
+      candidate.kind === "opening_range_break",
+  );
   if (setup === undefined) return declinedEvaluation("momentum_structure_not_eligible");
   // A close-confirmed break is itself fresh on this bar. `impulseIsFresh`
   // remains a gate for pre-break continuation evidence, but must not veto the

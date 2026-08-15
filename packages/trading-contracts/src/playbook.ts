@@ -45,18 +45,21 @@ export const PlaybookProcedure = Schema.Struct({
 export type PlaybookProcedure = typeof PlaybookProcedure.Type;
 
 /**
- * The five playbooks the `trading_get_playbook` tool returns by name.
+ * The playbooks the `trading_get_playbook` tool returns by name.
  *
  * `classify` is the regime read; `momentum` and `range_reversion` are the two
  * modes a regime resolves to; `opening_range` is the ORB placeholder the plan
- * authorises for a later session type; `standing_rules` is what holds in both
- * modes.
+ * authorises for a later session type; `ema_cross` and `rsi_reversion` are the
+ * two simple indicator strategies, each standalone rather than a filter on the
+ * structural ones; `standing_rules` is what holds in every mode.
  */
 export const TradingPlaybookName = Schema.Literals([
   "classify",
   "momentum",
   "range_reversion",
   "opening_range",
+  "ema_cross",
+  "rsi_reversion",
   "standing_rules",
 ]);
 export type TradingPlaybookName = typeof TradingPlaybookName.Type;
@@ -74,7 +77,7 @@ export const Playbook = Schema.Struct({
 export type Playbook = typeof Playbook.Type;
 
 /**
- * The five playbooks, in the order `trading_get_playbook` returns them when no
+ * The playbooks, in the order `trading_get_playbook` returns them when no
  * name is asked for (the tool always takes a name, so this ordering is for
  * readability here, not a runtime guarantee).
  *
@@ -93,6 +96,7 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
       "State the classification and the evidence for it in `belief.regime` before choosing a mode. Trending takes the momentum procedure; ranging takes the range scalp.",
       "trading_get_market_structure now does the assembling for you: `setups[]` is every setup its own measurements support, best score first, each with the `level` to arm and `closeConfirmed` saying which watch type evaluates it. An empty `setups[]` on a turn where the market reads clean is real evidence of no edge; a scored setup you decline is a decision to state your reason for. Read it as evidence, not as permission — the entry gates below still have to clear.",
       'RUN THE TOURNAMENT, NOT A ONE-HORSE RACE. `candidates[]` on the same read is `setups[]` joined with each candidate\'s own cost gate at the current book — the available move, its multiple of the break-even move, whether it clears the gate its playbook demands, and the distance to its trigger. Give one line per candidate (each strategy x each supported direction, plus "no trade") on expectancy after costs, then run the winner and record the rest in `alternativesConsidered[]` on the publish. A user mandate naming a strategy narrows the field to it; otherwise the whole field competes, every turn, and "no trade" has to beat the best candidate\'s expectancy — not perfection.',
+      'THE FIELD IS SIX STRATEGIES, NOT TWO. A bare mandate — "trade BTC", with no strategy named — puts every one of them on the table: `momentum_breakout` and `trend_continuation` from the momentum playbook, `range_reversion`, `opening_range_break`, and the two indicator strategies, `ema_cross` (a fresh 9/21 EMA cross, armed on the close through the fast EMA) and `rsi_reversion` (a fresh RSI(14) band extreme, faded at the boundary it was made at). The indicator two are STANDALONE: they are not confirmations bolted onto a structural setup, they are their own entries with their own gates and their own stops, and the structure read scores them alongside the structural ones from the same measurements. Naming a strategy in `alternativesConsidered[]` costs a line; leaving one unconsidered because the regime read pointed elsewhere is how a tradeable cross goes untaken all session. Every strategy is measured on every interval the read covers and traded on the mission\'s own timeframe, which is 1m unless the mandate names another.',
       "THE REGIME PICKS THE PLAYBOOK, NOT THE INSTRUCTION. A user instruction naming momentum is a directive to trade this market with momentum-style entries when they exist — it is not an order to sit out every other regime. When the read says ranging, run the range scalp at the measured boundaries and say that is what you are doing and why; publishing the same momentum stand-down at every reassessment while a tradeable range oscillates in front of you is not caution, it is refusing the trade that is there in favour of the one that is not.",
     ],
     gates: [],
@@ -179,6 +183,64 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
     ],
   },
   {
+    name: "ema_cross",
+    whenItApplies:
+      "EMA CROSS, the simplest directional strategy there is: the 9-period EMA crossing the 21-period one on the thesis timeframe. A STANDALONE strategy, not a filter on the others — it competes in the tournament on its own gates, and 'the cross says up and the structure says nothing' is a candidate to price, not a signal with nowhere to go.",
+    procedure: [
+      "Read `ema` on the thesis timeframe of trading_get_market_structure. `spreadUsd` is fast minus slow — its SIGN is the bias, its size is how separated the two are — and `barsSinceCross` is how long ago that sign last flipped. A cross older than " +
+        policy.emaCross.maxCrossAgeBars +
+        " bars is not a signal, it is a description of where price has already been, and the structure read declines to score it.",
+      "Require the two averages to be genuinely apart: |spreadUsd| at least " +
+        policy.emaCross.minSpreadAtrRatio +
+        "x the frame's ATR. Two averages grazing each other in chop cross constantly, and every one of those crossings is a round trip paid for nothing.",
+      'ARM THE FAST EMA AS A `candle_close`, NOT A `price_cross`. Price oscillates around its own average all day; only a bar CLOSING beyond the fast EMA says the cross is being traded. Publish the condition with `confirmation: "close"` and register a `candle_close` watch at `ema.fastUsd` on the thesis timeframe.',
+      "Derive the target the way every other mode does — off measured volatility over the expected hold, published in `protection.targetProfitBasis` with the arithmetic checked at publish. A cross has no range height and no impulse of its own to be paid out of, so the move it is played for is " +
+        policy.emaCross.targetAtrMultiple +
+        "x ATR, which is what `candidates[]` prices its cost gate against. Measure it rather than assume it: if the ATR says the move is smaller than that, the smaller number is the one to publish.",
+      "Stop beyond the SLOW EMA, plus the noise floor. That is the level that says the cross was wrong — not a dollar offset, and not the fast EMA, which price is expected to trade back through while the bias holds.",
+      "The cross is also the exit thesis: a close back through the fast EMA against the bias is the first warning, and a re-cross of the pair is the thesis over. Publish both as exit conditions rather than holding on the target alone.",
+    ],
+    gates: [
+      "Call trading_estimate_costs fresh at the size you intend and require the expected move (" +
+        policy.emaCross.targetAtrMultiple +
+        "x ATR) to be worth at least " +
+        policy.emaCross.entryCostMultiple +
+        "x `breakEvenPriceMoveUsd`. `candidates[]` has already computed this row for you — read `costMultiple` and `clearsCostGate` there rather than re-deriving them.",
+    ],
+    standDownIf: [
+      "If the expected move does not clear the entry multiple, stand down on THIS candidate and show the arithmetic — and then check the rest of the field before standing the turn down, because a cross that cannot pay its costs says nothing about the range boundary two dollars away.",
+      "A CROSS INSIDE A RANGE IS NOISE. When `regime.classification` is `ranging` and the swing range has held its height, the pair will cross at every oscillation and each crossing is the middle of the range — the worst entry the range offers. Trade the boundary instead, and say that is what you are doing.",
+    ],
+  },
+  {
+    name: "rsi_reversion",
+    whenItApplies:
+      "RSI BAND REVERSION: Wilder's RSI(14) at an extreme, faded back toward the middle. The other simple indicator strategy, standalone beside the EMA cross — it reads one oscillator against fixed bands and needs no structural range at all.",
+    procedure: [
+      "Read `rsi` on the thesis timeframe. `condition` applies the bands (" +
+        "overbought at 70, oversold at 30) so two turns cannot pick two different ones, and `barsSinceEnteringExtreme` is how long the extreme has held.",
+      "Fade the extreme: overbought is a short, oversold is a long. Enter at the boundary the extreme was MADE at — `swingHighPrice` for a short, `swingLowPrice` for a long — not wherever price has drifted to since, and arm it as a `price_cross` with " +
+        '`confirmation: "touch"`. Like the range boundary, the price IS the trigger here: waiting a whole bar for a close gives back most of the snap-back you are being paid for.',
+      "Play it for " +
+        policy.rsiReversion.targetSwingFraction * 100 +
+        "% of the swing range — the move back toward the middle, not a reversal. Publish that as `measuredMoveUsd` with `measurement` `swing_range`, and say in the rationale that the full height is not what is being claimed.",
+      "Stop beyond the extreme itself plus the noise floor: the thesis is that price is stretched, and a new extreme is that thesis failing.",
+      "Bank at the conservative rung. A reversion that reaches the middle has delivered exactly what it promised; holding it for a reversal is trading a different strategy with this one's stop.",
+    ],
+    gates: [
+      "Require half the swing range to be worth at least " +
+        policy.rsiReversion.entryCostMultiple +
+        "x `breakEvenPriceMoveUsd` at the size you intend — `candidates[]` prices this row for you.",
+      "Require the extreme to be FRESH: no more than " +
+        policy.rsiReversion.maxExtremeAgeBars +
+        " bars old. An oscillator that has been pinned at 75 for forty bars is measuring a trend, not a stretch.",
+    ],
+    standDownIf: [
+      "NEVER FADE A MARKET STILL DRIVING INTO THE BAND. When the recent 30-bar directional score points into the extreme with conviction, this is a leg being ridden and selling it is the losing half of this strategy's reputation. The structure read applies that veto in code and simply does not score the candidate; do not overrule it without naming what has turned.",
+      "If the swing range cannot be measured at all, there is no move to target and no stop to anchor — that is `blocked_by_data`, not a trade at the current price.",
+    ],
+  },
+  {
     name: "standing_rules",
     whenItApplies:
       "BOTH MODES, whichever one the regime put you in — these hold on every turn regardless of mode.",
@@ -201,6 +263,7 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
       "A WAKE WHILE FLAT RE-RUNS THE TOURNAMENT FROM SCRATCH. On a scheduled or staleness wake with no position, the incumbent thesis has no seniority: re-read the regime, re-read `candidates[]`, and let the field compete again — a plan published an hour ago is a record of that hour's market, not a claim on this one. While HOLDING, the bar is different: switching strategies means paying the exit and the re-entry, so a switch has to beat the incumbent by more than that round-trip cost, and the publish that switches shows the arithmetic.",
       "PLACE THE STOP BEYOND THE LEVEL THAT INVALIDATES THE THESIS, then add the noise floor — max(2x the half-spread, 0.35x ATR) — as margin. Never a bare dollar offset from entry: a stop that is not anchored to the structure that would prove the thesis wrong is anchored to nothing, and one inside the noise floor is a scheduled exit, not protection. trading_quote_entry refuses a stop inside the floor, the same rule trading_adjust_stop already enforces.",
       "SIZE THE POSITION TO THE RISK CEILING, NOT TO YOUR NERVE. Unless the mandate names a notional, omit `sizeEth`/`notionalUsd` on trading_quote_entry and take the size the server quotes, or size down only for a reason you can name. The ceilings — gross notional, leverage, planned loss, loss budget — ARE the risk policy, and a size well inside them is not a safer version of the thesis, it is the same thesis paid a fraction as much: the spread, the minimum tick, the round trip and the turn it cost are all the same. `constrainedBy` says which ceiling bound the quote.",
+      'SIZE THE NOTIONAL TO THE TARGET, NOT THE TARGET TO THE NOTIONAL. The target is a USD figure, the move is a percentage, and the round trip is also a percentage of notional — so the notional is what converts one into the other: notional x (expected move % - round trip %) = the target. Sizing DOWN does not make a target cheaper to reach, it makes it arithmetically unreachable, because the costs shrink with the position and the target does not. trading_quote_entry now does this for you: it reads the published target and its basis, works out the notional that pays it after costs at the current book, and lifts a too-small request up to it — bounded by every risk ceiling, which still bind. `constrainedBy: "target_notional"` is the quote saying it did so. When the warnings say the ceilings could not fund the target, that is a target to re-cut off the move the market is actually producing, or a trade to take for a nearer rung — it is NOT a reason to decline a setup that cleared every gate.',
       "COSTS ARE AN EXIT INSTRUMENT, NOT AN ENTRY VETO. Before entry they answer one question — does the move on offer clear `minimumViableTargetUsd` — and that question is asked once. Once the position is on they are the instrument you manage with: `positionCosts` on every holding wake prices the round trip on the size you actually hold, so `unrealisedPnl` minus what is left of that round trip is what banking now is really worth, and `preferredTargetUsd` is the rung to hold an extension against. The market is not being predicted here; it is being read for what it is currently paying.",
       "DEFEND WHAT IS OPEN, AND DO NOT LEAVE THE MOVE BEHIND. On every wake with a position, do three things before anything else: read `drawdownFromPeakUsd` against `peakUnrealisedPnl` to see what has already been handed back, trail the stop with trading_adjust_stop when structure has moved in your favour (`trail_peak` behind the newest swing, `breakeven` once the move covers the round trip), and keep a `pnl_giveback` armed under the peak whenever the position is in profit — not only when you decide to extend. A profit-target wake is a decision point: bank when the regime says mean-reversion or the structure ahead is thin, extend when the leg is still expanding and the higher timeframe agrees, and either way say which and arm what wakes you next. Extending with no giveback watch bets the whole open profit on the next leg.",
       "GIVE THE TRADE ROOM TO BE RIGHT. A stop is not tightened because the position is uncomfortable — every stop-out inside the noise floor is a fee paid for nothing. The floor (max(2x half-spread, 0.35x ATR)) is the minimum, not the target: anchor the stop beyond the level that would actually prove the thesis wrong and add the floor as margin. When ATR expands under an open position, `volatility_room` is a legitimate adjustment back toward the entry's approved stop — that envelope is yours to use, and using it is not loosening risk, it is refusing to hand the trade to a wick.",

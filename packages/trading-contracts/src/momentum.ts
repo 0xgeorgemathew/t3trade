@@ -73,6 +73,25 @@ export type MomentumDirection = typeof MomentumDirection.Type;
 export const RECENT_DIRECTION_BARS = 30;
 
 /**
+ * The EMA pair the `ema_cross` strategy trades.
+ *
+ * 9 over 21 is the shortest pair that still smooths a 1m series instead of
+ * tracing it, and it is the pair the doctrine names, so the two cannot drift
+ * apart. Nothing here is timeframe-specific: the same pair is measured on every
+ * interval in {@link MOMENTUM_TIMEFRAMES}, and the mission's own timeframe
+ * decides which frame's cross it trades.
+ */
+export const EMA_FAST_PERIOD = 9;
+export const EMA_SLOW_PERIOD = 21;
+
+/** Wilder's RSI period, the one every published RSI band assumes. */
+export const RSI_PERIOD = 14;
+
+/** RSI at or above this is overbought; at or below its mirror, oversold. */
+export const RSI_OVERBOUGHT = 70;
+export const RSI_OVERSOLD = 30;
+
+/**
  * The trailing run of each pivot sequence, counted from the newest pivot back.
  *
  * Three consecutive lower highs is a market being sold at ever-lower levels —
@@ -131,6 +150,52 @@ export const StructureBreakout = Schema.Struct({
 export type StructureBreakout = typeof StructureBreakout.Type;
 
 /**
+ * The two exponential moving averages the `ema_cross` playbook trades, and
+ * where price sits against them.
+ *
+ * 9 over 21 is the shortest pair that still smooths a 1m series rather than
+ * tracing it. `spreadUsd` is fast minus slow, so its SIGN is the bias and its
+ * size is how separated the two are; `barsSinceCross` is how long ago that sign
+ * last flipped, which is the whole freshness question for a cross entry.
+ * Absent when the window is shorter than the slow period.
+ */
+export const EmaTrend = Schema.Struct({
+  fastPeriod: Schema.Number,
+  slowPeriod: Schema.Number,
+  fastUsd: Schema.Number,
+  slowUsd: Schema.Number,
+  /** Fast minus slow, in USD of price. Positive is an up bias. */
+  spreadUsd: Schema.Number,
+  /** The same spread as a percentage of the slow EMA. */
+  spreadPercent: Schema.Number,
+  /**
+   * Bars since the spread last changed sign. Zero means it flipped on the last
+   * bar. Absent when the window holds no flip at all — a trend that has been
+   * one way for the whole lookback has no cross to be fresh or stale.
+   */
+  barsSinceCross: Schema.optional(Schema.Number),
+  /** Whether the last close sits on the same side of the fast EMA as the bias. */
+  closeAgreesWithBias: Schema.Boolean,
+});
+export type EmaTrend = typeof EmaTrend.Type;
+
+/**
+ * Wilder's RSI over the window, and whether it is at an extreme.
+ *
+ * The one number the `rsi_reversion` playbook turns on. `condition` applies the
+ * bands so two harnesses cannot pick two different ones, and
+ * `barsSinceEnteringExtreme` says how long the extreme has held — a market that
+ * has been overbought for forty bars is trending, not stretched.
+ */
+export const RsiRead = Schema.Struct({
+  period: Schema.Number,
+  value: Schema.Number,
+  condition: Schema.Literals(["overbought", "oversold", "neutral"]),
+  barsSinceEnteringExtreme: Schema.optional(Schema.Number),
+});
+export type RsiRead = typeof RsiRead.Type;
+
+/**
  * A setup the arithmetic can see, scored, with the level it lives at.
  *
  * Not a recommendation and not a permission — nothing in the runtime reads
@@ -145,6 +210,8 @@ export const CandidateSetup = Schema.Struct({
     "range_reversion",
     "opening_range_break",
     "trend_continuation",
+    "ema_cross",
+    "rsi_reversion",
   ]),
   direction: Schema.Literals(["up", "down"]),
   interval: MarketCandleInterval,
@@ -272,6 +339,16 @@ export const MomentumTimeframeContext = Schema.Struct({
   swingLowTouches: Schema.optional(Schema.Number),
   breakout: Schema.optional(StructureBreakout),
   /**
+   * The 9/21 EMA pair on this timeframe — see {@link EmaTrend}.
+   *
+   * Measured on every timeframe alongside the structural features, so the
+   * indicator strategies compete in the same tournament from the same read
+   * rather than needing a second tool call.
+   */
+  ema: Schema.optional(EmaTrend),
+  /** Wilder's RSI(14) on this timeframe — see {@link RsiRead}. */
+  rsi: Schema.optional(RsiRead),
+  /**
    * The last impulse ended within `IMPULSE_FRESH_BARS` bars.
    *
    * "A momentum entry taken twenty bars after the impulse finished is not a
@@ -328,6 +405,8 @@ export const StrategyCandidate = Schema.Struct({
     "range_reversion",
     "opening_range_break",
     "trend_continuation",
+    "ema_cross",
+    "rsi_reversion",
   ]),
   direction: Schema.Literals(["up", "down"]),
   interval: MarketCandleInterval,
@@ -382,6 +461,137 @@ export type MarketStructure = typeof MarketStructure.Type;
 // ---------------------------------------------------------------------------
 // Arithmetic
 // ---------------------------------------------------------------------------
+
+/**
+ * The EMA series over `values`, seeded with the simple average of the first
+ * `period` samples.
+ *
+ * One entry per input from index `period - 1` onward, so the last element is
+ * the current EMA. Empty when the window is shorter than the period — an EMA
+ * of fewer bars than its own period is a number with no smoothing in it.
+ */
+export function exponentialMovingAverage(
+  values: ReadonlyArray<number>,
+  period: number,
+): ReadonlyArray<number> {
+  if (period <= 0 || values.length < period) return [];
+  const multiplier = 2 / (period + 1);
+  let average = mean(values.slice(0, period));
+  const series: Array<number> = [average];
+  for (const value of values.slice(period)) {
+    average = (value - average) * multiplier + average;
+    series.push(average);
+  }
+  return series;
+}
+
+/**
+ * The 9/21 EMA read for one window — see {@link EmaTrend}.
+ *
+ * The two series are aligned on their shared tail (the slow one starts later),
+ * so `barsSinceCross` counts bars of the input, not offsets of an array.
+ */
+export function readEmaTrend(candles: ReadonlyArray<MarketCandle>): EmaTrend | undefined {
+  const closes = candles.map((candle) => candle.close);
+  const fast = exponentialMovingAverage(closes, EMA_FAST_PERIOD);
+  const slow = exponentialMovingAverage(closes, EMA_SLOW_PERIOD);
+  if (fast.length === 0 || slow.length === 0) return undefined;
+
+  // Both series end on the last bar, so aligning on the shorter tail pairs the
+  // two EMAs of the same bar.
+  const paired = slow.length;
+  const fastTail = fast.slice(fast.length - paired);
+  const spreads = fastTail.map((value, index) => value - slow[index]!);
+  const currentSpread = spreads[spreads.length - 1]!;
+  const slowUsd = slow[slow.length - 1]!;
+  const fastUsd = fastTail[fastTail.length - 1]!;
+
+  // Walk back to the newest bar whose spread had the other sign; the bars
+  // since it are the age of the cross.
+  let barsSinceCross: number | undefined;
+  const currentIsUp = currentSpread >= 0;
+  for (let index = spreads.length - 2; index >= 0; index -= 1) {
+    if (spreads[index]! >= 0 !== currentIsUp) {
+      barsSinceCross = spreads.length - 1 - index - 1;
+      break;
+    }
+  }
+
+  const lastClose = closes[closes.length - 1] ?? fastUsd;
+  return {
+    fastPeriod: EMA_FAST_PERIOD,
+    slowPeriod: EMA_SLOW_PERIOD,
+    fastUsd,
+    slowUsd,
+    spreadUsd: currentSpread,
+    spreadPercent: slowUsd > 0 ? (currentSpread / slowUsd) * 100 : 0,
+    ...(barsSinceCross === undefined ? {} : { barsSinceCross }),
+    closeAgreesWithBias: currentIsUp ? lastClose >= fastUsd : lastClose <= fastUsd,
+  };
+}
+
+/**
+ * Wilder's RSI over the window — see {@link RsiRead}.
+ *
+ * Smoothed the way Wilder defined it (an EMA of gains and losses with a 1/period
+ * multiplier), not as a simple average of the last 14 bars, because every
+ * published overbought/oversold band assumes the smoothed form.
+ */
+export function readRsi(candles: ReadonlyArray<MarketCandle>): RsiRead | undefined {
+  if (candles.length < RSI_PERIOD + 1) return undefined;
+  const closes = candles.map((candle) => candle.close);
+
+  const gains: Array<number> = [];
+  const losses: Array<number> = [];
+  for (let index = 1; index < closes.length; index += 1) {
+    const change = closes[index]! - closes[index - 1]!;
+    gains.push(Math.max(0, change));
+    losses.push(Math.max(0, -change));
+  }
+
+  let averageGain = mean(gains.slice(0, RSI_PERIOD));
+  let averageLoss = mean(losses.slice(0, RSI_PERIOD));
+  const values: Array<number> = [];
+  const push = (): void => {
+    // No losses at all is RSI 100 by definition, not a division by zero.
+    const strength = averageLoss === 0 ? 100 : 100 - 100 / (1 + averageGain / averageLoss);
+    values.push(strength);
+  };
+  push();
+  for (let index = RSI_PERIOD; index < gains.length; index += 1) {
+    averageGain = (averageGain * (RSI_PERIOD - 1) + gains[index]!) / RSI_PERIOD;
+    averageLoss = (averageLoss * (RSI_PERIOD - 1) + losses[index]!) / RSI_PERIOD;
+    push();
+  }
+
+  const value = values[values.length - 1]!;
+  const condition =
+    value >= RSI_OVERBOUGHT
+      ? ("overbought" as const)
+      : value <= RSI_OVERSOLD
+        ? ("oversold" as const)
+        : ("neutral" as const);
+
+  // How long the extreme has held: a market overbought for forty bars is
+  // trending, and that is the reversion trap this count exists to expose.
+  let barsSinceEnteringExtreme: number | undefined;
+  if (condition !== "neutral") {
+    const isExtreme = (sample: number): boolean =>
+      condition === "overbought" ? sample >= RSI_OVERBOUGHT : sample <= RSI_OVERSOLD;
+    let bars = 0;
+    for (let index = values.length - 2; index >= 0 && isExtreme(values[index]!); index -= 1) {
+      bars += 1;
+    }
+    barsSinceEnteringExtreme = bars;
+  }
+
+  return {
+    period: RSI_PERIOD,
+    value,
+    condition,
+    ...(barsSinceEnteringExtreme === undefined ? {} : { barsSinceEnteringExtreme }),
+  };
+}
 
 /** True range of each bar against its predecessor. One shorter than `candles`. */
 const trueRanges = (candles: ReadonlyArray<MarketCandle>): ReadonlyArray<number> => {
@@ -749,6 +959,8 @@ export function analyseTimeframe(
   const swingDrift = measureSwingDrift(candles);
   const excursionSymmetryRatio = measureExcursionSymmetry(candles);
   const breakout = readBreakout(candles, swingHighPrice, swingLowPrice);
+  const ema = readEmaTrend(candles);
+  const rsi = readRsi(candles);
 
   return {
     interval,
@@ -799,6 +1011,8 @@ export function analyseTimeframe(
       ? {}
       : { swingLowTouches: countTouches(candles, swingLowPrice, "low", touchTolerance) }),
     ...(breakout === undefined ? {} : { breakout }),
+    ...(ema === undefined ? {} : { ema }),
+    ...(rsi === undefined ? {} : { rsi }),
     ...(found === null ? {} : { impulseIsFresh: found.impulse.ageBars <= IMPULSE_FRESH_BARS }),
   };
 }
@@ -1132,111 +1346,251 @@ function readTrendContinuation(
 }
 
 /**
- * The setups each timeframe's measurements support.
+ * A fresh EMA cross with the two averages actually separated — the simplest
+ * directional signal there is, and a strategy in its own right.
  *
- * Three shapes, each with the conditions its playbook already states, applied
- * as arithmetic rather than as prose the harness re-derives every turn. A
- * timeframe with insufficient data contributes nothing.
+ * Deliberately not a filter on the structural setups: it is scored, gated and
+ * entered on its own terms, so "the cross said up and the structure said
+ * nothing" is a candidate the tournament can compare rather than a signal with
+ * nowhere to go. The trigger is a candle CLOSING beyond the fast EMA — the
+ * cross itself is a state of two averages, and the close is what says price
+ * agrees with it.
+ */
+function readEmaCross(
+  frame: MomentumTimeframeContext,
+  policy: TradingPolicy,
+): CandidateSetup | null {
+  const ema = frame.ema;
+  if (ema === undefined) return null;
+
+  const age = ema.barsSinceCross;
+  if (age === undefined || age > policy.emaCross.maxCrossAgeBars) return null;
+
+  // Two averages grazing each other in chop cross constantly. The separation
+  // is measured in ATRs so the gate means the same thing on any market.
+  const separation = frame.atrUsd > 0 ? Math.abs(ema.spreadUsd) / frame.atrUsd : 0;
+  if (separation < policy.emaCross.minSpreadAtrRatio) return null;
+  if (!ema.closeAgreesWithBias) return null;
+
+  const direction = ema.spreadUsd >= 0 ? ("up" as const) : ("down" as const);
+  const score = clamp01(
+    0.5 * (1 - age / Math.max(1, policy.emaCross.maxCrossAgeBars)) +
+      0.3 * clamp01(separation / (policy.emaCross.minSpreadAtrRatio * 4)) +
+      0.2 * clamp01(Math.abs(frame.recentDirectionScore) / policy.momentum.directionScoreThreshold),
+  );
+
+  return {
+    kind: "ema_cross",
+    direction,
+    interval: frame.interval,
+    score,
+    level: ema.fastUsd,
+    // A touch of the fast EMA is price oscillating around its own average;
+    // only a close beyond it says the cross is being traded.
+    closeConfirmed: true,
+    rationale:
+      `EMA ${ema.fastPeriod} crossed ${direction === "up" ? "above" : "below"} EMA ${ema.slowPeriod} ` +
+      `${age} bar(s) ago, separated ${separation.toFixed(2)} ATR (${ema.spreadPercent.toFixed(3)}%), ` +
+      `last close ${direction === "up" ? "above" : "below"} the fast EMA at ${ema.fastUsd.toFixed(2)}`,
+  };
+}
+
+/**
+ * An RSI band extreme that has only just been reached — the other simple
+ * indicator strategy, standing alone beside the EMA cross.
+ *
+ * Distinct from `range_reversion`, which reads a structural range and its
+ * boundaries: this one reads one oscillator against fixed bands and needs no
+ * range at all. What it borrows from the range playbook is the discipline that
+ * an extreme which has HELD for many bars is a trend being ridden, not a market
+ * stretched away from its mean.
+ */
+function readRsiReversion(
+  frame: MomentumTimeframeContext,
+  policy: TradingPolicy,
+): CandidateSetup | null {
+  const rsi = frame.rsi;
+  if (rsi === undefined || rsi.condition === "neutral") return null;
+
+  const age = rsi.barsSinceEnteringExtreme ?? 0;
+  if (age > policy.rsiReversion.maxExtremeAgeBars) return null;
+
+  // Fade the extreme: overbought is a short, oversold is a long.
+  const direction = rsi.condition === "overbought" ? ("down" as const) : ("up" as const);
+
+  // A market driving INTO the band is trending, and fading a trend on an
+  // oscillator is the losing half of this strategy's reputation. The freshness
+  // check above cannot see it — a breakout prints an overbought reading on its
+  // first bar — so the recent directional score is the veto.
+  const recent = frame.recentDirectionScore;
+  const threshold = policy.momentum.directionScoreThreshold;
+  const trendingIntoBand = direction === "down" ? recent >= threshold : recent <= -threshold;
+  if (trendingIntoBand) return null;
+  // The level to arm is the boundary the extreme was made at, so the entry
+  // happens where price actually stretched rather than wherever it is now.
+  const level =
+    (direction === "down" ? frame.swingHighPrice : frame.swingLowPrice) ?? frame.referencePrice;
+  const distanceFromBand =
+    direction === "down" ? rsi.value - RSI_OVERBOUGHT : RSI_OVERSOLD - rsi.value;
+
+  const score = clamp01(
+    0.4 * (1 - age / Math.max(1, policy.rsiReversion.maxExtremeAgeBars)) +
+      0.35 * clamp01(distanceFromBand / 15) +
+      // The flatter the recent drift, the more of a stretch this is rather
+      // than a leg being ridden.
+      0.25 * clamp01(1 - Math.abs(recent) / threshold),
+  );
+
+  return {
+    kind: "rsi_reversion",
+    direction,
+    interval: frame.interval,
+    score,
+    level,
+    // The band is reached at a price, and waiting a whole bar for a close gives
+    // back the part of the snap-back this strategy is paid for — the same call
+    // the range boundary makes, for the same reason.
+    closeConfirmed: false,
+    rationale:
+      `RSI(${rsi.period}) at ${rsi.value.toFixed(1)} is ${rsi.condition}, ` +
+      `${age} bar(s) into the extreme; fading it ${direction === "down" ? "short" : "long"} at ${level}`,
+  };
+}
+
+/**
+ * The structural setup a timeframe supports — breakout, continuation, or range
+ * boundary, in that order of precedence.
+ *
+ * They are mutually exclusive by construction: a confirmed break already IS
+ * the continuation taken at the level, and a frame with a live pivot run is not
+ * a range holding its bounds. The indicator strategies below are NOT part of
+ * this chain — they are read separately, so a frame can offer a structural
+ * candidate and an indicator candidate at once and the tournament compares
+ * them.
+ */
+function readStructuralSetup(
+  frame: MomentumTimeframeContext,
+  policy: TradingPolicy,
+): CandidateSetup | null {
+  const edgePercent = policy.rangeReversion.edgePercent;
+  const stabilityLimit = policy.rangeReversion.stabilityPercent;
+  const minTouches = policy.rangeReversion.minBoundaryTouches;
+  const expansion = frame.atrExpansionRatio ?? 1;
+
+  // A break of a swing, confirmed on the close. A wick through the level is
+  // deliberately not a setup: it is the failure this measurement exists to
+  // separate out.
+  const breakout = frame.breakout;
+  if (breakout !== undefined && breakout.closedBeyond) {
+    const aligned =
+      (breakout.direction === "up" && frame.directionScore > 0) ||
+      (breakout.direction === "down" && frame.directionScore < 0);
+    // The armed breakout's own close is allowed to lead the slower direction
+    // score (the playbook states that exception explicitly), but contracting
+    // ATR is not a breakout entry. This structural gate is shared by the live
+    // setup read and replay — and it ends the structural chain for the frame,
+    // the way the loop's `continue` used to.
+    if (expansion <= 1) return null;
+    const touches =
+      (breakout.direction === "up" ? frame.swingHighTouches : frame.swingLowTouches) ?? 0;
+    const openingRangeTested =
+      (frame.swingHighTouches ?? 0) >= policy.openingRange.minBoundaryTouches &&
+      (frame.swingLowTouches ?? 0) >= policy.openingRange.minBoundaryTouches;
+    const score = clamp01(
+      0.4 * clamp01(Math.abs(frame.directionScore) / policy.momentum.directionScoreThreshold / 2) +
+        0.3 * clamp01(expansion - 1) +
+        0.2 * (frame.impulseIsFresh === true ? 1 : 0) +
+        0.1 * (aligned ? 1 : 0),
+    );
+    return {
+      kind: openingRangeTested ? "opening_range_break" : "momentum_breakout",
+      direction: breakout.direction,
+      interval: frame.interval,
+      score,
+      level: breakout.level,
+      closeConfirmed: true,
+      rationale:
+        `close ${breakout.direction === "up" ? "above" : "below"} ${breakout.level} with ` +
+        `directionScore ${frame.directionScore.toFixed(2)}, atrExpansionRatio ${expansion.toFixed(2)}, ` +
+        `${touches} prior touches, impulse ${frame.impulseIsFresh === true ? "fresh" : "stale"}`,
+    };
+  }
+
+  // A drift resuming after a shallow pullback. Checked after the breakout —
+  // a confirmed break already is the continuation, taken at the level — and
+  // before the range branch, because the two claims contradict: a frame with
+  // a live pivot run is not a range holding its bounds.
+  const continuation = readTrendContinuation(frame, policy);
+  if (continuation !== null) return continuation;
+
+  // A boundary of a range that has held its height and been tested on both
+  // sides. Chop is the requirement here, not a disqualification.
+  const position = frame.positionInRangePercent;
+  const stability = frame.rangeStabilityPercent;
+  if (
+    position === undefined ||
+    stability === undefined ||
+    stability > stabilityLimit ||
+    frame.direction !== "flat" ||
+    (frame.swingHighTouches ?? 0) < minTouches ||
+    (frame.swingLowTouches ?? 0) < minTouches
+  ) {
+    return null;
+  }
+
+  const atLow = position <= edgePercent;
+  const atHigh = position >= 100 - edgePercent;
+  if (!atLow && !atHigh) return null;
+
+  const level = (atLow ? frame.swingLowPrice : frame.swingHighPrice) ?? frame.referencePrice;
+  return {
+    kind: "range_reversion",
+    // Long off the floor, short off the ceiling.
+    direction: atLow ? "up" : "down",
+    interval: frame.interval,
+    score: clamp01(
+      0.6 * (1 - stability / stabilityLimit) + 0.4 * (1 - Math.abs(50 - position) / 50),
+    ),
+    level,
+    // The boundary is the price. Waiting for a close gives back the edge the
+    // range is paying for.
+    closeConfirmed: false,
+    rationale:
+      `${position.toFixed(0)}% into a range whose height moved ${stability.toFixed(0)}% across the window, ` +
+      `tested ${frame.swingLowTouches}x low and ${frame.swingHighTouches}x high`,
+  };
+}
+
+/**
+ * Every setup each timeframe's measurements support, best score first.
+ *
+ * Two families, read independently. The structural family (breakout,
+ * continuation, range boundary) is mutually exclusive within a frame — see
+ * {@link readStructuralSetup}. The indicator family (EMA cross, RSI band) is
+ * read alongside it rather than instead of it, because "trade BTC" with no
+ * further instruction has to put every strategy on the table before one is
+ * picked: a frame that offers no structural setup can still offer a cross, and
+ * a frame that offers both should have to defend the choice between them.
+ *
+ * A timeframe with insufficient data contributes nothing.
  */
 export function findCandidateSetups(
   frames: ReadonlyArray<MomentumTimeframeContext>,
   policy: TradingPolicy = ACTIVE_TRADING_POLICY,
 ): ReadonlyArray<CandidateSetup> {
   const setups: Array<CandidateSetup> = [];
-  const edgePercent = policy.rangeReversion.edgePercent;
-  const stabilityLimit = policy.rangeReversion.stabilityPercent;
-  const minTouches = policy.rangeReversion.minBoundaryTouches;
 
   for (const frame of frames) {
     if (!frame.sufficientData) continue;
-    const expansion = frame.atrExpansionRatio ?? 1;
 
-    // A break of a swing, confirmed on the close. A wick through the level is
-    // deliberately not a setup: it is the failure this measurement exists to
-    // separate out.
-    const breakout = frame.breakout;
-    if (breakout !== undefined && breakout.closedBeyond) {
-      const aligned =
-        (breakout.direction === "up" && frame.directionScore > 0) ||
-        (breakout.direction === "down" && frame.directionScore < 0);
-      // The armed breakout's own close is allowed to lead the slower
-      // direction score (the playbook states that exception explicitly), but
-      // contracting ATR is not a breakout entry. This structural gate is
-      // shared by the live setup read and replay.
-      if (expansion <= 1) continue;
-      const touches =
-        (breakout.direction === "up" ? frame.swingHighTouches : frame.swingLowTouches) ?? 0;
-      const openingRangeTested =
-        (frame.swingHighTouches ?? 0) >= policy.openingRange.minBoundaryTouches &&
-        (frame.swingLowTouches ?? 0) >= policy.openingRange.minBoundaryTouches;
-      const score = clamp01(
-        0.4 *
-          clamp01(Math.abs(frame.directionScore) / policy.momentum.directionScoreThreshold / 2) +
-          0.3 * clamp01(expansion - 1) +
-          0.2 * (frame.impulseIsFresh === true ? 1 : 0) +
-          0.1 * (aligned ? 1 : 0),
-      );
-      setups.push({
-        kind: openingRangeTested ? "opening_range_break" : "momentum_breakout",
-        direction: breakout.direction,
-        interval: frame.interval,
-        score,
-        level: breakout.level,
-        closeConfirmed: true,
-        rationale:
-          `close ${breakout.direction === "up" ? "above" : "below"} ${breakout.level} with ` +
-          `directionScore ${frame.directionScore.toFixed(2)}, atrExpansionRatio ${expansion.toFixed(2)}, ` +
-          `${touches} prior touches, impulse ${frame.impulseIsFresh === true ? "fresh" : "stale"}`,
-      });
-      continue;
-    }
+    const structural = readStructuralSetup(frame, policy);
+    if (structural !== null) setups.push(structural);
 
-    // A drift resuming after a shallow pullback. Checked after the breakout —
-    // a confirmed break already is the continuation, taken at the level — and
-    // before the range branch, because the two claims contradict: a frame with
-    // a live pivot run is not a range holding its bounds.
-    const continuation = readTrendContinuation(frame, policy);
-    if (continuation !== null) {
-      setups.push(continuation);
-      continue;
-    }
+    const emaCross = readEmaCross(frame, policy);
+    if (emaCross !== null) setups.push(emaCross);
 
-    // A boundary of a range that has held its height and been tested on both
-    // sides. Chop is the requirement here, not a disqualification.
-    const position = frame.positionInRangePercent;
-    const stability = frame.rangeStabilityPercent;
-    if (
-      position === undefined ||
-      stability === undefined ||
-      stability > stabilityLimit ||
-      frame.direction !== "flat" ||
-      (frame.swingHighTouches ?? 0) < minTouches ||
-      (frame.swingLowTouches ?? 0) < minTouches
-    ) {
-      continue;
-    }
-
-    const atLow = position <= edgePercent;
-    const atHigh = position >= 100 - edgePercent;
-    if (!atLow && !atHigh) continue;
-
-    const level = (atLow ? frame.swingLowPrice : frame.swingHighPrice) ?? frame.referencePrice;
-    setups.push({
-      kind: "range_reversion",
-      // Long off the floor, short off the ceiling.
-      direction: atLow ? "up" : "down",
-      interval: frame.interval,
-      score: clamp01(
-        0.6 * (1 - stability / stabilityLimit) + 0.4 * (1 - Math.abs(50 - position) / 50),
-      ),
-      level,
-      // The boundary is the price. Waiting for a close gives back the edge the
-      // range is paying for.
-      closeConfirmed: false,
-      rationale:
-        `${position.toFixed(0)}% into a range whose height moved ${stability.toFixed(0)}% across the window, ` +
-        `tested ${frame.swingLowTouches}x low and ${frame.swingHighTouches}x high`,
-    });
+    const rsiReversion = readRsiReversion(frame, policy);
+    if (rsiReversion !== null) setups.push(rsiReversion);
   }
 
   return [...setups].sort((left, right) => right.score - left.score);
@@ -1257,12 +1611,30 @@ export function findCandidateSetups(
 function availableMoveUsd(
   setup: CandidateSetup,
   frame: MomentumTimeframeContext | undefined,
+  policy: TradingPolicy,
 ): number | undefined {
   if (frame === undefined) return undefined;
-  if (setup.kind === "range_reversion" || setup.kind === "opening_range_break") {
+
+  const swingHeight = (): number | undefined => {
     if (frame.swingHighPrice === undefined || frame.swingLowPrice === undefined) return undefined;
     const height = frame.swingHighPrice - frame.swingLowPrice;
     return height > 0 ? height : undefined;
+  };
+
+  if (setup.kind === "range_reversion" || setup.kind === "opening_range_break") {
+    return swingHeight();
+  }
+  if (setup.kind === "rsi_reversion") {
+    // A fade off a band is played back toward the middle, not across the whole
+    // range — so the move on offer is a stated fraction of the height.
+    const height = swingHeight();
+    return height === undefined ? undefined : height * policy.rsiReversion.targetSwingFraction;
+  }
+  if (setup.kind === "ema_cross") {
+    // A cross has no range height and no impulse of its own; what it has is the
+    // fluctuation the market is currently producing, in ATRs.
+    const move = frame.atrUsd * policy.emaCross.targetAtrMultiple;
+    return move > 0 ? move : undefined;
   }
   return frame.lastImpulse?.sizeUsd;
 }
@@ -1284,6 +1656,10 @@ function requiredCostMultiple(kind: CandidateSetup["kind"], policy: TradingPolic
     case "momentum_breakout":
     case "trend_continuation":
       return policy.momentum.entryCostMultiple;
+    case "ema_cross":
+      return policy.emaCross.entryCostMultiple;
+    case "rsi_reversion":
+      return policy.rsiReversion.entryCostMultiple;
   }
 }
 
@@ -1305,7 +1681,7 @@ export function compareCandidates(
 
   return structure.setups.map((setup) => {
     const frame = frameByInterval.get(setup.interval);
-    const move = availableMoveUsd(setup, frame);
+    const move = availableMoveUsd(setup, frame, policy);
     const required = requiredCostMultiple(setup.kind, policy);
     const breakEven = cost?.breakEvenPriceMoveUsd;
     const multiple =

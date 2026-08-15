@@ -83,6 +83,53 @@ export interface OpeningRangePolicy {
   readonly minBoundaryTouches: number;
 }
 
+/**
+ * How the EMA-cross strategy decides a cross is tradeable.
+ *
+ * A standalone strategy, not a filter bolted onto the structural ones: it
+ * competes in the same tournament, on its own gates, and wins or loses on
+ * expectancy after costs like every other candidate.
+ */
+export interface EmaCrossPolicy {
+  /** Round trips the expected move must be worth to enter. */
+  readonly entryCostMultiple: number;
+  /**
+   * Oldest a cross may be, in bars, and still be the reason for the entry.
+   *
+   * A cross twenty bars back is not a signal, it is a description of where
+   * price has already been.
+   */
+  readonly maxCrossAgeBars: number;
+  /**
+   * Smallest separation between the two EMAs, as a fraction of ATR, before the
+   * cross is a cross rather than the two lines grazing each other in chop.
+   */
+  readonly minSpreadAtrRatio: number;
+  /**
+   * The move a fresh cross is played for, in ATRs. This is what the candidate
+   * offers the cost gate — an EMA cross has no range height and no impulse of
+   * its own to be paid out of.
+   */
+  readonly targetAtrMultiple: number;
+}
+
+/** How the RSI-band reversion decides a market is stretched rather than trending. */
+export interface RsiReversionPolicy {
+  /** Round trips the expected move must be worth to enter. */
+  readonly entryCostMultiple: number;
+  /**
+   * How long an extreme may have held, in bars, before it is a trend rather
+   * than a stretch. Forty bars of overbought is a market being bought, and
+   * selling it is fading a trend.
+   */
+  readonly maxExtremeAgeBars: number;
+  /**
+   * The share of the swing range a reversion off an RSI extreme plays for —
+   * the move back toward the middle, not the whole crossing.
+   */
+  readonly targetSwingFraction: number;
+}
+
 /** The standing rules that hold in every mode. */
 export interface SessionPolicy {
   /** How long a mission is planned to run, in minutes: shortest, longest. */
@@ -136,6 +183,8 @@ export interface TradingPolicy {
   readonly momentum: MomentumPolicy;
   readonly rangeReversion: RangePolicy;
   readonly openingRange: OpeningRangePolicy;
+  readonly emaCross: EmaCrossPolicy;
+  readonly rsiReversion: RsiReversionPolicy;
   readonly session: SessionPolicy;
   readonly reassessment: ReassessmentPolicy;
 }
@@ -167,6 +216,21 @@ export const TRADING_POLICY_V1: TradingPolicy = {
     entryHeightCostMultiple: 2.2,
     heightCostMultiple: 2.2,
     minBoundaryTouches: 2,
+  },
+  // The indicator strategies did not exist at V1. Their numbers are stated at
+  // the same entry gates their structural cousins had here, so a replay of V1
+  // against V2 compares the same rules moving rather than a strategy appearing
+  // out of nowhere with looser ones.
+  emaCross: {
+    entryCostMultiple: 2,
+    maxCrossAgeBars: 5,
+    minSpreadAtrRatio: 0.15,
+    targetAtrMultiple: 3,
+  },
+  rsiReversion: {
+    entryCostMultiple: 2.2,
+    maxExtremeAgeBars: 5,
+    targetSwingFraction: 0.5,
   },
   session: {
     plannedMinutes: [60, 120],
@@ -222,6 +286,17 @@ export const TRADING_POLICY_V2: TradingPolicy = {
   openingRange: {
     ...TRADING_POLICY_V1.openingRange,
     entryHeightCostMultiple: 1.6,
+  },
+  // Same separation of entry gate from target rung the two above got: a cross
+  // worth 1.3 round trips taken repeatedly is the objective, and a reversion
+  // still has to clear more because it takes only part of the crossing.
+  emaCross: {
+    ...TRADING_POLICY_V1.emaCross,
+    entryCostMultiple: 1.3,
+  },
+  rsiReversion: {
+    ...TRADING_POLICY_V1.rsiReversion,
+    entryCostMultiple: 1.6,
   },
   session: {
     ...TRADING_POLICY_V1.session,

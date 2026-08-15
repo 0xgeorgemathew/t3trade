@@ -651,7 +651,7 @@ export type TradingGetOpenOrdersInput = typeof TradingGetOpenOrdersInput.Type;
  * Read one named playbook.
  *
  * The doctrine the harness used to carry inside `POC_DEFAULT_INSTRUCTION`, split
- * into five modes and reachable by name. The result is the procedure the harness
+ * into one mode per strategy and reachable by name. The result is the procedure the harness
  * reads in the turn it decides what to do — it never reaches a database and is
  * the same for every mission.
  */

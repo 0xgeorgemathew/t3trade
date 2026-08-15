@@ -417,7 +417,7 @@ export const TradingExecuteTool = Tool.make("trading_execute", {
 
 export const TradingGetPlaybookTool = Tool.make("trading_get_playbook", {
   description:
-    "Read one named playbook: classify (regime read), momentum, range_reversion, opening_range, standing_rules. Each returns whenItApplies (trigger), procedure[] (ordered steps), gates[] (must clear before entry), standDownIf[] (retire a setup). Static data, same for every mission; nothing in the runtime branches on it. `missionId` optional.",
+    "Read one named playbook: classify (regime read), momentum, range_reversion, opening_range, ema_cross, rsi_reversion, standing_rules. Each returns whenItApplies (trigger), procedure[] (ordered steps), gates[] (must clear before entry), standDownIf[] (retire a setup). Static data; nothing in the runtime branches on it. `missionId` optional.",
   parameters: TradingGetPlaybookInput,
   success: Playbook,
   failure: TradingToolRejectedError,

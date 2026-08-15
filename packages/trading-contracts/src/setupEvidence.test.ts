@@ -110,11 +110,15 @@ describe("structure evidence", () => {
     const broke = findCandidateSetups([
       analyseTimeframe({ interval: "1m", candles: breakoutCandles() }),
     ]);
-    const breakout = broke[0];
+    // Found by kind, not by rank: the field now holds the indicator
+    // strategies too, and which of several up-candidates scores highest is a
+    // tournament question, not this test's claim.
+    const breakout = broke.find((setup) =>
+      ["momentum_breakout", "opening_range_break"].includes(setup.kind),
+    );
     assert.isDefined(breakout);
     assert.strictEqual(breakout!.direction, "up");
     assert.strictEqual(breakout!.closeConfirmed, true);
-    assert.include(["momentum_breakout", "opening_range_break"], breakout!.kind);
 
     // A ranging window with the mark parked on the floor is the range entry.
     const ranging = rangingCandles();
@@ -129,6 +133,51 @@ describe("structure evidence", () => {
     assert.isNotEmpty(range);
     assert.strictEqual(range[0]?.direction, "up");
     assert.strictEqual(range[0]?.closeConfirmed, false);
+  });
+
+  it("offers the EMA cross as its own candidate on a fresh cross", () => {
+    // A slow drift down, then a clean leg up: the fast EMA crosses the slow
+    // one from below and price closes above both.
+    const candles: Array<MarketCandle> = [];
+    for (let index = 0; index < 60; index++) {
+      const level = 2_030 - index * 0.5;
+      candles.push(
+        bar({ index, open: level + 0.5, high: level + 0.7, low: level - 0.3, close: level }),
+      );
+    }
+    for (let step = 1; step <= 5; step++) {
+      const level = 2_000.5 + step * 3;
+      candles.push(
+        bar({
+          index: 59 + step,
+          open: level - 3,
+          high: level + 0.5,
+          low: level - 3.5,
+          close: level,
+        }),
+      );
+    }
+
+    const frame = analyseTimeframe({ interval: "1m", candles });
+    assert.isDefined(frame.ema);
+    assert.isAbove(frame.ema!.spreadUsd, 0);
+
+    const cross = findCandidateSetups([frame]).find((setup) => setup.kind === "ema_cross");
+    assert.isDefined(cross);
+    assert.strictEqual(cross!.direction, "up");
+    // The cross is a state of two averages; the close through the fast EMA is
+    // what confirms it, so it arms as a candle_close.
+    assert.strictEqual(cross!.closeConfirmed, true);
+  });
+
+  it("does not fade an RSI extreme the market is still driving into", () => {
+    // The breakout window is overbought by construction, and its recent
+    // direction score points straight into the band.
+    const frame = analyseTimeframe({ interval: "1m", candles: breakoutCandles() });
+    assert.strictEqual(frame.rsi?.condition, "overbought");
+
+    const setups = findCandidateSetups([frame]);
+    assert.isEmpty(setups.filter((setup) => setup.kind === "rsi_reversion"));
   });
 
   it("says nothing at all about a window too short to measure", () => {
