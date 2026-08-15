@@ -11,7 +11,9 @@
  * The database is opened read-only: the shared home database is live while a
  * server owns it, and this command must never be the reason it was written to.
  * Exit-side spread and slippage are structurally unrecorded (no exit quotes
- * exist), so those lines say `n/a` rather than inventing a number.
+ * exist), so those lines say `n/a` rather than inventing a number. The two
+ * fill-sourced cost lines (plan 29 step 2.7) read the session's real fills:
+ * maker fill rate by count, and fees as a share of gross notional traded.
  */
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
@@ -30,8 +32,10 @@ import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import {
   readActivityEvidence,
   readDecisionFunnel,
+  readSessionFills,
   readSessionTrades,
   readSessionWakes,
+  type SessionFill,
   type SessionTrade,
   type SessionWakeCounts,
 } from "../trading/TradingRunTelemetry.ts";
@@ -139,6 +143,45 @@ export const deriveSessionEconomics = (trades: ReadonlyArray<SessionTrade>): Ses
   };
 };
 
+/**
+ * The session's fill-sourced cost measurements — plan 29 step 2.7. Where the
+ * economics above are stated against closed trades' entry notional, these come
+ * from the session's real fills: fees as the exchange charged them, and the
+ * maker/taker flag the exchange put on each fill.
+ */
+export interface SessionFillCosts {
+  /**
+   * Share of the session's fills that rested (crossed=false), by count. Null
+   * when no fill carries the flag — sessions recorded before it was persisted.
+   */
+  readonly makerFillRate: number | null;
+  /**
+   * Total fees paid / gross traded notional (sum of |price x size| per fill),
+   * as a fraction. Null when the session traded no notional.
+   */
+  readonly feeShareOfGross: number | null;
+  /** Every reconciled fill of the session — the fee sample. */
+  readonly fills: number;
+  /** Fills carrying a recorded maker/taker flag — the fill-rate sample. */
+  readonly flaggedFills: number;
+  /** Flagged fills that rested (crossed=false). */
+  readonly makerFills: number;
+}
+
+export const deriveSessionFillCosts = (fills: ReadonlyArray<SessionFill>): SessionFillCosts => {
+  const flagged = fills.filter((fill) => fill.crossed !== null);
+  const makerFills = flagged.filter((fill) => fill.crossed === false).length;
+  const grossNotional = fills.reduce((sum, fill) => sum + fill.notionalUsd, 0);
+  return {
+    makerFillRate: flagged.length === 0 ? null : makerFills / flagged.length,
+    feeShareOfGross:
+      grossNotional > 0 ? fills.reduce((sum, fill) => sum + fill.feeUsd, 0) / grossNotional : null,
+    fills: fills.length,
+    flaggedFills: flagged.length,
+    makerFills,
+  };
+};
+
 /** Everything the printer needs for one session. */
 export interface SessionReport {
   readonly missionId: string;
@@ -146,6 +189,7 @@ export interface SessionReport {
   readonly createdAt: number;
   readonly activity: ActivityEvidence;
   readonly economics: SessionEconomics;
+  readonly fillCosts: SessionFillCosts;
   readonly wakes: SessionWakeCounts;
   readonly standDownHistogram: ReadonlyArray<{ readonly code: string; readonly runs: number }>;
 }
@@ -171,10 +215,11 @@ export const readSessionReport = (
     const mission = missions[0];
     if (mission === undefined) return null;
 
-    const [activity, funnel, trades, wakes] = yield* Effect.all([
+    const [activity, funnel, trades, fills, wakes] = yield* Effect.all([
       readActivityEvidence(sql, { missionId: input.missionId }),
       readDecisionFunnel(sql, { missionId: input.missionId }),
       readSessionTrades(sql, { missionId: input.missionId }),
+      readSessionFills(sql, { missionId: input.missionId }),
       readSessionWakes(sql, { missionId: input.missionId }),
     ]);
 
@@ -195,6 +240,7 @@ export const readSessionReport = (
       createdAt: mission.created_at,
       activity,
       economics: deriveSessionEconomics(trades),
+      fillCosts: deriveSessionFillCosts(fills),
       wakes,
       standDownHistogram,
     } satisfies SessionReport;
@@ -205,6 +251,14 @@ const round1 = (value: number): number => {
   return rounded === 0 ? 0 : rounded;
 };
 
+// Two decimals, not round1's one: fee share of gross lives at single-digit
+// basis points (0.09% -> 0.06% is the whole move step 2.7 exists to detect),
+// which one decimal of percent would blur to identical numbers.
+const round2 = (value: number): number => {
+  const rounded = Math.round(value * 100) / 100;
+  return rounded === 0 ? 0 : rounded;
+};
+
 const bpsLine = (key: string, value: number | null, availability: string): string =>
   value === null
     ? `${key}: n/a (${availability})`
@@ -212,7 +266,7 @@ const bpsLine = (key: string, value: number | null, availability: string): strin
 
 /** Render the report as one stable `key: value` block. */
 export const formatSessionReport = (report: SessionReport): string => {
-  const { activity, economics, wakes } = report;
+  const { activity, economics, fillCosts, wakes } = report;
   // Ratios print n/a with the reason; otherwise the sample they were computed
   // over rides along, so a partial record cannot read as a complete one.
   const noTrades = economics.trades === 0;
@@ -238,6 +292,12 @@ export const formatSessionReport = (report: SessionReport): string => {
       ? `cost slippage, entry side: n/a (no closed trades)`
       : bpsLine("cost slippage, entry side", economics.entrySlippageBps, quotedNote),
     "cost spread/slippage, exit side: n/a (no exit quotes recorded)",
+    fillCosts.makerFillRate === null
+      ? `maker fill rate (by fill count): n/a (${fillCosts.fills === 0 ? "no fills recorded" : "no maker flag recorded"})`
+      : `maker fill rate (by fill count): ${round1(fillCosts.makerFillRate * 100)}% (${fillCosts.makerFills} of ${fillCosts.flaggedFills} flagged fills)`,
+    fillCosts.feeShareOfGross === null
+      ? `cost fees, share of gross notional traded: n/a (${fillCosts.fills === 0 ? "no fills recorded" : "no notional recorded"})`
+      : `cost fees, share of gross notional traded: ${round2(fillCosts.feeShareOfGross * 100)}% (${fillCosts.fills} fills)`,
     `plan versions published: ${wakes.planVersionsPublished}`,
     `wakes taken: ${wakes.wakes}`,
     `wakes that changed nothing: ${wakes.noOpWakes}`,

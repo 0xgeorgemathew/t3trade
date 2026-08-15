@@ -54,7 +54,7 @@ const input: ReconcileInput = {
 /** Migrate the shared in-memory db, then truncate the 038 tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 60 });
+  yield* runMigrations({ toMigrationInclusive: 61 });
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM trading_orders`;
@@ -570,6 +570,53 @@ layer("HyperliquidReconciler", (it) => {
         SELECT direction FROM trading_fills WHERE mission_id = ${MISSION} AND order_id = 701
       `;
       assert.equal(rows[0]?.direction, null);
+    }),
+  );
+
+  // The maker/taker flag (plan 29 step 2.7): crossed=true is a taker that paid
+  // the spread, crossed=false a maker that rested. Order type does not decide
+  // it, so the exchange's own label is the only record of what was paid.
+  it.effect("records crossed true and false as 1 and 0 on the fill rows", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* setState({
+        fills: [
+          { ...fillAt(5_000, "3ef5".padEnd(32, "0"), "1", 800), crossed: true },
+          { ...fillAt(5_000, "4ab6".padEnd(32, "0"), "1", 801), crossed: false },
+        ],
+      });
+
+      const reconciler = yield* HyperliquidReconciler;
+      yield* reconciler.reconcile(input, "after_fill");
+
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly order_id: number; readonly crossed: number | null }>`
+        SELECT order_id, crossed FROM trading_fills
+        WHERE mission_id = ${MISSION} AND order_id IN (800, 801)
+        ORDER BY order_id
+      `;
+      assert.deepEqual(rows, [
+        { order_id: 800, crossed: 1 },
+        { order_id: 801, crossed: 0 },
+      ]);
+    }),
+  );
+
+  // A fill the wire did not flag keeps NULL — old sessions must read "no maker
+  // flag recorded" rather than count as maker or taker.
+  it.effect("stores NULL crossed for a fill the wire did not flag", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* setState({ fills: [fillAt(5_000, "5cd7".padEnd(32, "0"), "1", 802)] });
+
+      const reconciler = yield* HyperliquidReconciler;
+      yield* reconciler.reconcile(input, "after_fill");
+
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly crossed: number | null }>`
+        SELECT crossed FROM trading_fills WHERE mission_id = ${MISSION} AND order_id = 802
+      `;
+      assert.equal(rows[0]?.crossed, null);
     }),
   );
 

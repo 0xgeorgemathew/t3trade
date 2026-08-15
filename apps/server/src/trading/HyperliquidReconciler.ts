@@ -294,6 +294,19 @@ function readMissionStartedAt(
 }
 
 /**
+ * A `TradingFill` plus the maker/taker flag the wire carries.
+ *
+ * `crossed` is the exchange's own answer to "did this fill cross the spread?"
+ * (true = taker, paid it; false = maker, rested and was hit) — plan 29 step
+ * 2.7 persists it because order type does not decide it: a GTC priced through
+ * the book crosses and pays taker too, so the flag is the only record of what
+ * was actually paid. Undefined when the exchange sent no flag.
+ */
+interface ReconciledFill extends TradingFill {
+  readonly crossed?: boolean | undefined;
+}
+
+/**
  * Read canonical fills via the InfoClient userFills endpoint and map them to
  * `TradingFill` records. Only this mission's market's fills, and only ones
  * traded since the mission started, are kept.
@@ -302,7 +315,7 @@ function readCanonicalFills(
   input: ReconcileInput,
   observedAt: number,
   startedAt: number,
-): Effect.Effect<ReadonlyArray<TradingFill>, TradingReconciliationError, HyperliquidInfoClient> {
+): Effect.Effect<ReadonlyArray<ReconciledFill>, TradingReconciliationError, HyperliquidInfoClient> {
   return Effect.gen(function* () {
     const info = yield* HyperliquidInfoClient;
     const wireFills = yield* info.userFills(input.masterAddress).pipe(
@@ -335,9 +348,10 @@ function readCanonicalFills(
           // §16.2 dir: the exchange's own label for where this fill sat in the
           // position's life ("Open Long", "Close Short", "Long > Short").
           direction: f.dir,
+          crossed: f.crossed,
           tradedAt: f.time,
           observedAt,
-        }) as TradingFill,
+        }) as ReconciledFill,
     );
   });
 }
@@ -422,6 +436,15 @@ function persistPosition(
 }
 
 /**
+ * Bind the maker/taker flag for SQLite: 1 for a fill that crossed (taker), 0
+ * for one that rested (maker), NULL when the exchange sent no flag — a NULL
+ * that must survive the upsert's conflict path rather than read back as a
+ * confident maker fill.
+ */
+const crossedBit = (crossed: boolean | undefined): number | null =>
+  crossed === undefined ? null : crossed ? 1 : 0;
+
+/**
  * Persist reconciled fills (idempotent on `fill_id` — re-running a reconcile
  * never duplicates a fill).
  *
@@ -432,7 +455,7 @@ function persistPosition(
  * from the read (older than the userFills window) are left untouched.
  */
 function persistFills(
-  fills: ReadonlyArray<TradingFill>,
+  fills: ReadonlyArray<ReconciledFill>,
 ): Effect.Effect<void, TradingReconciliationError, SqlClient.SqlClient> {
   return Effect.gen(function* () {
     if (fills.length === 0) return;
@@ -442,17 +465,18 @@ function persistFills(
         INSERT INTO trading_fills (
           fill_id, mission_id, execution_id, cloid, order_id, market, side,
           filled_size, avg_fill_price, fee_usd, fee_token, closed_pnl,
-          direction, traded_at, observed_at
+          direction, crossed, traded_at, observed_at
         ) VALUES (
           ${f.fillId}, ${f.missionId}, ${f.executionId ?? null}, ${f.cloid ?? null},
           ${f.orderId}, ${f.market}, ${f.side}, ${f.filledSize}, ${f.avgFillPrice},
           ${f.feeUsd}, ${f.feeToken}, ${f.closedPnl}, ${f.direction ?? null},
-          ${f.tradedAt}, ${f.observedAt}
+          ${crossedBit(f.crossed)}, ${f.tradedAt}, ${f.observedAt}
         )
         ON CONFLICT(fill_id) DO UPDATE SET
           filled_size = ${f.filledSize}, avg_fill_price = ${f.avgFillPrice},
           closed_pnl = ${f.closedPnl}, fee_usd = ${f.feeUsd},
-          direction = ${f.direction ?? null}, observed_at = ${f.observedAt}
+          direction = ${f.direction ?? null}, crossed = ${crossedBit(f.crossed)},
+          observed_at = ${f.observedAt}
       `;
     }
 

@@ -13,6 +13,7 @@ const layer = it.layer(Layer.provideMerge(NodeSqliteClient.layerMemory(), NodeSe
 
 const MISSION = "mission_1";
 const EMPTY_MISSION = "mission_empty";
+const OLD_FILLS_MISSION = "mission_old_fills";
 
 const insertMission = (missionId: string, updatedAt: number) =>
   Effect.gen(function* () {
@@ -32,12 +33,14 @@ const insertMission = (missionId: string, updatedAt: number) =>
 /**
  * A small but complete session: a published plan, four wakes (one silent, one
  * still open), two closed trades — a long that paid the half-spread and got
- * price improvement, a short that slipped past the bid — and the open quotes
- * both entries joined to.
+ * price improvement, a short that slipped past the bid — the open quotes both
+ * entries joined to, and the four fills both trades were made of: two taker
+ * entries, one maker exit, and one exit recorded before the maker flag existed.
  */
 const seedSession = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* runMigrations();
+  yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM trading_entry_quotes`;
   yield* sql`DELETE FROM trading_closed_trades`;
   yield* sql`DELETE FROM trading_harness_runs`;
@@ -92,11 +95,27 @@ const seedSession = Effect.gen(function* () {
       (${MISSION}, 'ETH', ${40 * 60_000}, ${60 * 60_000}, ${20 * 60_000}, 'short', -3,
         100, 101, -3, 1, -4, 0, -4, 0, 1)
   `;
+
+  // The fills behind those trades: both entries crossed (takers), the long's
+  // exit rested (maker), and the short's exit predates the flag (NULL). Fees
+  // 5.00 on 12623 of gross notional is a 0.04% fee share; 1 maker of 3
+  // flagged fills is a 33.3% maker fill rate.
+  yield* sql`
+    INSERT INTO trading_fills (
+      fill_id, mission_id, order_id, market, side, filled_size, avg_fill_price,
+      fee_usd, fee_token, crossed, traded_at, observed_at
+    ) VALUES
+      ('fill_e1', ${MISSION}, 100, 'ETH', 'buy', 2, 3000, 3, 'USDC', 1, 1000, 1000),
+      ('fill_x1', ${MISSION}, 101, 'ETH', 'sell', 2, 3010, 1, 'USDC', 0, ${30 * 60_000}, ${30 * 60_000}),
+      ('fill_e2', ${MISSION}, 102, 'ETH', 'sell', 3, 100, 0.6, 'USDC', 1, ${40 * 60_000}, ${40 * 60_000}),
+      ('fill_x2', ${MISSION}, 103, 'ETH', 'buy', 3, 101, 0.4, 'USDC', NULL, ${60 * 60_000}, ${60 * 60_000})
+  `;
 });
 
 const seedEmptySession = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* runMigrations();
+  yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM trading_entry_quotes`;
   yield* sql`DELETE FROM trading_closed_trades`;
   yield* sql`DELETE FROM trading_harness_runs`;
@@ -104,6 +123,30 @@ const seedEmptySession = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_missions`;
 
   yield* insertMission(EMPTY_MISSION, 1000);
+});
+
+/** A session whose fills were all recorded before the maker flag existed. */
+const seedOldFillSession = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* runMigrations();
+  yield* sql`DELETE FROM trading_fills`;
+  yield* sql`DELETE FROM trading_entry_quotes`;
+  yield* sql`DELETE FROM trading_closed_trades`;
+  yield* sql`DELETE FROM trading_harness_runs`;
+  yield* sql`DELETE FROM momentum_strategy_versions`;
+  yield* sql`DELETE FROM trading_missions`;
+
+  yield* insertMission(OLD_FILLS_MISSION, 1000);
+  // 1.00 of fees on 6010 gross notional is a 0.02% fee share — the fee line
+  // still measures, because it never depended on the flag.
+  yield* sql`
+    INSERT INTO trading_fills (
+      fill_id, mission_id, order_id, market, side, filled_size, avg_fill_price,
+      fee_usd, fee_token, crossed, traded_at, observed_at
+    ) VALUES
+      ('fill_old_a', ${OLD_FILLS_MISSION}, 200, 'ETH', 'buy', 1, 3000, 0.5, 'USDC', NULL, 1000, 1000),
+      ('fill_old_b', ${OLD_FILLS_MISSION}, 201, 'ETH', 'sell', 1, 3010, 0.5, 'USDC', NULL, 2000, 2000)
+  `;
 });
 
 layer("session-report", (it) => {
@@ -119,6 +162,7 @@ layer("session-report", (it) => {
       // Long: 18 net on 6000 notional is 30 bps, and its fill 1 inside the ask
       // is -1 bps of price improvement. Short: -4 net on 300 notional is
       // -133.3 bps, plus 0.4 past the quoted bid. Fees 3 on 6300 notional.
+      // Fill-side: 5.00 of fees on 12623 gross notional, 1 maker of 3 flagged.
       assert.deepEqual(formatSessionReport(report).split("\n"), [
         "mission: mission_1 (ETH, created 1970-01-01T00:00:00.000Z)",
         "trades: 2",
@@ -128,6 +172,8 @@ layer("session-report", (it) => {
         "cost spread, entry side: 3.7 bps of entry notional (2 of 2 trades with entry quotes)",
         "cost slippage, entry side: -1.3 bps of entry notional (2 of 2 trades with entry quotes)",
         "cost spread/slippage, exit side: n/a (no exit quotes recorded)",
+        "maker fill rate (by fill count): 33.3% (1 of 3 flagged fills)",
+        "cost fees, share of gross notional traded: 0.04% (4 fills)",
         "plan versions published: 1",
         "wakes taken: 4",
         "wakes that changed nothing: 1",
@@ -158,6 +204,8 @@ layer("session-report", (it) => {
         "cost spread, entry side: n/a (no closed trades)",
         "cost slippage, entry side: n/a (no closed trades)",
         "cost spread/slippage, exit side: n/a (no exit quotes recorded)",
+        "maker fill rate (by fill count): n/a (no fills recorded)",
+        "cost fees, share of gross notional traded: n/a (no fills recorded)",
         "plan versions published: 0",
         "wakes taken: 0",
         "wakes that changed nothing: 0",
@@ -166,6 +214,38 @@ layer("session-report", (it) => {
         "stand-down codes: none",
       ]);
     }),
+  );
+
+  it.effect(
+    "prints n/a maker fill rate for fills recorded before the flag, fee share still measured",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* seedOldFillSession;
+
+        const report = yield* readSessionReport(sql, { missionId: OLD_FILLS_MISSION });
+        if (report === null) {
+          assert.fail("expected a report for a seeded mission");
+        }
+        assert.deepEqual(formatSessionReport(report).split("\n"), [
+          "mission: mission_old_fills (ETH, created 1970-01-01T00:00:00.000Z)",
+          "trades: 0",
+          "win rate: n/a (no closed trades)",
+          "net bps per trade: n/a (no closed trades)",
+          "cost fees: n/a (no closed trades)",
+          "cost spread, entry side: n/a (no closed trades)",
+          "cost slippage, entry side: n/a (no closed trades)",
+          "cost spread/slippage, exit side: n/a (no exit quotes recorded)",
+          "maker fill rate (by fill count): n/a (no maker flag recorded)",
+          "cost fees, share of gross notional traded: 0.02% (2 fills)",
+          "plan versions published: 0",
+          "wakes taken: 0",
+          "wakes that changed nothing: 0",
+          "wakes with no decision: 0",
+          "time in market: 0%",
+          "stand-down codes: none",
+        ]);
+      }),
   );
 
   it.effect("returns null for a mission that does not exist", () =>

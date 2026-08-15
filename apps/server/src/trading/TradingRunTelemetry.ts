@@ -596,6 +596,46 @@ export const readSessionTrades = (sql: Sql, input: { readonly missionId: string 
     );
   });
 
+/**
+ * One reconciled fill of a session — the money columns the fill-sourced cost
+ * measurements read (plan 29 step 2.7). Unlike the closed-trade economics,
+ * these come from the real fills: fees as the exchange actually charged them,
+ * against the notional actually traded.
+ */
+export interface SessionFill {
+  readonly feeUsd: number;
+  /** |price x size| — this fill's share of the session's gross traded notional. */
+  readonly notionalUsd: number;
+  /**
+   * The exchange's maker/taker flag: false = maker (rested, paid no spread),
+   * true = taker (crossed, paid it). Null on fills recorded before the flag
+   * was carried — those cannot contribute to a maker fill rate.
+   */
+  readonly crossed: boolean | null;
+}
+
+/** The session's fills, oldest first — the real-fill basis for step 2.7. */
+export const readSessionFills = (sql: Sql, input: { readonly missionId: string }) =>
+  Effect.gen(function* () {
+    const rows = yield* sql<{
+      readonly fee_usd: number;
+      readonly notional_usd: number;
+      readonly crossed: number | null;
+    }>`
+      SELECT fee_usd, ABS(avg_fill_price * filled_size) AS notional_usd, crossed
+      FROM trading_fills
+      WHERE mission_id = ${input.missionId}
+      ORDER BY traded_at
+    `;
+    return rows.map(
+      (row): SessionFill => ({
+        feeUsd: row.fee_usd,
+        notionalUsd: row.notional_usd,
+        crossed: row.crossed === null ? null : row.crossed === 1,
+      }),
+    );
+  });
+
 /** A session's wake counts — plan 29 step 0.2's activity half. */
 export interface SessionWakeCounts {
   /** Every harness run the mission ever started, settled or not. */
