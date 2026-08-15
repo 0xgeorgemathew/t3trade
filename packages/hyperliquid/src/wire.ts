@@ -294,13 +294,22 @@ export type WireUserFillsResponse = typeof WireUserFillsResponse.Type;
 // -- Info: userFees ------------------------------------------------------------
 
 /**
- * The `userFees` response. Only the cross (taker) rate is read for the Eq-4 fee
- * reserve; the rest (daily volume, tiers, discounts) is left permissive since
- * the POC reserves on a single taker-side rate per side.
+ * The `userFees` response. The cross (taker) rate feeds the Eq-4 fee reserve;
+ * the add (maker) rate feeds the cost model's per-order-type round trips. The
+ * rest (daily volume, tiers, discounts) is left permissive since the POC
+ * reserves on a single taker-side rate per side.
  */
 export const WireUserFeesResponse = Schema.Struct({
   /** Taker fee rate as a decimal string (e.g. "0.00045" = 4.5 bps). */
   userCrossRate: Schema.String,
+  /**
+   * Maker (resting) fee rate as a decimal string, same encoding as
+   * `userCrossRate`. Optional because the cost model has an explicit degraded
+   * path for its absence — pricing the maker legs at the taker rate — and a
+   * required field here would fail the whole fee read (taking the taker rate
+   * down with it) over a field only the maker combinations need.
+   */
+  userAddRate: Schema.optional(Schema.String),
 });
 export type WireUserFeesResponse = typeof WireUserFeesResponse.Type;
 

@@ -89,6 +89,7 @@ const makeMutableGateway = (ref: Ref.Ref<FakeState>) =>
     getPosition: () => Effect.die("not used"),
     getOpenOrders: () => Effect.map(Ref.get(ref), (s) => s.orders),
     getTakerFeeRateBps: () => Effect.die("not used"),
+    getUserFeeRatesBps: () => Effect.die("not used"),
   });
 
 /**

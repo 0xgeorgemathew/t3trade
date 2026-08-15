@@ -298,6 +298,15 @@ const fakeGatewayLayer = Layer.succeed(HyperliquidGateway, {
   getPosition: (() => Effect.die("not used")) as never,
   getOpenOrders: () => Effect.sync(() => restingProtection),
   getTakerFeeRateBps: () => Effect.succeed({ feeBps: 4.5, observedAt: 1_000 }),
+  // The wakeup composer prices its round trip through TradingCostEstimatorLive,
+  // which reads both rates at once.
+  getUserFeeRatesBps: () =>
+    Effect.succeed({
+      takerFeeBps: 4.5,
+      makerFeeBps: 1,
+      observedAt: 1_000,
+      makerRateSource: "hyperliquid_user_fees",
+    }),
 } as unknown as HyperliquidGateway["Service"]);
 
 // --- fake InfoClient for the reconciler's canonical reads -------------------

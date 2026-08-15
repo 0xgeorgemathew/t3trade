@@ -102,12 +102,67 @@ describe("estimateTradingCosts", () => {
     expect(estimate.bookDepthSufficient).toBe(true);
   });
 
+  it("recombines the components per order type when the maker rate differs", () => {
+    const estimate = estimateTradingCosts(input({ takerFeeBpsPerSide: 5, makerFeeBpsPerSide: 1 }));
+
+    expect(estimate.makerFeeBpsPerSide).toBe(1);
+    // Maker/maker is two maker fees and nothing else: 2,000 x 1 bps x 2.
+    expect(estimate.roundTripMakerMakerUsd).toBeCloseTo(0.4, 10);
+    // Taker/maker is one taker fee (1.00) + one maker fee (0.20) + one crossing
+    // of the 0.50 half spread; the size sits on the touch so no leg walks.
+    expect(estimate.roundTripTakerMakerUsd).toBeCloseTo(1.7, 10);
+    // The taker/taker total is untouched by the maker rate.
+    expect(estimate.roundTripUsd).toBeCloseTo(3, 10);
+    expect(estimate.notes.join(" ")).toContain("maker side pays no spread crossing");
+    expect(estimate.degraded).toBe(false);
+  });
+
+  it("prices the taker leg of the mixed combination as the entry walk", () => {
+    const estimate = estimateTradingCosts(
+      input({
+        sizeEth: 5,
+        takerFeeBpsPerSide: 5,
+        makerFeeBpsPerSide: 1,
+        // Only the ask side is thin: the entry walk pays 8.00 where an exit
+        // walk would pay nothing — pinning which leg carries the walk.
+        asks: [
+          { price: 2_000.5, size: 1 },
+          { price: 2_002.5, size: 10 },
+        ],
+        bids: [{ price: 1_999.5, size: 10 }],
+      }),
+    );
+
+    // 5 ETH @ 2,000 = 10,000 notional: 5.00 of taker fee + 1.00 of maker fee
+    // + 2.50 of spread crossed once + the 8.00 entry walk.
+    expect(estimate.roundTripTakerMakerUsd).toBeCloseTo(16.5, 10);
+    expect(estimate.roundTripMakerMakerUsd).toBeCloseTo(2, 10);
+    expect(estimate.buySlippageUsd).toBeCloseTo(8, 10);
+    expect(estimate.sellSlippageUsd).toBe(0);
+  });
+
+  it("prices the maker combinations at the taker rate when no maker rate was given", () => {
+    const estimate = estimateTradingCosts(input());
+
+    expect(estimate.makerFeeBpsPerSide).toBe(5);
+    expect(estimate.roundTripMakerMakerUsd).toBeCloseTo(2, 10);
+    expect(estimate.roundTripTakerMakerUsd).toBeCloseTo(2.5, 10);
+    // The assumption is recorded, and degrades nothing: the taker/taker total
+    // it sits next to was measured, not substituted.
+    expect(estimate.notes.join(" ")).toContain("priced at the taker rate");
+    expect(estimate.degraded).toBe(false);
+  });
+
   // The whole point of the tool is that a cost it could not read is visible as
   // such. A silent zero here is what a below-cost target looks like from above.
   it("flags a fallback fee rate rather than passing it off as read", () => {
     const estimate = estimateTradingCosts(input({ feeRateSource: "authority_fallback" }));
     expect(estimate.degraded).toBe(true);
     expect(estimate.notes.join(" ")).toContain("fallback");
+    // The authority names one (taker) rate, so the maker combinations price at
+    // it too — and say so, rather than passing the fallback off as a read.
+    expect(estimate.makerFeeBpsPerSide).toBe(5);
+    expect(estimate.notes.join(" ")).toContain("authority's fallback taker rate");
   });
 
   it("flags a book too thin to absorb the size", () => {

@@ -458,3 +458,62 @@ describe("HyperliquidGateway.getOpenOrders", () => {
     ),
   );
 });
+
+describe("HyperliquidGateway.getUserFeeRatesBps", () => {
+  it.effect("converts both decimal-string rates to bps from one userFees read", () =>
+    Effect.gen(function* () {
+      const before = yield* Clock.currentTimeMillis;
+      const gateway = yield* HyperliquidGateway;
+      const rates = yield* gateway.getUserFeeRatesBps(MASTER_ADDRESS);
+      const after = yield* Clock.currentTimeMillis;
+      // "0.00045" = 4.5 bps taker; "0.00001" = 0.1 bps maker.
+      expect(rates.takerFeeBps).toBeCloseTo(4.5, 10);
+      expect(rates.makerFeeBps).toBeCloseTo(0.1, 10);
+      expect(rates.makerRateSource).toBe("hyperliquid_user_fees");
+      expect(rates.observedAt).toBeGreaterThanOrEqual(before);
+      expect(rates.observedAt).toBeLessThanOrEqual(after);
+    }).pipe(
+      Effect.provide(
+        gatewayLayerWith({
+          metaAndAssetCtxs: FIXTURE_META_AND_CTX,
+          userFees: () => ({ userCrossRate: "0.00045", userAddRate: "0.00001" }),
+        }),
+      ),
+    ),
+  );
+
+  // A missing maker rate must not fail the read — the taker rate it shares the
+  // response with is still good — but it must never read as an exchange number.
+  it.effect("falls back to the taker rate, saying so, when userAddRate is absent", () =>
+    Effect.gen(function* () {
+      const gateway = yield* HyperliquidGateway;
+      const rates = yield* gateway.getUserFeeRatesBps(MASTER_ADDRESS);
+      expect(rates.takerFeeBps).toBeCloseTo(4.5, 10);
+      expect(rates.makerFeeBps).toBeCloseTo(4.5, 10);
+      expect(rates.makerRateSource).toBe("assumed_equal_to_taker");
+    }).pipe(
+      Effect.provide(
+        gatewayLayerWith({
+          metaAndAssetCtxs: FIXTURE_META_AND_CTX,
+          userFees: () => ({ userCrossRate: "0.00045" }),
+        }),
+      ),
+    ),
+  );
+
+  it.effect("treats an unparseable userAddRate the same as an absent one", () =>
+    Effect.gen(function* () {
+      const gateway = yield* HyperliquidGateway;
+      const rates = yield* gateway.getUserFeeRatesBps(MASTER_ADDRESS);
+      expect(rates.makerFeeBps).toBeCloseTo(4.5, 10);
+      expect(rates.makerRateSource).toBe("assumed_equal_to_taker");
+    }).pipe(
+      Effect.provide(
+        gatewayLayerWith({
+          metaAndAssetCtxs: FIXTURE_META_AND_CTX,
+          userFees: () => ({ userCrossRate: "0.00045", userAddRate: "not-a-rate" }),
+        }),
+      ),
+    ),
+  );
+});

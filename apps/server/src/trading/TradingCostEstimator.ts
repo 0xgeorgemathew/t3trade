@@ -2,8 +2,8 @@
  * TradingCostEstimator - what a round trip on this market actually costs.
  *
  * The arithmetic lives in `@t3tools/trading-contracts/costs` and is pure. This
- * service is only the reads it needs: the master wallet's taker fee rate, the
- * order book, and the mark. It resolves the fee rate the same way
+ * service is only the reads it needs: the master wallet's taker and maker fee
+ * rates, the order book, and the mark. It resolves the fee rate the same way
  * `TradingMissionReactor` does before a preview — `userFees`, falling back to
  * the authority's `fallbackTakerFeeBpsPerSide` — so the number the harness is
  * shown and the number the loss budget reserves against cannot drift apart.
@@ -79,11 +79,21 @@ const make = Effect.gen(function* () {
       );
 
       // `userFees` is a network read that can fail on its own; the rest of the
-      // estimate is still worth having when it does.
-      const fee = yield* gateway.getTakerFeeRateBps(input.masterAddress).pipe(
-        Effect.map((read) => ({ bps: read.feeBps, source: "hyperliquid_user_fees" as const })),
+      // estimate is still worth having when it does. A maker rate the gateway
+      // could not read is dropped rather than passed through, so the estimate
+      // prices the maker combinations at the taker rate and says so in its
+      // notes instead of passing an assumption off as a read. The same applies
+      // on the authority fallback, where the fallback names one (taker) rate.
+      const fee = yield* gateway.getUserFeeRatesBps(input.masterAddress).pipe(
+        Effect.map((read) => ({
+          takerBps: read.takerFeeBps,
+          makerBps:
+            read.makerRateSource === "assumed_equal_to_taker" ? undefined : read.makerFeeBps,
+          source: "hyperliquid_user_fees" as const,
+        })),
         Effect.orElseSucceed(() => ({
-          bps: input.fallbackTakerFeeBpsPerSide,
+          takerBps: input.fallbackTakerFeeBpsPerSide,
+          makerBps: undefined,
           source: "authority_fallback" as const,
         })),
       );
@@ -98,7 +108,8 @@ const make = Effect.gen(function* () {
         market: input.market,
         sizeEth,
         referencePrice: snapshot.markPrice,
-        takerFeeBpsPerSide: fee.bps,
+        takerFeeBpsPerSide: fee.takerBps,
+        makerFeeBpsPerSide: fee.makerBps,
         feeRateSource: fee.source,
         bids: book.bids,
         asks: book.asks,

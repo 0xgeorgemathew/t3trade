@@ -53,6 +53,14 @@ export type FeeRateSource = typeof FeeRateSource.Type;
  * half-spread is what crossing from the mid to the touch costs, and slippage is
  * only what walking the book *past* the touch adds. Summing them is therefore
  * legitimate rather than double-counting the spread.
+ *
+ * The per-order-type combinations (`roundTripUsd` as taker/taker, plus
+ * `roundTripTakerMakerUsd` and `roundTripMakerMakerUsd`) recombine those same
+ * components rather than introducing new ones: a maker leg pays its fee at
+ * `makerFeeBpsPerSide` and nothing else — it crosses no spread and walks past
+ * no touch — so every combination is the sum of its legs' components. The
+ * non-overlap invariant is what makes those recombinations as legitimate as the
+ * taker/taker total.
  */
 export const TradingCostEstimate = Schema.Struct({
   market: ExchangeMarket,
@@ -63,6 +71,12 @@ export const TradingCostEstimate = Schema.Struct({
   referencePrice: Price,
 
   takerFeeBpsPerSide: Schema.Number,
+  /**
+   * The maker (resting) fee rate per side the combinations below are priced
+   * at. Equals `takerFeeBpsPerSide` when no maker rate was read — `notes`
+   * says when that is the case.
+   */
+  makerFeeBpsPerSide: Schema.Number,
   feeRateSource: FeeRateSource,
   entryFeeUsd: Schema.Number,
   exitFeeUsd: Schema.Number,
@@ -88,6 +102,16 @@ export const TradingCostEstimate = Schema.Struct({
 
   /** Fees + spread + slippage for the whole round trip. */
   roundTripUsd: Schema.Number,
+  /**
+   * A taker leg and a maker leg: the taker fee plus the maker fee, one spread
+   * crossing, and the walk of the taker leg only. The taker leg is priced as
+   * the entry (the buy walk) — the two orientations differ only in which
+   * side's walk the taker pays, and the trade this prices is an immediate
+   * entry resting a patient exit.
+   */
+  roundTripTakerMakerUsd: Schema.Number,
+  /** Both legs resting: two maker fees, no spread crossing, no slippage. */
+  roundTripMakerMakerUsd: Schema.Number,
   /** How far price must move, per base unit, just to break even. */
   breakEvenPriceMoveUsd: Schema.Number,
   breakEvenPriceMovePercent: Schema.Number,
@@ -155,6 +179,13 @@ export interface CostEstimateInput {
   /** Mark or mid — the price the estimate is measured against. */
   readonly referencePrice: number;
   readonly takerFeeBpsPerSide: number;
+  /**
+   * The maker (resting) fee rate per side in bps, when it was read. Absent
+   * means no maker rate was available: the maker legs of the combinations are
+   * then priced at the taker rate and a note records the assumption, so the
+   * number is never mistaken for a read.
+   */
+  readonly makerFeeBpsPerSide?: number | undefined;
   readonly feeRateSource: FeeRateSource;
   /** Book levels, exchange order (asks ascending, bids descending). */
   readonly bids: ReadonlyArray<OrderBookLevel>;
@@ -191,6 +222,10 @@ export function estimateTradingCosts(input: CostEstimateInput): TradingCostEstim
 
   const feePerSide = notionalUsd * (input.takerFeeBpsPerSide / 10_000);
   const roundTripFeeUsd = feePerSide * 2;
+  // A maker rate that was read pays its own bps; one that was not is priced at
+  // the taker rate — the pessimistic maker round trip — with a note below.
+  const makerFeeBpsPerSide = input.makerFeeBpsPerSide ?? input.takerFeeBpsPerSide;
+  const makerFeePerSide = notionalUsd * (makerFeeBpsPerSide / 10_000);
 
   const bestBid = input.bids[0]?.price;
   const bestAsk = input.asks[0]?.price;
@@ -213,9 +248,27 @@ export function estimateTradingCosts(input: CostEstimateInput): TradingCostEstim
   }
   const roundTripSlippageUsd = buy.slippageUsd + sell.slippageUsd;
 
+  // Order-type combinations, recomposed from the same non-overlapping
+  // components as the taker/taker total: a maker leg pays its fee and nothing
+  // else — it crosses no spread and walks past no touch. The taker leg of the
+  // mixed combination is the entry, so it pays the buy walk.
+  const roundTripTakerMakerUsd =
+    feePerSide + makerFeePerSide + halfSpreadUsd * size + buy.slippageUsd;
+  const roundTripMakerMakerUsd = makerFeePerSide * 2;
+
   if (input.fundingRatePer8h === undefined) {
     notes.push("no funding rate was supplied; holding cost over funding intervals is not included");
   }
+  if (input.makerFeeBpsPerSide === undefined) {
+    notes.push(
+      input.feeRateSource === "authority_fallback"
+        ? "no maker fee rate was read; the maker combinations are priced at the authority's fallback taker rate"
+        : "no maker fee rate was available; the maker combinations are priced at the taker rate",
+    );
+  }
+  notes.push(
+    "a maker side pays no spread crossing or walk past the touch; the taker/maker and maker/maker totals reprice only the fee",
+  );
 
   const roundTripUsd = roundTripFeeUsd + roundTripSpreadUsd + roundTripSlippageUsd;
   const breakEvenPriceMoveUsd = size > 0 ? roundTripUsd / size : 0;
@@ -226,6 +279,7 @@ export function estimateTradingCosts(input: CostEstimateInput): TradingCostEstim
     notionalUsd,
     referencePrice: input.referencePrice > 0 ? input.referencePrice : 1,
     takerFeeBpsPerSide: input.takerFeeBpsPerSide,
+    makerFeeBpsPerSide,
     feeRateSource: input.feeRateSource,
     entryFeeUsd: feePerSide,
     exitFeeUsd: feePerSide,
@@ -243,6 +297,8 @@ export function estimateTradingCosts(input: CostEstimateInput): TradingCostEstim
           fundingCostPer8hUsd: input.fundingRatePer8h * notionalUsd,
         }),
     roundTripUsd,
+    roundTripTakerMakerUsd,
+    roundTripMakerMakerUsd,
     breakEvenPriceMoveUsd,
     breakEvenPriceMovePercent:
       input.referencePrice > 0 ? (breakEvenPriceMoveUsd / input.referencePrice) * 100 : 0,

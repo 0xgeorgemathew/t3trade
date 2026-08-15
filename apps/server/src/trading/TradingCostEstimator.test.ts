@@ -10,7 +10,7 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
+import { HyperliquidGateway, type UserFeeRatesBps } from "@t3tools/hyperliquid/Gateway";
 import type { AgentMarketSnapshot, OrderBook } from "@t3tools/trading-contracts/market";
 
 import { TradingCostEstimator, TradingCostEstimatorLive } from "./TradingCostEstimator.ts";
@@ -48,9 +48,13 @@ const book: OrderBook = {
 
 const unusedRead = () => Effect.die("not used by TradingCostEstimator tests");
 
-/** Mutable so a case can make the fee read fail. */
-let feeRead: Effect.Effect<{ readonly feeBps: number; readonly observedAt: number }, string> =
-  Effect.succeed({ feeBps: 4.5, observedAt: 1_000 });
+/** Mutable so a case can make the fee read fail or drop the maker rate. */
+let feeRead: Effect.Effect<UserFeeRatesBps, string> = Effect.succeed({
+  takerFeeBps: 4.5,
+  makerFeeBps: 1,
+  observedAt: 1_000,
+  makerRateSource: "hyperliquid_user_fees",
+});
 
 const stubGateway = Layer.succeed(HyperliquidGateway, {
   resolveMarket: unusedRead,
@@ -60,7 +64,7 @@ const stubGateway = Layer.succeed(HyperliquidGateway, {
   getAccountSnapshot: unusedRead,
   getPosition: unusedRead,
   getOpenOrders: unusedRead,
-  getTakerFeeRateBps: () => feeRead,
+  getUserFeeRatesBps: () => feeRead,
 } as unknown as (typeof HyperliquidGateway)["Service"]);
 
 const layer = it.layer(TradingCostEstimatorLive.pipe(Layer.provideMerge(stubGateway)));
@@ -68,7 +72,12 @@ const layer = it.layer(TradingCostEstimatorLive.pipe(Layer.provideMerge(stubGate
 layer("TradingCostEstimator", (it) => {
   it.effect("prices a round trip from the wallet's own fee rate and the live book", () =>
     Effect.gen(function* () {
-      feeRead = Effect.succeed({ feeBps: 4.5, observedAt: 1_000 });
+      feeRead = Effect.succeed({
+        takerFeeBps: 4.5,
+        makerFeeBps: 1,
+        observedAt: 1_000,
+        makerRateSource: "hyperliquid_user_fees",
+      });
       const estimator = yield* TradingCostEstimator;
 
       const estimate = yield* estimator.estimate({
@@ -110,7 +119,70 @@ layer("TradingCostEstimator", (it) => {
       assert.equal(estimate.feeRateSource, "authority_fallback");
       assert.equal(estimate.degraded, true);
       assert.match(estimate.notes[0] ?? "", /fallback/);
-      feeRead = Effect.succeed({ feeBps: 4.5, observedAt: 1_000 });
+      // The authority names one (taker) rate, so the maker combinations price
+      // at it too — and the estimate says so rather than passing it off as read.
+      assert.equal(estimate.makerFeeBpsPerSide, 5);
+      assert.match(estimate.notes.join(" "), /authority's fallback taker rate/);
+      feeRead = Effect.succeed({
+        takerFeeBps: 4.5,
+        makerFeeBps: 1,
+        observedAt: 1_000,
+        makerRateSource: "hyperliquid_user_fees",
+      });
+    }),
+  );
+
+  it.effect("carries the maker rate through to the per-combination round trips", () =>
+    Effect.gen(function* () {
+      feeRead = Effect.succeed({
+        takerFeeBps: 4.5,
+        makerFeeBps: 1,
+        observedAt: 1_000,
+        makerRateSource: "hyperliquid_user_fees",
+      });
+      const estimator = yield* TradingCostEstimator;
+
+      const estimate = yield* estimator.estimate({
+        market: "ETH",
+        masterAddress: MASTER,
+        sizeEth: 1,
+        fallbackTakerFeeBpsPerSide: 5,
+      });
+
+      assert.equal(estimate.makerFeeBpsPerSide, 1);
+      // Taker/maker: 0.90 of taker fee + 0.20 of maker fee + 0.50 of spread
+      // crossed once. A maker leg pays no crossing, and this size sits on the
+      // touch, so there is no walk on either leg.
+      assert.closeTo(estimate.roundTripTakerMakerUsd, 1.6, 1e-9);
+      // Maker/maker: two maker fees and nothing else.
+      assert.closeTo(estimate.roundTripMakerMakerUsd, 0.4, 1e-9);
+      assert.equal(estimate.degraded, false);
+    }),
+  );
+
+  it.effect("prices the maker combinations at the taker rate when the exchange served none", () =>
+    Effect.gen(function* () {
+      feeRead = Effect.succeed({
+        takerFeeBps: 4.5,
+        makerFeeBps: 4.5,
+        observedAt: 1_000,
+        makerRateSource: "assumed_equal_to_taker",
+      });
+      const estimator = yield* TradingCostEstimator;
+
+      const estimate = yield* estimator.estimate({
+        market: "ETH",
+        masterAddress: MASTER,
+        sizeEth: 1,
+        fallbackTakerFeeBpsPerSide: 5,
+      });
+
+      // The taker rate was genuinely read, so the source stays the exchange and
+      // only the maker substitution is recorded.
+      assert.equal(estimate.makerFeeBpsPerSide, 4.5);
+      assert.equal(estimate.feeRateSource, "hyperliquid_user_fees");
+      assert.equal(estimate.degraded, false);
+      assert.match(estimate.notes.join(" "), /maker combinations are priced at the taker rate/);
     }),
   );
 

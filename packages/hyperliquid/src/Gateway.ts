@@ -56,6 +56,21 @@ export type GatewayError =
   | HyperliquidMarketError
   | HyperliquidIdentityError;
 
+/**
+ * Where the maker half of {@link HyperliquidGateway.getUserFeeRatesBps} came
+ * from: read off the exchange, or assumed equal to the taker rate because the
+ * exchange served no usable `userAddRate`.
+ */
+export type MakerFeeRateSource = "hyperliquid_user_fees" | "assumed_equal_to_taker";
+
+/** What {@link HyperliquidGateway.getUserFeeRatesBps} returns. */
+export interface UserFeeRatesBps {
+  readonly takerFeeBps: number;
+  readonly makerFeeBps: number;
+  readonly observedAt: number;
+  readonly makerRateSource: MakerFeeRateSource;
+}
+
 export class HyperliquidGateway extends Context.Service<
   HyperliquidGateway,
   {
@@ -89,10 +104,28 @@ export class HyperliquidGateway extends Context.Service<
      * the millisecond timestamp the rate was observed. The caller applies a
      * staleness window; on a stale/unreadable read it falls back to the
      * authority's `fallbackTakerFeeBpsPerSide`.
+     *
+     * Callers that also need the maker rate should read both at once via
+     * {@link getUserFeeRatesBps}; this taker-only read remains for the callers
+     * that price the taker-side reserve alone.
      */
     readonly getTakerFeeRateBps: (
       address: EvmAddress,
     ) => Effect.Effect<{ feeBps: number; observedAt: number }, GatewayError>;
+    /**
+     * The master wallet's current taker (cross) AND maker (add) fee rates in
+     * basis points, plus the millisecond timestamp both were observed at.
+     *
+     * A missing or unparseable `userAddRate` does not fail the read:
+     * `makerFeeBps` falls back to the taker rate — the pessimistic price for a
+     * maker round trip — and `makerRateSource` says the fallback happened, so
+     * no caller can mistake the assumption for a read. Like the taker-only
+     * read, the caller applies a staleness window and falls back to the
+     * authority's `fallbackTakerFeeBpsPerSide` when the whole read fails.
+     */
+    readonly getUserFeeRatesBps: (
+      address: EvmAddress,
+    ) => Effect.Effect<UserFeeRatesBps, GatewayError>;
   }
 >()("@t3tools/hyperliquid/Gateway/HyperliquidGateway") {}
 
@@ -434,6 +467,30 @@ const makeHyperliquidGateway = Effect.gen(function* () {
     return { feeBps, observedAt };
   });
 
+  const getUserFeeRatesBps = Effect.fn("HyperliquidGateway.getUserFeeRatesBps")(function* (
+    address: EvmAddress,
+  ) {
+    const masterAddress = yield* requireMasterAddress(address);
+    const fees = yield* info.userFees(String(masterAddress));
+    // Both rates arrive as decimal strings; convert to bps the same way.
+    const takerFeeBps = Number(fees.userCrossRate) * 10_000;
+    // A maker rate the exchange did not serve, or served unparseable, must not
+    // fail the whole read: pricing the maker legs at the taker rate is the
+    // pessimistic case for a maker round trip, and `makerRateSource` makes the
+    // assumption visible instead of letting it read as an exchange number.
+    const parsedMaker = fees.userAddRate === undefined ? undefined : Number(fees.userAddRate);
+    const makerFeeBps =
+      parsedMaker !== undefined && Number.isFinite(parsedMaker) ? parsedMaker * 10_000 : undefined;
+    const observedAt = yield* nowMillis;
+    return {
+      takerFeeBps,
+      makerFeeBps: makerFeeBps ?? takerFeeBps,
+      observedAt,
+      makerRateSource:
+        makerFeeBps === undefined ? "assumed_equal_to_taker" : "hyperliquid_user_fees",
+    } satisfies UserFeeRatesBps;
+  });
+
   return HyperliquidGateway.of({
     resolveMarket,
     getMarketSnapshot,
@@ -443,6 +500,7 @@ const makeHyperliquidGateway = Effect.gen(function* () {
     getPosition,
     getOpenOrders,
     getTakerFeeRateBps,
+    getUserFeeRatesBps,
   });
 });
 

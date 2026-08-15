@@ -998,6 +998,7 @@ it.live("sizes a mission with no stated capital from the live account value", ()
       getPosition: () => Effect.die("not used"),
       getOpenOrders: () => Effect.die("not used"),
       getTakerFeeRateBps: () => Effect.die("not used"),
+      getUserFeeRatesBps: () => Effect.die("not used"),
     });
 
     const StubbedLayer = TradingMissionReactorLive.pipe(
