@@ -420,7 +420,12 @@ export const makeTradingQuoteService = Effect.gen(function* () {
           frames: histories,
         });
         const wantedDirection = request.side === "buy" ? "up" : "down";
-        const best = structure.setups.find((setup) => setup.direction === wantedDirection);
+        // Only a setup that cleared every internal gate is a scored setup
+        // (plan 29 step 3.4): near-misses are context and must not put a
+        // setup kind behind an entry that never had one.
+        const best = structure.setups.find(
+          (setup) => setup.direction === wantedDirection && setup.rejectedBy === undefined,
+        );
         // The primary timeframe's ATR, for the stop noise floor and the
         // stop-distance record on the eventual closed trade.
         const primaryFrame = structure.timeframes.find((frame) => frame.sufficientData) ?? null;

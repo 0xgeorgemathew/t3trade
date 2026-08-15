@@ -204,6 +204,30 @@ export type RsiRead = typeof RsiRead.Type;
  * was no setup" and "there was a setup and I did not see it" stop looking
  * identical in the decision funnel.
  */
+/**
+ * One internal threshold a candidate failed, and by how much — plan 29 step
+ * 3.4.
+ *
+ * The detectors used to return `null` on a failed threshold, which made a
+ * signal 5% under its requirement indistinguishable from no signal at all. A
+ * near-miss row carries every gate it failed with the shortfall in the gate's
+ * own unit: required minus observed for a minimum, observed minus allowed for
+ * a maximum. A model weighs the margin; nothing gates on it.
+ */
+export const SetupRejection = Schema.Struct({
+  /** The gate that fired, e.g. `ema_separation` or `cross_age`. */
+  gate: Schema.String,
+  /** The shortfall in the gate's own unit. Smaller is nearer. */
+  margin: Schema.Number,
+});
+export type SetupRejection = typeof SetupRejection.Type;
+
+/** One line naming every gate a near-miss failed, for a row that stands alone. */
+const describeRejections = (rejections: ReadonlyArray<SetupRejection>): string =>
+  rejections
+    .map(({ gate, margin }) => `${gate} short by ${Number(margin.toPrecision(3))}`)
+    .join(", ");
+
 export const CandidateSetup = Schema.Struct({
   kind: Schema.Literals([
     "momentum_breakout",
@@ -229,6 +253,17 @@ export const CandidateSetup = Schema.Struct({
    */
   closeConfirmed: Schema.Boolean,
   rationale: Schema.String,
+  /**
+   * The internal thresholds this setup failed, when it failed any — plan 29
+   * step 3.4.
+   *
+   * Absent on a setup that cleared every gate its detector applies: that is a
+   * real scored candidate, and anything counting or entering behind "a scored
+   * setup" must treat only setups without this field as one. Present, the row
+   * is context — a near-miss the model can weigh, never evidence. Frames with
+   * insufficient data still contribute nothing at all.
+   */
+  rejectedBy: Schema.optional(Schema.Array(SetupRejection)),
 });
 export type CandidateSetup = typeof CandidateSetup.Type;
 
@@ -430,6 +465,12 @@ export const StrategyCandidate = Schema.Struct({
    * "free". Context, not a gate.
    */
   costMultiple: Schema.optional(Schema.Number),
+  /**
+   * The internal gates this candidate failed, copied from its setup — plan 29
+   * step 3.4. Absent on a real candidate; present, the row is a flagged
+   * near-miss the model weighs, never a scored setup.
+   */
+  rejectedBy: Schema.optional(Schema.Array(SetupRejection)),
   /** The setup's own rationale, carried through so the row stands alone. */
   note: Schema.String,
 });
@@ -1301,9 +1342,16 @@ function readTrendContinuation(
 ): CandidateSetup | null {
   const impulse = frame.lastImpulse;
   const pullbackPercent = frame.pullbackPercentOfImpulse;
-  if (impulse === undefined || pullbackPercent === undefined) return null;
-  if (pullbackPercent <= 0 || pullbackPercent > TREND_CONTINUATION_MAX_PULLBACK_PERCENT) {
-    return null;
+  // No impulse or no pullback at all is no signal, not a near-miss: there is
+  // no leg to continue and nothing to be near.
+  if (impulse === undefined || pullbackPercent === undefined || pullbackPercent <= 0) return null;
+
+  const rejections: Array<SetupRejection> = [];
+  if (pullbackPercent > TREND_CONTINUATION_MAX_PULLBACK_PERCENT) {
+    rejections.push({
+      gate: "pullback_too_deep",
+      margin: pullbackPercent - TREND_CONTINUATION_MAX_PULLBACK_PERCENT,
+    });
   }
 
   // The failing levels are the pivots the drift keeps making: higher lows
@@ -1312,11 +1360,17 @@ function readTrendContinuation(
     impulse.direction === "up"
       ? frame.pivotTrend.consecutiveHigherLows
       : frame.pivotTrend.consecutiveLowerHighs;
-  if (run < REGIME_PIVOT_RUN) return null;
+  if (run < REGIME_PIVOT_RUN) {
+    rejections.push({ gate: "pivot_run", margin: REGIME_PIVOT_RUN - run });
+  }
 
   const recent = frame.recentDirectionScore;
   const recentAgrees = impulse.direction === "up" ? recent > 0 : recent < 0;
-  if (!recentAgrees) return null;
+  if (!recentAgrees) {
+    // The conviction of the drift against the leg — zero is a coin flip
+    // away from agreeing.
+    rejections.push({ gate: "recent_direction", margin: Math.abs(recent) });
+  }
 
   const threshold = policy.momentum.directionScoreThreshold;
   const score = clamp01(
@@ -1337,7 +1391,9 @@ function readTrendContinuation(
       `${run} consecutive ${impulse.direction === "up" ? "higher lows" : "lower highs"}, ` +
       `recent ${RECENT_DIRECTION_BARS}-bar directionScore ${recent.toFixed(2)}, ` +
       `pullback ${pullbackPercent.toFixed(0)}% of the ${impulse.sizeUsd.toFixed(2)} USD impulse; ` +
-      `a candle closing back through ${impulse.endPrice} resumes the drift`,
+      `a candle closing back through ${impulse.endPrice} resumes the drift` +
+      (rejections.length === 0 ? "" : `; near-miss: ${describeRejections(rejections)}`),
+    ...(rejections.length === 0 ? {} : { rejectedBy: rejections }),
   };
 }
 
@@ -1358,17 +1414,34 @@ function readEmaCross(
 ): CandidateSetup | null {
   const ema = frame.ema;
   if (ema === undefined) return null;
-
+  // No flip anywhere in the window is a trend that has been one way for the
+  // whole lookback — no cross to be fresh or stale.
   const age = ema.barsSinceCross;
-  if (age === undefined || age > policy.emaCross.maxCrossAgeBars) return null;
+  if (age === undefined) return null;
 
+  const direction = ema.spreadUsd >= 0 ? ("up" as const) : ("down" as const);
   // Two averages grazing each other in chop cross constantly. The separation
   // is measured in ATRs so the gate means the same thing on any market.
   const separation = frame.atrUsd > 0 ? Math.abs(ema.spreadUsd) / frame.atrUsd : 0;
-  if (separation < policy.emaCross.minSpreadAtrRatio) return null;
-  if (!ema.closeAgreesWithBias) return null;
 
-  const direction = ema.spreadUsd >= 0 ? ("up" as const) : ("down" as const);
+  const rejections: Array<SetupRejection> = [];
+  if (age > policy.emaCross.maxCrossAgeBars) {
+    rejections.push({ gate: "cross_age", margin: age - policy.emaCross.maxCrossAgeBars });
+  }
+  if (separation < policy.emaCross.minSpreadAtrRatio) {
+    rejections.push({
+      gate: "ema_separation",
+      margin: policy.emaCross.minSpreadAtrRatio - separation,
+    });
+  }
+  if (!ema.closeAgreesWithBias) {
+    // How far the last close sits from the fast EMA it has to close beyond.
+    rejections.push({
+      gate: "close_against_bias",
+      margin: Math.abs(frame.referencePrice - ema.fastUsd),
+    });
+  }
+
   const score = clamp01(
     0.5 * (1 - age / Math.max(1, policy.emaCross.maxCrossAgeBars)) +
       0.3 * clamp01(separation / (policy.emaCross.minSpreadAtrRatio * 4)) +
@@ -1387,7 +1460,9 @@ function readEmaCross(
     rationale:
       `EMA ${ema.fastPeriod} crossed ${direction === "up" ? "above" : "below"} EMA ${ema.slowPeriod} ` +
       `${age} bar(s) ago, separated ${separation.toFixed(2)} ATR (${ema.spreadPercent.toFixed(3)}%), ` +
-      `last close ${direction === "up" ? "above" : "below"} the fast EMA at ${ema.fastUsd.toFixed(2)}`,
+      `last close ${direction === "up" ? "above" : "below"} the fast EMA at ${ema.fastUsd.toFixed(2)}` +
+      (rejections.length === 0 ? "" : `; near-miss: ${describeRejections(rejections)}`),
+    ...(rejections.length === 0 ? {} : { rejectedBy: rejections }),
   };
 }
 
@@ -1406,22 +1481,31 @@ function readRsiReversion(
   policy: TradingPolicy,
 ): CandidateSetup | null {
   const rsi = frame.rsi;
+  // A neutral oscillator is no signal — there is no extreme to be near.
   if (rsi === undefined || rsi.condition === "neutral") return null;
 
   const age = rsi.barsSinceEnteringExtreme ?? 0;
-  if (age > policy.rsiReversion.maxExtremeAgeBars) return null;
-
   // Fade the extreme: overbought is a short, oversold is a long.
   const direction = rsi.condition === "overbought" ? ("down" as const) : ("up" as const);
 
   // A market driving INTO the band is trending, and fading a trend on an
   // oscillator is the losing half of this strategy's reputation. The freshness
-  // check above cannot see it — a breakout prints an overbought reading on its
+  // check cannot see it — a breakout prints an overbought reading on its
   // first bar — so the recent directional score is the veto.
   const recent = frame.recentDirectionScore;
   const threshold = policy.momentum.directionScoreThreshold;
   const trendingIntoBand = direction === "down" ? recent >= threshold : recent <= -threshold;
-  if (trendingIntoBand) return null;
+
+  const rejections: Array<SetupRejection> = [];
+  if (age > policy.rsiReversion.maxExtremeAgeBars) {
+    rejections.push({ gate: "extreme_age", margin: age - policy.rsiReversion.maxExtremeAgeBars });
+  }
+  if (trendingIntoBand) {
+    // The conviction of the trend into the band, beyond the threshold that
+    // already makes it a veto.
+    rejections.push({ gate: "trending_into_band", margin: Math.abs(recent) - threshold });
+  }
+
   // The level to arm is the boundary the extreme was made at, so the entry
   // happens where price actually stretched rather than wherever it is now.
   const level =
@@ -1449,7 +1533,9 @@ function readRsiReversion(
     closeConfirmed: false,
     rationale:
       `RSI(${rsi.period}) at ${rsi.value.toFixed(1)} is ${rsi.condition}, ` +
-      `${age} bar(s) into the extreme; fading it ${direction === "down" ? "short" : "long"} at ${level}`,
+      `${age} bar(s) into the extreme; fading it ${direction === "down" ? "short" : "long"} at ${level}` +
+      (rejections.length === 0 ? "" : `; near-miss: ${describeRejections(rejections)}`),
+    ...(rejections.length === 0 ? {} : { rejectedBy: rejections }),
   };
 }
 
@@ -1459,10 +1545,12 @@ function readRsiReversion(
  *
  * They are mutually exclusive by construction: a confirmed break already IS
  * the continuation taken at the level, and a frame with a live pivot run is not
- * a range holding its bounds. The indicator strategies below are NOT part of
- * this chain — they are read separately, so a frame can offer a structural
- * candidate and an indicator candidate at once and the tournament compares
- * them.
+ * a range holding its bounds. A branch entered but failed reports its
+ * near-miss rather than nothing (plan 29 step 3.4); a CLEAN candidate anywhere
+ * in the chain still wins over a near-miss. The indicator strategies are NOT
+ * part of this chain — they are read separately, so a frame can offer a
+ * structural candidate and an indicator candidate at once and the tournament
+ * compares them.
  */
 function readStructuralSetup(
   frame: MomentumTimeframeContext,
@@ -1481,12 +1569,6 @@ function readStructuralSetup(
     const aligned =
       (breakout.direction === "up" && frame.directionScore > 0) ||
       (breakout.direction === "down" && frame.directionScore < 0);
-    // The armed breakout's own close is allowed to lead the slower direction
-    // score (the playbook states that exception explicitly), but contracting
-    // ATR is not a breakout entry. This structural gate is shared by the live
-    // setup read and replay — and it ends the structural chain for the frame,
-    // the way the loop's `continue` used to.
-    if (expansion <= 1) return null;
     const touches =
       (breakout.direction === "up" ? frame.swingHighTouches : frame.swingLowTouches) ?? 0;
     const openingRangeTested =
@@ -1498,6 +1580,27 @@ function readStructuralSetup(
         0.2 * (frame.impulseIsFresh === true ? 1 : 0) +
         0.1 * (aligned ? 1 : 0),
     );
+    const rationale =
+      `close ${breakout.direction === "up" ? "above" : "below"} ${breakout.level} with ` +
+      `directionScore ${frame.directionScore.toFixed(2)}, atrExpansionRatio ${expansion.toFixed(2)}, ` +
+      `${touches} prior touches, impulse ${frame.impulseIsFresh === true ? "fresh" : "stale"}`;
+    // The armed breakout's own close is allowed to lead the slower direction
+    // score (the playbook states that exception explicitly), but contracting
+    // ATR is not a breakout entry. It ends the structural chain for the frame,
+    // the way the loop's `continue` used to — reported as the near-miss it is.
+    if (expansion <= 1) {
+      const rejections = [{ gate: "atr_not_expanding", margin: 1 - expansion }];
+      return {
+        kind: openingRangeTested ? "opening_range_break" : "momentum_breakout",
+        direction: breakout.direction,
+        interval: frame.interval,
+        score,
+        level: breakout.level,
+        closeConfirmed: true,
+        rationale: `${rationale}; near-miss: ${describeRejections(rejections)}`,
+        rejectedBy: rejections,
+      };
+    }
     return {
       kind: openingRangeTested ? "opening_range_break" : "momentum_breakout",
       direction: breakout.direction,
@@ -1505,60 +1608,81 @@ function readStructuralSetup(
       score,
       level: breakout.level,
       closeConfirmed: true,
-      rationale:
-        `close ${breakout.direction === "up" ? "above" : "below"} ${breakout.level} with ` +
-        `directionScore ${frame.directionScore.toFixed(2)}, atrExpansionRatio ${expansion.toFixed(2)}, ` +
-        `${touches} prior touches, impulse ${frame.impulseIsFresh === true ? "fresh" : "stale"}`,
+      rationale,
     };
   }
 
   // A drift resuming after a shallow pullback. Checked after the breakout —
   // a confirmed break already is the continuation, taken at the level — and
   // before the range branch, because the two claims contradict: a frame with
-  // a live pivot run is not a range holding its bounds.
+  // a live pivot run is not a range holding its bounds. A near-miss
+  // continuation does not claim the frame, so the range branch still gets its
+  // turn.
   const continuation = readTrendContinuation(frame, policy);
-  if (continuation !== null) return continuation;
+  if (continuation !== null && continuation.rejectedBy === undefined) return continuation;
 
   // A boundary of a range that has held its height and been tested on both
-  // sides. Chop is the requirement here, not a disqualification.
+  // sides. Chop is the requirement here, not a disqualification. A frame with
+  // no position or stability measurement is no signal, not a near-miss.
   const position = frame.positionInRangePercent;
   const stability = frame.rangeStabilityPercent;
-  if (
-    position === undefined ||
-    stability === undefined ||
-    stability > stabilityLimit ||
-    frame.direction !== "flat" ||
-    (frame.swingHighTouches ?? 0) < minTouches ||
-    (frame.swingLowTouches ?? 0) < minTouches
-  ) {
-    return null;
+  if (position !== undefined && stability !== undefined) {
+    const rejections: Array<SetupRejection> = [];
+    if (stability > stabilityLimit) {
+      rejections.push({ gate: "range_stability", margin: stability - stabilityLimit });
+    }
+    if (frame.direction !== "flat") {
+      // Conviction beyond the flat band.
+      rejections.push({
+        gate: "direction_not_flat",
+        margin: Math.abs(frame.directionScore) - policy.momentum.directionScoreThreshold,
+      });
+    }
+    const highShort = minTouches - (frame.swingHighTouches ?? 0);
+    const lowShort = minTouches - (frame.swingLowTouches ?? 0);
+    if (highShort > 0 || lowShort > 0) {
+      // The worse side of the two.
+      rejections.push({ gate: "boundary_touches", margin: Math.max(highShort, lowShort) });
+    }
+    const distanceFromEdge = Math.min(position, 100 - position);
+    if (distanceFromEdge > edgePercent) {
+      rejections.push({ gate: "range_edge", margin: distanceFromEdge - edgePercent });
+    }
+
+    // The nearer boundary is the one a mid-range near-miss is reaching for:
+    // long off the floor side, short off the ceiling side.
+    const nearFloor = position <= 50;
+    const level = (nearFloor ? frame.swingLowPrice : frame.swingHighPrice) ?? frame.referencePrice;
+    const rangeSetup: CandidateSetup = {
+      kind: "range_reversion",
+      direction: nearFloor ? "up" : "down",
+      interval: frame.interval,
+      score: clamp01(
+        0.6 * (1 - stability / stabilityLimit) + 0.4 * (1 - Math.abs(50 - position) / 50),
+      ),
+      level,
+      // The boundary is the price. Waiting for a close gives back the edge the
+      // range is paying for.
+      closeConfirmed: false,
+      rationale:
+        `${position.toFixed(0)}% into a range whose height moved ${stability.toFixed(0)}% across the window, ` +
+        `tested ${frame.swingLowTouches}x low and ${frame.swingHighTouches}x high` +
+        (rejections.length === 0 ? "" : `; near-miss: ${describeRejections(rejections)}`),
+      ...(rejections.length === 0 ? {} : { rejectedBy: rejections }),
+    };
+    if (rangeSetup.rejectedBy === undefined) return rangeSetup;
+    // A clean continuation outranks a near-miss range; otherwise the first
+    // near-miss the chain produced is the context the frame contributes.
+    if (continuation !== null) return continuation;
+    return rangeSetup;
   }
 
-  const atLow = position <= edgePercent;
-  const atHigh = position >= 100 - edgePercent;
-  if (!atLow && !atHigh) return null;
-
-  const level = (atLow ? frame.swingLowPrice : frame.swingHighPrice) ?? frame.referencePrice;
-  return {
-    kind: "range_reversion",
-    // Long off the floor, short off the ceiling.
-    direction: atLow ? "up" : "down",
-    interval: frame.interval,
-    score: clamp01(
-      0.6 * (1 - stability / stabilityLimit) + 0.4 * (1 - Math.abs(50 - position) / 50),
-    ),
-    level,
-    // The boundary is the price. Waiting for a close gives back the edge the
-    // range is paying for.
-    closeConfirmed: false,
-    rationale:
-      `${position.toFixed(0)}% into a range whose height moved ${stability.toFixed(0)}% across the window, ` +
-      `tested ${frame.swingLowTouches}x low and ${frame.swingHighTouches}x high`,
-  };
+  return continuation;
 }
 
 /**
- * Every setup each timeframe's measurements support, best score first.
+ * Every setup each timeframe's measurements support: real candidates first,
+ * best score first, then the near-misses behind them.
  *
  * Two families, read independently. The structural family (breakout,
  * continuation, range boundary) is mutually exclusive within a frame — see
@@ -1568,7 +1692,8 @@ function readStructuralSetup(
  * picked: a frame that offers no structural setup can still offer a cross, and
  * a frame that offers both should have to defend the choice between them.
  *
- * A timeframe with insufficient data contributes nothing.
+ * A timeframe with insufficient data contributes nothing — not even a
+ * near-miss (plan 29 step 3.4).
  */
 export function findCandidateSetups(
   frames: ReadonlyArray<MomentumTimeframeContext>,
@@ -1589,7 +1714,13 @@ export function findCandidateSetups(
     if (rsiReversion !== null) setups.push(rsiReversion);
   }
 
-  return [...setups].sort((left, right) => right.score - left.score);
+  // Real candidates ahead of near-misses, whatever their scores: a near-miss
+  // with a high score is context, not a better candidate.
+  return [...setups].sort(
+    (left, right) =>
+      Number(left.rejectedBy !== undefined) - Number(right.rejectedBy !== undefined) ||
+      right.score - left.score,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1669,7 +1800,13 @@ export function compareCandidates(
       distanceToTriggerUsd: frame === undefined ? 0 : Math.abs(setup.level - frame.referencePrice),
       ...(move === undefined ? {} : { availableMoveUsd: move }),
       ...(multiple === undefined ? {} : { costMultiple: multiple }),
-      note: setup.rationale,
+      ...(setup.rejectedBy === undefined ? {} : { rejectedBy: setup.rejectedBy }),
+      // A near-miss is flagged in the note itself, so the row says what it is
+      // even where only the text is read.
+      note:
+        setup.rejectedBy === undefined
+          ? setup.rationale
+          : `NEAR-MISS (${describeRejections(setup.rejectedBy)}) — ${setup.rationale}`,
     };
   });
 }

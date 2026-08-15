@@ -184,7 +184,7 @@ describe("trend_continuation setup", () => {
     assert.ok(continuation.score > 0);
   });
 
-  it("offers no continuation when the pullback has run too deep", () => {
+  it("reports a too-deep pullback as a near-miss rather than silence", () => {
     // Same zigzag, but the recovery retraces most of the last down leg.
     const candles = [...descendingZigzag(), ...ramp(91, 1, 8)];
     const structure = analyseMomentum({
@@ -193,10 +193,39 @@ describe("trend_continuation setup", () => {
       frames: [{ interval: "1m", candles }],
     });
 
-    assert.equal(
-      structure.setups.find((setup) => setup.kind === "trend_continuation"),
-      undefined,
+    const continuation = structure.setups.find((setup) => setup.kind === "trend_continuation");
+    // Plan 29 step 3.4: a failed internal threshold is reported with its
+    // margin, not dropped — an 88% pullback against a 50% cap is 38 points
+    // past it, and that number is the context the model weighs.
+    assert.ok(continuation !== undefined);
+    assert.ok(continuation.rejectedBy !== undefined);
+    assert.deepEqual(
+      continuation.rejectedBy.map(({ gate }) => gate),
+      ["pullback_too_deep"],
     );
+    assert.ok(continuation.rejectedBy[0]!.margin > 38);
+    // The near-miss says so in its own rationale, so the row stands alone.
+    assert.include(continuation.rationale, "near-miss");
+    // It sorts behind every clean candidate: once the near-misses start, no
+    // clean setup follows them.
+    const firstNearMiss = structure.setups.findIndex((setup) => setup.rejectedBy !== undefined);
+    assert.ok(firstNearMiss !== -1);
+    assert.ok(
+      structure.setups.slice(firstNearMiss).every((setup) => setup.rejectedBy !== undefined),
+    );
+  });
+
+  it("carries no rejectedBy on a setup that cleared every gate", () => {
+    const structure = analyseMomentum({
+      market: "ETH",
+      measuredAt: 1_000,
+      frames: [{ interval: "1m", candles: descendingZigzag() }],
+    });
+
+    const continuation = structure.setups.find((setup) => setup.kind === "trend_continuation");
+    assert.ok(continuation !== undefined);
+    assert.equal(continuation.rejectedBy, undefined);
+    assert.equal(continuation.rationale.includes("near-miss"), false);
   });
 });
 
@@ -240,6 +269,25 @@ describe("compareCandidates", () => {
     assert.equal(row.costMultiple, undefined);
     // Everything that needs no book still answers.
     assert.ok(row.note.length > 0);
+  });
+
+  it("flags a near-miss row in the table without gating it", () => {
+    // The too-deep pullback window: the continuation is on the table only as
+    // context, visibly flagged and carrying the same cost arithmetic.
+    const near = analyseMomentum({
+      market: "ETH",
+      measuredAt: 1_000,
+      frames: [{ interval: "1m", candles: [...descendingZigzag(), ...ramp(91, 1, 8)] }],
+    });
+    const rows = compareCandidates(near, { breakEvenPriceMoveUsd: 2 });
+    const row = rows.find((candidate) => candidate.strategy === "trend_continuation");
+
+    assert.ok(row !== undefined);
+    assert.ok(row.rejectedBy !== undefined);
+    assert.include(row.note, "NEAR-MISS");
+    // Flagged, not gated: the row still carries its move and its multiple.
+    assert.ok(row.availableMoveUsd !== undefined);
+    assert.ok(row.costMultiple !== undefined);
   });
 });
 

@@ -102,8 +102,11 @@ describe("structure evidence", () => {
     const setups = findCandidateSetups([wicked]);
 
     // This is the whole point: an executable close-confirmed setup cannot come
-    // from a bar that closed back inside the range.
-    assert.isEmpty(setups.filter((setup) => setup.closeConfirmed));
+    // from a bar that closed back inside the range. Near-misses (plan 29
+    // step 3.4) may appear, but never as scored setups.
+    assert.isEmpty(
+      setups.filter((setup) => setup.closeConfirmed && setup.rejectedBy === undefined),
+    );
   });
 
   it("proposes a close-confirmed breakout, and a touch-triggered range boundary", () => {
@@ -177,7 +180,18 @@ describe("structure evidence", () => {
     assert.strictEqual(frame.rsi?.condition, "overbought");
 
     const setups = findCandidateSetups([frame]);
-    assert.isEmpty(setups.filter((setup) => setup.kind === "rsi_reversion"));
+    // The veto still holds: no SCORED reversion. What the frame contributes
+    // instead is the near-miss that names the veto and its conviction (plan
+    // 29 step 3.4) — context, never a candidate.
+    assert.isEmpty(
+      setups.filter((setup) => setup.kind === "rsi_reversion" && setup.rejectedBy === undefined),
+    );
+    const nearMiss = setups.find((setup) => setup.kind === "rsi_reversion");
+    assert.isDefined(nearMiss?.rejectedBy);
+    assert.include(
+      nearMiss!.rejectedBy!.map(({ gate }) => gate),
+      "trending_into_band",
+    );
   });
 
   it("says nothing at all about a window too short to measure", () => {

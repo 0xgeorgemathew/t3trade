@@ -152,9 +152,12 @@ export function evaluateSetup(input: {
   const size = fixture.notionalUsd / entryPrice;
   const clearsCosts = (movePrice: number, multiple: number): boolean =>
     movePrice > 0 && movePrice * size >= fixture.roundTripCostUsd * multiple;
+  // Near-misses (plan 29 step 3.4) are context, never evidence: only setups
+  // that cleared every internal gate count as candidates here.
+  const candidates = input.candidates.filter((candidate) => candidate.rejectedBy === undefined);
 
   if (fixture.playbook === "range_reversion") {
-    const setup = input.candidates.find((candidate) => candidate.kind === "range_reversion");
+    const setup = candidates.find((candidate) => candidate.kind === "range_reversion");
     const height =
       frame.swingHighPrice !== undefined && frame.swingLowPrice !== undefined
         ? frame.swingHighPrice - frame.swingLowPrice
@@ -225,7 +228,7 @@ export function evaluateSetup(input: {
   // also scores the indicator strategies (`ema_cross`, `rsi_reversion`), and a
   // negative filter would have relabelled one of those as a momentum breakout
   // and graded it against the momentum playbook's gates.
-  const setup = input.candidates.find(
+  const setup = candidates.find(
     (candidate) =>
       candidate.kind === "momentum_breakout" ||
       candidate.kind === "trend_continuation" ||
