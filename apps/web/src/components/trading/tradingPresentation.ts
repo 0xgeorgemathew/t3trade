@@ -1636,10 +1636,24 @@ export function deriveUpNextItems(
   return [
     ...orders,
     ...stops,
-    ...levels.sort((a, b) => a.distance - b.distance).map((entry) => entry.item),
+    // One pill per level, however many watches point at it. A trigger armed as
+    // both a touch and a close is the doctrine working — and as two identical
+    // "wake @ 1,876.6 ↑" pills it reads as two things to wait for.
+    ...dedupeLevelItems(levels.sort((a, b) => a.distance - b.distance).map((entry) => entry.item)),
     ...times.sort((a, b) => a.at - b.at).map((entry) => entry.item),
     ...entries,
   ];
+}
+
+/** Drop repeats of the same label — see the call site. Order is preserved. */
+function dedupeLevelItems(items: ReadonlyArray<UpNextItem>): ReadonlyArray<UpNextItem> {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = `${item.kind}:${item.label}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /**

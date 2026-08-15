@@ -180,8 +180,10 @@ const RULE_MIX: Record<ChartLevelKind, number> = {
   stop: 28,
   target: 34,
   liquidation: 30,
-  condition_above: 28,
-  condition_below: 28,
+  // Quieter than the named levels and quieter than the two EMAs: a condition is
+  // a price nothing has happened at yet, and there can be three of them.
+  condition_above: 22,
+  condition_below: 22,
   // A resting order is about to become a position; it earns a little more.
   pending_buy: 45,
   pending_sell: 45,
@@ -366,7 +368,10 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     flash === undefined || flash === null ? null : findLevelAtPrice(geometry.levels, flash.price);
 
   return (
-    <div className={cn("relative h-full w-full", className)}>
+    // `overflow-hidden`: the gutter tags and the mark dot are HTML positioned
+    // in percentages of the viewBox, so anything the geometry places near an
+    // edge would otherwise be drawn over the bands above and below the chart.
+    <div className={cn("relative h-full w-full overflow-hidden", className)}>
       {/* The mark's ring animation, declared once for the whole chart. */}
       <style>{`@keyframes mission-mark-pulse { 0%, 100% { opacity: 0.9; transform: translate(-50%, -50%) scale(1); } 50% { opacity: 0.15; transform: translate(-50%, -50%) scale(1.35); } }
 @keyframes mission-level-flash { 0% { opacity: 0; } 15% { opacity: 1; } 100% { opacity: 0; } }
@@ -400,21 +405,40 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             the wick that took a stop out, the bar that opened at its low —
             not the subject. The subject is still the coloured segment above. */}
         {geometry.bars.map((bar) => {
-          const ink =
-            bar.direction === "up"
-              ? "color-mix(in oklab, var(--color-profit) 55%, transparent)"
-              : "color-mix(in oklab, var(--color-loss) 55%, transparent)";
+          // Full strength. At 70% the body was translucent, so the wick drawn
+          // underneath it showed through as a dark stripe up the middle of
+          // every candle — the bar reading as two shades of its own colour.
+          const ink = bar.direction === "up" ? "var(--color-profit)" : "var(--color-loss)";
+          // The wick is a rect, not a stroked line. A `non-scaling-stroke`
+          // line is one device pixel wide whatever the container does, while
+          // the body next to it is stretched by the plot's x scale — so on a
+          // wide panel every bar was a fat slab with a hair sticking out of
+          // it. Drawn as a rect the two scale together, and the wick stays a
+          // fixed fraction of the body at any width.
+          const wickHalfWidth = Math.max(0.18, bar.halfWidth * 0.22);
+          // Drawn as the two pieces OUTSIDE the body rather than as one rect
+          // behind it: nothing then overlaps, so the candle is one flat shape
+          // whatever opacity anything above it is composited at.
+          const upperWick = Math.max(0, bar.bodyTop - bar.highY);
+          const lowerWick = Math.max(0, bar.lowY - bar.bodyBottom);
           return (
-            <g key={`bar-${bar.key}`}>
-              <line
-                x1={bar.x}
-                y1={bar.highY}
-                x2={bar.x}
-                y2={bar.lowY}
-                stroke={ink}
-                strokeWidth={1}
-                vectorEffect="non-scaling-stroke"
-              />
+            <g key={`bar-${bar.key}`} fill={ink}>
+              {upperWick > 0 ? (
+                <rect
+                  x={bar.x - wickHalfWidth}
+                  y={bar.highY}
+                  width={wickHalfWidth * 2}
+                  height={upperWick}
+                />
+              ) : null}
+              {lowerWick > 0 ? (
+                <rect
+                  x={bar.x - wickHalfWidth}
+                  y={bar.bodyBottom}
+                  width={wickHalfWidth * 2}
+                  height={lowerWick}
+                />
+              ) : null}
               <rect
                 x={bar.x - bar.halfWidth}
                 // A doji has no height, and a zero-height rect draws nothing —
@@ -422,11 +446,32 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
                 y={bar.bodyTop}
                 width={bar.halfWidth * 2}
                 height={Math.max(0.75, bar.bodyBottom - bar.bodyTop)}
-                fill={ink}
               />
             </g>
           );
         })}
+
+        {/* The two EMAs — the strategy's entry read, drawn as the two curves it
+            is actually made of. Neutral ink on purpose: the cross is a
+            relationship between these two lines, and colouring them by
+            profit/loss would put them in the same conversation as the trade's
+            own shape. The slow one is thinner and quieter; the fast one is what
+            crosses. */}
+        {geometry.emaLines.map((line) => (
+          <polyline
+            key={`ema-${line.speed}`}
+            points={toPoints(line.points)}
+            fill="none"
+            stroke={
+              line.speed === "fast"
+                ? "color-mix(in oklab, var(--color-info) 75%, transparent)"
+                : "color-mix(in oklab, var(--color-muted-foreground) 55%, transparent)"
+            }
+            strokeWidth={line.speed === "fast" ? 1.25 : 1}
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
 
         {/* Pre-entry segment: muted, the flat part of the line. Suppressed
             once the candles are drawn — the same closes twice, once as a line
@@ -630,6 +675,30 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         ),
       )}
 
+      {/* Which two averages those lines are. Four characters each, in their own
+          ink, so the pair is identifiable without a legend box. */}
+      {geometry.emaLines.length === 2 ? (
+        <span
+          className="pointer-events-none absolute left-1.5 top-0.5 flex gap-2 text-[9px] leading-none"
+          aria-hidden="true"
+        >
+          {[...geometry.emaLines]
+            .sort((left, right) => left.period - right.period)
+            .map((line) => (
+              <span
+                key={`ema-legend-${line.speed}`}
+                className="tabular-nums"
+                style={{
+                  color:
+                    line.speed === "fast" ? "var(--color-info)" : "var(--color-muted-foreground)",
+                }}
+              >
+                EMA {line.period} {formatPrice(line.lastValue)}
+              </span>
+            ))}
+        </span>
+      ) : null}
+
       {/* The gutter: HTML, so the glyphs are never stretched by the plot's
           aspect ratio and a long caption can ellipsis instead of overflowing. */}
       <div
@@ -662,6 +731,10 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
               {caption === "" ? null : (
                 <span className="truncate text-[9px] opacity-70">
                   {tag.kind === "mark" ? `(${caption})` : caption}
+                  {/* A cluster says how many watches it stands for, so folding
+                      three near-identical levels into one rule hides no armed
+                      condition — it only stops drawing three of them. */}
+                  {tag.count === undefined ? "" : ` ×${tag.count}`}
                 </span>
               )}
             </span>

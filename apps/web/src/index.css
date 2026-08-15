@@ -938,11 +938,17 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --warning-foreground: var(--color-amber-700);
   /* Trading semantics. P&L sign and position side are different questions — a
      short is not a loss — so they get separate tokens even where the hue
-     currently agrees. `--armed` is the "committed but not yet exposed" tone. */
-  --profit: var(--color-emerald-600);
-  --loss: var(--color-red-600);
-  --long: var(--color-emerald-600);
-  --short: var(--color-red-600);
+     currently agrees. `--armed` is the "committed but not yet exposed" tone.
+     Written as explicit oklch rather than borrowed from the emerald/red ramps:
+     those two are neighbours in lightness but not in chroma, so a green candle
+     and a red one printed at the same size did not read as the same weight of
+     ink. Here the pair is matched on lightness and chroma and separated only by
+     hue — a green pulled off emerald's blue lean, and a red pushed toward
+     coral so it stays distinct from `--destructive`. */
+  --profit: oklch(0.6 0.16 152);
+  --loss: oklch(0.58 0.21 27);
+  --long: oklch(0.6 0.16 152);
+  --short: oklch(0.58 0.21 27);
   --armed: var(--color-amber-600);
   --warning-surface: color-mix(in srgb, var(--warning) 8%, transparent);
   --update: var(--primary);
@@ -1010,10 +1016,14 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     --success-foreground: var(--color-emerald-400);
     --warning: var(--color-amber-500);
     --warning-foreground: var(--color-amber-400);
-    --profit: var(--color-emerald-400);
-    --loss: var(--color-red-400);
-    --long: var(--color-emerald-400);
-    --short: var(--color-red-400);
+    /* Lifted well clear of the dark surface: on the chart these are the fill of
+       a 3px-wide candle body, and the 400-ramp pair sat close enough to the
+       background that a down bar read as a smudge. Same matched-pair rule as
+       the light theme above. */
+    --profit: oklch(0.79 0.18 152);
+    --loss: oklch(0.71 0.2 27);
+    --long: oklch(0.79 0.18 152);
+    --short: oklch(0.71 0.2 27);
     --armed: var(--color-amber-400);
     --warning-surface: color-mix(in srgb, var(--warning) 16%, transparent);
     --update: var(--primary);

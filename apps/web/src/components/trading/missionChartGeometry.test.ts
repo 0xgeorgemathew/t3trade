@@ -1,3 +1,4 @@
+import { EMA_FAST_PERIOD, EMA_SLOW_PERIOD } from "@t3tools/trading-contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -5,17 +6,21 @@ import {
   CHART_VIEWBOX_HEIGHT,
   DOMAIN_PADDING_RATIO,
   FUTURE_GUTTER_RATIO,
+  GUTTER_LABEL_EDGE_INSET,
   GUTTER_LABEL_MIN_SEPARATION,
+  MIN_CANDLE_DOMAIN_SHARE,
   MAX_DRAWN_CONDITIONS,
   MAX_DRAWN_PAST_MARKERS,
   MIN_CANDLES_FOR_SVG,
   PLOT_WIDTH,
   computeChartGeometry,
+  dedupeConditions,
   deriveEntryFillAtMillis,
   deriveProgressToTarget,
   deriveTargetPrice,
   findLevelAtPrice,
   layoutGutterLabels,
+  medianBarInterval,
   selectVisibleCandles,
 } from "./missionChartGeometry";
 
@@ -633,11 +638,50 @@ describe("computeChartGeometry domain sanity", () => {
 
     const drawn = geometry.levels.filter((level) => level.kind.startsWith("condition_"));
     expect(drawn).toHaveLength(MAX_DRAWN_CONDITIONS);
-    expect(geometry.droppedConditions).toBe(2);
-    // The two far ones are the ones dropped.
-    expect(drawn.map((level) => level.price).sort((a, b) => a - b)).toEqual([
-      99.8, 99.9, 100.1, 100.2,
-    ]);
+    expect(geometry.droppedConditions).toBe(3);
+    // Whichever three survive, they are the near ones: the two far conditions
+    // are the first to go, and none of the four near ones is clustered away —
+    // 0.1 apart on a 2-unit band is a tenth of the frame, not a coincidence.
+    const prices = drawn.map((level) => level.price);
+    expect(prices).not.toContain(130);
+    expect(prices).not.toContain(70);
+    expect(drawn.every((level) => level.count === undefined)).toBe(true);
+  });
+
+  it("folds conditions a fraction of the window apart into one level", () => {
+    // The stop raised twice: three watches inside a tenth of a unit, on a band
+    // two units tall. Three rules there are one line's worth of pixels.
+    const geometry = geometryWith({
+      conditions: [
+        { price: 99.5, direction: "below", met: false },
+        { price: 99.47, direction: "below", met: false },
+        { price: 99.45, direction: "below", met: true },
+      ],
+    })!;
+
+    const drawn = geometry.levels.filter((level) => level.kind.startsWith("condition_"));
+    expect(drawn).toHaveLength(1);
+    expect(geometry.droppedConditions).toBe(0);
+    // The nearest the mark — the one the market reaches first — with the count
+    // of what it stands for, and `met` as the OR across the cluster.
+    expect(drawn[0]?.price).toBe(99.5);
+    expect(drawn[0]?.count).toBe(3);
+    expect(drawn[0]?.met).toBe(true);
+  });
+
+  it("never folds an above and a below condition into one level", () => {
+    const geometry = geometryWith({
+      conditions: [
+        { price: 100, direction: "above", met: false },
+        { price: 100, direction: "below", met: false },
+      ],
+    })!;
+
+    // One price, two opposite statements about it: merging them would lose the
+    // only thing either level says.
+    const kinds = geometry.levels.map((level) => level.kind);
+    expect(kinds).toContain("condition_above");
+    expect(kinds).toContain("condition_below");
   });
 });
 
@@ -1167,5 +1211,205 @@ describe("computeChartGeometry — candles", () => {
 
     expect(geometry.bars).toEqual([]);
     expect(geometry.postEntryPoints).toHaveLength(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A chart that does not move while the price does
+// ---------------------------------------------------------------------------
+//
+// The complaint these cover: the series "jumped" and "distorted" as live
+// prices came in. It was the ruler, not the data — fitting `timeStart..now` to
+// a fixed plot width made the scale a function of the wall clock.
+
+describe("computeChartGeometry — a stable scale under a live clock", () => {
+  const candles = fiveWalkingCandles();
+  const lastOpenTime = candles[candles.length - 1]!.openTime;
+  const base = {
+    candles,
+    entryPrice: null,
+    stopPrice: null,
+    targetPrice: null,
+    liquidationPrice: null,
+    entryTime: null,
+    markPrice: 104,
+  } as const;
+
+  it("keeps the bar pitch identical as the clock advances", () => {
+    const early = computeChartGeometry({ ...base, nowMillis: lastOpenTime + 5_000 })!;
+    const later = computeChartGeometry({ ...base, nowMillis: lastOpenTime + 55_000 })!;
+
+    // Same candles, 50 seconds apart: every bar has moved left by the same
+    // amount and none of them has changed width.
+    expect(later.bars[0]!.halfWidth).toBeCloseTo(early.bars[0]!.halfWidth, 10);
+    const shift = early.xForTime(lastOpenTime) - later.xForTime(lastOpenTime);
+    expect(early.xForTime(candles[0]!.openTime) - later.xForTime(candles[0]!.openTime)).toBeCloseTo(
+      shift,
+      10,
+    );
+    expect(shift).toBeGreaterThan(0);
+  });
+
+  it("does not change the scale when a new candle closes", () => {
+    const before = computeChartGeometry({ ...base, nowMillis: lastOpenTime + 59_000 })!;
+    const nextCandle = {
+      openTime: lastOpenTime + 60_000,
+      open: 104,
+      high: 105,
+      low: 103,
+      close: 104,
+    };
+    const after = computeChartGeometry({
+      ...base,
+      candles: [...candles.slice(1), nextCandle],
+      nowMillis: lastOpenTime + 61_000,
+    })!;
+
+    // The old fit-to-window axis re-scaled here, so the whole series snapped
+    // sideways once a minute. Same window length in, same pitch out.
+    expect(after.bars[0]!.halfWidth).toBeCloseTo(before.bars[0]!.halfWidth, 10);
+    expect(after.xForTime(after.timeEnd) - after.xForTime(after.timeEnd - 60_000)).toBeCloseTo(
+      before.xForTime(before.timeEnd) - before.xForTime(before.timeEnd - 60_000),
+      10,
+    );
+  });
+
+  it("reads the bar interval as the median gap, not the mean", () => {
+    // One missing bar leaves a double gap; the median ignores it.
+    expect(
+      medianBarInterval([
+        { openTime: 0 },
+        { openTime: 60_000 },
+        { openTime: 180_000 },
+        { openTime: 240_000 },
+      ]),
+    ).toBe(60_000);
+    expect(medianBarInterval([{ openTime: 0 }])).toBe(60_000);
+  });
+});
+
+describe("computeChartGeometry — the candles keep their share of the frame", () => {
+  it("drops a level that would flatten the price action", () => {
+    const candles = fiveWalkingCandles();
+    // The candle window is 99..105; a target 60 below it would leave the bars
+    // a tenth of the domain.
+    const geometry = computeChartGeometry({
+      candles,
+      entryPrice: null,
+      stopPrice: null,
+      targetPrice: 40,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: null,
+    })!;
+
+    const candleShare = (105 - 99) / (geometry.domainMax - geometry.domainMin);
+    expect(candleShare).toBeGreaterThanOrEqual(MIN_CANDLE_DOMAIN_SHARE);
+    // The level is still on the chart — pinned at the edge with a chevron.
+    const target = geometry.levels.find((level) => level.kind === "target")!;
+    expect(target.offScale).toBe("below");
+  });
+});
+
+describe("one rule per price", () => {
+  it("folds two watches at one level into a single condition", () => {
+    const deduped = dedupeConditions([
+      { price: 1_876.6, direction: "above", met: false },
+      { price: 1_876.6, direction: "above", met: true },
+      { price: 1_860, direction: "below", met: false },
+    ]);
+
+    expect(deduped).toHaveLength(2);
+    // Any watch at the price having fired means the level was reached.
+    expect(deduped.find((condition) => condition.price === 1_876.6)?.met).toBe(true);
+  });
+
+  it("does not draw a condition on top of a level the chart already names", () => {
+    const geometry = computeChartGeometry({
+      candles: fiveWalkingCandles(),
+      entryPrice: null,
+      stopPrice: null,
+      targetPrice: 106,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: 104,
+      conditions: [{ price: 106, direction: "above", met: false }],
+    })!;
+
+    expect(geometry.levels.filter((level) => level.price === 106)).toHaveLength(1);
+    expect(geometry.levels.find((level) => level.price === 106)?.kind).toBe("target");
+  });
+});
+
+describe("gutter tags stay inside the chart", () => {
+  it("holds every tag an inset clear of both edges", () => {
+    // Six levels crowded into the bottom of a shallow domain: the layout has
+    // to spread them without letting the last one hang below the frame.
+    const placed = layoutGutterLabels(
+      [0, 1, 2, 3, 4, 5].map((index) => ({ y: CHART_VIEWBOX_HEIGHT - index, priority: index })),
+    );
+
+    for (const tag of placed) {
+      expect(tag.labelY).toBeGreaterThanOrEqual(GUTTER_LABEL_EDGE_INSET);
+      expect(tag.labelY).toBeLessThanOrEqual(CHART_VIEWBOX_HEIGHT - GUTTER_LABEL_EDGE_INSET);
+    }
+  });
+});
+
+describe("the two moving averages", () => {
+  const walk = (count: number) =>
+    Array.from({ length: count }, (_, index) => {
+      const close = 100 + Math.sin(index / 4) * 2;
+      return {
+        openTime: 1_700_000_000_000 + index * 60_000,
+        open: close,
+        high: close + 0.5,
+        low: close - 0.5,
+        close,
+      };
+    });
+
+  const geometryFor = (count: number) =>
+    computeChartGeometry({
+      candles: walk(count),
+      entryPrice: null,
+      stopPrice: null,
+      targetPrice: null,
+      liquidationPrice: null,
+      entryTime: null,
+      markPrice: 100,
+    });
+
+  it("draws the fast and slow EMAs at the strategy's own periods", () => {
+    const geometry = geometryFor(60)!;
+
+    expect(geometry.emaLines.map((line) => line.period)).toEqual([
+      EMA_SLOW_PERIOD,
+      EMA_FAST_PERIOD,
+    ]);
+    // Slow first: it is drawn under the fast one, which is the line that
+    // crosses.
+    expect(geometry.emaLines[0]?.speed).toBe("slow");
+
+    // Each starts where its seed average completes and runs to the last bar.
+    for (const line of geometry.emaLines) {
+      expect(line.points).toHaveLength(60 - line.period + 1);
+      expect(line.points[line.points.length - 1]?.x).toBeCloseTo(geometry.nowX, 6);
+    }
+  });
+
+  it("draws neither average when the window is too short for both", () => {
+    // Long enough for the fast one alone — which says nothing about a cross,
+    // so the pair is suppressed rather than drawn half-complete.
+    expect(geometryFor(EMA_SLOW_PERIOD - 1)!.emaLines).toEqual([]);
+  });
+
+  it("reports each average's newest value at the price it is drawn at", () => {
+    const geometry = geometryFor(60)!;
+
+    for (const line of geometry.emaLines) {
+      const last = line.points[line.points.length - 1]!;
+      expect(last.y).toBeCloseTo(geometry.yForPrice(line.lastValue), 9);
+    }
   });
 });

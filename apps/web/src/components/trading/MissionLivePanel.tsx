@@ -63,6 +63,7 @@ import { Skeleton } from "../ui/skeleton";
 
 import { MissionPriceChart } from "./MissionPriceChart";
 import {
+  dedupeConditions,
   deriveEntryFillAtMillis,
   deriveProgressToTarget,
   deriveTargetPrice,
@@ -282,7 +283,10 @@ export function MissionLivePanel({
     position !== null && position.entryPrice !== undefined
       ? { entryPrice: position.entryPrice, size: position.size }
       : null;
-  const chartConditions = deriveChartConditions(mission, pnlBasis);
+  // Deduped before it is counted: two watches at one price are one level on a
+  // price axis, and counting them twice made "+1 more level armed, off the
+  // chart" appear about a level that was already drawn.
+  const chartConditions = dedupeConditions(deriveChartConditions(mission, pnlBasis));
   const droppedConditions = Math.max(0, chartConditions.length - MAX_DRAWN_CONDITIONS);
 
   // Every fill the session has made, as circles on the axis. A position that
@@ -430,7 +434,11 @@ export function MissionLivePanel({
               leverageLabel={leverage === null ? null : formatLeverage(leverage)}
               isLong={position.size > 0}
             />
-            <span className={cn("font-medium tabular-nums", pnlToneClass)}>
+            {/* The one figure the operator is actually reading, at the one
+                size on this row that says so. Everything after it is context
+                for it, grouped behind a separator and set in the muted ink
+                the rest of the panel uses for context. */}
+            <span className={cn("text-sm font-semibold leading-none tabular-nums", pnlToneClass)}>
               {formatSignedUsd(position.unrealisedPnl)}
             </span>
             {roiPercent === null ? null : (
@@ -438,13 +446,17 @@ export function MissionLivePanel({
                 {formatSignedPercent(roiPercent)}
               </span>
             )}
-            {progressPercent === null ? null : (
-              <span className="tabular-nums text-muted-foreground">
-                {Math.round(progressPercent)}% to target
+            {progressPercent === null && holdLabel === null ? null : (
+              <span className="flex items-center gap-2 tabular-nums text-muted-foreground">
+                {progressPercent === null ? null : (
+                  <>
+                    <ProgressToTarget percent={progressPercent} toneClass={pnlToneClass} />
+                    <span>{Math.round(progressPercent)}% to target</span>
+                  </>
+                )}
+                {progressPercent !== null && holdLabel !== null ? <span>·</span> : null}
+                {holdLabel === null ? null : <span>held {holdLabel}</span>}
               </span>
-            )}
-            {holdLabel === null ? null : (
-              <span className="tabular-nums text-muted-foreground">held {holdLabel}</span>
             )}
           </>
         )}
@@ -510,10 +522,17 @@ export function MissionLivePanel({
           is likely to arrive. The checklist below says what is armed; this says
           when. */}
       {upNext.length === 0 ? null : (
+        // Left-aligned under a label, not centred: every other band on this
+        // panel starts at the same left rule, and a centred row of pills was
+        // the one thing on the card that floated free of it. The label is what
+        // makes the row a section rather than a loose set of chips.
         <div
           data-testid="mission-up-next"
-          className="flex flex-wrap items-center justify-center gap-1.5 border-t border-border/40 px-3 py-1.5 sm:px-4"
+          className="flex flex-wrap items-center gap-1.5 border-t border-border/40 bg-muted/15 px-3 py-1.5 sm:px-4"
         >
+          <span className="mr-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+            next
+          </span>
           {upNext.slice(0, MAX_UP_NEXT_PILLS).map((item) => (
             <UpNextPill
               key={item.key}
@@ -538,10 +557,18 @@ export function MissionLivePanel({
           levels nearest the mark; these rows are the exact set, including the
           watches that have no y on a price chart at all. */}
       {visibleRows.length === 0 ? null : (
-        <div className="divide-y divide-border/40 border-t border-border/40">
-          {visibleRows.map((row) => (
-            <ConditionRow key={row.id} row={row} />
-          ))}
+        <div className="border-t border-border/40">
+          {/* The band's own label, on the panel's left rule like every other
+              section heading. Without it the rows read as a continuation of
+              the pill strip above rather than as the checklist. */}
+          <p className="px-3 pb-0.5 pt-1.5 text-[10px] uppercase tracking-wide text-muted-foreground sm:px-4">
+            armed
+          </p>
+          <div className="divide-y divide-border/25">
+            {visibleRows.map((row) => (
+              <ConditionRow key={row.id} row={row} />
+            ))}
+          </div>
           {hiddenRows === 0 && droppedConditions === 0 ? null : (
             <p className="px-3 py-1 text-[11px] text-muted-foreground sm:px-4">
               {hiddenRows > 0
@@ -853,14 +880,28 @@ function ConditionRow({ row }: { readonly row: WatchConditionRow }): ReactNode {
         ? formatSignedUsd(row.thresholdValue)
         : formatPrice(row.thresholdValue);
 
+  // Fixed-width, right-aligned columns rather than a wrapping baseline row:
+  // the values are read DOWN the list against each other, and ragged right
+  // edges made four rows of numbers look like four unrelated facts.
   return (
-    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-1.5 text-xs sm:px-4">
+    <div className="flex items-baseline gap-x-3 px-3 py-1.5 text-xs sm:px-4">
       <span className="w-4 flex-none text-center">{glyph}</span>
-      <span className="text-foreground">{row.description}</span>
-      <span className="ml-auto flex items-baseline gap-2 tabular-nums">
-        <span className={row.met ? "text-profit" : "text-foreground"}>{observed}</span>
-        {threshold === null ? null : <span className="text-muted-foreground">/ {threshold}</span>}
-        {row.met ? null : <span className="text-[11px] text-muted-foreground">← waiting</span>}
+      <span className="min-w-0 flex-1 truncate text-foreground" title={row.description}>
+        {row.description}
+      </span>
+      <span
+        className={cn(
+          "w-20 flex-none text-right tabular-nums",
+          row.met ? "text-profit" : "text-foreground",
+        )}
+      >
+        {observed}
+      </span>
+      <span className="w-20 flex-none text-right tabular-nums text-muted-foreground">
+        {threshold === null ? "" : `/ ${threshold}`}
+      </span>
+      <span className="w-14 flex-none text-right text-[11px] text-muted-foreground">
+        {row.met ? "met" : "waiting"}
       </span>
     </div>
   );
@@ -978,6 +1019,33 @@ function PlanField({
   );
 }
 
+/**
+ * Progress to target as a 28px rule, next to the number it stands for.
+ *
+ * The figure alone ("0% to target") is a number the eye has to read before it
+ * means anything; the rule is the same fact at a glance, and it costs one line
+ * of the header rather than a band of its own.
+ */
+function ProgressToTarget({
+  percent,
+  toneClass,
+}: {
+  readonly percent: number;
+  readonly toneClass: string;
+}): ReactNode {
+  return (
+    <span
+      className="inline-block h-1 w-7 overflow-hidden rounded-full bg-foreground/10"
+      aria-hidden
+    >
+      <span
+        className={cn("block h-full rounded-full bg-current", toneClass)}
+        style={{ width: `${Math.max(2, Math.min(100, percent))}%` }}
+      />
+    </span>
+  );
+}
+
 /** The live header's side chip, tinted by the exposure direction. */
 function SideChip({
   market,
@@ -1043,8 +1111,9 @@ function PositionStrip({
   return (
     <div
       data-testid="mission-position-strip"
-      className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 border-t border-border/40 px-3 py-1.5 text-[11px] tabular-nums text-muted-foreground sm:px-4"
+      className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 border-t border-border/40 bg-muted/15 px-3 py-1.5 text-[11px] tabular-nums text-muted-foreground sm:px-4"
     >
+      <span className="mr-0.5 text-[10px] uppercase tracking-wide">held</span>
       <PositionStat label="Size" value={formatSize(Math.abs(size))} />
       {entryPrice === null ? null : <PositionStat label="Entry" value={formatPrice(entryPrice)} />}
       {markPrice === null ? null : <PositionStat label="Mark" value={formatPrice(markPrice)} />}

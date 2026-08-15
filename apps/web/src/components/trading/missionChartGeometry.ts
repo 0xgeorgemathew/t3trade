@@ -11,6 +11,12 @@
 // rules — is there to frame that shape, and the geometry below computes those
 // frames from the projection alone (never from UI state).
 
+import {
+  EMA_FAST_PERIOD,
+  EMA_SLOW_PERIOD,
+  exponentialMovingAverage,
+} from "@t3tools/trading-contracts";
+
 import { readFillLifecycle, type ChartFillKind, type ChartFillMarker } from "./tradingPresentation";
 
 /**
@@ -60,8 +66,32 @@ export const GUTTER_LABEL_MIN_SEPARATION = 18;
  */
 export const GUTTER_LABEL_MERGE_DISTANCE = 6;
 
+/**
+ * How far inside the frame a gutter tag's centre is held, in viewBox units.
+ *
+ * A tag is drawn centred on its `labelY` and is two lines tall, so a tag
+ * centred on the frame edge puts half of itself outside the chart — over the
+ * schedule pills below it, or the header above. Nine units is a little over
+ * one line at the heights this chart renders at.
+ */
+export const GUTTER_LABEL_EDGE_INSET = 9;
+
 /** How many armed condition levels the chart draws before it says "+N more". */
-export const MAX_DRAWN_CONDITIONS = 4;
+export const MAX_DRAWN_CONDITIONS = 3;
+
+/**
+ * How close two armed conditions have to be to become one drawn level, as a
+ * fraction of the candle window's own range.
+ *
+ * A plan that raises its stop twice leaves three watches within a few tenths of
+ * a percent of each other — 1,876.00, 1,875.90, 1,875.66 on a window whose bars
+ * span twenty dollars. Drawn as three levels they are three rules the eye
+ * cannot separate, three gutter tags all captioned "below", and (because the
+ * tag layout holds tags apart) three labels no longer next to the rules they
+ * name. At this distance they are one line on the price axis, and the chart
+ * says so: the nearest price, plus how many watches sit on it.
+ */
+export const CONDITION_CLUSTER_RANGE_RATIO = 0.03;
 
 /**
  * The share of the plot held empty to the right of "now", as a fraction.
@@ -118,6 +148,14 @@ export interface ChartLevel {
   readonly offScale: "above" | "below" | null;
   /** Whether an armed condition's predicate is already satisfied. */
   readonly met?: boolean;
+  /**
+   * How many armed watches this one condition level stands for.
+   *
+   * Above 1 the level is a cluster — see {@link CONDITION_CLUSTER_RANGE_RATIO}
+   * — and its `price` is the nearest of them to the mark, the one the market
+   * would reach first.
+   */
+  readonly count?: number;
 }
 
 /**
@@ -150,6 +188,8 @@ export interface ChartCondition {
   readonly price: number;
   readonly direction: "above" | "below";
   readonly met: boolean;
+  /** Set by clustering; how many watches this entry stands for. @see ChartLevel.count */
+  readonly count?: number;
 }
 
 /** One placed fill: where on the plot the mission traded, and what it was. */
@@ -178,6 +218,8 @@ export interface GutterTag {
   readonly met?: boolean;
   /** Set when the entry tag merged into the mark tag; the entry price. */
   readonly mergedPrice?: number;
+  /** How many armed watches the tag's level stands for. @see ChartLevel.count */
+  readonly count?: number;
 }
 
 /**
@@ -202,6 +244,25 @@ export interface ChartBar {
   readonly bodyBottom: number;
   /** Close at or above open is `up`. Doji resolve to `up`, as exchanges do. */
   readonly direction: "up" | "down";
+}
+
+/**
+ * One of the two moving averages the EMA-cross strategy trades, placed.
+ *
+ * Both are drawn whenever the window is long enough to carry them, whatever the
+ * mission is doing: the cross of a fast average through a slow one is the
+ * strategy's entry read, and a chart that shows the entry level without the two
+ * curves that produced it is asking the operator to take the setup on faith.
+ * The arithmetic is the strategy's own — `exponentialMovingAverage` from the
+ * contracts package, at {@link EMA_FAST_PERIOD}/{@link EMA_SLOW_PERIOD} — so
+ * the line on screen cannot drift from the line the gate reads.
+ */
+export interface ChartEmaLine {
+  readonly speed: "fast" | "slow";
+  readonly period: number;
+  readonly points: ReadonlyArray<ChartPoint>;
+  /** The average's newest value, in price. */
+  readonly lastValue: number;
 }
 
 /**
@@ -246,6 +307,8 @@ export interface ChartGeometry {
    * `open` — a body drawn from a guessed open is a bar that did not happen.
    */
   readonly bars: ReadonlyArray<ChartBar>;
+  /** The fast and slow EMAs, or empty when the window is too short for both. */
+  readonly emaLines: ReadonlyArray<ChartEmaLine>;
   /** Closes before the entry time — the flat part of the line. */
   readonly preEntryPoints: ReadonlyArray<ChartPoint>;
   /** Closes from entry time onward — the held part of the line. */
@@ -491,6 +554,26 @@ export function selectVisibleCandles<T extends { readonly openTime: number }>(
   return candles.slice(Math.min(tailStart, wanted));
 }
 
+/**
+ * The series' own bar interval, as the median gap between consecutive opens.
+ *
+ * The median rather than the mean, and rather than the first gap: a feed with
+ * one missing bar has a gap of two intervals in it, and either of the other two
+ * readings would take that hole for the pitch of the whole series. Falls back
+ * to one minute when there is nothing to measure — the interval every mission
+ * defaults to.
+ */
+export function medianBarInterval(candles: ReadonlyArray<{ readonly openTime: number }>): number {
+  const gaps: number[] = [];
+  for (let index = 1; index < candles.length; index += 1) {
+    const gap = candles[index]!.openTime - candles[index - 1]!.openTime;
+    if (gap > 0) gaps.push(gap);
+  }
+  if (gaps.length === 0) return 60_000;
+  gaps.sort((left, right) => left - right);
+  return gaps[Math.floor(gaps.length / 2)]!;
+}
+
 /** Hold a value inside `[min, max]`. */
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -516,12 +599,27 @@ function candleBounds(candles: ReadonlyArray<{ readonly high: number; readonly l
 }
 
 /**
+ * The smallest share of the plot's height the candles are allowed to occupy.
+ *
+ * `DOMAIN_LEVEL_REACH_RATIO` bounds each level individually, which is not the
+ * same as bounding what they do together: a stop above the window and a target
+ * below it can each be "within reach" and still, between them, flatten an hour
+ * of price action into a band a few pixels tall — which is the chart that
+ * reads as broken. This is the floor that stops it. A level that would push
+ * the candles below it is dropped from the domain and pinned at the frame edge
+ * with a chevron, the same idiom a far target already gets.
+ */
+export const MIN_CANDLE_DOMAIN_SHARE = 0.45;
+
+/**
  * The levels near enough to the price action to anchor the domain.
  *
  * Liquidation is never an anchor (at 20x it is always far), and neither is the
  * mark (it is polled far more often than the candles). Everything else joins
  * only while it sits within `DOMAIN_LEVEL_REACH_RATIO` candle-ranges of the
- * window's midpoint.
+ * window's midpoint AND leaves the candles at least
+ * {@link MIN_CANDLE_DOMAIN_SHARE} of the resulting domain. Nearest first, so
+ * the levels closest to the price action are the ones that keep their place.
  */
 function collectDomainAnchors(
   candles: ReadonlyArray<{ readonly high: number; readonly low: number }>,
@@ -534,8 +632,21 @@ function collectDomainAnchors(
   // percent of the price so "near" still means something.
   const range = bounds.max - bounds.min || Math.max(1, Math.abs(mid) * 0.001);
   const reach = range * DOMAIN_LEVEL_REACH_RATIO;
-  for (const price of candidates) {
-    if (Math.abs(price - mid) <= reach) anchors.push(price);
+
+  let min = bounds.min;
+  let max = bounds.max;
+  const nearestFirst = [...candidates].sort(
+    (left, right) => Math.abs(left - mid) - Math.abs(right - mid),
+  );
+  for (const price of nearestFirst) {
+    if (Math.abs(price - mid) > reach) continue;
+    const nextMin = Math.min(min, price);
+    const nextMax = Math.max(max, price);
+    const span = nextMax - nextMin;
+    if (span > 0 && range / span < MIN_CANDLE_DOMAIN_SHARE) continue;
+    min = nextMin;
+    max = nextMax;
+    anchors.push(price);
   }
   return anchors;
 }
@@ -576,22 +687,38 @@ export function layoutGutterLabels<T extends { readonly y: number; readonly prio
   }
 
   // Two sweeps close the loop: forward pushes everything below the top edge
-  // apart, backward pulls everything above the bottom edge back in.
+  // apart, backward pulls everything above the bottom edge back in. Both stop
+  // an inset short of the frame rather than at it: a tag is centred on its
+  // `labelY` and is two lines tall, so one placed exactly on the bottom edge
+  // hung its caption over whatever the panel drew underneath the chart — which
+  // is where the schedule pills sit.
+  const top = GUTTER_LABEL_EDGE_INSET;
+  const bottom = CHART_VIEWBOX_HEIGHT - GUTTER_LABEL_EDGE_INSET;
   for (const tag of placed) {
-    tag.labelY = clamp(tag.labelY, 0, CHART_VIEWBOX_HEIGHT);
+    tag.labelY = clamp(tag.labelY, top, bottom);
   }
   for (let i = 1; i < placed.length; i += 1) {
     const previous = placed[i - 1]!;
     const current = placed[i]!;
     current.labelY = Math.max(current.labelY, previous.labelY + GUTTER_LABEL_MIN_SEPARATION);
   }
+  // The forward sweep can push the bottom tag past the edge, and the backward
+  // sweep below starts at the second-to-last — so the last one has to be
+  // pulled in first or it is the one tag nothing ever bounds.
+  const last = placed[placed.length - 1];
+  if (last !== undefined) last.labelY = Math.min(last.labelY, bottom);
   for (let i = placed.length - 2; i >= 0; i -= 1) {
     const next = placed[i + 1]!;
     const current = placed[i]!;
     current.labelY = Math.min(
       current.labelY,
-      Math.min(next.labelY - GUTTER_LABEL_MIN_SEPARATION, CHART_VIEWBOX_HEIGHT),
+      Math.min(next.labelY - GUTTER_LABEL_MIN_SEPARATION, bottom),
     );
+  }
+  // The backward sweep can only pull upward, so the last clamp is the one that
+  // guarantees the top edge as well.
+  for (const tag of placed) {
+    tag.labelY = Math.max(tag.labelY, top);
   }
 
   return placed;
@@ -645,6 +772,7 @@ function buildGutterTags(
     readonly offScale: "above" | "below" | null;
     readonly met?: boolean;
     readonly mergedPrice?: number;
+    readonly count?: number;
     readonly priority: number;
   }> = [];
 
@@ -669,11 +797,46 @@ function buildGutterTags(
       price: level.price,
       offScale: level.offScale,
       ...(level.met === undefined ? {} : { met: level.met }),
+      ...(level.count === undefined ? {} : { count: level.count }),
       priority: GUTTER_PRIORITY[level.kind],
     });
   });
 
   return layoutGutterLabels(candidates).map(({ priority: _priority, ...tag }) => tag);
+}
+
+/**
+ * Place one exponential moving average across the window.
+ *
+ * Returns null below two points: a one-point average is a dot, and the pair is
+ * only meaningful drawn together, so the caller drops both when either is
+ * missing. The series starts `period - 1` bars in (that is where the seed
+ * average completes), so it is aligned to the tail of the candle array.
+ */
+function buildEmaLine(input: {
+  readonly candles: ReadonlyArray<{ readonly openTime: number; readonly close: number }>;
+  readonly period: number;
+  readonly speed: "fast" | "slow";
+  readonly xForTime: (t: number) => number;
+  readonly yForPrice: (p: number) => number;
+}): ChartEmaLine | null {
+  const series = exponentialMovingAverage(
+    input.candles.map((candle) => candle.close),
+    input.period,
+  );
+  if (series.length < 2) return null;
+
+  const offset = input.candles.length - series.length;
+  const points = series.map((value, index) => ({
+    x: input.xForTime(input.candles[offset + index]!.openTime),
+    y: input.yForPrice(value),
+  }));
+  return {
+    speed: input.speed,
+    period: input.period,
+    points,
+    lastValue: series[series.length - 1]!,
+  };
 }
 
 /** Build the level list, pinning anything outside the domain to an edge. */
@@ -690,7 +853,7 @@ function buildLevels(input: {
 }): ChartLevel[] {
   const levels: ChartLevel[] = [];
 
-  const pushLevel = (kind: ChartLevelKind, price: number, met?: boolean): void => {
+  const pushLevel = (kind: ChartLevelKind, price: number, met?: boolean, count?: number): void => {
     const offScale: "above" | "below" | null =
       price > input.domainMax ? "above" : price < input.domainMin ? "below" : null;
     levels.push({
@@ -707,6 +870,7 @@ function buildLevels(input: {
       inFrame: offScale === null,
       offScale,
       ...(met === undefined ? {} : { met }),
+      ...(count === undefined || count <= 1 ? {} : { count }),
     });
   };
 
@@ -723,11 +887,23 @@ function buildLevels(input: {
     if (inFrame) pushLevel("liquidation", input.liquidationPrice);
   }
 
+  // An armed condition sitting on a level the chart has already named is that
+  // level, not a second one. A profit-target watch resolves to exactly the
+  // target price and a stop-proximity watch to the stop, so drawing both put
+  // two rules and two identical gutter tags at one price — "1,858.43 target"
+  // with "1,858.43 below" written across it. The named level wins: it says
+  // what the price IS, which is the more useful of the two statements.
+  const named = levels.map((level) => level.price);
+  const alreadyNamed = (price: number): boolean =>
+    named.some((existing) => Math.abs(existing - price) <= Math.max(Math.abs(price), 1) * 1e-6);
+
   for (const condition of input.conditions) {
+    if (alreadyNamed(condition.price)) continue;
     pushLevel(
       condition.direction === "above" ? "condition_above" : "condition_below",
       condition.price,
       condition.met,
+      condition.count,
     );
   }
 
@@ -748,19 +924,100 @@ function buildLevels(input: {
  * all turns the plot into a ladder and hides the price line inside it, so the
  * near ones are drawn and the rest are counted.
  */
-function selectConditions(
-  conditions: ReadonlyArray<ChartCondition>,
-  markPrice: number | null,
-): { readonly drawn: ReadonlyArray<ChartCondition>; readonly dropped: number } {
-  if (conditions.length <= MAX_DRAWN_CONDITIONS) return { drawn: conditions, dropped: 0 };
-  const reference = markPrice ?? conditions[0]!.price;
-  const nearest = [...conditions].sort(
+function selectConditions(input: {
+  readonly conditions: ReadonlyArray<ChartCondition>;
+  readonly markPrice: number | null;
+  readonly candleRange: number;
+}): { readonly drawn: ReadonlyArray<ChartCondition>; readonly dropped: number } {
+  const reference = input.markPrice ?? input.conditions[0]?.price ?? 0;
+  const unique = clusterConditions(
+    dedupeConditions(input.conditions),
+    input.candleRange * CONDITION_CLUSTER_RANGE_RATIO,
+    reference,
+  );
+  if (unique.length <= MAX_DRAWN_CONDITIONS) return { drawn: unique, dropped: 0 };
+  const nearest = [...unique].sort(
     (a, b) => Math.abs(a.price - reference) - Math.abs(b.price - reference),
   );
-  return {
-    drawn: nearest.slice(0, MAX_DRAWN_CONDITIONS),
-    dropped: conditions.length - MAX_DRAWN_CONDITIONS,
-  };
+  // A dropped cluster takes every watch in it with it, so the count the panel
+  // reports is watches, not levels.
+  const dropped = nearest
+    .slice(MAX_DRAWN_CONDITIONS)
+    .reduce((total, condition) => total + (condition.count ?? 1), 0);
+  return { drawn: nearest.slice(0, MAX_DRAWN_CONDITIONS), dropped };
+}
+
+/**
+ * Fold conditions closer together than `tolerance` into one drawn level.
+ *
+ * Clusters only within a direction: an "above" and a "below" watch at the same
+ * price are two opposite statements about it, and merging them would lose the
+ * one thing the level says. The representative is the member nearest
+ * `reference` (the mark) — the price the market reaches first, which is the one
+ * worth reading off the axis — and `met` is the OR, as it is in
+ * {@link dedupeConditions}.
+ */
+export function clusterConditions(
+  conditions: ReadonlyArray<ChartCondition>,
+  tolerance: number,
+  reference: number,
+): ReadonlyArray<ChartCondition> {
+  if (tolerance <= 0) return conditions;
+
+  const clusters: Array<{ direction: "above" | "below"; members: ChartCondition[] }> = [];
+  for (const condition of [...conditions].sort((a, b) => a.price - b.price)) {
+    const open = clusters[clusters.length - 1];
+    const joins =
+      open !== undefined &&
+      open.direction === condition.direction &&
+      condition.price - open.members[open.members.length - 1]!.price <= tolerance;
+    if (joins) {
+      open.members.push(condition);
+    } else {
+      clusters.push({ direction: condition.direction, members: [condition] });
+    }
+  }
+
+  return clusters.map((cluster) => {
+    const nearest = cluster.members.reduce((best, member) =>
+      Math.abs(member.price - reference) < Math.abs(best.price - reference) ? member : best,
+    );
+    return {
+      price: nearest.price,
+      direction: cluster.direction,
+      met: cluster.members.some((member) => member.met),
+      count: cluster.members.reduce((total, member) => total + (member.count ?? 1), 0),
+    };
+  });
+}
+
+/**
+ * One rule per price and direction, however many watches point at it.
+ *
+ * A plan that arms both a `price_cross` and a `candle_close` at the same level
+ * — which the doctrine asks for at a trigger it wants confirmed — produced two
+ * identical rules and two identical gutter tags stacked on top of each other,
+ * reading as two levels when the mission is watching one. The checklist below
+ * the chart still lists both, because there the difference between a touch and
+ * a close is the point; on a price axis it has no y of its own.
+ *
+ * `met` is the OR: if any watch at the price has fired, the level has been
+ * reached.
+ */
+export function dedupeConditions(
+  conditions: ReadonlyArray<ChartCondition>,
+): ReadonlyArray<ChartCondition> {
+  const byLevel = new Map<string, ChartCondition>();
+  for (const condition of conditions) {
+    const key = `${condition.direction}:${condition.price}`;
+    const existing = byLevel.get(key);
+    if (existing === undefined) {
+      byLevel.set(key, condition);
+      continue;
+    }
+    if (condition.met && !existing.met) byLevel.set(key, condition);
+  }
+  return [...byLevel.values()];
 }
 
 /**
@@ -777,10 +1034,12 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
 
   if (candles.length < MIN_CANDLES_FOR_SVG) return null;
 
-  const { drawn: conditions, dropped: droppedConditions } = selectConditions(
-    input.conditions ?? [],
+  const bounds = candleBounds(candles);
+  const { drawn: conditions, dropped: droppedConditions } = selectConditions({
+    conditions: input.conditions ?? [],
     markPrice,
-  );
+    candleRange: bounds.max - bounds.min,
+  });
 
   // --- y-domain: candle range ∪ the levels near enough to it, padded. ------
   const pendingOrder = input.pendingOrder ?? null;
@@ -824,12 +1083,26 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
   // over the browser's clock when they disagree.
   const timeEnd = hasClock ? Math.max(input.nowMillis!, lastCandleTime) : lastCandleTime;
   const nowX = hasClock ? PLOT_WIDTH * (1 - FUTURE_GUTTER_RATIO) : PLOT_WIDTH;
-  const timeSpan = timeEnd - timeStart;
 
-  const xForTime = (t: number): number => {
-    if (timeSpan <= 0) return 0;
-    return ((t - timeStart) / timeSpan) * nowX;
-  };
+  // The axis scale, in viewBox units per millisecond.
+  //
+  // With a clock it is a CONSTANT — the window is a fixed number of bar
+  // intervals wide, anchored at `now` — and that is the whole fix for a series
+  // that "moved oddly" while the price ticked. Fitting `timeStart..now` to the
+  // plot instead made the span grow with every passing second and shrink again
+  // the moment a bar closed, so between two candles the whole series crept
+  // rightward and squashed by ~1.7%, then snapped back. Nothing in the data
+  // moved; the ruler did. Held constant, every bar slides left at one steady
+  // rate, the pitch never changes, and a new candle arriving is not an event
+  // the geometry can see.
+  //
+  // Without a clock (the review chart) the old fit-to-window mapping is kept
+  // exactly: that window is closed, so it has nothing to slide.
+  const barIntervalMillis = medianBarInterval(candles);
+  const visibleSpan = hasClock ? barIntervalMillis * candles.length : timeEnd - timeStart;
+  const pixelsPerMilli = visibleSpan > 0 ? nowX / visibleSpan : 0;
+
+  const xForTime = (t: number): number => nowX - (timeEnd - t) * pixelsPerMilli;
 
   // Inverted: higher price → smaller y → top of SVG.
   const yForPrice = (p: number): number => {
@@ -867,14 +1140,17 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
   // without an `open` is skipped rather than bodied from the previous close:
   // the fallback is a convention, and a chart that invents one is no longer
   // the same picture as the exchange's.
-  const barPitch =
-    candles.length < 2
-      ? 0
-      : (xForTime(lastCandleTime) - xForTime(timeStart)) / (candles.length - 1);
+  // One interval's worth of the axis, not the window divided by the bar count:
+  // with a constant scale the two are the same on an even series, and on one
+  // with a hole in it only this reading keeps every body the same width.
+  const barPitch = barIntervalMillis * pixelsPerMilli;
   const halfWidth = Math.max(0.5, Math.min(BAR_MAX_HALF_WIDTH, (barPitch * 0.72) / 2));
   const bars: ChartBar[] = [];
   for (const candle of candles) {
     if (candle.open === undefined) continue;
+    // A bar that has slid off the left edge is dropped rather than drawn
+    // half-outside the frame.
+    if (xForTime(candle.openTime) < -halfWidth) continue;
     const openY = yForPrice(candle.open);
     const closeY = yForPrice(candle.close);
     bars.push({
@@ -888,6 +1164,25 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
       direction: candle.close >= candle.open ? "up" : "down",
     });
   }
+
+  // --- the two moving averages: the EMA strategy's own read. ---------------
+  // Both or neither — a fast average alone says nothing about a cross.
+  const emaFast = buildEmaLine({
+    candles,
+    period: EMA_FAST_PERIOD,
+    speed: "fast",
+    xForTime,
+    yForPrice,
+  });
+  const emaSlow = buildEmaLine({
+    candles,
+    period: EMA_SLOW_PERIOD,
+    speed: "slow",
+    xForTime,
+    yForPrice,
+  });
+  const emaLines: ReadonlyArray<ChartEmaLine> =
+    emaFast === null || emaSlow === null ? [] : [emaSlow, emaFast];
 
   // --- levels --------------------------------------------------------------
   const levels = buildLevels({
@@ -986,6 +1281,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     xForTime,
     yForPrice,
     bars,
+    emaLines,
     preEntryPoints,
     postEntryPoints,
     livePoints,
