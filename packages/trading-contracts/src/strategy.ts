@@ -417,6 +417,49 @@ export const ProfitTargetBasis = Schema.Struct({
 });
 export type ProfitTargetBasis = typeof ProfitTargetBasis.Type;
 
+/**
+ * The basis fields a take-profit limit price is derived from. Structurally the
+ * same subset of `ProfitTargetBasis` that `checkProfitTarget` grades, so the
+ * price the exchange rests and the arithmetic the publish proved cannot come
+ * from different numbers.
+ */
+export interface ProfitTargetPriceBasis {
+  readonly referencePrice: number;
+  readonly measuredMoveUsd: number;
+  readonly insufficientVolatility?: boolean | undefined;
+}
+
+/**
+ * The price a resting reduce-only take-profit limit rests at (plan 29 step
+ * 2.5), derived from the published basis and the position's direction.
+ *
+ * The plan states its target as a move — `measuredMoveUsd` away from
+ * `referencePrice` — not as a price, so the price has to be derived
+ * direction-aware: a long banks by selling ABOVE its reference, a short by
+ * buying BELOW it. Getting the sign wrong is not a cosmetic defect; it would
+ * rest a reduce-only limit on the losing side of the position where it fills
+ * immediately at a loss.
+ *
+ * Returns `null` when no usable target exists — no basis, a basis that stood
+ * down for insufficient volatility, non-positive reference or move, or no
+ * position to derive a direction from. The caller treats `null` as "withdraw
+ * any resting take-profit", never as "keep whatever is there".
+ */
+export function takeProfitLimitPrice(input: {
+  readonly basis: ProfitTargetPriceBasis | null | undefined;
+  /** Signed canonical position size; positive long, negative short. */
+  readonly positionSize: number;
+}): number | null {
+  const basis = input.basis;
+  if (basis === null || basis === undefined) return null;
+  if (basis.insufficientVolatility === true) return null;
+  if (!(basis.referencePrice > 0) || !(basis.measuredMoveUsd > 0)) return null;
+  if (!(input.positionSize > 0) && !(input.positionSize < 0)) return null;
+  return input.positionSize > 0
+    ? basis.referencePrice + basis.measuredMoveUsd
+    : basis.referencePrice - basis.measuredMoveUsd;
+}
+
 export const MomentumProtection = Schema.Struct({
   stopMethod: TradingText,
   stopPrice: Schema.optional(Price),

@@ -272,6 +272,58 @@ describe("mapOrder", () => {
       expect(leg.t).toEqual({ limit: { tif: "Alo" } });
     }),
   );
+
+  it.effect("rests a long take-profit sell above the ask as a non-crossing ALO", () =>
+    Effect.gen(function* () {
+      // Plan 29 step 2.5: a long banks by selling ABOVE the market, so the
+      // take-profit's normal resting place is above the best ask — the far
+      // side of both crossing checks. A crossing test that keyed a sell off
+      // the ASK would reject every legitimate take-profit; it keys off the
+      // bid, and 1950 > 1891.4 rests.
+      const order = yield* mapOrder({
+        intent: baseIntent({
+          actionType: "reduce",
+          side: "sell",
+          reduceOnly: true,
+          orderPreference: "post_only",
+          limitPrice: 1_950,
+        }),
+        bbo: FRESH_BBO(1_000),
+        szDecimals: 4,
+        allowedSlippageBps: 50,
+        nowMs: 1_000,
+      });
+      expect(order.timeInForce).toBe("alo");
+      expect(order.side).toBe("sell");
+      expect(order.reduceOnly).toBe(true);
+      expect(order.limitPrice).toBe("1950");
+    }),
+  );
+
+  it.effect("rests a short take-profit buy below the bid as a non-crossing ALO", () =>
+    Effect.gen(function* () {
+      // The mirror: a short banks by buying BELOW the market, so its
+      // take-profit rests under the best bid. A buy crossing check keyed off
+      // the bid would reject it; it keys off the ask, and 1850 < 1891.5 rests.
+      const order = yield* mapOrder({
+        intent: baseIntent({
+          actionType: "reduce",
+          side: "buy",
+          reduceOnly: true,
+          orderPreference: "post_only",
+          limitPrice: 1_850,
+        }),
+        bbo: FRESH_BBO(1_000),
+        szDecimals: 4,
+        allowedSlippageBps: 50,
+        nowMs: 1_000,
+      });
+      expect(order.timeInForce).toBe("alo");
+      expect(order.side).toBe("buy");
+      expect(order.reduceOnly).toBe(true);
+      expect(order.limitPrice).toBe("1850");
+    }),
+  );
 });
 
 describe("buildOrderAction / buildCancelByCloidAction", () => {

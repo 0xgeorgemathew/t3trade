@@ -168,6 +168,33 @@ export class HyperliquidExecutionService extends Context.Service<
       /** Distinguishes repeated attempts so each carries its own cloid. */
       readonly attempt: number;
     }) => Effect.Effect<ReadonlyArray<TradingOrderResult>, TradingExecutionError>;
+
+    /**
+     * Place one resting reduce-only post-only (ALO) limit at a stated price
+     * (plan 29 step 2.5 — the take-profit), WITHOUT a preview context.
+     *
+     * Same §14.7 reasoning as `submitReduceOnlyIoc`: a reduce-only order cannot
+     * open or extend exposure, so the §16.3 checklist that gates risk-taking
+     * does not apply, and the take-profit is reconciled by the protection
+     * watchdog — outside any harness turn, where the checklist's
+     * lease-owning-run requirement could never be satisfied. What is NOT
+     * bypassed: the signer, the nonce lane, and precision.
+     *
+     * ALO means the exchange itself refuses the order if the limit would cross
+     * the book — the take-profit never takes liquidity and never pays taker.
+     * That refusal is a normal outcome the caller reports, not an error to
+     * retry harder: a target the market has already run through is a decision
+     * for the wake that the profit armed, not for this path.
+     */
+    readonly submitReduceOnlyAlo: (input: {
+      readonly market: string;
+      /** Deterministic cloid; the caller owns retry/replacement identity. */
+      readonly cloid: string;
+      /** Signed canonical position size; positive long, negative short. */
+      readonly positionSize: number;
+      /** The limit price to rest at — the plan's derived target price. */
+      readonly limitPrice: number;
+    }) => Effect.Effect<ReadonlyArray<TradingOrderResult>, TradingExecutionError>;
   }
 >()("t3/trading/HyperliquidExecutionService") {}
 
@@ -952,11 +979,118 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
       );
     });
 
+  // Plan 29 step 2.5: the preview-free resting take-profit. Same §14.7
+  // rationale as submitReduceOnlyIoc above; the one difference is the order's
+  // shape — it rests at the caller's stated price as a post-only ALO instead
+  // of crossing at a BBO-derived limit.
+  const submitReduceOnlyAlo: HyperliquidExecutionService["Service"]["submitReduceOnlyAlo"] = (
+    input,
+  ) =>
+    Effect.gen(function* () {
+      const size = Math.abs(input.positionSize);
+      if (size <= 0) return [];
+
+      const signerOpt = yield* signerConfig.resolve.pipe(
+        Effect.mapError(
+          (e: InterimSignerError) =>
+            new TradingExecutionError({ stage: "signer_not_configured", detail: e.reason }),
+        ),
+      );
+      if (signerOpt._tag === "None") {
+        return yield* new TradingExecutionError({ stage: "signer_not_configured" });
+      }
+      const signer = signerOpt.value;
+
+      const market = yield* gateway
+        .resolveMarket(input.market)
+        .pipe(Effect.mapError(() => new TradingExecutionError({ stage: "market_unresolved" })));
+
+      // Bank the position by exiting the way it was entered: a sell above the
+      // market for a long, a buy below it for a short. Reduce-only clamps the
+      // fill to the position, so the size can never cross through flat.
+      const isLong = input.positionSize > 0;
+      const side = isLong ? ("sell" as const) : ("buy" as const);
+
+      const action = buildOrderAction(
+        {
+          cloid: input.cloid,
+          coin: input.market as TradingWireOrder["coin"],
+          side,
+          limitPrice: formatPrice(input.limitPrice),
+          size: formatSize(size, market.szDecimals),
+          timeInForce: "alo",
+          reduceOnly: true,
+        },
+        market.assetIndex,
+      );
+
+      const signed = yield* nonceCoord
+        .runWithNonce((nonce) =>
+          Effect.succeed({
+            action,
+            nonce,
+            signature: signL1ActionForWire({
+              action,
+              nonce,
+              privateKey: signer.privateKeyBytes,
+              isTestnet: true,
+            }),
+          } satisfies SignedAction),
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new TradingExecutionError({
+                stage: "sign_failed",
+                detail: cause instanceof Error ? cause.message : String(cause),
+              }),
+          ),
+        );
+
+      const response = yield* exchange.submit(signed).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingExecutionError({
+              stage: "submit_failed",
+              detail: cause instanceof Error ? cause.message : String(cause),
+            }),
+        ),
+      );
+
+      const outcome = readExchangeResponse(response);
+      if (outcome.actionError !== undefined) {
+        return yield* new TradingExecutionError({
+          stage: "inspect_failed",
+          detail: `reduce-only take-profit rejected by the exchange: ${outcome.actionError}`,
+        });
+      }
+      yield* Effect.logInfo("trading reduce-only take-profit hit the wire", {
+        market: input.market,
+        cloid: input.cloid,
+        side,
+        limitPrice: input.limitPrice,
+        size,
+        outcomes: outcome.statuses.map((row) => row.outcome),
+      });
+      return outcome.statuses.map(
+        (row) =>
+          ({
+            cloid: input.cloid,
+            status: row.outcome,
+            orderId: row.orderId,
+            filledSize: row.filledSize,
+            reason: row.reason,
+            role: "protection",
+          }) satisfies TradingOrderResult,
+      );
+    });
+
   return HyperliquidExecutionService.of({
     submitOrder,
     submitCancel,
     submitProtectiveStop,
     submitReduceOnlyIoc,
+    submitReduceOnlyAlo,
   });
 });
 

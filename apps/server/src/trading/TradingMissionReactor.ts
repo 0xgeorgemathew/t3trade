@@ -868,6 +868,106 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  // --- plan 29 step 2.5: keep a resting reduce-only take-profit on the book --
+
+  /**
+   * The active plan's target basis, read as numbers rather than through the
+   * strategy decoder — the same trade-off `TradingQuoteService`'s target read
+   * makes: a reconciliation that refused to act because a historical prose
+   * field stopped decoding would leave a take-profit resting against a plan
+   * that had withdrawn it.
+   *
+   * Null when the mission has published nothing, stood down, flagged
+   * insufficient volatility, or the basis is missing its numbers.
+   */
+  const readPlanTargetBasis = (missionId: TradingMissionId) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{
+        readonly reference_price: number | null;
+        readonly measured_move_usd: number | null;
+        readonly insufficient_volatility: number | null;
+        readonly stand_down_code: string | null;
+      }>`
+        SELECT
+          json_extract(s.strategy_json, '$.protection.targetProfitBasis.referencePrice')
+            AS reference_price,
+          json_extract(s.strategy_json, '$.protection.targetProfitBasis.measuredMoveUsd')
+            AS measured_move_usd,
+          json_extract(s.strategy_json, '$.protection.targetProfitBasis.insufficientVolatility')
+            AS insufficient_volatility,
+          json_extract(s.strategy_json, '$.standDownCode') AS stand_down_code
+        FROM momentum_strategy_versions s
+        JOIN trading_missions m
+          ON m.mission_id = s.mission_id AND m.strategy_version = s.version
+        WHERE s.mission_id = ${missionId}
+      `;
+      const row = rows[0];
+      if (row === undefined || row.stand_down_code !== null) return null;
+      if (row.reference_price === null || row.measured_move_usd === null) return null;
+      // SQLite's json_extract reports a JSON true as 1.
+      if (row.insufficient_volatility !== null && row.insufficient_volatility !== 0) {
+        return null;
+      }
+      return {
+        referencePrice: row.reference_price,
+        measuredMoveUsd: row.measured_move_usd,
+      };
+    });
+
+  /**
+   * Converge the resting take-profit to the plan: the protection service
+   * reads canonical state and places, replaces, or withdraws the reduce-only
+   * ALO at the plan's derived target price. Failures log and wait for the
+   * next pass — the stop keeps the downside, so nothing here escalates.
+   */
+  const reconcileTakeProtectionFor = Effect.fn("TradingMissionReactor.reconcileTakeProtectionFor")(
+    function* (input: {
+      readonly missionId: TradingMissionId;
+      readonly market: TradingMarket;
+      readonly strategyVersion: number;
+      readonly masterAddress: string;
+      /** Varies the placement cloid across passes; watchdog passes use epoch seconds. */
+      readonly executionSequence: number;
+    }) {
+      const targetBasis = yield* readPlanTargetBasis(input.missionId);
+      const outcome = yield* protection.reconcileTakeProtection({
+        missionId: input.missionId,
+        strategyVersion: input.strategyVersion,
+        executionSequence: input.executionSequence,
+        masterAddress: input.masterAddress,
+        market: input.market,
+        targetBasis,
+      });
+      yield* Effect.logInfo("trading take-profit reconciled", {
+        missionId: input.missionId,
+        status: outcome.status,
+        targetPrice: outcome.targetPrice,
+        positionSize: outcome.positionSize,
+        cancelledCloids: outcome.cancelledCloids,
+        ...(outcome.detail === undefined ? {} : { detail: outcome.detail }),
+      });
+      return outcome;
+    },
+  );
+
+  /** Never let the take-profit break the flow it is attached to. */
+  const reconcileTakeProtectionQuietly = (input: {
+    readonly missionId: TradingMissionId;
+    readonly market: TradingMarket;
+    readonly strategyVersion: number;
+    readonly masterAddress: string;
+    readonly executionSequence: number;
+  }) =>
+    reconcileTakeProtectionFor(input).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("trading could not reconcile the take-profit", {
+          missionId: input.missionId,
+          reason: describeRefusal(cause),
+        }),
+      ),
+    );
+
   /**
    * §17.2 steps 6–9 for one acknowledged increase.
    *
@@ -911,6 +1011,17 @@ const make = Effect.gen(function* () {
         missionId,
         market: intent.market,
         stopPrice: stop.stopPrice,
+      });
+      // The entry that opened the position also banks its profit target: the
+      // plan's take-profit goes from published to resting here (plan 29 step
+      // 2.5). Quietly — a take-profit that cannot rest never fails the
+      // execution that just confirmed the stop.
+      yield* reconcileTakeProtectionQuietly({
+        missionId,
+        market: intent.market,
+        strategyVersion: intent.strategyVersion,
+        masterAddress,
+        executionSequence: intent.executionSequence,
       });
       return;
     }
@@ -1623,12 +1734,30 @@ const make = Effect.gen(function* () {
     const missionId = TradingMissionId.make(mission.id);
     if (yield* holdsPosition(missionId)) return;
 
-    yield* advance({
+    const wentFlat = yield* advance({
       missionId,
       threadId: mission.harness.threadId as ThreadId,
       from: ["position_open"],
       to: "waiting",
       reason: "position_went_flat",
+    });
+    if (!wentFlat) return;
+
+    // The position that just left can leave a resting take-profit behind (a
+    // stop-out takes the position without taking the profit order). The
+    // exchange usually retires reduce-only orders with the position; this is
+    // the belt. The stop path is deliberately not touched here — withdrawing
+    // stops is not this loop's invariant to own.
+    const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+    const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+    yield* reconcileTakeProtectionQuietly({
+      missionId,
+      market: mission.market,
+      strategyVersion: mission.strategyVersion,
+      masterAddress,
+      // No harness execution to borrow a sequence from; epoch seconds keep
+      // this pass's cloid distinct, the same trick the stop watchdog uses.
+      executionSequence: Math.floor(occurredAt / 1000),
     });
   });
 
@@ -1732,6 +1861,36 @@ const make = Effect.gen(function* () {
     yield* coordinator.requestRun({ missionId, cause: "order_updated" }).pipe(Effect.ignore);
   });
 
+  /**
+   * Keep the resting take-profit converged to the plan (plan 29 step 2.5).
+   *
+   * Runs on the same five-second cadence as the protection watchdog and for
+   * the same reason: the plan can change (a publish that moved the target) or
+   * the book can change (an order cancelled by hand) between harness turns,
+   * and nothing else watches the profit side. Only while simply holding — an
+   * execution in progress reconciles the take-profit itself.
+   */
+  const guardTakeProfit = Effect.fn("TradingMissionReactor.guardTakeProfit")(function* () {
+    const active = yield* missions.findActiveMission(LOCAL_TRADING_USER_ID);
+    if (Option.isNone(active)) return;
+    const mission = active.value;
+    if (mission.status !== "position_open") return;
+
+    const missionId = TradingMissionId.make(mission.id);
+    const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+    const occurredAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+    yield* reconcileTakeProtectionFor({
+      missionId,
+      market: mission.market,
+      strategyVersion: mission.strategyVersion,
+      masterAddress,
+      // Not a harness execution, so there is no sequence to borrow; epoch
+      // seconds keep each pass's cloid distinct — the same trick the stop
+      // watchdog uses.
+      executionSequence: Math.floor(occurredAt / 1000),
+    });
+  });
+
   yield* Effect.gen(function* () {
     while (true) {
       yield* Effect.sleep("5 seconds");
@@ -1741,6 +1900,13 @@ const make = Effect.gen(function* () {
           Cause.hasInterruptsOnly(cause)
             ? Effect.failCause(cause)
             : warnWithCause("trading protection watchdog pass failed", {}, cause),
+        ),
+      );
+      yield* guardTakeProfit().pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : warnWithCause("trading take-profit watchdog pass failed", {}, cause),
         ),
       );
     }
