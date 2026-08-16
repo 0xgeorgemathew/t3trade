@@ -667,3 +667,51 @@ the armed panel reads header → `NEXT` → chart. That is the change, and it is
 the whole change.
 
 **Found broken, not mine.** Nothing new.
+
+---
+
+## Step 8.7 — The phone test — `317a34a97`
+
+Phase 8 ends here. Both of the step's conditions now hold at 375.
+
+**The gutter truncation is fixed** — the one flagged at the top of this log
+since 8.1 as pre-existing. The gutter was a flat 15% of the frame with no floor,
+which is ~56px on a phone, narrower than `○ ▲ 1,873.5`. Every tag clipped to
+`1,8` and the panel stopped answering question three (what is protecting me, at
+what price) and half of question four. It now has a `max(15%, 4.5rem)` floor,
+which takes the space out of the right end of the plot — that end is the future
+gutter, and it is empty by construction.
+
+**Question five was missing while holding.** The armed header has carried the
+plan's own sentence since the restyle, but the live header carries P&L, ROI,
+progress and hold time — so the reason you are in the trade was behind the plan
+disclosure, which is not "one screen". It is now one line under the header,
+clamped to two rows so a long thesis cannot push the chart off a phone.
+
+**Five, not six.** The schedule strip drew up to six pills where the chart's
+own gutter has held five since `MAX_DRAWN_TIME_MARKERS`. It was the single
+surface breaking the bound the chart was written to.
+
+**The six questions, on the phone shot, from the holding panel alone.** Up or
+down: `+$2.60 +1.39%`. What am I in: `ETH 5x Long`, `Size 0.5`. What is
+protecting me and the worst case: `Protected Full` and `stop 1,858.1 $3.05
+risk`. What next: the schedule strip and the chart's future gutter. Why: the
+new sentence. What has happened: the chart's fill circle and its past-event
+ticks. All above the plan disclosure.
+
+**Decisions you might have made differently.** The floor is 4.5rem, which at
+375px is 19% of the frame rather than 15%. That is real plot width given up on
+a phone and kept on a desktop, and I preferred it to shrinking the tag type:
+9px prices on a phone would be legible-in-principle and unread-in-practice.
+
+**Numbers.** `pnpm typecheck` 0 errors. `apps/web` trading suites 262 passed (5
+files). `pnpm lint` 35 warnings, same 2 pre-existing errors.
+
+**Verified in the browser.** `8-7-phone-test-phone.png` (375) and
+`-desktop.png` (1280). At 375 the tags read `○ ▲ 1,873.5 above`, `1,878.2
+target`, `1,864.2 entry`, `1,858.1 stop` in full — that is the fix, and it is
+visible against the same fixtures the 8-5 shot clipped.
+
+**Found broken, not mine.** Nothing new. The drag readout at 375 spans most of
+the plot, which I flagged under 8.4; with the tags now legible it reads as
+deliberate rather than broken, and I left it.
