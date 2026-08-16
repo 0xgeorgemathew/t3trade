@@ -34,6 +34,7 @@ import type {
   OrderBook,
 } from "@t3tools/trading-contracts/market";
 import {
+  MARKET_SAMPLE_MIN_SPAN_MILLIS,
   readMicrostructure,
   sampleFromObservation,
   type MarketMicrostructure,
@@ -891,16 +892,28 @@ const make = Effect.gen(function* () {
       // ...and what this one leaves for the next. Fire-and-forget by
       // construction: `writeMarketSample` swallows its own failures, because a
       // mission that cannot write bookkeeping still has to wake.
-      yield* writeMarketSample({
-        missionId: mission.id,
-        market,
-        sample: sampleFromObservation({
-          markPrice: marketSnapshot.markPrice,
-          observedAt: occurredAt,
-          microstructure,
-          openInterest: marketSnapshot.openInterest,
-        }),
-      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      //
+      // A sample younger than the delta floor is NOT replaced. `observe` runs
+      // on every `trading_look` as well as every wake, and overwriting on each
+      // one would keep resetting the clock: a model that looks three times in a
+      // turn would leave the next wake comparing against a sample seconds old
+      // and reporting nothing. Letting the stored sample age instead means the
+      // comparison spans the gap that actually matters.
+      const sampleIsStale =
+        previousSample === null ||
+        occurredAt - previousSample.observedAt >= MARKET_SAMPLE_MIN_SPAN_MILLIS;
+      if (sampleIsStale) {
+        yield* writeMarketSample({
+          missionId: mission.id,
+          market,
+          sample: sampleFromObservation({
+            markPrice: marketSnapshot.markPrice,
+            observedAt: occurredAt,
+            microstructure,
+            openInterest: marketSnapshot.openInterest,
+          }),
+        }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      }
 
       // What the levels near the mark have already done to this mission, and
       // what the previous structure read believed (plan 27 B1/B2). Both are

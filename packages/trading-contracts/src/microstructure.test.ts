@@ -4,6 +4,7 @@ import type { MarketCandle, OrderBook, OrderBookLevel } from "./market.ts";
 import {
   AGGRESSOR_FLOW_BARS,
   BOOK_IMBALANCE_LEVELS,
+  MARKET_SAMPLE_MIN_SPAN_MILLIS,
   readAggressorFlow,
   readBookImbalance,
   readLiquidity,
@@ -196,6 +197,24 @@ describe("readLiquidity", () => {
     assert.strictEqual(reading?.sinceSeconds, 60);
   });
 
+  it("keeps the current levels but withholds the change over too short a span", () => {
+    const previous: MarketSample = {
+      markPrice: 100,
+      spreadBps: 10,
+      nearDepthUsd: 4_000,
+      observedAt: 40_000,
+    };
+    const reading = readLiquidity({
+      orderBook: twoSided,
+      observedAt: previous.observedAt + MARKET_SAMPLE_MIN_SPAN_MILLIS - 1,
+      previous,
+    });
+    // The spread and the depth are facts about now, and still reported.
+    assert.closeTo(reading?.spreadBps ?? 0, 20, 1e-9);
+    assert.isUndefined(reading?.depthChangePercent);
+    assert.isUndefined(reading?.sinceSeconds);
+  });
+
   it("refuses a predecessor that is not older than this observation", () => {
     const reading = readLiquidity({
       orderBook: twoSided,
@@ -299,6 +318,29 @@ describe("readPositioning", () => {
   it("refuses a predecessor that is not older than this observation", () => {
     assert.isNull(
       readPositioning({ markPrice: 102, openInterest: 1_100, observedAt: 40_000, previous }),
+    );
+  });
+
+  // The reading a second look inside one turn would otherwise manufacture:
+  // open interest republishes slowly, so over a few seconds it is unchanged
+  // while the mark has ticked — which reads exactly like a squeeze.
+  it("says nothing about a span too short for open interest to have moved", () => {
+    const tooSoon = readPositioning({
+      markPrice: 100.05,
+      openInterest: 1_000,
+      observedAt: previous.observedAt + MARKET_SAMPLE_MIN_SPAN_MILLIS - 1,
+      previous,
+    });
+    assert.isNull(tooSoon);
+
+    // One millisecond later it is a measurement again.
+    assert.isNotNull(
+      readPositioning({
+        markPrice: 100.05,
+        openInterest: 1_000,
+        observedAt: previous.observedAt + MARKET_SAMPLE_MIN_SPAN_MILLIS,
+        previous,
+      }),
     );
   });
 });

@@ -110,6 +110,25 @@ export const NEAR_TOUCH_BPS = 10;
  * exchange serves no history for either — so the runtime keeps the last sample
  * and the next observation compares against it.
  */
+/**
+ * The shortest gap a delta reading is measured over.
+ *
+ * `observe` runs on every wake AND on every `trading_look`, so a model that
+ * looks twice in a turn puts two samples seconds apart. Over three seconds,
+ * open interest — which the exchange republishes on its own slow cadence —
+ * has almost always not moved at all, while the mark has moved a little. That
+ * pair reads exactly like the squeeze the positioning reading exists to name:
+ * price going somewhere on no new money. The reading would be manufactured by
+ * the act of looking.
+ *
+ * Thirty seconds, against a 1m primary timeframe: short enough that a genuine
+ * wake-to-wake delta always clears it, long enough that a second look inside
+ * one turn does not. Below it the current levels are still reported; only the
+ * change is withheld, because "too soon to say" and "unchanged" are different
+ * facts.
+ */
+export const MARKET_SAMPLE_MIN_SPAN_MILLIS = 30_000;
+
 export const MarketSample = Schema.Struct({
   markPrice: Schema.Number,
   spreadBps: Schema.optional(Schema.Number),
@@ -347,7 +366,7 @@ export const readLiquidity = (input: {
     previous.spreadBps === undefined ||
     previous.nearDepthUsd === undefined ||
     previous.nearDepthUsd <= 0 ||
-    previous.observedAt >= input.observedAt
+    input.observedAt - previous.observedAt < MARKET_SAMPLE_MIN_SPAN_MILLIS
   ) {
     return { spreadBps, nearDepthUsd };
   }
@@ -364,8 +383,9 @@ export const readLiquidity = (input: {
  * Measure open interest and price over the same span.
  *
  * Returns `null` unless the predecessor carried a usable open interest and a
- * usable mark and was taken earlier — a change needs two readings of the same
- * two things, and there is no partial answer worth reporting.
+ * usable mark and was taken at least {@link MARKET_SAMPLE_MIN_SPAN_MILLIS}
+ * earlier — a change needs two readings of the same two things far enough
+ * apart to be a change, and there is no partial answer worth reporting.
  */
 export const readPositioning = (input: {
   readonly markPrice: number;
@@ -381,7 +401,7 @@ export const readPositioning = (input: {
     previous.openInterest === undefined ||
     previous.openInterest <= 0 ||
     previous.markPrice <= 0 ||
-    previous.observedAt >= input.observedAt
+    input.observedAt - previous.observedAt < MARKET_SAMPLE_MIN_SPAN_MILLIS
   ) {
     return null;
   }
