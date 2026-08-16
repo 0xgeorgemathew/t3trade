@@ -558,119 +558,233 @@ export function MissionLivePanel({
         </span>
       </div>
 
-      <div className="border-t border-border/40">
-        <ChartSlot
-          data={chart.data}
-          isLoading={chart.isLoading}
-          error={chart.error}
-          entryPrice={entryPrice}
-          stopPrice={stopPrice}
-          targetPrice={targetPrice}
-          liquidationPrice={position?.liquidationPrice ?? null}
-          entryTime={entryMillis}
-          markPrice={markPrice}
-          pnlSign={pnlSign}
-          conditions={chartConditions}
-          fills={fillMarkers}
-          pendingOrder={pendingOrder}
-          flash={flash}
-          nowMillis={nowMillis}
-          triggerExpiryAt={triggerExpiryAt}
-          timeMarkers={timeMarkers}
-          pastMarkers={pastMarkers}
-          draggableKinds={draggableKinds}
-          onLevelDragEnd={onLevelDragEnd}
-          refusedStop={revision.refusedStop}
-          positionSize={position?.size ?? null}
-        />
-      </div>
+      {/* Step 8.6: the bands are the same in every state; their ORDER is not.
+          What belongs at the top is whatever that state is a question about.
 
-      {/* What the last drag came back saying. Two sentences and no third: the
-          model republished underneath it, or the exchange refused to move the
-          stop. Both stay until the operator drags again — a message that
-          disappears on a timer is one they will miss while looking at the
-          chart. */}
-      {revision.lockLost || revision.refusedStop !== null || revision.error !== null ? (
-        <button
-          type="button"
-          onClick={revision.dismiss}
-          data-testid="mission-revision-note"
-          className="w-full px-3 py-1.5 text-left text-[11px] leading-snug text-muted-foreground"
-        >
-          {revision.lockLost
-            ? "The model republished the plan while you were dragging, so the level snapped back. Drag again against what is there now."
-            : (revision.refusedStop?.detail ?? revision.error)}
-        </button>
-      ) : null}
+          `armed` is a question about what the mission is waiting for, so the
+          schedule and the checklist stand above the chart and the chart
+          becomes the picture that explains them. `live` is a question about a
+          position, so the chart — the shape of the trade — stays at the top
+          and what is held sits directly under it, with the checklist below;
+          before this the checklist separated a position's chart from its own
+          size and protection. `planning` has neither band and reads as it did.
 
-      {/* The schedule, as one row of pills: what happens next, in the order it
-          is likely to arrive. The checklist below says what is armed; this says
-          when. */}
-      {upNext.length === 0 ? null : (
-        // Left-aligned under a label, not centred: every other band on this
-        // panel starts at the same left rule, and a centred row of pills was
-        // the one thing on the card that floated free of it. The label is what
-        // makes the row a section rather than a loose set of chips.
-        <div
-          data-testid="mission-up-next"
-          className={cn("flex flex-wrap items-center gap-1.5", CONTEXT_BAND_CLASS)}
-        >
-          <span className={cn("mr-0.5", BAND_LEGEND_CLASS)}>next</span>
-          {upNext.slice(0, MAX_UP_NEXT_PILLS).map((item) => (
-            <UpNextPill
-              key={item.key}
-              item={item}
-              isFlashed={flash !== null && item.priceLevel === flash.price}
-              onSelect={
-                item.priceLevel === null
-                  ? null
-                  : (price) => setFlash((prev) => ({ price, nonce: (prev?.nonce ?? 0) + 1 }))
-              }
-            />
-          ))}
-          {upNext.length > MAX_UP_NEXT_PILLS ? (
-            <span className="font-mono text-[10.5px] text-muted-foreground">
-              +{upNext.length - MAX_UP_NEXT_PILLS} more
-            </span>
-          ) : null}
-        </div>
-      )}
-
-      {/* The full checklist, below the chart. The chart draws the four price
-          levels nearest the mark; these rows are the exact set, including the
-          watches that have no y on a price chart at all. */}
-      {visibleRows.length === 0 ? null : (
-        <div className="border-t border-border/40">
-          {/* The band's own label, on the panel's left rule like every other
-              section heading. Without it the rows read as a continuation of
-              the pill strip above rather than as the checklist. */}
-          <p className={cn("px-3 pb-0.5 pt-1.5 sm:px-4", BAND_LEGEND_CLASS)}>armed</p>
-          <div className="divide-y divide-border/25">
-            {visibleRows.map((row) => (
-              <ConditionRow key={row.id} row={row} />
-            ))}
-          </div>
-          {hiddenRows === 0 && droppedConditions === 0 ? null : (
-            <p className="px-3 py-1 font-mono text-[10.5px] text-muted-foreground sm:px-4">
-              {hiddenRows > 0
-                ? `+${hiddenRows} more condition${hiddenRows === 1 ? "" : "s"} armed`
-                : `+${droppedConditions} more level${droppedConditions === 1 ? "" : "s"} armed, off the chart`}
-            </p>
+          The drag's answer always rides with the chart, wherever the chart is:
+          it is about a level that was just moved. */}
+      {state === "armed" ? (
+        <>
+          {/* The schedule, as one row of pills: what happens next, in the order it
+            is likely to arrive. The checklist below says what is armed; this says
+            when. */}
+          {upNext.length === 0 ? null : (
+            // Left-aligned under a label, not centred: every other band on this
+            // panel starts at the same left rule, and a centred row of pills was
+            // the one thing on the card that floated free of it. The label is what
+            // makes the row a section rather than a loose set of chips.
+            <div
+              data-testid="mission-up-next"
+              className={cn("flex flex-wrap items-center gap-1.5", CONTEXT_BAND_CLASS)}
+            >
+              <span className={cn("mr-0.5", BAND_LEGEND_CLASS)}>next</span>
+              {upNext.slice(0, MAX_UP_NEXT_PILLS).map((item) => (
+                <UpNextPill
+                  key={item.key}
+                  item={item}
+                  isFlashed={flash !== null && item.priceLevel === flash.price}
+                  onSelect={
+                    item.priceLevel === null
+                      ? null
+                      : (price) => setFlash((prev) => ({ price, nonce: (prev?.nonce ?? 0) + 1 }))
+                  }
+                />
+              ))}
+              {upNext.length > MAX_UP_NEXT_PILLS ? (
+                <span className="font-mono text-[10.5px] text-muted-foreground">
+                  +{upNext.length - MAX_UP_NEXT_PILLS} more
+                </span>
+              ) : null}
+            </div>
           )}
-        </div>
-      )}
-
-      {/* What is actually held, at the foot of the panel. This used to be a
-          `Position` card in the timeline — but a position is state, not an
-          event, and state in a scrolling log reads as a fact from the moment
-          you scrolled past. The fill receipts stay in the timeline, where an
-          event with a timestamp belongs. */}
-      {position === null ? null : (
-        <PositionStrip
-          size={position.size}
-          liquidationPrice={position.liquidationPrice ?? null}
-          protectedSize={position.protectedSize}
-        />
+          {/* The full checklist, below the chart. The chart draws the four price
+            levels nearest the mark; these rows are the exact set, including the
+            watches that have no y on a price chart at all. */}
+          {visibleRows.length === 0 ? null : (
+            <div className="border-t border-border/40">
+              {/* The band's own label, on the panel's left rule like every other
+                section heading. Without it the rows read as a continuation of
+                the pill strip above rather than as the checklist. */}
+              <p className={cn("px-3 pb-0.5 pt-1.5 sm:px-4", BAND_LEGEND_CLASS)}>armed</p>
+              <div className="divide-y divide-border/25">
+                {visibleRows.map((row) => (
+                  <ConditionRow key={row.id} row={row} />
+                ))}
+              </div>
+              {hiddenRows === 0 && droppedConditions === 0 ? null : (
+                <p className="px-3 py-1 font-mono text-[10.5px] text-muted-foreground sm:px-4">
+                  {hiddenRows > 0
+                    ? `+${hiddenRows} more condition${hiddenRows === 1 ? "" : "s"} armed`
+                    : `+${droppedConditions} more level${droppedConditions === 1 ? "" : "s"} armed, off the chart`}
+                </p>
+              )}
+            </div>
+          )}
+          <div className="border-t border-border/40">
+            <ChartSlot
+              data={chart.data}
+              isLoading={chart.isLoading}
+              error={chart.error}
+              entryPrice={entryPrice}
+              stopPrice={stopPrice}
+              targetPrice={targetPrice}
+              liquidationPrice={position?.liquidationPrice ?? null}
+              entryTime={entryMillis}
+              markPrice={markPrice}
+              pnlSign={pnlSign}
+              conditions={chartConditions}
+              fills={fillMarkers}
+              pendingOrder={pendingOrder}
+              flash={flash}
+              nowMillis={nowMillis}
+              triggerExpiryAt={triggerExpiryAt}
+              timeMarkers={timeMarkers}
+              pastMarkers={pastMarkers}
+              draggableKinds={draggableKinds}
+              onLevelDragEnd={onLevelDragEnd}
+              refusedStop={revision.refusedStop}
+              positionSize={position?.size ?? null}
+            />
+          </div>
+          {/* What the last drag came back saying. Two sentences and no third: the
+            model republished underneath it, or the exchange refused to move the
+            stop. Both stay until the operator drags again — a message that
+            disappears on a timer is one they will miss while looking at the
+            chart. */}
+          {revision.lockLost || revision.refusedStop !== null || revision.error !== null ? (
+            <button
+              type="button"
+              onClick={revision.dismiss}
+              data-testid="mission-revision-note"
+              className="w-full px-3 py-1.5 text-left text-[11px] leading-snug text-muted-foreground"
+            >
+              {revision.lockLost
+                ? "The model republished the plan while you were dragging, so the level snapped back. Drag again against what is there now."
+                : (revision.refusedStop?.detail ?? revision.error)}
+            </button>
+          ) : null}
+        </>
+      ) : (
+        <>
+          <div className="border-t border-border/40">
+            <ChartSlot
+              data={chart.data}
+              isLoading={chart.isLoading}
+              error={chart.error}
+              entryPrice={entryPrice}
+              stopPrice={stopPrice}
+              targetPrice={targetPrice}
+              liquidationPrice={position?.liquidationPrice ?? null}
+              entryTime={entryMillis}
+              markPrice={markPrice}
+              pnlSign={pnlSign}
+              conditions={chartConditions}
+              fills={fillMarkers}
+              pendingOrder={pendingOrder}
+              flash={flash}
+              nowMillis={nowMillis}
+              triggerExpiryAt={triggerExpiryAt}
+              timeMarkers={timeMarkers}
+              pastMarkers={pastMarkers}
+              draggableKinds={draggableKinds}
+              onLevelDragEnd={onLevelDragEnd}
+              refusedStop={revision.refusedStop}
+              positionSize={position?.size ?? null}
+            />
+          </div>
+          {/* What the last drag came back saying. Two sentences and no third: the
+            model republished underneath it, or the exchange refused to move the
+            stop. Both stay until the operator drags again — a message that
+            disappears on a timer is one they will miss while looking at the
+            chart. */}
+          {revision.lockLost || revision.refusedStop !== null || revision.error !== null ? (
+            <button
+              type="button"
+              onClick={revision.dismiss}
+              data-testid="mission-revision-note"
+              className="w-full px-3 py-1.5 text-left text-[11px] leading-snug text-muted-foreground"
+            >
+              {revision.lockLost
+                ? "The model republished the plan while you were dragging, so the level snapped back. Drag again against what is there now."
+                : (revision.refusedStop?.detail ?? revision.error)}
+            </button>
+          ) : null}
+          {/* What is actually held, at the foot of the panel. This used to be a
+            `Position` card in the timeline — but a position is state, not an
+            event, and state in a scrolling log reads as a fact from the moment
+            you scrolled past. The fill receipts stay in the timeline, where an
+            event with a timestamp belongs. */}
+          {position === null ? null : (
+            <PositionStrip
+              size={position.size}
+              liquidationPrice={position.liquidationPrice ?? null}
+              protectedSize={position.protectedSize}
+            />
+          )}
+          {/* The schedule, as one row of pills: what happens next, in the order it
+            is likely to arrive. The checklist below says what is armed; this says
+            when. */}
+          {upNext.length === 0 ? null : (
+            // Left-aligned under a label, not centred: every other band on this
+            // panel starts at the same left rule, and a centred row of pills was
+            // the one thing on the card that floated free of it. The label is what
+            // makes the row a section rather than a loose set of chips.
+            <div
+              data-testid="mission-up-next"
+              className={cn("flex flex-wrap items-center gap-1.5", CONTEXT_BAND_CLASS)}
+            >
+              <span className={cn("mr-0.5", BAND_LEGEND_CLASS)}>next</span>
+              {upNext.slice(0, MAX_UP_NEXT_PILLS).map((item) => (
+                <UpNextPill
+                  key={item.key}
+                  item={item}
+                  isFlashed={flash !== null && item.priceLevel === flash.price}
+                  onSelect={
+                    item.priceLevel === null
+                      ? null
+                      : (price) => setFlash((prev) => ({ price, nonce: (prev?.nonce ?? 0) + 1 }))
+                  }
+                />
+              ))}
+              {upNext.length > MAX_UP_NEXT_PILLS ? (
+                <span className="font-mono text-[10.5px] text-muted-foreground">
+                  +{upNext.length - MAX_UP_NEXT_PILLS} more
+                </span>
+              ) : null}
+            </div>
+          )}
+          {/* The full checklist, below the chart. The chart draws the four price
+            levels nearest the mark; these rows are the exact set, including the
+            watches that have no y on a price chart at all. */}
+          {visibleRows.length === 0 ? null : (
+            <div className="border-t border-border/40">
+              {/* The band's own label, on the panel's left rule like every other
+                section heading. Without it the rows read as a continuation of
+                the pill strip above rather than as the checklist. */}
+              <p className={cn("px-3 pb-0.5 pt-1.5 sm:px-4", BAND_LEGEND_CLASS)}>armed</p>
+              <div className="divide-y divide-border/25">
+                {visibleRows.map((row) => (
+                  <ConditionRow key={row.id} row={row} />
+                ))}
+              </div>
+              {hiddenRows === 0 && droppedConditions === 0 ? null : (
+                <p className="px-3 py-1 font-mono text-[10.5px] text-muted-foreground sm:px-4">
+                  {hiddenRows > 0
+                    ? `+${hiddenRows} more condition${hiddenRows === 1 ? "" : "s"} armed`
+                    : `+${droppedConditions} more level${droppedConditions === 1 ? "" : "s"} armed, off the chart`}
+                </p>
+              )}
+            </div>
+          )}
+        </>
       )}
 
       {/* The whole published plan, one disclosure away. It used to be a card in
