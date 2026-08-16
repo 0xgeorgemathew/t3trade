@@ -191,7 +191,10 @@ const readUnboundMission = Effect.fn("TradingToolkit.readUnboundMission")(functi
 const readMission = Effect.fn("TradingToolkit.readMission")(function* (mission: TradingMission) {
   const strategies = yield* TradingStrategyService;
   const strategy = yield* strategies.getCurrentStrategy(mission.id).pipe(Effect.orDie);
-  const watches = yield* strategies.listWatches(mission.id).pipe(Effect.orDie);
+  // Bounded (plan 29 step 6.3): every live watch, plus a capped tail of
+  // settled ones. This read rides every turn, and the settled tail is the part
+  // that grows without limit.
+  const watches = yield* strategies.listWatchesForRead(mission.id).pipe(Effect.orDie);
   const missions = yield* TradingMissionService;
   // The same set preview item 16 refuses against, so a harness told
   // `no_conflicting_execution_pending` can read what is holding the lock.

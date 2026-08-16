@@ -60,6 +60,33 @@ export interface TradingStrategyServiceShape {
   ) => Effect.Effect<ReadonlyArray<PersistedWatch>, PersistenceSqlError>;
 
   /**
+   * The same registry, bounded for the read that rides every turn.
+   *
+   * `listWatches` is every watch the mission ever registered, and since plan 29
+   * step 6.1 it rides EVERY `trading_look`. A mission that re-levels on each
+   * wake accumulates terminal rows forever, so by hour three the model is
+   * paying for a few hundred cancelled levels on every read — the same cost
+   * `PLAN_HISTORY_READ_LIMIT` was introduced to stop on the plan journal.
+   *
+   * The cap is NOT recency. A watch that has FIRED and has not yet been
+   * reasoned about is the single most important row in the list, and it is
+   * also, by construction, older than every level armed after it — recency
+   * alone would drop exactly the row the turn exists to answer. So nothing
+   * live is ever dropped: every `active` and every `triggered` watch is
+   * returned in full, and only the settled tail — cancelled, consumed,
+   * expired, superseded — is capped, newest first.
+   *
+   * That leaves the live set unbounded in principle. In practice it is bounded
+   * by what a mission can arm and have standing at once, which is the set the
+   * coverage floor and the evaluator both already work over; a watch that is
+   * still live is a watch the turn may need to act on, and dropping one to
+   * save tokens would be a silent risk change.
+   */
+  readonly listWatchesForRead: (
+    missionId: string,
+  ) => Effect.Effect<ReadonlyArray<PersistedWatch>, PersistenceSqlError>;
+
+  /**
    * Every plan the mission has published, newest first.
    *
    * `getCurrentStrategy` answers what the mission believes now. This answers
@@ -125,6 +152,15 @@ interface WatchRow {
  */
 const PLAN_HISTORY_READ_LIMIT = 10;
 
+/**
+ * How many settled watches a turn's read of the registry carries.
+ *
+ * Ten, for the same reason the plan journal keeps ten: enough to see the levels
+ * this mission has been working and retiring, far short of the whole session.
+ * Only terminal rows are counted against it — see `listWatchesForRead`.
+ */
+const SETTLED_WATCH_READ_LIMIT = 10;
+
 const toStrategySummary = (row: {
   readonly version: number;
   readonly strategy_json: string;
@@ -179,6 +215,36 @@ const makeTradingStrategyService = Effect.gen(function* () {
     `.pipe(
       Effect.mapError(sqlFail("listWatches")),
       Effect.map((rows) => rows.map(toPersistedWatch)),
+    );
+
+  const listWatchesForRead: TradingStrategyServiceShape["listWatchesForRead"] = (missionId) =>
+    sql<WatchRow>`
+      SELECT watch_id, mission_id, watch_json, status, armed_reason,
+             created_at, updated_at
+      FROM trading_watches
+      WHERE mission_id = ${missionId}
+        AND status IN ('active', 'triggered')
+      UNION ALL
+      SELECT watch_id, mission_id, watch_json, status, armed_reason,
+             created_at, updated_at
+      FROM (
+        SELECT watch_id, mission_id, watch_json, status, armed_reason,
+               created_at, updated_at
+        FROM trading_watches
+        WHERE mission_id = ${missionId}
+          AND status NOT IN ('active', 'triggered')
+        ORDER BY created_at DESC, watch_id DESC
+        LIMIT ${SETTLED_WATCH_READ_LIMIT}
+      )
+    `.pipe(
+      Effect.mapError(sqlFail("listWatchesForRead")),
+      Effect.map((rows) =>
+        rows
+          .map(toPersistedWatch)
+          // The two arms come back in whatever order the union produced. The
+          // caller's contract is the same as `listWatches`: newest first.
+          .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1)),
+      ),
     );
 
   const listStrategyVersions: TradingStrategyServiceShape["listStrategyVersions"] = (missionId) =>
@@ -308,6 +374,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
     publishPlan,
     getCurrentStrategy,
     listWatches,
+    listWatchesForRead,
     listStrategyVersions,
   } satisfies TradingStrategyServiceShape;
 });

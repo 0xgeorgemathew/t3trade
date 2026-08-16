@@ -559,3 +559,64 @@ layer("trading_publish_plan (§14.3)", (it) => {
     }),
   );
 });
+
+// Plan 29 step 6.3: the read that rides every turn is bounded, and the bound
+// is chosen so it cannot drop the one row a turn most needs.
+layer("the watch read a turn takes", (it) => {
+  /** Insert `count` watches of one status, oldest first. */
+  const seedWatches = (status: string, count: number, from: number) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      for (let i = 0; i < count; i += 1) {
+        const at = from + i;
+        yield* sql`
+          INSERT INTO trading_watches
+            (watch_id, mission_id, watch_json, status, armed_reason, version, created_at, updated_at)
+          VALUES (${`${status}_${i}`}, 'mission_1',
+                  '{"type":"price_cross","market":"ETH","priceSource":"mark","direction":"above","price":3200}',
+                  ${status}, NULL, 1, ${at}, ${at})
+        `;
+      }
+    });
+
+  it.effect("caps the settled tail rather than the whole registry", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      yield* seedWatches("cancelled", 25, 1_000);
+
+      const strategies = yield* TradingStrategyService;
+      const all = yield* strategies.listWatches("mission_1");
+      const read = yield* strategies.listWatchesForRead("mission_1");
+
+      assert.equal(all.length, 25);
+      assert.equal(read.length, 10);
+      // Newest first, same contract as the unbounded read.
+      assert.equal(read[0]?.id, "cancelled_24");
+      assert.isAbove(read[0]!.createdAt, read[9]!.createdAt);
+    }),
+  );
+
+  // The failure a recency cap would produce: the fired watch is by
+  // construction older than every level armed after it, so "keep the newest
+  // ten" drops precisely the row the wake exists to answer.
+  it.effect("never drops a watch that fired and has not been reasoned about", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      // The fired one is the OLDEST row in the mission.
+      yield* seedWatches("triggered", 1, 1);
+      yield* seedWatches("cancelled", 30, 1_000);
+      yield* seedWatches("active", 3, 5_000);
+
+      const strategies = yield* TradingStrategyService;
+      const read = yield* strategies.listWatchesForRead("mission_1");
+
+      const byStatus = (status: string) => read.filter((w) => w.status === status);
+      assert.equal(byStatus("triggered").length, 1, "the fired watch survived the cap");
+      assert.equal(byStatus("triggered")[0]?.id, "triggered_0");
+      // Nothing live was dropped either.
+      assert.equal(byStatus("active").length, 3);
+      // And the settled tail is what paid for it.
+      assert.equal(byStatus("cancelled").length, 10);
+    }),
+  );
+});

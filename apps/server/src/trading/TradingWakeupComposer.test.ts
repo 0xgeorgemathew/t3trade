@@ -212,6 +212,7 @@ const stubWatches = Layer.succeed(TradingWatchService)({
 
 const stubStrategies = Layer.succeed(TradingStrategyService)({
   listWatches: () => Effect.succeed(armed),
+  listWatchesForRead: () => Effect.succeed(armed),
 } as unknown as TradingStrategyService["Service"]);
 
 const layer = it.layer(
