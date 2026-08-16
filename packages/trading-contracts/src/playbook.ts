@@ -181,21 +181,21 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
     procedure: [
       "Read `ema` on the thesis timeframe of trading_look. `spreadUsd` is fast minus slow — its SIGN is the bias, its size is how separated the two are — and `barsSinceCross` is how long ago that sign last flipped. A cross older than " +
         policy.emaCross.maxCrossAgeBars +
-        " bars is not a signal, it is a description of where price has already been, and the structure read declines to score it.",
+        " bars is not a signal, it is a description of where price has already been. Nothing scores this for you: `ema` carries the bias as `direction`, the separation as `separationAtr`, and the age as `barsSinceCross`, and the judgement is yours.",
       "Require the two averages to be genuinely apart: |spreadUsd| at least " +
         policy.emaCross.minSpreadAtrRatio +
         "x the frame's ATR. Two averages grazing each other in chop cross constantly, and every one of those crossings is a round trip paid for nothing.",
       'ARM THE FAST EMA ON THE CLOSE, NOT THE TOUCH. Price oscillates around its own average all day; only a bar CLOSING beyond the fast EMA says the cross is being traded. Publish the condition with `confirmation: "close"` and arm a `price` condition at `ema.fastUsd` with `confirm: "close"` and the `interval` of the thesis timeframe.',
       "Derive the target the way every other mode does — off measured volatility over the expected hold, published as the conservative rung. A cross has no range height and no impulse of its own to be paid out of, so the move it is played for is " +
         policy.emaCross.targetAtrMultiple +
-        "x ATR, which is what `candidates[]` prices its cost against. Measure it rather than assume it: if the ATR says the move is smaller than that, the smaller number is the one to publish.",
+        "x ATR. This playbook does not appear in `candidates[]` — price the round trip against that move yourself, from `cost`. Measure it rather than assume it: if the ATR says the move is smaller than that, the smaller number is the one to publish.",
       "Stop beyond the SLOW EMA, plus the noise floor. That is the level that says the cross was wrong — not a dollar offset, and not the fast EMA, which price is expected to trade back through while the bias holds.",
       "The cross is also the exit thesis: a close back through the fast EMA against the bias is the first warning, and a re-cross of the pair is the thesis over. Publish both as exit conditions rather than holding on the target alone.",
     ],
     gates: [
       "Call trading_look fresh at the size you intend and weigh the expected move (" +
         policy.emaCross.targetAtrMultiple +
-        "x ATR) against the round trip — `candidates[]` carries the same row as `costMultiple`, so read it there rather than re-deriving it.",
+        "x ATR) against the round trip in `cost`. No row is precomputed for this one — the arithmetic is the entry decision, so do it and show it.",
     ],
     standDownIf: [
       "If the expected move cannot pay the round trip, stand down on THIS candidate and show the arithmetic — a cross that cannot pay its costs says nothing about the range boundary two dollars away.",

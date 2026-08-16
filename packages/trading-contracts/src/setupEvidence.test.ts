@@ -169,12 +169,15 @@ describe("structure evidence", () => {
     assert.isDefined(frame.ema);
     assert.isAbove(frame.ema!.spreadUsd, 0);
 
-    const cross = findCandidateSetups([frame]).find((setup) => setup.kind === "ema_cross");
-    assert.isDefined(cross);
-    assert.strictEqual(cross!.direction, "up");
-    // The cross is a state of two averages; the close through the fast EMA is
-    // what confirms it, so it arms as a candle_close.
-    assert.strictEqual(cross!.closeConfirmed, true);
+    // Plan 29 step 7.6: the cross is a reading, not a scored candidate. The
+    // frame carries the bias, how separated the averages are in ATRs, and how
+    // old the flip is; nothing turns those three into a verdict any more.
+    assert.strictEqual(frame.ema!.direction, "up");
+    assert.isAbove(frame.ema!.separationAtr, 0);
+    assert.isDefined(frame.ema!.barsSinceCross);
+    assert.isUndefined(
+      findCandidateSetups([frame]).find((setup) => setup.rationale.includes("EMA")),
+    );
   });
 
   it("does not fade an RSI extreme the market is still driving into", () => {

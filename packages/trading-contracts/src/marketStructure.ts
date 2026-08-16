@@ -181,6 +181,22 @@ export const EmaTrend = Schema.Struct({
   barsSinceCross: Schema.optional(Schema.Number),
   /** Whether the last close sits on the same side of the fast EMA as the bias. */
   closeAgreesWithBias: Schema.Boolean,
+  /**
+   * The bias as a direction, which is the sign of `spreadUsd` named.
+   *
+   * Plan 29 step 7.6. The scorer used to derive this, fold it into a verdict,
+   * and throw the derivation away; the reading now carries it, so the model
+   * reads the same number the detector did.
+   */
+  direction: MarketDirection,
+  /**
+   * How far apart the two averages are, in ATRs of the same frame.
+   *
+   * The one number that separates a cross worth trading from two averages
+   * grazing each other in chop, and ATR-normalised so it means the same thing
+   * on any market. Zero when the frame has no ATR to normalise by.
+   */
+  separationAtr: Schema.Number,
 });
 export type EmaTrend = typeof EmaTrend.Type;
 
@@ -239,7 +255,6 @@ export const CandidateSetup = Schema.Struct({
     "range_reversion",
     "opening_range_break",
     "trend_continuation",
-    "ema_cross",
     "rsi_reversion",
   ]),
   direction: Schema.Literals(["up", "down"]),
@@ -445,7 +460,6 @@ export const StrategyCandidate = Schema.Struct({
     "range_reversion",
     "opening_range_break",
     "trend_continuation",
-    "ema_cross",
     "rsi_reversion",
   ]),
   direction: Schema.Literals(["up", "down"]),
@@ -533,7 +547,10 @@ export function exponentialMovingAverage(
  * The two series are aligned on their shared tail (the slow one starts later),
  * so `barsSinceCross` counts bars of the input, not offsets of an array.
  */
-export function readEmaTrend(candles: ReadonlyArray<MarketCandle>): EmaTrend | undefined {
+export function readEmaTrend(
+  candles: ReadonlyArray<MarketCandle>,
+  atrUsd: number = 0,
+): EmaTrend | undefined {
   const closes = candles.map((candle) => candle.close);
   const fast = exponentialMovingAverage(closes, EMA_FAST_PERIOD);
   const slow = exponentialMovingAverage(closes, EMA_SLOW_PERIOD);
@@ -569,6 +586,8 @@ export function readEmaTrend(candles: ReadonlyArray<MarketCandle>): EmaTrend | u
     spreadPercent: slowUsd > 0 ? (currentSpread / slowUsd) * 100 : 0,
     ...(barsSinceCross === undefined ? {} : { barsSinceCross }),
     closeAgreesWithBias: currentIsUp ? lastClose >= fastUsd : lastClose <= fastUsd,
+    direction: currentIsUp ? "up" : "down",
+    separationAtr: atrUsd > 0 ? Math.abs(currentSpread) / atrUsd : 0,
   };
 }
 
@@ -1001,7 +1020,9 @@ export function analyseTimeframe(
   const swingDrift = measureSwingDrift(candles);
   const excursionSymmetryRatio = measureExcursionSymmetry(candles);
   const breakout = readBreakout(candles, swingHighPrice, swingLowPrice);
-  const ema = readEmaTrend(candles);
+  // The frame's own ATR normalises the separation, so a cross reads the same
+  // way on a $4,000 market and a $90,000 one.
+  const ema = readEmaTrend(candles, atrUsd);
   const rsi = readRsi(candles);
 
   return {
@@ -1399,71 +1420,22 @@ function readTrendContinuation(
   };
 }
 
-/**
- * A fresh EMA cross with the two averages actually separated — the simplest
- * directional signal there is, and a strategy in its own right.
+/*
+ * `readEmaCross` used to live here — plan 29 step 7.6 deleted it.
  *
- * Deliberately not a filter on the structural setups: it is scored, gated and
- * entered on its own terms, so "the cross said up and the structure said
- * nothing" is a candidate the tournament can compare rather than a signal with
- * nowhere to go. The trigger is a candle CLOSING beyond the fast EMA — the
- * cross itself is a state of two averages, and the close is what says price
- * agrees with it.
+ * It took the same `ema` reading the frame already carries, applied three
+ * policy thresholds to it, folded the result into a 0-to-1 score, and handed
+ * the model a verdict. The model cannot argue with a score; it can only accept
+ * or ignore it, and either way the numbers behind it were gone. Two averages
+ * crossing is a reading, not a decision: `EmaTrend` now carries the bias, the
+ * ATR-normalised separation, and the age of the cross, and the `ema_cross`
+ * playbook reads them and reaches its own conclusion against the same cost
+ * question every other entry answers.
+ *
+ * The three thresholds survive in `policy.emaCross` and are quoted in the
+ * playbook's prose, where they read as guidance the model can weigh rather
+ * than as a gate that already decided.
  */
-function readEmaCross(frame: TimeframeReading, policy: TradingPolicy): CandidateSetup | null {
-  const ema = frame.ema;
-  if (ema === undefined) return null;
-  // No flip anywhere in the window is a trend that has been one way for the
-  // whole lookback — no cross to be fresh or stale.
-  const age = ema.barsSinceCross;
-  if (age === undefined) return null;
-
-  const direction = ema.spreadUsd >= 0 ? ("up" as const) : ("down" as const);
-  // Two averages grazing each other in chop cross constantly. The separation
-  // is measured in ATRs so the gate means the same thing on any market.
-  const separation = frame.atrUsd > 0 ? Math.abs(ema.spreadUsd) / frame.atrUsd : 0;
-
-  const rejections: Array<SetupRejection> = [];
-  if (age > policy.emaCross.maxCrossAgeBars) {
-    rejections.push({ gate: "cross_age", margin: age - policy.emaCross.maxCrossAgeBars });
-  }
-  if (separation < policy.emaCross.minSpreadAtrRatio) {
-    rejections.push({
-      gate: "ema_separation",
-      margin: policy.emaCross.minSpreadAtrRatio - separation,
-    });
-  }
-  if (!ema.closeAgreesWithBias) {
-    // How far the last close sits from the fast EMA it has to close beyond.
-    rejections.push({
-      gate: "close_against_bias",
-      margin: Math.abs(frame.referencePrice - ema.fastUsd),
-    });
-  }
-
-  const score = clamp01(
-    0.5 * (1 - age / Math.max(1, policy.emaCross.maxCrossAgeBars)) +
-      0.3 * clamp01(separation / (policy.emaCross.minSpreadAtrRatio * 4)) +
-      0.2 * clamp01(Math.abs(frame.recentDirectionScore) / policy.readings.directionScoreThreshold),
-  );
-
-  return {
-    kind: "ema_cross",
-    direction,
-    interval: frame.interval,
-    score,
-    level: ema.fastUsd,
-    // A touch of the fast EMA is price oscillating around its own average;
-    // only a close beyond it says the cross is being traded.
-    closeConfirmed: true,
-    rationale:
-      `EMA ${ema.fastPeriod} crossed ${direction === "up" ? "above" : "below"} EMA ${ema.slowPeriod} ` +
-      `${age} bar(s) ago, separated ${separation.toFixed(2)} ATR (${ema.spreadPercent.toFixed(3)}%), ` +
-      `last close ${direction === "up" ? "above" : "below"} the fast EMA at ${ema.fastUsd.toFixed(2)}` +
-      (rejections.length === 0 ? "" : `; near-miss: ${describeRejections(rejections)}`),
-    ...(rejections.length === 0 ? {} : { rejectedBy: rejections }),
-  };
-}
 
 /**
  * An RSI band extreme that has only just been reached — the other simple
@@ -1703,9 +1675,6 @@ export function findCandidateSetups(
     const structural = readStructuralSetup(frame, policy);
     if (structural !== null) setups.push(structural);
 
-    const emaCross = readEmaCross(frame, policy);
-    if (emaCross !== null) setups.push(emaCross);
-
     const rsiReversion = readRsiReversion(frame, policy);
     if (rsiReversion !== null) setups.push(rsiReversion);
   }
@@ -1752,12 +1721,6 @@ function availableMoveUsd(
     // range — so the move on offer is a stated fraction of the height.
     const height = swingHeight();
     return height === undefined ? undefined : height * policy.rsiReversion.targetSwingFraction;
-  }
-  if (setup.kind === "ema_cross") {
-    // A cross has no range height and no impulse of its own; what it has is the
-    // fluctuation the market is currently producing, in ATRs.
-    const move = frame.atrUsd * policy.emaCross.targetAtrMultiple;
-    return move > 0 ? move : undefined;
   }
   return frame.lastImpulse?.sizeUsd;
 }

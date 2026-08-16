@@ -225,9 +225,10 @@ export function evaluateSetup(input: {
     return declinedEvaluation("atr_not_expanding");
   }
   // Named positively, not as "anything that is not a range". The setup finder
-  // also scores the indicator strategies (`ema_cross`, `rsi_reversion`), and a
-  // negative filter would have relabelled one of those as a momentum breakout
-  // and graded it against the momentum playbook's gates.
+  // also scores `rsi_reversion`, and a negative filter would have relabelled it
+  // as a momentum breakout and graded it against the momentum playbook's gates.
+  // (`ema_cross` used to be scored here too; plan 29 step 7.6 made it a reading
+  // on the frame instead, so it never reaches this list at all.)
   const setup = candidates.find(
     (candidate) =>
       candidate.kind === "momentum_breakout" ||
