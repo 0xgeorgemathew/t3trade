@@ -97,7 +97,10 @@ const P_MIN = 1873.4;
 const P_MAX = 1909.6;
 const GUTTER = 104; // right-hand room for the level labels
 const PLOT_W = CHART_W - GUTTER;
-const CANDLE_W = PLOT_W * 0.68;
+/* The record takes a little under three fifths of the plot, which leaves the
+   plan enough room to print at the same candle width the record uses. One
+   grid across the whole chart, no seam. */
+const CANDLE_W = PLOT_W * 0.58;
 const SLOT = CANDLE_W / CANDLE_COUNT;
 const yOf = (price: number) => CHART_H - ((price - P_MIN) / (P_MAX - P_MIN)) * CHART_H;
 const xOf = (index: number) => index * SLOT + SLOT / 2;
@@ -113,35 +116,37 @@ const runPath = candles
 /* The low sits at t = 0.5 so the wipe uncovers it on the same scroll step the
    PnL reel bottoms out. The number and the line hit their worst point
    together, which is the whole reason the drawdown is here. */
+/* Neither half of the run is a straight line. On the way down two bounces
+   fail before the low; on the way up the break is retested and the run pulls
+   back twice before the target prints. */
 const PLAN: [number, number][] = [
   [0.0, MISSION.mark],
-  [0.14, 1886.1],
-  [0.3, 1884.3],
+  [0.09, 1886.4],
+  [0.18, 1888.2],
+  [0.28, 1884.1],
+  [0.37, 1886.3],
+  [0.44, 1882.0],
   [0.5, DIP_PRICE],
-  [0.62, 1885.2],
-  [0.72, 1890.4],
-  [0.83, 1896.8],
-  [0.92, 1902.3],
+  [0.57, 1885.0],
+  [0.63, 1883.2],
+  [0.71, 1890.8],
+  [0.77, 1888.4],
+  [0.85, 1897.9],
+  [0.91, 1895.0],
   [1.0, MISSION.target],
 ];
 const planX = (t: number) => CANDLE_W + (PLOT_W - CANDLE_W) * t;
 
-/* The plan is drawn in three coloured runs rather than one line, because the
-   direction it is heading is the whole story: up out of the mark, down through
-   the drawdown, then up to the target. A single accent stroke hid the middle
-   one. */
-const planSeg = (fromIndex: number, toIndex: number) =>
-  PLAN.slice(fromIndex, toIndex + 1)
-    .map(([t, price], index) =>
-      `${index === 0 ? "M" : "L"}${planX(t).toFixed(1)} ${yOf(price).toFixed(1)}`,
-    )
-    .join(" ");
-
-const PLAN_RUNS = [
-  { d: planSeg(0, 1), up: true },
-  { d: planSeg(1, 3), up: false },
-  { d: planSeg(3, 8), up: true },
-];
+/* One stroke per leg rather than one line for the whole plan, because the
+   direction it is heading is the story. A single accent stroke made a fall
+   look the same as a climb. */
+const PLAN_RUNS = PLAN.slice(0, -1).map(([t0, p0], index) => {
+  const [t1, p1] = PLAN[index + 1];
+  return {
+    d: `M${planX(t0).toFixed(1)} ${yOf(p0).toFixed(1)} L${planX(t1).toFixed(1)} ${yOf(p1).toFixed(1)}`,
+    up: p1 >= p0,
+  };
+});
 
 const DIP_X = planX(0.5);
 const TARGET_X = planX(1);
@@ -150,7 +155,7 @@ const TARGET_X = planX(1);
    candles too, so the right half reads the same way the left half does and
    each one takes the colour of the direction it closed. They are hollow
    because none of them has happened yet. */
-const PROJ_COUNT = 26;
+const PROJ_COUNT = 35;
 const PROJ_SLOT = (PLOT_W - CANDLE_W) / PROJ_COUNT;
 
 const planPriceAt = (t: number) => {
@@ -162,19 +167,31 @@ const planPriceAt = (t: number) => {
   return PLAN[PLAN.length - 1][1];
 };
 
-const projected = Array.from({ length: PROJ_COUNT }, (_, index) => {
-  const openPrice = planPriceAt(index / PROJ_COUNT);
-  const closePrice = planPriceAt((index + 1) / PROJ_COUNT);
-  const wick = 0.26 + (index % 3) * 0.13;
-  return {
-    x: CANDLE_W + index * PROJ_SLOT + PROJ_SLOT / 2,
-    high: Math.max(openPrice, closePrice) + wick,
-    low: Math.min(openPrice, closePrice) - wick,
-    top: yOf(Math.max(openPrice, closePrice)),
-    bottom: yOf(Math.min(openPrice, closePrice)),
-    up: closePrice >= openPrice,
+/* The same seeded walk the record uses. Interpolating the plan on its own
+   gave every candle in a leg the same body, which read as a printed pattern
+   rather than a market. */
+const projected = (() => {
+  let seed = 20260816;
+  const rand = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
   };
-});
+
+  return Array.from({ length: PROJ_COUNT }, (_, index) => {
+    const openPrice = planPriceAt(index / PROJ_COUNT) + (rand() - 0.5) * 0.95;
+    const closePrice = planPriceAt((index + 1) / PROJ_COUNT) + (rand() - 0.5) * 0.95;
+    const high = Math.max(openPrice, closePrice) + rand() * 0.8;
+    const low = Math.min(openPrice, closePrice) - rand() * 0.8;
+    return {
+      x: CANDLE_W + index * PROJ_SLOT + PROJ_SLOT / 2,
+      high,
+      low,
+      top: yOf(Math.max(openPrice, closePrice)),
+      bottom: yOf(Math.min(openPrice, closePrice)),
+      up: closePrice >= openPrice,
+    };
+  });
+})();
 
 /* Seven beats share one timeline. Each owns a slice of the pinned scroll, and
    the chart annotation, the console row, and the rail step that belong to a
