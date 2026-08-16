@@ -121,6 +121,17 @@ export interface WorkingOrderInput {
    * progress owns the book for the duration of its turn.
    */
   readonly missionStatus: TradingMissionStatus;
+  /**
+   * The current plan's publication time and whether it stood aside, when a
+   * plan exists. The backstop half of plan 29's audited risk fix: a resting
+   * patient entry is retracted when the plan stood aside or was revised after
+   * the entry was accepted — the publish aftermath cancels it directly, and
+   * this catches whatever that path missed.
+   */
+  readonly plan?: {
+    readonly publishedAt: number;
+    readonly standAside: boolean;
+  } | null;
   /** The pass decides ages against this, never the wall clock. */
   readonly nowMs: number;
   /** Allowed slippage for the crossing IOC — the same config the wake uses. */
@@ -664,19 +675,33 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
         } satisfies WorkingOrderOutcome;
       }
 
-      // --- the mission must still want the entry ------------------------------
-      const stillWantsIt =
-        !(SUSPENDED_STATUSES as readonly TradingMissionStatus[]).includes(input.missionStatus) &&
-        !(PERMANENT_TERMINAL_STATUSES as readonly TradingMissionStatus[]).includes(
+      // --- the mission (and its plan) must still want the entry ---------------
+      const suspendedOrTerminal =
+        (SUSPENDED_STATUSES as readonly TradingMissionStatus[]).includes(input.missionStatus) ||
+        (PERMANENT_TERMINAL_STATUSES as readonly TradingMissionStatus[]).includes(
           input.missionStatus,
         );
-      if (!stillWantsIt) {
+      const planRetractedIt =
+        input.plan !== undefined &&
+        input.plan !== null &&
+        (input.plan.standAside || input.plan.publishedAt > lineage.resting.created_at);
+      if (suspendedOrTerminal || planRetractedIt) {
         const cancelled = yield* cancelBestEffort(input.market, [lineage.resting.cloid]);
         return {
           status: "abandoned",
           cancelledCloids: cancelled,
           ...facts,
-          summary: `patient entry withdrawn: the mission is ${input.missionStatus}`,
+          ...(suspendedOrTerminal
+            ? { summary: `patient entry withdrawn: the mission is ${input.missionStatus}` }
+            : input.plan?.standAside === true
+              ? {
+                  summary:
+                    "patient entry withdrawn: the plan stood aside — the model changed its mind",
+                }
+              : {
+                  summary:
+                    "patient entry withdrawn: the plan was revised after this entry was accepted",
+                }),
         } satisfies WorkingOrderOutcome;
       }
       if (input.missionStatus === "executing" || input.missionStatus === "initializing") {

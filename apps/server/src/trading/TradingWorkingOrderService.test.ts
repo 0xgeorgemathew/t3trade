@@ -544,6 +544,74 @@ it.effect("abandons the entry when the mission stops wanting new exposure", () =
   }),
 );
 
+// The audited risk fix: a resting patient entry used to keep working up to
+// the ~90s cross horizon even after the model changed its mind. The
+// stillWantsIt check now retracts on the plan's say-so, and the publish
+// aftermath abandons directly; these pin the backstop half.
+it.effect("retracts the entry when the plan was revised after it was accepted", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ orders: [restingEntry(CLOID, 2_990)] });
+    // The entry was accepted 10s ago; the plan was published 5s ago — after.
+    const outcome = yield* runReconcile(
+      fake,
+      { ...INPUT, plan: { publishedAt: NOW - 5_000, standAside: false } },
+      seedRecord({ cloid: CLOID, ageMsAgo: 10_000 }),
+    );
+
+    assert.equal(outcome.status, "abandoned");
+    assert.deepEqual(fake.cancels, [CLOID]);
+    assert.deepEqual(fake.placements, []);
+    assert.ok(outcome.summary?.includes("plan was revised"));
+  }),
+);
+
+it.effect("retracts the entry when the plan stands aside, however old", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ orders: [restingEntry(CLOID, 2_990)] });
+    // The plan predates the entry, but standing aside IS the changed mind.
+    const outcome = yield* runReconcile(
+      fake,
+      { ...INPUT, plan: { publishedAt: NOW - 60_000, standAside: true } },
+      seedRecord({ cloid: CLOID, ageMsAgo: 10_000 }),
+    );
+
+    assert.equal(outcome.status, "abandoned");
+    assert.deepEqual(fake.cancels, [CLOID]);
+    assert.deepEqual(fake.placements, []);
+    assert.ok(outcome.summary?.includes("stood aside"));
+  }),
+);
+
+it.effect("a working entry under an unchanged plan keeps working", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ orders: [restingEntry(CLOID, 2_990)] });
+    // The plan predates the entry and wants in: nothing retracts it, and the
+    // loop's own cadence (a re-price away from the near side) proceeds.
+    const outcome = yield* runReconcile(
+      fake,
+      { ...INPUT, plan: { publishedAt: NOW - 60_000, standAside: false } },
+      seedRecord({ cloid: CLOID, ageMsAgo: 10_000, movedMsAgo: 20_000 }),
+    );
+
+    assert.equal(outcome.status, "repriced");
+    assert.deepEqual(fake.cancels, [CLOID]);
+    assert.ok(fake.placements.length > 0);
+  }),
+);
+
+it.effect("a mission with no plan at all keeps working its entry", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ orders: [restingEntry(CLOID, 2_990)] });
+    const outcome = yield* runReconcile(
+      fake,
+      { ...INPUT, plan: null },
+      seedRecord({ cloid: CLOID, ageMsAgo: 10_000, movedMsAgo: 20_000 }),
+    );
+
+    assert.equal(outcome.status, "repriced");
+  }),
+);
+
 it.effect("a filled-then-closed lineage is history, not a working order", () =>
   Effect.gen(function* () {
     // The record is still `accepted` (the reconciler has a one-minute grace

@@ -30,6 +30,7 @@ import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcom
 import { TradingExitService } from "../../../trading/TradingExitService.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import { TradingPlanProtectionService } from "../../../trading/TradingPlanProtectionService.ts";
+import { TradingWorkingOrderService } from "../../../trading/TradingWorkingOrderService.ts";
 import { TradingQuoteService } from "../../../trading/TradingQuoteService.ts";
 import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
@@ -669,11 +670,41 @@ const handlers = {
             ).pipe(Effect.as(null)),
           ),
         );
-      if (reconciled === null || reconciled.refusal === undefined) return published;
-      return {
-        ...published,
-        warnings: [...published.warnings, reconciled.refusal],
-      };
+      const warnings = [...published.warnings];
+      if (reconciled !== null && reconciled.refusal !== undefined) {
+        warnings.push(reconciled.refusal);
+      }
+
+      // The audited risk fix: a resting patient entry kept working up to the
+      // ~90s cross horizon even after the model changed its mind. A publish IS
+      // the mind changing — retract the mission's resting working entries now,
+      // through the same abandon() the reactor's retirement path uses, and say
+      // so in the response so the model can re-place under the new plan.
+      const workingOrders = yield* TradingWorkingOrderService;
+      const retracted = yield* workingOrders
+        .abandon({
+          missionId: mission.id,
+          masterAddress,
+          market: published.strategy.market,
+          nowMs: yield* Effect.clockWith((clock) => clock.currentTimeMillis),
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning(
+              "trading publish: a resting entry could not be withdrawn; the working-order backstop will",
+              { missionId: mission.id, reason: error.message },
+            ).pipe(Effect.as(null)),
+          ),
+        );
+      if (retracted !== null && retracted.found) {
+        warnings.push(
+          "the plan was revised, so its resting patient entry was withdrawn — re-place it under " +
+            "the new plan if you still want in",
+        );
+      }
+
+      if (warnings.length === published.warnings.length) return published;
+      return { ...published, warnings };
     }),
 
   /**

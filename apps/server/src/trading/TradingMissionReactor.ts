@@ -243,6 +243,31 @@ export const moduleReadPlanTarget = (missionId: TradingMissionId) =>
     };
   });
 
+/**
+ * The current plan's publication facts for the working-order backstop: when it
+ * was published and whether it stood aside. Read as numbers and a flag rather
+ * than through the plan decoder — the same posture as `moduleReadPlanTarget`.
+ * Null when the mission has published nothing.
+ */
+export const moduleReadPlanPublication = (missionId: TradingMissionId) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{
+      readonly published_at: number;
+      readonly stand_aside: number;
+    }>`
+      SELECT created_at AS published_at,
+             json_extract(strategy_json, '$.intent') = 'stand_aside' AS stand_aside
+      FROM trading_plan_history
+      WHERE mission_id = ${missionId}
+      ORDER BY version DESC
+      LIMIT 1
+    `;
+    const row = rows[0];
+    if (row === undefined) return null;
+    return { publishedAt: row.published_at, standAside: row.stand_aside === 1 };
+  });
+
 export interface TradingMissionReactorShape {
   /** Start the event stream. The server-startup reconcile runs at layer build. */
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
@@ -1954,6 +1979,7 @@ const make = Effect.gen(function* () {
       masterAddress,
       market: mission.market,
       missionStatus: mission.status,
+      plan: yield* moduleReadPlanPublication(missionId),
       nowMs,
       allowedSlippageBps: (yield* iocSlippage.resolve).entryBps,
     });
