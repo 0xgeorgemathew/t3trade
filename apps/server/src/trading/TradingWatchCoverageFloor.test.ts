@@ -214,6 +214,31 @@ const publishStrategy = Effect.gen(function* () {
   assert.equal(published.outcome, "accepted");
 });
 
+/**
+ * Publish a plan whose reassess window is about to lapse, so the floor it arms
+ * is the plan's own expiry rather than the coverage cadence (plan 29 step
+ * 4.6). `afterMinutes` is fractional on purpose: 0.05 min = 3 s.
+ */
+const publishShortWindowStrategy = Effect.gen(function* () {
+  const strategies = yield* TradingStrategyService;
+  const missions = yield* TradingMissionService;
+  const published = yield* strategies.publishMomentumStrategy({
+    missionId: MISSION,
+    expectedMissionVersion: yield* missions.getMissionVersion(MISSION),
+    strategy: {
+      market: "ETH",
+      intent: "long",
+      entry: { triggers: [], urgency: "now" },
+      stop: { method: "fixed" },
+      target: { profitUsd: 10 },
+      invalidation: [],
+      reassess: { afterMinutes: 0.05 },
+      because: "this plan expires almost immediately",
+    },
+  });
+  assert.equal(published.outcome, "accepted");
+});
+
 const activeWatches = Effect.gen(function* () {
   const strategies = yield* TradingStrategyService;
   const all = yield* strategies.listWatches(MISSION);
@@ -364,6 +389,32 @@ layer("run settlement: the armed-coverage floor", (it) => {
       const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
       const flatFloor = watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: false });
       assert.isAtMost(watch.runAt, now + flatFloor + 1_000);
+    }),
+  );
+
+  // Plan 29 step 4.6: a plan's own `reassess.afterMinutes` caps the floor. A
+  // plan that expires in seconds must get its reassessment within seconds,
+  // not at the flat floor's ten-minute cadence.
+  it.effect("arms no later than the plan's own expiry", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      // Publish inside the turn, so the plan's clock starts when the turn is
+      // living it and the floor that arms at settlement measures from there.
+      yield* startTurn;
+      yield* publishShortWindowStrategy;
+      yield* endTurn;
+
+      const active = yield* activeWatches;
+      const watch = active.find((w) => w.watch.type === "scheduled_reassessment");
+      assert.ok(watch !== undefined, "expected a scheduled reassessment");
+      if (watch?.watch.type !== "scheduled_reassessment") return;
+      const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      // The plan's 3 s window has likely already lapsed by the time the floor
+      // arms; either way the wake is due within the window plus slack, far
+      // inside the 10-minute flat floor.
+      const flatFloor = watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: false });
+      assert.isAtMost(watch.watch.runAt, now + 3_000 + 2_000);
+      assert.isBelow(watch.watch.runAt - now, flatFloor);
     }),
   );
 

@@ -355,6 +355,48 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
+  // Plan 29 step 4.6: an untriggered plan goes stale on its own. Past
+  // `reassess.afterMinutes` since `updatedAt`, the review says so ahead of
+  // anything else, flat or holding.
+  it.effect("marks an expired plan stale in the review", () =>
+    Effect.gen(function* () {
+      positionSize = 0;
+      // A 5 min window, published ~6.7 min before the wake.
+      const stale = {
+        ...strategy,
+        reassess: { afterMinutes: 5 },
+        updatedAt: NOW - 400_000,
+      } as TradingPlanState;
+      const { wakeup } = yield* composeFull({ activeStrategy: stale });
+
+      assert.include(wakeup.strategyReview ?? "", "has gone stale");
+      assert.include(wakeup.strategyReview ?? "", "reassess");
+    }),
+  );
+
+  it.effect("does not mark a fresh plan stale", () =>
+    Effect.gen(function* () {
+      positionSize = 0;
+      const wakeup = yield* compose();
+      assert.notInclude(wakeup.strategyReview ?? "", "gone stale");
+    }),
+  );
+
+  it.effect("marks a stale plan on a holding wake too", () =>
+    Effect.gen(function* () {
+      positionSize = -1.25;
+      const stale = {
+        ...strategy,
+        reassess: { afterMinutes: 5 },
+        updatedAt: NOW - 400_000,
+      } as TradingPlanState;
+      const { wakeup } = yield* composeFull({ activeStrategy: stale });
+      positionSize = 0;
+
+      assert.include(wakeup.positionReview ?? "", "has gone stale");
+    }),
+  );
+
   // Plan 29 step 4.3: a plan-less mission wakes on the same market snapshot,
   // with a decision prompt where the plan echo would be. No field that a plan
   // would carry becomes required; the budget discipline is unchanged.

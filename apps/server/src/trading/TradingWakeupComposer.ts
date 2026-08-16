@@ -854,25 +854,37 @@ const make = Effect.gen(function* () {
             })
           : [];
 
+      // Plan 29 step 4.6: an untriggered plan goes stale on its own. When the
+      // wake is past `reassess.afterMinutes` since the plan was written, the
+      // review says so ahead of anything else — the plan is no longer the
+      // incumbent view, it is the thing to reconsider.
+      const staleNote =
+        activeStrategy !== undefined &&
+        occurredAt > activeStrategy.updatedAt + activeStrategy.reassess.afterMinutes * 60_000
+          ? `STALE PLAN — this plan has gone stale (published ${Math.round(
+              (occurredAt - activeStrategy.updatedAt) / 60_000,
+            )} min ago against a ${activeStrategy.reassess.afterMinutes} min reassess window); reassess before acting on it. `
+          : "";
+
       // Flat: every playbook is a candidate again this turn. See
       // `strategyReview` on the wakeup schema for why this rides the payload
       // rather than living only in the playbook the run may not call. A
       // plan-less flat mission gets the decision prompt instead — the turn is
       // the mission's read on the market, not an apology for a missing plan
       // (plan 29 step 4.3).
-      const strategyReview =
-        position.size === 0
-          ? activeStrategy === undefined
-            ? "FLAT, NO PLAN ACTIVE — nothing is armed for this mission and no thesis is on file. Decide this turn: weigh the market against one question — is the expected move over the intended hold bigger than the round trip is worth? (`costContext` prices it) — and either publish a plan (`trading_publish_plan`; standing aside is a plan too) or arm what you are waiting for."
-            : "FLAT — the field is open: momentum, range_reversion, opening_range, ema_cross, and rsi_reversion are all candidates again, and `candidates[]` carries each setup with its own cost arithmetic. Weigh each against one question — is the expected move over the intended hold bigger than the round trip is worth? (`costContext` prices it) — and take the one that answers it best, or none of them if none do."
-          : undefined;
+      const flatReview =
+        activeStrategy === undefined
+          ? "FLAT, NO PLAN ACTIVE — nothing is armed for this mission and no thesis is on file. Decide this turn: weigh the market against one question — is the expected move over the intended hold bigger than the round trip is worth? (`costContext` prices it) — and either publish a plan (`trading_publish_plan`; standing aside is a plan too) or arm what you are waiting for."
+          : "FLAT — the field is open: momentum, range_reversion, opening_range, ema_cross, and rsi_reversion are all candidates again, and `candidates[]` carries each setup with its own cost arithmetic. Weigh each against one question — is the expected move over the intended hold bigger than the round trip is worth? (`costContext` prices it) — and take the one that answers it best, or none of them if none do.";
+      const strategyReview = position.size === 0 ? `${staleNote}${flatReview}` : undefined;
 
       // Holding: the turn belongs to the position, not to the thesis. See
-      // `positionReview` on the wakeup schema.
+      // `positionReview` on the wakeup schema. A stale plan still says so —
+      // holding does not make an expired thesis fresh.
       const positionReview =
         position.size === 0
           ? undefined
-          : "HOLDING — spend this turn on the position. Bank-or-extend against positionCosts (unrealisedPnl minus the remaining exit cost is what banking is worth) and preferredTargetUsd; check drawdownFromPeakUsd against peakUnrealisedPnl; trail the stop (trail_peak / breakeven, or volatility_room if ATR expanded) rather than leaving it where entry put it; keep a pnl_giveback armed under the peak whenever you are in profit.";
+          : `${staleNote}HOLDING — spend this turn on the position. Bank-or-extend against positionCosts (unrealisedPnl minus the remaining exit cost is what banking is worth) and preferredTargetUsd; check drawdownFromPeakUsd against peakUnrealisedPnl; trail the stop (trail_peak / breakeven, or volatility_room if ATR expanded) rather than leaving it where entry put it; keep a pnl_giveback armed under the peak whenever you are in profit.`;
 
       // The other half of the same read: a level that IS armed, with a watch
       // that cannot evaluate the confirmation the trigger declared.

@@ -40,6 +40,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Stream from "effect/Stream";
@@ -453,6 +454,19 @@ const make = Effect.gen(function* () {
       const strategyOption = yield* strategies.getCurrentStrategy(missionId);
       const primaryTimeframe = primaryTimeframeFor(mission.instruction);
 
+      // Plan 29 step 4.6: a plan's own `reassess.afterMinutes` is a floor no
+      // scheduled reassessment may arm later than. An untriggered plan that
+      // has gone stale gets its wake at its expiry, not at the coverage
+      // floor's cadence; a plan whose window is long leaves the floors as
+      // they were.
+      const planExpiryAt = Option.isSome(strategyOption)
+        ? strategyOption.value.updatedAt + strategyOption.value.reassess.afterMinutes * 60_000
+        : null;
+      const cappedByPlanExpiry = (floorMillis: number): number =>
+        planExpiryAt === null
+          ? floorMillis
+          : Math.min(floorMillis, Math.max(0, planExpiryAt - now));
+
       // Flat. Timing an entry is the harness's own business, so no level is
       // required on either side — but a mission that has published a thesis and
       // is running its loop must still come back to it. Without this, a thesis
@@ -467,10 +481,12 @@ const make = Effect.gen(function* () {
         // typed. The floor runs on the default timeframe in that case, and
         // the wake it arms takes the plan-less composer path — market context
         // and a decision prompt, no plan required (plan 29 step 4.3).
-        const flatFloor = watchCoverageFloorMillis({
-          timeframe: primaryTimeframe,
-          holdingPosition: false,
-        });
+        const flatFloor = cappedByPlanExpiry(
+          watchCoverageFloorMillis({
+            timeframe: primaryTimeframe,
+            holdingPosition: false,
+          }),
+        );
         if (hasReassessmentWithin({ watches: armed, nowMillis: now, floorMillis: flatFloor }))
           return;
 
@@ -500,10 +516,12 @@ const make = Effect.gen(function* () {
       }
 
       const markPrice = position.mark_px;
-      const holdingFloor = watchCoverageFloorMillis({
-        timeframe: primaryTimeframe,
-        holdingPosition: true,
-      });
+      const holdingFloor = cappedByPlanExpiry(
+        watchCoverageFloorMillis({
+          timeframe: primaryTimeframe,
+          holdingPosition: true,
+        }),
+      );
 
       // With no mark there is no "each side of" anything to measure. Treat that
       // as uncovered rather than as covered: an unreadable mark is not evidence
@@ -533,7 +551,7 @@ const make = Effect.gen(function* () {
       // Covered on both sides. The mission will be woken by a real event, so the
       // only thing left to schedule is the slow look at whether the thesis still
       // holds — not the three-bar metronome the deaf case needs.
-      const sanityFloor = watchSanityBackstopMillis(primaryTimeframe);
+      const sanityFloor = cappedByPlanExpiry(watchSanityBackstopMillis(primaryTimeframe));
       if (hasReassessmentWithin({ watches: armed, nowMillis: now, floorMillis: sanityFloor }))
         return;
 
