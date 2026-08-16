@@ -116,7 +116,27 @@ let costedSize: number | null = null;
 /** The notional the cost estimator was asked to price, or null for a size-based call. */
 let costedNotional: number | null = null;
 
+/**
+ * How the stub book behaves this test: served, or a read that blows up.
+ *
+ * "blows up" is deliberately a synchronous throw rather than a typed failure —
+ * that is the shape a broken gateway actually takes, and the shape a plain
+ * error-channel recovery would NOT have caught.
+ */
+let bookBehaviour: "served" | "throws" = "served";
+
 const stubGateway = Layer.succeed(HyperliquidGateway)({
+  getOrderBook: () => {
+    if (bookBehaviour === "throws") throw new Error("l2Book unreachable");
+    return Effect.succeed({
+      market: "ETH",
+      // Three to one on the bid, at one price, so the imbalance is 0.5 exactly.
+      bids: [{ price: MARK, size: 3 }],
+      asks: [{ price: MARK, size: 1 }],
+      bestBidOffer: { bidPrice: MARK, bidSize: 3, askPrice: MARK, askSize: 1, freshness },
+      freshness,
+    } as never);
+  },
   getMarketSnapshot: () =>
     Effect.succeed({
       market: "ETH",
@@ -621,6 +641,49 @@ layer("TradingWakeupComposer", (it) => {
       assert.include(text, "more)");
       // The facts a run cannot re-derive from a tool call survive the trim.
       assert.include(text, "marketSnapshot");
+    }),
+  );
+  // -- the book, plan 29 step 7.1 --------------------------------------------
+
+  it.effect("carries the book imbalance on every wake", () =>
+    Effect.gen(function* () {
+      const wakeup = yield* compose();
+      // Three on the bid against one on the ask, at one price: (3 - 1) / 4.
+      assert.equal(wakeup.microstructure?.bookImbalance?.imbalance, 0.5);
+      assert.equal(wakeup.microstructure?.bookImbalance?.levels, 1);
+    }),
+  );
+
+  it.effect("reads the same book a look reads, from one read", () =>
+    Effect.gen(function* () {
+      const composer = yield* TradingWakeupComposer;
+      const facts = yield* composer.observe({ mission, occurredAt: NOW });
+      const wakeup = yield* compose();
+      // `trading_look` returns `facts`; the wake renders the same value. If the
+      // two ever diverged, a look and a wake would quote different books.
+      assert.deepEqual(facts.microstructure, wakeup.microstructure);
+      assert.equal(facts.orderBook?.bids[0]?.size, 3);
+    }),
+  );
+
+  it.effect("a book read that throws costs the book fields and nothing else", () =>
+    Effect.gen(function* () {
+      bookBehaviour = "throws";
+      const wakeup = yield* compose().pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            bookBehaviour = "served";
+          }),
+        ),
+      );
+
+      // The reading is gone...
+      assert.equal(wakeup.microstructure, undefined);
+      // ...and everything the wake is actually defined by survived it.
+      assert.equal(wakeup.marketSnapshot.markPrice, MARK);
+      assert.equal(wakeup.position.size, 0);
+      assert.isAbove(wakeup.recentCandles.candles.length, 0);
+      assert.isDefined(wakeup.observedVolatility);
     }),
   );
 });

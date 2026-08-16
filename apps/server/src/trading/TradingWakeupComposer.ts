@@ -28,7 +28,15 @@ import type {
   AgentAccountSnapshot,
   AgentNetPosition,
 } from "@t3tools/trading-contracts/account-snapshot";
-import type { AgentMarketSnapshot, MarketHistory } from "@t3tools/trading-contracts/market";
+import type {
+  AgentMarketSnapshot,
+  MarketHistory,
+  OrderBook,
+} from "@t3tools/trading-contracts/market";
+import {
+  readMicrostructure,
+  type MarketMicrostructure,
+} from "@t3tools/trading-contracts/microstructure";
 import type { LevelHistoryEntry, PreviousStructureRead } from "@t3tools/trading-contracts/wakeup";
 import {
   costContextFromEstimate,
@@ -586,6 +594,17 @@ export interface ObservedFacts {
   readonly recentCandles: MarketHistory;
   readonly observedVolatility: ObservedVolatility;
   readonly higherTimeframeVolatility: ObservedVolatility | null;
+  /**
+   * The book, when it could be read.
+   *
+   * Read here rather than beside each caller so the look and the wake cannot
+   * quote different books: `trading_look` used to take its own `getOrderBook`
+   * while the wake took none, which is exactly the drift `observe` exists to
+   * prevent.
+   */
+  readonly orderBook: OrderBook | null;
+  /** What the book says, as readings. Null when nothing could be measured. */
+  readonly microstructure: MarketMicrostructure | null;
   readonly positionCosts: TradingCostEstimate | null;
   readonly costContext: TradingCostContext | null;
   readonly levelHistory: ReadonlyArray<LevelHistoryEntry>;
@@ -813,7 +832,7 @@ const make = Effect.gen(function* () {
       // arrives at all. A flat wake gets its one cost line here too — the
       // plan's intended entry notional when the plan names one, else the
       // allocated capital.
-      const [higherTimeframeVolatility, positionCosts, costContext] = yield* Effect.all(
+      const [higherTimeframeVolatility, positionCosts, costContext, orderBook] = yield* Effect.all(
         [
           measureHigherTimeframe(market, pairedTimeframe(primaryTimeframe)),
           costOpenPosition(
@@ -835,9 +854,22 @@ const make = Effect.gen(function* () {
                 mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
               )
             : Effect.succeed<TradingCostContext | null>(null),
+          // The book rides the same rule as the two above it: an enrichment,
+          // not a fact the observation is defined by. A mission whose book read
+          // fails still needs to wake holding a position it can read.
+          //
+          // `suspend` + `catchCause`, not `orElseSucceed`: a gateway that
+          // throws while BUILDING the effect throws inside this generator, and
+          // a gateway that dies mid-read produces a defect. Neither is a
+          // typed failure, so neither would be caught by recovering from the
+          // error channel alone — and either would have cost the whole wake.
+          Effect.suspend(() => gateway.getOrderBook(market)).pipe(
+            Effect.catchCause(() => Effect.succeed<OrderBook | null>(null)),
+          ),
         ],
         { concurrency: "unbounded" },
       );
+      const microstructure = readMicrostructure({ orderBook });
 
       // What the levels near the mark have already done to this mission, and
       // what the previous structure read believed (plan 27 B1/B2). Both are
@@ -900,6 +932,8 @@ const make = Effect.gen(function* () {
         recentCandles,
         observedVolatility,
         higherTimeframeVolatility,
+        orderBook,
+        microstructure,
         positionCosts,
         costContext,
         levelHistory,
@@ -925,6 +959,7 @@ const make = Effect.gen(function* () {
         recentCandles,
         observedVolatility,
         higherTimeframeVolatility,
+        microstructure,
         positionCosts,
         costContext,
         levelHistory,
@@ -1016,6 +1051,7 @@ const make = Effect.gen(function* () {
         recentCandles,
         observedVolatility,
         ...(higherTimeframeVolatility === null ? {} : { higherTimeframeVolatility }),
+        ...(microstructure === null ? {} : { microstructure }),
         ...(positionCosts === null ? {} : { positionCosts }),
         ...(costContext === null ? {} : { costContext }),
         ...(activeStrategy === undefined ? {} : { activeStrategy }),

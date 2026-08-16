@@ -19,6 +19,7 @@ import { TradingCostContext, TradingCostEstimate } from "./costs.ts";
 import { TradingTradeHistory } from "./history.ts";
 import { AgentMarketSnapshot, MarketHistory, OrderBook, ResolvedMarket } from "./market.ts";
 import { MarketStructure } from "./marketStructure.ts";
+import { MarketMicrostructure } from "./microstructure.ts";
 import { TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import { TradingGetMissionResult } from "./tools.ts";
@@ -65,6 +66,11 @@ export const TradingObservation = Schema.Struct({
   higherTimeframeVolatility: Schema.optional(ObservedVolatility),
   /** Direction, alignment, regime, and the scored setups with their cost. */
   structure: Schema.optional(MarketStructure),
+  /**
+   * What the book says, as readings — plan 29 phase 7. The same value the wake
+   * carries, from the same read: a look and a wake quote one book, never two.
+   */
+  microstructure: Schema.optional(MarketMicrostructure),
   /**
    * Why the market half is missing, when it is. Present only then, so its
    * absence is the signal that everything above was read.

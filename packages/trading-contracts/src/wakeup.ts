@@ -14,6 +14,7 @@ import { AgentAccountSnapshot, AgentNetPosition } from "./account-snapshot.ts";
 import { TradingAuthority } from "./authority.ts";
 import { TradingCostContext, TradingCostEstimate } from "./costs.ts";
 import { AgentMarketSnapshot, MarketHistory } from "./market.ts";
+import { MarketMicrostructure } from "./microstructure.ts";
 import { TradingHarnessRunCause } from "./mission.ts";
 import { TradingId, TradingText, UnixMillis } from "./primitives.ts";
 import { TradingPlanState, TradingTimeframe } from "./strategy.ts";
@@ -237,6 +238,18 @@ export const TradingHarnessWakeup = Schema.Struct({
    * the highest interval, or when the higher read failed.
    */
   higherTimeframeVolatility: Schema.optional(ObservedVolatility),
+  /**
+   * What the book says right now, as readings — plan 29 phase 7.
+   *
+   * The candles above say what price already did; this says what is resting
+   * behind the next move, on a horizon that matches the holding period. It is
+   * measured on every wake for the same reason the volatility pair is: a tool
+   * call the harness is free to skip is a fact the harness will skip.
+   *
+   * Readings, never verdicts, and absent whenever the book read failed — the
+   * wake carries what it could measure and never fails for what it could not.
+   */
+  microstructure: Schema.optional(MarketMicrostructure),
   /**
    * What the round trip on the CURRENT position costs, at the size actually
    * held, from the live fee rate and book.

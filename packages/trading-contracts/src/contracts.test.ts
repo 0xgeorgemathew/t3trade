@@ -804,6 +804,7 @@ describe("subpath exports", () => {
         "./volatility",
         "./observation",
         "./costs",
+        "./microstructure",
         "./market-structure",
         "./history",
         "./calibration",

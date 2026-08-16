@@ -68,6 +68,10 @@
       "types": "./src/costs.ts",
       "import": "./src/costs.ts"
     },
+    "./microstructure": {
+      "types": "./src/microstructure.ts",
+      "import": "./src/microstructure.ts"
+    },
     "./market-structure": {
       "types": "./src/marketStructure.ts",
       "import": "./src/marketStructure.ts"

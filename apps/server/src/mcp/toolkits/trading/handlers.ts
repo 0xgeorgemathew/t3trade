@@ -62,6 +62,8 @@ import {
   MARKET_STRUCTURE_LOOKBACK_BARS,
   MARKET_STRUCTURE_TIMEFRAMES,
 } from "@t3tools/trading-contracts/market-structure";
+import type { OrderBook } from "@t3tools/trading-contracts/market";
+import { readMicrostructure } from "@t3tools/trading-contracts/microstructure";
 import { PLAYBOOKS } from "@t3tools/trading-contracts/playbook";
 import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
 import { TradingCalibrationService } from "../../../trading/TradingCalibrationService.ts";
@@ -767,6 +769,17 @@ const describeMarketReadFailure = (market: string, cause: Cause.Cause<unknown>):
  * same volatility pair, the same cost line — so what a look reports and what a
  * wake carries can never drift apart. Without one, it is the market alone.
  */
+/**
+ * The book readings, or nothing — never a `microstructure: null` field.
+ *
+ * The unbound half builds them here from its own book read; the mission half
+ * takes the composer's, so the two paths measure the same thing.
+ */
+const withMicrostructure = (orderBook: OrderBook) => {
+  const microstructure = readMicrostructure({ orderBook });
+  return microstructure === null ? {} : { microstructure };
+};
+
 const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (input: {
   readonly market: TradingMarket;
   readonly mission: TradingMission | null;
@@ -796,6 +809,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
         candles: candles.candles,
         measuredAt: candles.freshness.observedAt,
       }),
+      ...withMicrostructure(orderBook),
       structure,
     };
   }
@@ -812,10 +826,12 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
     ...(Option.isNone(plan) ? {} : { activeStrategy: plan.value }),
   });
 
-  const [resolvedMarket, orderBook, structure, openOrders] = yield* Effect.all(
+  // The book is NOT re-read here. `observe` already took it, and a second read
+  // would let a look and a wake quote two different books — the drift the
+  // shared market half exists to prevent.
+  const [resolvedMarket, structure, openOrders] = yield* Effect.all(
     [
       gateway.resolveMarket(market),
-      gateway.getOrderBook(market),
       readMarketStructure({ market, mission }),
       gateway.getOpenOrders(facts.address as `0x${string}`),
     ],
@@ -825,7 +841,8 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
   return {
     resolvedMarket,
     snapshot: facts.marketSnapshot,
-    orderBook,
+    ...(facts.orderBook === null ? {} : { orderBook: facts.orderBook }),
+    ...(facts.microstructure === null ? {} : { microstructure: facts.microstructure }),
     candles: facts.history,
     volatility: facts.observedVolatility,
     ...(facts.higherTimeframeVolatility === null
