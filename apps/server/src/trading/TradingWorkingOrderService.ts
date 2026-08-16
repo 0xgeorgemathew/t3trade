@@ -18,6 +18,28 @@
  *     mission stopped wanting new exposure, or the replacement failed. What
  *     rests is cancelled and the model is told in one line.
  *
+ * The exit lane (the audited risk fix this half adds): a model-initiated
+ * `patient` exit — a `close`/`reduce` the exit tool rested as a reduce-only
+ * ALO — had the mirror problem with no owner at all: no re-price, no cross
+ * after a wait, no withdrawal, bounded only by the resting stop. The same
+ * pass now owns it with the semantics inverted, because exits are about
+ * LEAVING:
+ *
+ *   - a position is what an exit NEEDS — position gone means it filled (the
+ *     fill channel reports that) or it should be withdrawn;
+ *   - a suspended mission keeps working its exit: an exit resting is exposure
+ *     coming off, and withdrawing it would put exposure back on. Only the
+ *     terminal statuses withdraw (the reactor's retirement path owns that);
+ *   - a plan revision does not retract an exit. The publish aftermath
+ *     retracts resting ENTRIES; an exit is the model's deliberate choice to
+ *     leave patiently (the same reasoning that made the take-profit loop
+ *     preserve these orders, commit 580c788b6), and the model has the cancel
+ *     tool when it changes its mind.
+ *
+ * The take-profit loop must not be double-managed from here, and is not: see
+ * `readNewestAcceptedExit` for how the two lanes of resting reduce-only ALOs
+ * are told apart.
+ *
  * It is a stateless reconcile in the same sense `TradingProtectionService` is:
  * state is read from canonical exchange state (position + open orders via the
  * master wallet) and from the execution records the submit path already
@@ -32,11 +54,19 @@
  * then places. The gap in between holds no position — the entry was unfilled —
  * so the one invariant that must never break ("the moment of fill must never
  * find itself without its stop child") is kept by never placing an entry
- * without its grouped reduce-only stop child beside it.
+ * without its grouped reduce-only stop child beside it. The exit lane keeps
+ * the same cancel-first-then-place ordering even though two resting
+ * reduce-only exits are only queue contention, never double exposure: keeping
+ * records and book one-to-one is what the lineage walk assumes, and the
+ * transient co-existence of the exit with the resting stop or the plan's
+ * take-profit is tolerated for the same reason the stop reconcile tolerates
+ * it — reduce-only orders cannot open exposure.
  *
  * Cancelling a grouped entry parent takes its linked stop child with it (the
  * `normalTpsl` semantics §17.1 documents and §17.3 relies on), which is why
  * every replacement re-places the pair together rather than only the parent.
+ * A reduce-only exit carries no stop child — there is nothing to protect
+ * against an order that only ever shrinks the position.
  *
  * Exhaustion is not re-evaluated here: §16.4's block already cancels every
  * mission-owned increasing order the moment the budget exhausts, and this
@@ -126,7 +156,9 @@ export interface WorkingOrderInput {
    * plan exists. The backstop half of plan 29's audited risk fix: a resting
    * patient entry is retracted when the plan stood aside or was revised after
    * the entry was accepted — the publish aftermath cancels it directly, and
-   * this catches whatever that path missed.
+   * this catches whatever that path missed. The exit lane deliberately does
+   * NOT read this: retracting an exit would put exposure back on, and the
+   * model has the cancel tool for changing its mind about leaving.
    */
   readonly plan?: {
     readonly publishedAt: number;
@@ -140,15 +172,15 @@ export interface WorkingOrderInput {
 
 /** How one pass ended. */
 export type WorkingOrderOutcomeStatus =
-  /** No resting post-only entry is owed anything. Nothing was done. */
+  /** No resting post-only order is owed anything. Nothing was done. */
   | "no_working_order"
-  /** An entry rests and is young enough, or its turn owns the book. */
+  /** An order rests and is young enough, or its turn owns the book. */
   | "resting"
-  /** The entry was cancelled and re-placed at the current near side. */
+  /** The order was cancelled and re-placed at the current near side. */
   | "repriced"
-  /** The max wait was reached; the entry crossed via a marketable IOC. */
+  /** The max wait was reached; the order crossed via a marketable IOC. */
   | "crossed"
-  /** Terminal: the entry was withdrawn and the model must be told. */
+  /** Terminal: the order was withdrawn and the model must be told. */
   | "abandoned"
   /** A position exists — the stop machinery owns the world now. */
   | "position_open"
@@ -161,7 +193,9 @@ export interface WorkingOrderOutcome {
   /**
    * The intent this pass placed, when it placed one. A cross hands this back
    * so the caller can run the same post-fill protection reconciliation the
-   * wake's own execution path runs.
+   * wake's own execution path runs. The entry lane only: an exit cross
+   * removes exposure and needs no post-fill protection, so the exit lane's
+   * crosses deliberately leave this undefined.
    */
   readonly placedIntent?: TradingOrderIntent | undefined;
   /** Cloids this pass cancelled. */
@@ -196,9 +230,11 @@ export interface AbandonOutcome {
 
 /**
  * The working-order service. `reconcile` is the watchdog's per-pass entry
- * point; `abandon` is the direct withdrawal the reactor calls when a mission
- * ends with an entry still resting. Reasons for a withdrawal live with the
- * caller — it knows why the mission ended; this service knows how to cancel.
+ * point — it owns both lanes, the resting patient entry and the resting
+ * patient exit; `abandon` is the direct withdrawal the reactor calls when a
+ * mission ends with a resting order still on its book. Reasons for a
+ * withdrawal live with the caller — it knows why the mission ended; this
+ * service knows how to cancel.
  */
 export class TradingWorkingOrderService extends Context.Service<
   TradingWorkingOrderService,
@@ -218,10 +254,12 @@ interface CanonicalView {
 }
 
 /**
- * The execution-record columns the loop reads. Both queries filter on a
- * non-null stop, so the declared types are the truth the filters guarantee.
- * `market`, `side` and `action_type` are read back from columns the submit
- * path wrote from a `TradingOrderIntent`, which is the only writer.
+ * The execution-record columns the loop reads. The entry queries filter on a
+ * non-null stop; the exit queries read records that carry none — `stop_price`
+ * is nullable because a reduce-only exit never has one, and each lane treats
+ * it accordingly. `market`, `side` and `action_type` are read back from
+ * columns the submit path wrote from a `TradingOrderIntent`, which is the
+ * only writer.
  */
 interface WorkingRecordRow {
   readonly execution_id: string;
@@ -232,7 +270,7 @@ interface WorkingRecordRow {
   readonly market: string;
   readonly side: "buy" | "sell";
   readonly size: number;
-  readonly stop_price: number;
+  readonly stop_price: number | null;
   readonly planned_loss_at_stop_usd: number | null;
   readonly created_at: number;
   readonly updated_at: number;
@@ -260,11 +298,13 @@ const SIZE_EPSILON = 1e-9;
 /**
  * The envelope facts that make a replacement the same trade the wake approved.
  * Everything else — limit price, time in force — is exactly what this loop owns.
+ * The stop is entry-lane only: an exit carries none, and `stopPrice` is
+ * undefined exactly when the record it came from had no stop.
  */
 interface Envelope {
   readonly side: "buy" | "sell";
   readonly size: number;
-  readonly stopPrice: number;
+  readonly stopPrice?: number | undefined;
 }
 
 /**
@@ -278,6 +318,15 @@ const envelopeDefect = (approved: Envelope, candidate: Envelope): string | null 
   if (Math.abs(candidate.size - approved.size) > SIZE_EPSILON) {
     return `size ${candidate.size} does not match the approved ${approved.size}`;
   }
+  // Entries must keep the approved stop; exits must keep having none. A
+  // candidate that swaps one for the other is a mutated envelope, whichever
+  // lane it arrived on.
+  if (approved.stopPrice === undefined || candidate.stopPrice === undefined) {
+    if (approved.stopPrice !== candidate.stopPrice) {
+      return "one envelope carries a stop and the other does not";
+    }
+    return null;
+  }
   if (!samePrice(candidate.stopPrice, approved.stopPrice)) {
     return `stop ${candidate.stopPrice} does not match the approved ${approved.stopPrice}`;
   }
@@ -288,7 +337,7 @@ const envelopeDefect = (approved: Envelope, candidate: Envelope): string | null 
 const envelopeOf = (record: WorkingRecordRow): Envelope => ({
   side: record.side,
   size: record.size,
-  stopPrice: record.stop_price,
+  stopPrice: record.stop_price ?? undefined,
 });
 
 export const makeTradingWorkingOrderService = Effect.gen(function* () {
@@ -354,6 +403,23 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
     order.market === market &&
     order.side === side &&
     !order.reduceOnly &&
+    !order.isTrigger &&
+    order.remainingSize > SIZE_EPSILON;
+
+  /**
+   * True when one resting order is this mission's working exit. The mirror
+   * of `isWorkingEntryOrder`: reduce-only is the exit's shape, and matching
+   * is by cloid on top of it so the resting stop (a trigger) and the plan's
+   * take-profit (a different cloid) are never mistaken for the exit.
+   */
+  const isWorkingExitOrder = (
+    order: AgentOpenOrder,
+    market: string,
+    side: "buy" | "sell",
+  ): boolean =>
+    order.market === market &&
+    order.side === side &&
+    order.reduceOnly &&
     !order.isTrigger &&
     order.remainingSize > SIZE_EPSILON;
 
@@ -442,7 +508,56 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
     });
 
   /**
-   * Read the working entry's lineage from the execution records.
+   * The action types the exit tool writes for an order it places: `close`,
+   * and `reduce` (a reduce promoted past the dust threshold is recorded as
+   * the close it becomes — see `TradingExitService`).
+   */
+  const EXIT_ACTION_TYPES = ["close", "reduce"] as const;
+
+  /**
+   * The newest accepted resting patient EXIT, or null when none rests.
+   *
+   * Telling this lane's records from the take-profit's is the whole
+   * double-management risk, and the discrimination is by action type:
+   *
+   *  - the exit tool records exactly `close` or `reduce` through the full
+   *    preview → submit path, so those two action types ARE the
+   *    model-initiated exits;
+   *  - the take-profit's resting reduce-only ALOs are placed through
+   *    `submitReduceOnlyAlo`, which never writes an execution record — its
+   *    cloid embeds `take_profit_<price>` but that exists only in the
+   *    exchange's order list, not in this table — so they cannot reach this
+   *    reader at all;
+   *  - the `IN ('close','reduce')` filter is the belt for the day that
+   *    changes: a `take_profit_<price>`-shaped record can never be picked up
+   *    as a patient exit. The take-profit reconcile owns its own orders and
+   *    explicitly preserves ours (its `preserveCloids`, commit 580c788b6);
+   *    this lane returns the courtesy by scope rather than by cloid list.
+   */
+  const readNewestAcceptedExit = (input: {
+    readonly missionId: string;
+    readonly market: string;
+  }): Effect.Effect<WorkingRecordRow | null> =>
+    Effect.gen(function* () {
+      const rows = yield* sql<WorkingRecordRow>`
+        SELECT execution_id, mission_id, execution_sequence,
+               action_type, cloid, market, side, size, stop_price,
+               planned_loss_at_stop_usd, created_at, updated_at
+        FROM trading_execution_records
+        WHERE mission_id = ${input.missionId}
+          AND market = ${input.market}
+          AND time_in_force = 'alo'
+          AND reduce_only = 1
+          AND status = 'accepted'
+          AND ${sql.in("action_type", EXIT_ACTION_TYPES)}
+        ORDER BY created_at DESC, execution_sequence DESC
+        LIMIT 1
+      `.pipe(Effect.orElseSucceed(() => [] as WorkingRecordRow[]));
+      return rows[0] ?? null;
+    });
+
+  /**
+   * Read the working order's lineage from the execution records.
    *
    * The lineage is the chain of records that share the resting record's
    * envelope (action, side, size, stop) and touch in time: each member was
@@ -451,6 +566,10 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
    * that had already ended — and the status filter admits the attempts the
    * loop itself leaves behind (a rejected or failed placement) but never a
    * fill, which ends a cycle outright.
+   *
+   * The stop comparison is the null-safe `IS`: entries match their recorded
+   * stop, exits match its absence, and neither can bleed into the other's
+   * lineage.
    */
   const readLineage = (
     input: { readonly missionId: string; readonly market: string },
@@ -468,8 +587,7 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
           AND time_in_force = 'alo'
           AND side = ${resting.side}
           AND size = ${resting.size}
-          AND stop_price = ${resting.stop_price}
-          AND stop_price IS NOT NULL
+          AND stop_price IS ${resting.stop_price}
           AND status IN ('accepted', 'cancelled', 'rejected', 'failed')
         ORDER BY created_at DESC, execution_sequence DESC
       `.pipe(Effect.orElseSucceed(() => [] as WorkingRecordRow[]));
@@ -533,25 +651,29 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
 
   /**
    * Build a replacement intent for a lineage: the ORIGINAL approval's
-   * envelope and strategy version, a fresh execution sequence, and the order
-   * shape the caller states. A fresh sequence is not optional — reusing the
-   * old one would derive the old cloid and the old idempotency key, and the
-   * resubmission guard would return the old record without submitting.
+   * envelope, a fresh execution sequence, and the order shape the caller
+   * states. A fresh sequence is not optional — reusing the old one would
+   * derive the old cloid and the old idempotency key, and the resubmission
+   * guard would return the old record without submitting.
    *
-   * The stop is returned beside the intent: the intent's `stop` is optional in
-   * its own right, and the envelope assert needs a guaranteed-present stop
-   * rather than a hope.
+   * `reduceOnly` selects the lane: false for entries (whose grouped stop
+   * child is re-armed from the recorded stop), true for exits (whose records
+   * carry no stop, so the intent carries none either).
    */
   const buildReplacementIntent = (
     lineage: WorkingLineage,
     input: { readonly limitPrice: number; readonly freshSequence: number },
     orderPreference: "post_only" | "marketable_ioc",
-  ): { readonly intent: TradingOrderIntent; readonly stop: TradingStopInfo } => {
+    reduceOnly: boolean,
+  ): { readonly intent: TradingOrderIntent; readonly stop: TradingStopInfo | undefined } => {
     const original = lineage.original;
-    const stop: TradingStopInfo = {
-      stopPrice: original.stop_price,
-      plannedLossAtStopUsd: original.planned_loss_at_stop_usd ?? 0,
-    };
+    const stop: TradingStopInfo | undefined =
+      original.stop_price === null
+        ? undefined
+        : {
+            stopPrice: original.stop_price,
+            plannedLossAtStopUsd: original.planned_loss_at_stop_usd ?? 0,
+          };
     const intent: TradingOrderIntent = {
       missionId: original.mission_id,
       executionSequence: input.freshSequence,
@@ -564,7 +686,7 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
       orderPreference,
       limitPrice: input.limitPrice,
       stop,
-      reduceOnly: false,
+      reduceOnly,
     };
     return { intent, stop };
   };
@@ -574,22 +696,22 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
    * asserting the envelope. The assert is the hard constraint that stands in
    * for the §16.3 checklist this path cannot run: the intent may differ from
    * the approval in limit price and time in force ONLY. It is checked against
-   * the ORIGINAL record (what the wake approved) and the RESTING record
-   * (what the book claims to be working), so a mutated resting row cannot
-   * vouch for itself.
+   * the ORIGINAL record (what the wake approved) and the RESTING record (what
+   * the book claims to be working), so a mutated resting row cannot vouch
+   * for itself.
    */
   const placeReplacement = (
     input: WorkingOrderInput,
     lineage: WorkingLineage,
     intent: TradingOrderIntent,
-    stop: TradingStopInfo,
+    stop: TradingStopInfo | undefined,
   ): Effect.Effect<
     | { readonly ok: true; readonly recordCloid: string }
     | { readonly ok: false; readonly detail: string },
     WorkingOrderFailure
   > =>
     Effect.gen(function* () {
-      const candidate = { side: intent.side, size: intent.size, stopPrice: stop.stopPrice };
+      const candidate = { side: intent.side, size: intent.size, stopPrice: stop?.stopPrice };
       // Against the ORIGINAL (what the wake approved) and against the RESTING
       // record (what the book claims to be working): the second check is what
       // keeps a mutated resting row from vouching for itself.
@@ -614,6 +736,17 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
     input: WorkingOrderInput,
   ): Effect.Effect<WorkingOrderOutcome, WorkingOrderFailure> =>
     Effect.gen(function* () {
+      // --- is there a working exit first? ------------------------------------
+      //
+      // The exit lane runs before the entry lane's `position_open` early
+      // return: an exit needs a position, so a resting exit beside an open
+      // position is exactly the state this lane exists to work, and the
+      // entry lane would have returned without ever reaching it.
+      const restingExit = yield* readNewestAcceptedExit(input);
+      if (restingExit !== null) {
+        return yield* reconcileExit(input, restingExit);
+      }
+
       // --- is there a working entry at all? ----------------------------------
       //
       // Read first and read locally: on the common pass — no entry resting —
@@ -775,6 +908,7 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
         lineage,
         { limitPrice: restingLimitPrice, freshSequence: sequence },
         "marketable_ioc",
+        false,
       );
       const placed = yield* placeReplacement(input, lineage, intent, stop);
       if (!placed.ok) {
@@ -803,7 +937,7 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
           summary:
             `patient entry crossed after ${Math.round(facts.waitMillis / 1000)}s: ` +
             `${intent.side} ${intent.size} ${intent.market} at market ` +
-            `(stop ${stop.stopPrice} went out with it)`,
+            `(stop ${stop?.stopPrice} went out with it)`,
         } satisfies WorkingOrderOutcome;
       }
 
@@ -887,6 +1021,7 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
         lineage,
         { limitPrice: nearSide, freshSequence: sequence },
         "post_only",
+        false,
       );
       const placed = yield* placeReplacement(input, lineage, intent, stop);
       if (!placed.ok) {
@@ -926,37 +1061,366 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
       } satisfies WorkingOrderOutcome;
     });
 
+  // --- the exit lane: the same ownership, semantics inverted -------------------
+
+  /**
+   * Work one resting patient exit. Mirrors the entry half of `reconcile`
+   * with the polarity the audited gap identified: a position is what an
+   * exit needs, so the entry lane's `position_open` early return becomes
+   * "the position is gone — verify a fill, else withdraw", and the
+   * stillWantsIt check keeps working through every non-terminal status
+   * because an exit resting is exposure coming off.
+   */
+  const reconcileExit = (
+    input: WorkingOrderInput,
+    restingRecord: WorkingRecordRow,
+  ): Effect.Effect<WorkingOrderOutcome, WorkingOrderFailure> =>
+    Effect.gen(function* () {
+      const lineage = yield* readLineage(input, restingRecord);
+      const facts = {
+        cloid: lineage.resting.cloid,
+        waitMillis: input.nowMs - lineage.original.created_at,
+        repriceCount: lineage.repriceCount,
+      } satisfies Pick<WorkingOrderOutcome, "cloid" | "waitMillis" | "repriceCount">;
+
+      const reread = () => readCanonical(input);
+      const view = yield* reread();
+
+      // --- the position is gone: filled elsewhere, or nothing to exit -------
+      if (Math.abs(view.positionSize) <= SIZE_EPSILON) {
+        if (
+          yield* hasFillUnderAny(input.missionId, [lineage.resting.cloid, lineage.original.cloid])
+        ) {
+          // It filled and the position has since closed — or the position
+          // was closed by the stop/take-profit and the exchange retired the
+          // reduce-only order with it. Either way the fill channel is how
+          // the model hears about it, not this loop.
+          return {
+            status: "no_working_order",
+            cancelledCloids: [],
+            ...facts,
+          } satisfies WorkingOrderOutcome;
+        }
+        // Nothing is left to exit and the order never filled: a leftover
+        // resting on a flat position. Withdraw it and say so — leaving it
+        // would make the record work a position that does not exist forever.
+        const cancelled = yield* cancelBestEffort(input.market, [lineage.resting.cloid]);
+        return {
+          status: "abandoned",
+          cancelledCloids: cancelled,
+          ...facts,
+          summary:
+            "patient exit withdrawn: the position is gone (stopped out, closed, or " +
+            "taken by the take-profit) and the order never filled",
+        } satisfies WorkingOrderOutcome;
+      }
+
+      const restingOrder = view.openOrders.find(
+        (order) =>
+          order.cloid === lineage.resting.cloid &&
+          isWorkingExitOrder(order, input.market, lineage.resting.side),
+      );
+
+      // --- the exit left the book --------------------------------------------
+      if (restingOrder === undefined) {
+        if (
+          yield* hasFillUnderAny(input.missionId, [lineage.resting.cloid, lineage.original.cloid])
+        ) {
+          // A partial fill took some of the position; the reconciler settles
+          // the record and the fill channel reports the reduction.
+          return {
+            status: "no_working_order",
+            cancelledCloids: [],
+            ...facts,
+          } satisfies WorkingOrderOutcome;
+        }
+        // Cancelled by hand, retired with the position's last reduction, or a
+        // replacement of ours that never confirmed. Not resurrected: the
+        // model that wanted out must place a new exit against the market it
+        // sees now.
+        const cancelled = yield* cancelBestEffort(input.market, [lineage.resting.cloid]);
+        return {
+          status: "abandoned",
+          cancelledCloids: cancelled,
+          ...facts,
+          summary:
+            `patient exit abandoned: it left the book unfilled after ` +
+            `${Math.round(facts.waitMillis / 1000)}s and was not replaced`,
+        } satisfies WorkingOrderOutcome;
+      }
+
+      // --- the mission's say-so, inverted -------------------------------------
+      //
+      // Suspended is deliberately NOT a withdrawal here: the entry lane
+      // abandons on `paused`/`blocked` because it must not open exposure
+      // into a stopped mission; an exit does the opposite of opening. Only
+      // the permanent terminals withdraw — and the reactor's retirement path
+      // (`retireWorkingOrdersQuietly` → `abandon`) owns those in practice;
+      // this branch is the defensive backstop for a pass that raced one.
+      const terminal = (PERMANENT_TERMINAL_STATUSES as readonly TradingMissionStatus[]).includes(
+        input.missionStatus,
+      );
+      if (terminal) {
+        const cancelled = yield* cancelBestEffort(input.market, [lineage.resting.cloid]);
+        return {
+          status: "abandoned",
+          cancelledCloids: cancelled,
+          ...facts,
+          summary: `patient exit withdrawn: the mission is ${input.missionStatus}`,
+        } satisfies WorkingOrderOutcome;
+      }
+      if (input.missionStatus === "executing" || input.missionStatus === "initializing") {
+        // The wake's own turn owns the book while it runs.
+        return { status: "resting", cancelledCloids: [], ...facts } satisfies WorkingOrderOutcome;
+      }
+
+      // --- the order on the book must be the approval --------------------------
+      if (Math.abs(restingOrder.size - lineage.resting.size) > SIZE_EPSILON) {
+        return {
+          status: "failed",
+          cancelledCloids: [],
+          ...facts,
+          detail:
+            `the resting exit's size ${restingOrder.size} does not match the ` +
+            `approved ${lineage.resting.size}; refusing to work it`,
+        } satisfies WorkingOrderOutcome;
+      }
+
+      // --- the wait is up: cross -----------------------------------------------
+      if (facts.waitMillis >= WORKING_ORDER_MAX_WAIT_MILLIS) {
+        return yield* crossWorkingExit(
+          input,
+          lineage,
+          restingOrder.limitPrice,
+          reread,
+          view.positionSize,
+        );
+      }
+
+      // --- re-price on cadence ---------------------------------------------------
+      if (input.nowMs - lineage.resting.updated_at >= WORKING_ORDER_REPRICE_CADENCE_MILLIS) {
+        return yield* repriceWorkingExit(input, lineage, restingOrder, reread);
+      }
+
+      return { status: "resting", cancelledCloids: [], ...facts } satisfies WorkingOrderOutcome;
+    });
+
+  const crossWorkingExit = (
+    input: WorkingOrderInput,
+    lineage: WorkingLineage,
+    restingLimitPrice: number,
+    reread: () => Effect.Effect<CanonicalView, TradingWorkingOrderError>,
+    positionSizeBefore: number,
+  ): Effect.Effect<WorkingOrderOutcome, WorkingOrderFailure> =>
+    Effect.gen(function* () {
+      const facts = {
+        cloid: lineage.resting.cloid,
+        waitMillis: input.nowMs - lineage.original.created_at,
+        repriceCount: lineage.repriceCount,
+      } satisfies Pick<WorkingOrderOutcome, "cloid" | "waitMillis" | "repriceCount">;
+
+      const gone = yield* cancelAndConfirmGone(
+        { market: input.market, cloid: lineage.resting.cloid },
+        reread,
+      );
+      if (!gone) {
+        return {
+          status: "failed",
+          cancelledCloids: [],
+          ...facts,
+          detail: "the resting exit would not cancel; nothing was crossed",
+        } satisfies WorkingOrderOutcome;
+      }
+
+      const sequence = yield* freshSequence(input.missionId);
+      const { intent } = buildReplacementIntent(
+        lineage,
+        { limitPrice: restingLimitPrice, freshSequence: sequence },
+        "marketable_ioc",
+        true,
+      );
+      const placed = yield* placeReplacement(input, lineage, intent, undefined);
+      if (!placed.ok) {
+        return {
+          status: "failed",
+          cancelledCloids: [lineage.resting.cloid],
+          ...facts,
+          detail: placed.detail,
+        } satisfies WorkingOrderOutcome;
+      }
+
+      // Confirm the cross from canonical state: the proof of an exit cross
+      // is the position shrinking (a reduce may leave a remainder). No
+      // placedIntent is handed back — the entry lane's cross returns one so
+      // the reactor can protect the position it opened; a cross that only
+      // ever removes exposure has no such follow-up to run.
+      const afterCross = yield* confirmWithin(
+        (v) => Math.abs(v.positionSize) < Math.abs(positionSizeBefore) - SIZE_EPSILON,
+        reread,
+      );
+      if (Math.abs(afterCross.positionSize) < Math.abs(positionSizeBefore) - SIZE_EPSILON) {
+        return {
+          status: "crossed",
+          cancelledCloids: [lineage.resting.cloid],
+          ...facts,
+          summary:
+            `patient exit crossed after ${Math.round(facts.waitMillis / 1000)}s: ` +
+            `${intent.side} ${intent.size} ${intent.market} at market — the ` +
+            `position is ${Math.abs(afterCross.positionSize) <= SIZE_EPSILON ? "closed" : "reduced"}`,
+        } satisfies WorkingOrderOutcome;
+      }
+
+      // The cross did not fill — the book had nothing to take at the price
+      // the mapper allowed. Cancel whatever it left (an unfilled IOC should
+      // leave nothing) and tell the model the exit is over.
+      const leftovers = afterCross.openOrders
+        .map((o) => o.cloid)
+        .filter((c): c is string => c !== undefined && c === placed.recordCloid);
+      const cancelled = yield* cancelBestEffort(input.market, leftovers);
+      return {
+        status: "abandoned",
+        cancelledCloids: cancelled,
+        ...facts,
+        summary:
+          `patient exit abandoned: the crossing order did not fill after the ` +
+          `${WORKING_ORDER_MAX_WAIT_MILLIS / 1000}s wait`,
+      } satisfies WorkingOrderOutcome;
+    });
+
+  const repriceWorkingExit = (
+    input: WorkingOrderInput,
+    lineage: WorkingLineage,
+    restingOrder: AgentOpenOrder,
+    reread: () => Effect.Effect<CanonicalView, TradingWorkingOrderError>,
+  ): Effect.Effect<WorkingOrderOutcome, WorkingOrderFailure> =>
+    Effect.gen(function* () {
+      const facts = {
+        cloid: lineage.resting.cloid,
+        waitMillis: input.nowMs - lineage.original.created_at,
+        repriceCount: lineage.repriceCount,
+      } satisfies Pick<WorkingOrderOutcome, "cloid" | "waitMillis" | "repriceCount">;
+
+      const book = yield* gateway.getOrderBook(input.market).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TradingWorkingOrderError({
+              reason: "book_read_failed",
+              detail: cause instanceof Error ? cause.message : String(cause),
+            }),
+        ),
+      );
+      const { bidPrice, askPrice } = book.bestBidOffer;
+      const nearSide = lineage.resting.side === "buy" ? bidPrice : askPrice;
+      if (nearSide === undefined) {
+        return {
+          status: "failed",
+          cancelledCloids: [],
+          ...facts,
+          detail: `no ${lineage.resting.side === "buy" ? "bid" : "ask"} to re-price against`,
+        } satisfies WorkingOrderOutcome;
+      }
+
+      // Already at the near side: the model's patient price stands until the
+      // book moves away from it, exactly as the entry lane leaves an entry
+      // that still sits at the near side. Re-placing would be churn.
+      if (samePrice(nearSide, restingOrder.limitPrice)) {
+        return { status: "resting", cancelledCloids: [], ...facts } satisfies WorkingOrderOutcome;
+      }
+
+      // Cancel first, confirm, then place — same ordering as the entry lane.
+      // Two resting reduce-only exits are queue contention, never double
+      // exposure, but the records-to-book correspondence the lineage walk
+      // assumes is worth one confirmation window, and the transient overlap
+      // with the resting stop or the take-profit is tolerated for the same
+      // reason the stop reconcile tolerates it: reduce-only cannot open.
+      const gone = yield* cancelAndConfirmGone(
+        { market: input.market, cloid: lineage.resting.cloid },
+        reread,
+      );
+      if (!gone) {
+        return {
+          status: "failed",
+          cancelledCloids: [],
+          ...facts,
+          detail: "the resting exit would not cancel; nothing was re-priced",
+        } satisfies WorkingOrderOutcome;
+      }
+
+      const sequence = yield* freshSequence(input.missionId);
+      const { intent } = buildReplacementIntent(
+        lineage,
+        { limitPrice: nearSide, freshSequence: sequence },
+        "post_only",
+        true,
+      );
+      const placed = yield* placeReplacement(input, lineage, intent, undefined);
+      if (!placed.ok) {
+        return {
+          status: "failed",
+          cancelledCloids: [lineage.resting.cloid],
+          ...facts,
+          detail: placed.detail,
+        } satisfies WorkingOrderOutcome;
+      }
+
+      const afterPlace = yield* confirmWithin(
+        (v) => v.openOrders.some((o) => o.cloid === placed.recordCloid),
+        reread,
+      );
+      if (!afterPlace.openOrders.some((o) => o.cloid === placed.recordCloid)) {
+        return {
+          status: "abandoned",
+          cancelledCloids: [lineage.resting.cloid],
+          ...facts,
+          summary:
+            `patient exit abandoned: re-pricing to ${nearSide} did not confirm ` +
+            "— the exchange refused the replacement or it never rested",
+        } satisfies WorkingOrderOutcome;
+      }
+
+      return {
+        status: "repriced",
+        placedIntent: intent,
+        cancelledCloids: [lineage.resting.cloid],
+        ...facts,
+      } satisfies WorkingOrderOutcome;
+    });
+
   /**
    * Direct withdrawal: cancel what rests, no replacement, no cross. The
    * caller owns the reason and the telling; this owns the cancelling.
    *
    * Shape first, records second: a terminal mission's records may already be
-   * settling, but a cloid'd, non-reduce-only, non-trigger limit in this
-   * mission's market is an entry nobody is working anymore. An order placed
-   * in the exchange UI carries no cloid and is not ours to cancel.
+   * settling, but a cloid'd, non-trigger limit in this mission's market is
+   * ours and nobody is working it — an entry, a patient exit, or the plan's
+   * take-profit (all three are mission-owned; none may outlive the mission,
+   * and the exchange retiring reduce-only orders with the position is
+   * relied upon, not assumed). Stops are triggers and stay: they are the
+   * flat-protection the emergency close coordinates with, and the exchange
+   * retires them with the position. An order placed in the exchange UI
+   * carries no cloid and is not ours to cancel.
    */
   const abandon = (input: AbandonInput): Effect.Effect<AbandonOutcome, WorkingOrderFailure> =>
     Effect.gen(function* () {
       const view = yield* readCanonical(input);
-      const entries = view.openOrders.filter(
+      const resting = view.openOrders.filter(
         (order) =>
           order.market === input.market &&
           order.cloid !== undefined &&
-          !order.reduceOnly &&
           !order.isTrigger &&
           order.remainingSize > SIZE_EPSILON,
       );
-      if (entries.length === 0) {
+      if (resting.length === 0) {
         return { found: false, cancelledCloids: [] } satisfies AbandonOutcome;
       }
       const cancelled = yield* cancelBestEffort(
         input.market,
-        entries.flatMap((o) => (o.cloid === undefined ? [] : [o.cloid])),
+        resting.flatMap((o) => (o.cloid === undefined ? [] : [o.cloid])),
       );
       return {
         found: true,
         cancelledCloids: cancelled,
-        cloid: entries[0]?.cloid,
+        cloid: resting[0]?.cloid,
       } satisfies AbandonOutcome;
     });
 

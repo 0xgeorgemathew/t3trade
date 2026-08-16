@@ -42,6 +42,8 @@ const MASTER = "0xmaster";
 /** All passes decide against this instant; records are seeded relative to it. */
 const NOW = 1_000_000;
 const CLOID = "0xworkingentry0000000000000000001";
+/** The resting patient exit's cloid — a reduce-only ALO the model placed. */
+const EXIT_CLOID = "0xworkingexit000000000000000000001";
 
 const INPUT: WorkingOrderInput = {
   missionId: MISSION,
@@ -73,6 +75,13 @@ const restingEntry = (
     orderType: "Limit",
     ...overrides,
   }) as AgentOpenOrder;
+
+/**
+ * A resting reduce-only limit on the reducing side — the patient exit's
+ * wire shape, and (at another price) the take-profit's.
+ */
+const restingExit = (cloid: string, limitPrice: number): AgentOpenOrder =>
+  restingEntry(cloid, limitPrice, { side: "sell", reduceOnly: true });
 
 /** What a working-entry placement does, as far as canonical state shows. */
 type PlacementBehaviour = "rest" | "fill" | "no_fill";
@@ -163,13 +172,22 @@ const executionLayer = (fake: FakeExchange) =>
         } as TradingExecutionRecord;
         if (fake.placementBehaviour === "rest") {
           fake.orders.push(
-            restingEntry(cloid, input.intent.limitPrice, { side: input.intent.side }),
+            restingEntry(cloid, input.intent.limitPrice, {
+              side: input.intent.side,
+              reduceOnly: input.intent.reduceOnly,
+            }),
           );
         } else if (fake.placementBehaviour === "fill") {
-          fake.positionSize = input.intent.side === "buy" ? input.intent.size : -input.intent.size;
+          // An entry fill opens the position; an exit fill removes it. The
+          // tests only ever cross a full-size exit, so removal is to zero.
+          fake.positionSize = input.intent.reduceOnly
+            ? 0
+            : input.intent.side === "buy"
+              ? input.intent.size
+              : -input.intent.size;
         }
-        // "no_fill": the IOC went out and nothing came back — no position,
-        // nothing resting. That is the cross that failed.
+        // "no_fill": the IOC went out and nothing came back — no position
+        // change, nothing resting. That is the cross that failed.
         return record;
       }),
     submitOrder: () => Effect.die("the working loop must never use the preview path"),
@@ -185,9 +203,12 @@ const seedRecord = Effect.fn("seedRecord")(function* (input: {
   readonly movedMsAgo?: number | undefined;
   readonly status?: string | undefined;
   readonly size?: number | undefined;
-  readonly stopPrice?: number | undefined;
+  readonly stopPrice?: number | null | undefined;
   readonly side?: "buy" | "sell" | undefined;
   readonly actionType?: string | undefined;
+  readonly reduceOnly?: number | undefined;
+  readonly limitPrice?: number | undefined;
+  readonly executionSequence?: number | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const {
@@ -199,6 +220,9 @@ const seedRecord = Effect.fn("seedRecord")(function* (input: {
     stopPrice = 2_950,
     side = "buy",
     actionType = "open",
+    reduceOnly = 0,
+    limitPrice = 2_990,
+    executionSequence = cloid.length,
   } = input;
   yield* sql`
     INSERT INTO trading_execution_records (
@@ -207,24 +231,65 @@ const seedRecord = Effect.fn("seedRecord")(function* (input: {
       reduce_only, signer_address, status, order_results_json, created_at, updated_at,
       stop_price, planned_loss_at_stop_usd
     ) VALUES (
-      ${`exec_${cloid}`}, ${MISSION}, ${cloid.length}, ${actionType},
-      ${cloid}, ${`idem_${cloid}`}, 'ETH', ${side}, ${size}, 2_990, 'alo',
-      0, ${MASTER}, ${status}, '[]', ${NOW - ageMsAgo}, ${NOW - movedMsAgo},
-      ${stopPrice}, 8
+      ${`exec_${cloid}`}, ${MISSION}, ${executionSequence}, ${actionType},
+      ${cloid}, ${`idem_${cloid}`}, 'ETH', ${side}, ${size}, ${limitPrice}, 'alo',
+      ${reduceOnly}, ${MASTER}, ${status}, '[]', ${NOW - ageMsAgo}, ${NOW - movedMsAgo},
+      ${stopPrice}, ${stopPrice === null ? null : 8}
     )
   `.pipe(Effect.orDie);
 });
 
+/** Seed one patient-exit record: reduce-only ALO, no stop, on the sell side. */
+const seedExitRecord = Effect.fn("seedExitRecord")(function* (input: {
+  readonly cloid: string;
+  readonly ageMsAgo: number;
+  readonly movedMsAgo?: number | undefined;
+  readonly status?: string | undefined;
+  readonly actionType?: string | undefined;
+  readonly executionSequence?: number | undefined;
+}) {
+  yield* seedRecord({
+    cloid: input.cloid,
+    ageMsAgo: input.ageMsAgo,
+    movedMsAgo: input.movedMsAgo,
+    status: input.status,
+    actionType: input.actionType ?? "close",
+    side: "sell",
+    stopPrice: null,
+    reduceOnly: 1,
+    limitPrice: 3_010,
+    executionSequence: input.executionSequence,
+  });
+});
+
 /** Seed the reservation the original approval reserved. */
-const seedReservation = Effect.fn("seedReservation")(function* (cloid: string) {
+const seedReservation = Effect.fn("seedReservation")(function* (
+  cloid: string,
+  actionType = "open",
+) {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
     INSERT INTO trading_risk_reservations (
       reservation_id, mission_id, execution_id, cloid, action_type,
       reserved_risk_usd, status, reserved_at
     ) VALUES (
-      ${`res_${cloid}`}, ${MISSION}, ${`exec_${cloid}`}, ${cloid}, 'open',
+      ${`res_${cloid}`}, ${MISSION}, ${`exec_${cloid}`}, ${cloid}, ${actionType},
       12.5, 'reserved', ${NOW}
+    )
+  `.pipe(Effect.orDie);
+});
+
+/** Seed one fill row under a cloid — the proof an order did its job. */
+const seedFill = Effect.fn("seedFill")(function* (cloid: string) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    INSERT INTO trading_fills (
+      fill_id, mission_id, execution_id, cloid, order_id, market, side,
+      filled_size, avg_fill_price, fee_usd, fee_token, closed_pnl,
+      direction, crossed, traded_at, observed_at
+    ) VALUES (
+      ${`fill_${cloid}`}, ${MISSION}, ${`exec_${cloid}`}, ${cloid}, 11, 'ETH', 'sell',
+      0.5, 3010, 0.1, 'USDC', 0, 'Close Long', 0, ${NOW - 5_000}, ${NOW}
     )
   `.pipe(Effect.orDie);
 });
@@ -683,7 +748,7 @@ it.effect("withdraws resting entries directly, without replacing them", () =>
   }),
 );
 
-it.effect("the direct withdrawal leaves reduce-only and trigger orders alone", () =>
+it.effect("the direct withdrawal leaves trigger stops and cloid-less UI orders alone", () =>
   Effect.gen(function* () {
     const fake = makeFake({
       orders: [
@@ -702,5 +767,341 @@ it.effect("the direct withdrawal leaves reduce-only and trigger orders alone", (
 
     assert.equal(outcome.found, false);
     assert.deepEqual(fake.cancels, []);
+  }),
+);
+
+// A terminal mission claims no resting limit in its market — not only its
+// entries. A patient exit (reduce-only, non-trigger, cloid'd) is swept by
+// the same direct withdrawal the retirement path calls.
+it.effect("the direct withdrawal also retires resting reduce-only limits", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ orders: [restingExit(EXIT_CLOID, 3_010)] });
+    const outcome = yield* runWithClock(fake, (service) =>
+      service.abandon({
+        missionId: MISSION,
+        masterAddress: MASTER,
+        market: "ETH",
+        nowMs: NOW,
+      }),
+    );
+
+    assert.equal(outcome.found, true);
+    assert.deepEqual(outcome.cancelledCloids, [EXIT_CLOID]);
+    assert.deepEqual(fake.placements, []);
+  }),
+);
+
+// --- the exit lane: resting patient exits get the same ownership ---------------
+//
+// The audited gap: a model-initiated close/reduce at urgency "patient" rested
+// as a reduce-only ALO with NO owner — no re-price, no cross-after-wait, no
+// withdrawal — bounded only by the resting stop. These pin the lane that now
+// owns it, and that the take-profit's own reduce-only ALOs are not touched.
+
+/** The input an exit pass actually runs under: a mission holding a position. */
+const EXIT_INPUT: WorkingOrderInput = { ...INPUT, missionStatus: "position_open" };
+
+it.effect("re-prices a resting patient exit on cadence, reduce-only and stop-less", () =>
+  Effect.gen(function* () {
+    // A long 0.5 rests under a patient sell at 3010; the market has come off
+    // to the 3002 ask. 20s after placement the cadence fires and the exit
+    // follows the market down to the near side — still post-only, still the
+    // model's envelope, and carrying no stop because an exit never has one.
+    const fake = makeFake({ positionSize: 0.5, orders: [restingExit(EXIT_CLOID, 3_010)] });
+    const outcome = yield* runReconcile(
+      fake,
+      EXIT_INPUT,
+      Effect.gen(function* () {
+        yield* seedExitRecord({ cloid: EXIT_CLOID, ageMsAgo: 20_000 });
+        yield* seedReservation(EXIT_CLOID, "close");
+      }),
+    );
+
+    assert.equal(outcome.status, "repriced");
+    assert.deepEqual(fake.log, ["cancel", "place"]);
+    assert.deepEqual(fake.cancels, [EXIT_CLOID]);
+
+    const placed = fake.placements[0]!;
+    assert.equal(placed.intent.side, "sell");
+    assert.equal(placed.intent.size, 0.5);
+    assert.equal(placed.intent.reduceOnly, true);
+    assert.equal(placed.intent.stop, undefined);
+    assert.equal(placed.intent.orderPreference, "post_only");
+    // A sell joins the ask — the near side for the reducing side of the book.
+    assert.equal(placed.intent.limitPrice, 3_002);
+    assert.equal(placed.intent.actionType, "close");
+    // The exit's reservation is carried, not recomputed.
+    assert.equal(placed.reservedRiskUsd, 12.5);
+    assert.equal(fake.orders.length, 1);
+    assert.equal(fake.orders[0]!.cloid, "0xplaced1");
+    // The position was never touched — the exit is still resting, not crossed.
+    assert.equal(fake.positionSize, 0.5);
+  }),
+);
+
+it.effect("rests a patient exit already at the near side, and while its turn runs", () =>
+  Effect.gen(function* () {
+    const atNearSide = makeFake({ positionSize: 0.5, orders: [restingExit(EXIT_CLOID, 3_002)] });
+    const resting = yield* runReconcile(
+      atNearSide,
+      EXIT_INPUT,
+      seedExitRecord({ cloid: EXIT_CLOID, ageMsAgo: 30_000 }),
+    );
+
+    const midTurn = makeFake({ positionSize: 0.5, orders: [restingExit(EXIT_CLOID, 3_010)] });
+    const owned = yield* runReconcile(
+      midTurn,
+      { ...EXIT_INPUT, missionStatus: "executing" },
+      seedExitRecord({ cloid: EXIT_CLOID, ageMsAgo: 20_000 }),
+    );
+
+    assert.equal(resting.status, "resting");
+    assert.deepEqual(atNearSide.placements, []);
+    assert.equal(owned.status, "resting");
+    assert.deepEqual(midTurn.placements, []);
+  }),
+);
+
+it.effect("crosses a patient exit after the max wait with a reduce-only IOC", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({
+      positionSize: 0.5,
+      placementBehaviour: "fill",
+      orders: [restingExit(EXIT_CLOID, 3_010)],
+    });
+    const outcome = yield* runReconcile(
+      fake,
+      EXIT_INPUT,
+      Effect.gen(function* () {
+        yield* seedExitRecord({
+          cloid: EXIT_CLOID,
+          ageMsAgo: WORKING_ORDER_MAX_WAIT_MILLIS + 1_000,
+        });
+        yield* seedReservation(EXIT_CLOID, "close");
+      }),
+    );
+
+    assert.equal(outcome.status, "crossed");
+    assert.deepEqual(fake.cancels, [EXIT_CLOID]);
+    assert.equal(fake.placements.length, 1);
+    const placed = fake.placements[0]!;
+    assert.equal(placed.intent.orderPreference, "marketable_ioc");
+    assert.equal(placed.intent.reduceOnly, true);
+    assert.equal(placed.intent.stop, undefined);
+    // The proof of an exit cross is the position going away.
+    assert.equal(fake.positionSize, 0);
+    // No placedIntent: an exit cross removes exposure and has no post-fill
+    // protection to run — the entry lane's follow-ups must not fire on it.
+    assert.isUndefined(outcome.placedIntent);
+    assert.ok(outcome.summary?.includes("patient exit crossed"));
+  }),
+);
+
+it.effect("an exit cross that does not fill abandons and says so", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({
+      positionSize: 0.5,
+      placementBehaviour: "no_fill",
+      orders: [restingExit(EXIT_CLOID, 3_010)],
+    });
+    const outcome = yield* runReconcile(
+      fake,
+      EXIT_INPUT,
+      seedExitRecord({ cloid: EXIT_CLOID, ageMsAgo: WORKING_ORDER_MAX_WAIT_MILLIS + 1_000 }),
+    );
+
+    assert.equal(outcome.status, "abandoned");
+    assert.deepEqual(fake.cancels, [EXIT_CLOID]);
+    assert.ok(outcome.summary?.includes("did not fill"));
+    assert.equal(fake.positionSize, 0.5);
+  }),
+);
+
+it.effect("withdraws a patient exit whose position is gone and nothing filled", () =>
+  Effect.gen(function* () {
+    // The stop (or the take-profit, or a hand close) took the position; the
+    // exit never filled. It must not keep working a position that does not
+    // exist — the loop says so and cancels the leftover.
+    const fake = makeFake({ orders: [restingExit(EXIT_CLOID, 3_010)] });
+    const outcome = yield* runReconcile(
+      fake,
+      EXIT_INPUT,
+      seedExitRecord({ cloid: EXIT_CLOID, ageMsAgo: 30_000 }),
+    );
+
+    assert.equal(outcome.status, "abandoned");
+    assert.deepEqual(fake.cancels, [EXIT_CLOID]);
+    assert.deepEqual(fake.placements, []);
+    assert.ok(outcome.summary?.includes("position is gone"));
+  }),
+);
+
+it.effect("a patient exit that filled against a gone position is history", () =>
+  Effect.gen(function* () {
+    const fake = makeFake();
+    const outcome = yield* runReconcile(
+      fake,
+      EXIT_INPUT,
+      Effect.gen(function* () {
+        yield* seedExitRecord({ cloid: EXIT_CLOID, ageMsAgo: 30_000 });
+        yield* seedFill(EXIT_CLOID);
+      }),
+    );
+
+    assert.equal(outcome.status, "no_working_order");
+    assert.deepEqual(fake.cancels, []);
+    assert.deepEqual(fake.placements, []);
+  }),
+);
+
+it.effect("abandons a patient exit that left the book without filling", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ positionSize: 0.5 });
+    const outcome = yield* runReconcile(
+      fake,
+      EXIT_INPUT,
+      seedExitRecord({ cloid: EXIT_CLOID, ageMsAgo: 30_000 }),
+    );
+
+    assert.equal(outcome.status, "abandoned");
+    assert.ok(outcome.summary?.includes("left the book unfilled"));
+    assert.deepEqual(fake.placements, []);
+  }),
+);
+
+it.effect("a suspended mission keeps working its exit — leaving is the safe side", () =>
+  Effect.gen(function* () {
+    // The entry lane withdraws on `paused` because it must not open exposure
+    // into a stopped mission. The exit lane inverts that: withdrawing the
+    // exit would put the exposure back on. The re-price proceeds.
+    const fake = makeFake({ positionSize: 0.5, orders: [restingExit(EXIT_CLOID, 3_010)] });
+    const outcome = yield* runReconcile(
+      fake,
+      { ...EXIT_INPUT, missionStatus: "paused" },
+      seedExitRecord({ cloid: EXIT_CLOID, ageMsAgo: 20_000 }),
+    );
+
+    assert.equal(outcome.status, "repriced");
+    assert.deepEqual(fake.cancels, [EXIT_CLOID]);
+    assert.equal(fake.placements.length, 1);
+  }),
+);
+
+it.effect("a plan revision does not retract a patient exit", () =>
+  Effect.gen(function* () {
+    // The publish aftermath retracts resting ENTRIES; an exit resting is
+    // exposure coming off, and the model has the cancel tool for changing
+    // its mind about leaving. Standing aside especially is no reason to
+    // un-leave — it is the strongest reason to finish leaving.
+    const fake = makeFake({ positionSize: 0.5, orders: [restingExit(EXIT_CLOID, 3_010)] });
+    const outcome = yield* runReconcile(
+      fake,
+      { ...EXIT_INPUT, plan: { publishedAt: NOW - 5_000, standAside: true } },
+      seedExitRecord({ cloid: EXIT_CLOID, ageMsAgo: 20_000 }),
+    );
+
+    assert.equal(outcome.status, "repriced");
+    assert.deepEqual(fake.cancels, [EXIT_CLOID]);
+    assert.deepEqual(fake.placements.length, 1);
+  }),
+);
+
+it.effect("refuses to work an exit whose size no longer matches the approval", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({
+      positionSize: 0.5,
+      orders: [restingExit(EXIT_CLOID, 3_010)],
+    });
+    fake.orders[0] = { ...fake.orders[0]!, size: 0.4, remainingSize: 0.4 };
+    const outcome = yield* runReconcile(
+      fake,
+      EXIT_INPUT,
+      seedExitRecord({ cloid: EXIT_CLOID, ageMsAgo: 30_000 }),
+    );
+
+    assert.equal(outcome.status, "failed");
+    assert.ok(outcome.detail?.includes("does not match the approved"));
+    assert.deepEqual(fake.cancels, []);
+    assert.deepEqual(fake.placements, []);
+  }),
+);
+
+it.effect("the exit wait accumulates through re-prices instead of resetting", () =>
+  Effect.gen(function* () {
+    const replacement = "0xworkingexit00000000000000000002";
+    const fake = makeFake({ positionSize: 0.5, orders: [restingExit(replacement, 3_010)] });
+    const outcome = yield* runReconcile(
+      fake,
+      EXIT_INPUT,
+      Effect.gen(function* () {
+        yield* seedExitRecord({ cloid: EXIT_CLOID, ageMsAgo: 80_000, status: "cancelled" });
+        yield* seedExitRecord({ cloid: replacement, ageMsAgo: 20_000 });
+      }),
+    );
+
+    assert.equal(outcome.status, "repriced");
+    assert.equal(outcome.repriceCount, 1);
+    assert.equal(outcome.waitMillis, 80_000);
+    assert.deepEqual(fake.cancels, [replacement]);
+  }),
+);
+
+it.effect("a take-profit-shaped record is not this lane's and is never touched", () =>
+  Effect.gen(function* () {
+    // The take-profit loop owns the other kind of resting reduce-only ALO.
+    // Its orders never become execution records (submitReduceOnlyAlo writes
+    // none), but if one ever did — action type take_profit_<price> — this
+    // lane must not pick it up, work it, or cancel it.
+    const fake = makeFake();
+    const outcome = yield* runReconcile(
+      fake,
+      EXIT_INPUT,
+      seedRecord({
+        cloid: "0xtakeprofit0000000000000000001",
+        ageMsAgo: 30_000,
+        actionType: "take_profit_3100",
+        side: "sell",
+        stopPrice: null,
+        reduceOnly: 1,
+        limitPrice: 3_100,
+      }),
+    );
+
+    assert.equal(outcome.status, "no_working_order");
+    assert.deepEqual(fake.cancels, []);
+    assert.deepEqual(fake.placements, []);
+  }),
+);
+
+it.effect("the entry lane still works beside a resting take-profit", () =>
+  Effect.gen(function* () {
+    // The complementary direction: a working entry and the plan's resting
+    // take-profit coexist, and the pass works the entry without cancelling
+    // the take-profit — each lane touches exactly its own cloid.
+    const TP_CLOID = "0xtakeprofit0000000000000000002";
+    const fake = makeFake({
+      orders: [restingEntry(CLOID, 2_990), restingExit(TP_CLOID, 3_100)],
+    });
+    const outcome = yield* runReconcile(
+      fake,
+      INPUT,
+      Effect.gen(function* () {
+        yield* seedRecord({ cloid: CLOID, ageMsAgo: 20_000 });
+        yield* seedRecord({
+          cloid: TP_CLOID,
+          ageMsAgo: 30_000,
+          actionType: "take_profit_3100",
+          side: "sell",
+          stopPrice: null,
+          reduceOnly: 1,
+          limitPrice: 3_100,
+        });
+      }),
+    );
+
+    assert.equal(outcome.status, "repriced");
+    assert.deepEqual(fake.cancels, [CLOID]);
+    // The take-profit still rests where the plan put it.
+    assert.ok(fake.orders.some((o) => o.cloid === TP_CLOID));
   }),
 );

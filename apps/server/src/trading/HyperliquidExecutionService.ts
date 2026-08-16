@@ -198,16 +198,21 @@ export class HyperliquidExecutionService extends Context.Service<
     }) => Effect.Effect<ReadonlyArray<TradingOrderResult>, TradingExecutionError>;
 
     /**
-     * Re-place an ALREADY-APPROVED working entry outside a harness turn (plan
-     * 29 step 2.4), WITHOUT a preview context.
+     * Re-place an ALREADY-APPROVED working order outside a harness turn (plan
+     * 29 step 2.4), WITHOUT a preview context. Despite the historical name it
+     * carries both of `TradingWorkingOrderService`'s lanes: an entry (the
+     * grouped stop child below) and a reduce-only patient exit (no child —
+     * there is nothing to protect against an order that only shrinks).
      *
-     * Unlike the three §14.7 paths above, this order CAN open exposure — an
-     * entry is the one action that does — so bypassing the §16.3 checklist is
-     * only honest because the caller passes an intent whose size, side, stop
-     * and market are IDENTICAL to a resting order a wake already pushed through
-     * that checklist (quote → preview → submit). The risk envelope was approved
-     * at quote time; the working loop may move the limit price (re-price) or
-     * the time-in-force (cross) and nothing else. `TradingWorkingOrderService`
+     * Unlike the three §14.7 paths above, an ENTRY re-placed here can open
+     * exposure — an entry is the one action that does — so bypassing the
+     * §16.3 checklist is only honest because the caller passes an intent
+     * whose size, side, stop and market are IDENTICAL to a resting order a
+     * wake already pushed through that checklist (quote → preview → submit).
+     * The exit half needs no such defence: it is reduce-only and cannot open
+     * exposure by construction. The risk envelope was approved at quote
+     * time; the working loop may move the limit price (re-price) or the
+     * time-in-force (cross) and nothing else. `TradingWorkingOrderService`
      * builds the intent from the approved execution record and asserts that
      * equality before calling this — the constraint lives there, where the
      * record is read, not here where it could not be checked.
