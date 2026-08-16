@@ -134,6 +134,14 @@ interface QuoteRow {
   readonly limit_price: number;
   readonly stop_price: number;
   readonly planned_loss_usd: number;
+  readonly notional_usd: number;
+  readonly constrained_by: string;
+  readonly best_bid: number;
+  readonly best_ask: number;
+  readonly setup_kind_at_entry: string | null;
+  readonly setup_score_at_entry: number | null;
+  readonly regime_at_entry: string | null;
+  readonly atr_usd_at_entry: number | null;
   readonly expires_at: number;
   readonly consumed_at: number | null;
 }
@@ -580,6 +588,40 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       ),
     );
 
+  /**
+   * Record what the server saw at the moment it committed to this entry.
+   *
+   * Written at consumption rather than at quote time because a quote nobody
+   * executed describes an entry that never happened, and the four readers of
+   * this table all ask "what was behind the trade that opened here?". The
+   * mission-local execution sequence is the key, so a replay of the same quote
+   * writes the same row — `OR IGNORE` makes the second write a no-op rather
+   * than a conflict.
+   *
+   * Losing the row costs the evidence, never the execution: every reader of it
+   * already treats an absent row as an entry it cannot explain.
+   */
+  const recordEntryContext = (row: QuoteRow, now: number) =>
+    sql`
+      INSERT OR IGNORE INTO trading_entry_context (
+        mission_id, execution_sequence, market, side, action_type,
+        entry_price, best_bid, best_ask, stop_price, size, notional_usd,
+        constrained_by, setup_kind, setup_score, regime, atr_usd, recorded_at
+      ) VALUES (
+        ${row.mission_id}, ${row.execution_sequence}, ${row.market}, ${row.side},
+        ${row.action_type},
+        ${row.side === "buy" ? row.best_ask : row.best_bid},
+        ${row.best_bid}, ${row.best_ask}, ${row.stop_price}, ${row.size},
+        ${row.notional_usd}, ${row.constrained_by},
+        ${row.setup_kind_at_entry}, ${row.setup_score_at_entry},
+        ${row.regime_at_entry}, ${row.atr_usd_at_entry}, ${now}
+      )
+    `.pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("trading entry context could not be recorded", { cause: String(cause) }),
+      ),
+    );
+
   const consume: TradingQuoteService["Service"]["consume"] = (input) =>
     Effect.gen(function* () {
       const rows = yield* sql<QuoteRow>`
@@ -631,6 +673,7 @@ export const makeTradingQuoteService = Effect.gen(function* () {
         UPDATE trading_entry_quotes SET consumed_at = ${now}
         WHERE quote_id = ${input.quoteId} AND consumed_at IS NULL
       `;
+      yield* recordEntryContext(row, now);
 
       return {
         outcome: "ready" as const,

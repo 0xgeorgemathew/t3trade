@@ -329,15 +329,27 @@ const harnesses = [
                   style={`${span(88, 96)}`} />
               </svg>
 
-              <!-- What the two levels are actually worth, to scale. -->
+              <!-- What the two levels are actually worth, to scale. Both bars
+                   are measured outward from the entry, in the order the run
+                   creates them: the stop caps the downside first, then the
+                   target opens the upside. -->
               <figcaption class="rr">
-                <span class="rr-bar" style={`${span(64, 80)}`}>
-                  <span class="rr-seg rr-seg--risk" style={`flex: ${risk}`}>{usd(-risk)}</span>
-                  <span class="rr-seg rr-seg--reward" style={`flex: ${reward}`}>{usd(reward)}</span>
+                <span class="rr-bar">
+                  <span class="rr-seg rr-seg--risk" style={`flex: ${risk}; ${span(62, 72)}`}>
+                    <span class="rr-cap">stop</span>
+                    <span class="rr-val">{usd(-risk)}</span>
+                  </span>
+                  <span class="rr-seg rr-seg--reward" style={`flex: ${reward}; ${span(72, 84)}`}>
+                    <span class="rr-cap">target</span>
+                    <span class="rr-val">{usd(reward)}</span>
+                  </span>
                 </span>
                 <span class="rr-note">
-                  <strong>{rr.toFixed(1)}:1</strong> planned. The stop caps the left side before
-                  the order is signed.
+                  <svg class="tick" style={`${span(84, 90)}`} viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
+                  </svg>
+                  <span><strong>{rr.toFixed(1)}:1</strong> planned. The stop caps the left side
+                  before the order is signed.</span>
                 </span>
               </figcaption>
             </figure>
@@ -362,16 +374,23 @@ const harnesses = [
 
               <dl class="readout-grid">
                 {[
-                  { term: "Size", value: MISSION.size.toFixed(4), at: 50 },
-                  { term: "Entry", value: px(MISSION.entry), at: 52 },
-                  { term: "Mark", value: px(MISSION.mark), at: 78 },
-                  { term: "Stop", value: px(MISSION.stop), at: 64 },
-                  { term: "Liq", value: px(MISSION.liquidation), at: 66 },
-                  { term: "Margin", value: `$${MISSION.margin}`, at: 54 },
+                  { term: "Size", value: MISSION.size.toFixed(4), at: 50, ok: false },
+                  { term: "Entry", value: px(MISSION.entry), at: 52, ok: true },
+                  { term: "Mark", value: px(MISSION.mark), at: 78, ok: false },
+                  { term: "Stop", value: px(MISSION.stop), at: 64, ok: true },
+                  { term: "Liq", value: px(MISSION.liquidation), at: 66, ok: false },
+                  { term: "Margin", value: `$${MISSION.margin}`, at: 54, ok: false },
                 ].map((row) => (
                   <div class="readout-row" style={`${span(row.at, row.at + 8)}`}>
                     <dt>{row.term}</dt>
-                    <dd>{row.value}</dd>
+                    <dd>
+                      {row.ok && (
+                        <svg class="tick" style={`${span(row.at + 4, row.at + 10)}`} viewBox="0 0 16 16" aria-hidden="true">
+                          <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
+                        </svg>
+                      )}
+                      {row.value}
+                    </dd>
                   </div>
                 ))}
               </dl>
@@ -382,20 +401,47 @@ const harnesses = [
                   <div class={`armed-row ${watch.metAt ? "armed-row--met" : ""}`}
                     style={`${span(26 + index * 3, 36 + index * 3)}`}>
                     <span class="armed-label">{watch.label}</span>
-                    <span class="armed-state" style={watch.metAt ? `${span(watch.metAt, watch.metAt + 8)}` : undefined}>
-                      {watch.metAt ? "met" : "waiting"}
-                    </span>
+                    {watch.metAt ? (
+                      <span class="armed-state" style={`${span(watch.metAt, watch.metAt + 8)}`}>
+                        <svg class="tick" style={`${span(watch.metAt, watch.metAt + 6)}`} viewBox="0 0 16 16" aria-hidden="true">
+                          <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
+                        </svg>
+                        met
+                      </span>
+                    ) : (
+                      <span class="armed-state">waiting</span>
+                    )}
                   </div>
                 ))}
               </div>
             </div>
           </div>
 
-          <!-- The rail names the beat the chart is currently on. -->
+          <!-- The payoff. Every rule the page has been describing held, so it
+               says so once, plainly, at the end of the run. -->
+          <div class="console-success" style={`${span(84, 92)}`}>
+            <svg class="tick tick--lg" style={`${span(85, 91)}`} viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
+            </svg>
+            <span class="success-head">Mission running clean</span>
+            <span class="success-facts">
+              <span>Stop resting at {px(MISSION.stop)}</span>
+              <span>Loss budget untouched</span>
+              <span>{usd(open)} open</span>
+            </span>
+          </div>
+
+          <!-- The rail names the beat the chart is currently on, and keeps a
+               tick on every beat already behind you. -->
           <ol class="beat-rail">
             {BEATS.map((beat) => (
               <li class="beat" style={`${span(beat.at, beat.at + 10)}`}>
-                <span class="beat-label">{beat.label}</span>
+                <span class="beat-head">
+                  <span class="beat-label">{beat.label}</span>
+                  <svg class="tick beat-tick" style={`${span(beat.at + 7, beat.at + 13)}`} viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
+                  </svg>
+                </span>
                 <span class="beat-note">{beat.note}</span>
               </li>
             ))}
@@ -1172,25 +1218,46 @@ const harnesses = [
   .rr-bar {
     display: flex;
     flex: 1;
-    height: 22px;
+    height: 26px;
     border-radius: 6px;
     overflow: hidden;
-    transform-origin: 0 50%;
   }
 
   .rr-seg {
-    display: grid;
-    place-items: center;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 9px;
     font-family: var(--font-mono);
     font-size: 10.5px;
     font-variant-numeric: tabular-nums;
     min-width: 0;
+    /* Each side is revealed by a wipe rather than a scale, so the figures
+       stay at their true size while the bar measures itself out. */
+    clip-path: inset(0);
   }
 
+  .rr-cap {
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    font-size: 9px;
+    opacity: 0.62;
+  }
+
+  .rr-val {
+    margin-left: auto;
+  }
+
+  /* Both sides read outward from the entry, so the risk figure hugs the
+     divider and the reward figure runs away from it. */
   .rr-seg--risk {
     background: color-mix(in srgb, var(--loss) 26%, transparent);
     color: color-mix(in srgb, var(--loss) 78%, white);
+    flex-direction: row-reverse;
+    border-right: 1px solid color-mix(in srgb, white 45%, transparent);
   }
+
+  .rr-seg--risk .rr-val { margin-left: 0; margin-right: auto; }
 
   .rr-seg--reward {
     background: color-mix(in srgb, var(--accent) 24%, transparent);
@@ -1198,6 +1265,9 @@ const harnesses = [
   }
 
   .rr-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
     font-size: 12px;
     color: var(--fg-dim);
     max-width: 30ch;
@@ -1209,6 +1279,35 @@ const harnesses = [
     font-family: var(--font-mono);
     font-weight: 500;
   }
+
+  /* ── Success marks ────────────────────────────────────────── */
+  /* One glyph for every state that came out right. It rests drawn, so a
+     browser without scroll timelines still shows a finished checkmark. */
+  .tick {
+    width: 12px;
+    height: 12px;
+    flex: none;
+    overflow: visible;
+  }
+
+  .tick path {
+    fill: none;
+    stroke: var(--ok);
+    stroke-width: 2.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+  }
+
+  .tick--lg {
+    width: 19px;
+    height: 19px;
+  }
+
+  .tick--lg path { stroke-width: 2.1; }
+
+  .rr-note .tick { margin-top: 2px; }
 
   .candle-body { fill: currentColor; }
   .candle-wick { stroke: currentColor; stroke-width: 1.1; }
@@ -1373,6 +1472,9 @@ const harnesses = [
   }
 
   .readout-row dd {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     font-family: var(--font-mono);
     font-size: 12.5px;
     font-variant-numeric: tabular-nums;
@@ -1411,11 +1513,47 @@ const harnesses = [
   }
 
   .armed-state {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     color: var(--fg-faint);
     flex-shrink: 0;
   }
 
   .armed-row--met .armed-state { color: var(--ok); }
+
+  /* ── The run came out clean ───────────────────────────────── */
+  .console-success {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 12px;
+    padding: 13px 16px;
+    border: 1px solid color-mix(in srgb, var(--ok) 34%, transparent);
+    border-radius: var(--radius-sm);
+    background:
+      linear-gradient(90deg, color-mix(in srgb, var(--ok) 11%, transparent), transparent 62%),
+      rgba(9, 9, 11, 0.9);
+  }
+
+  .success-head {
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    color: color-mix(in srgb, var(--ok) 55%, white);
+    flex: none;
+  }
+
+  .success-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-dim);
+  }
 
   /* ── Beat rail ────────────────────────────────────────────── */
   .beat-rail {
@@ -1423,7 +1561,7 @@ const harnesses = [
     display: grid;
     grid-template-columns: repeat(7, 1fr);
     gap: 1px;
-    margin-top: 14px;
+    margin-top: 12px;
     background: var(--border);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
@@ -1431,12 +1569,18 @@ const harnesses = [
   }
 
   .beat {
-    padding: 12px 13px;
+    padding: 11px 13px 12px;
     background: rgba(9, 9, 11, 0.9);
     border-top: 2px solid transparent;
     display: flex;
     flex-direction: column;
     gap: 5px;
+  }
+
+  .beat-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
   }
 
   .beat-label {
@@ -1447,6 +1591,12 @@ const harnesses = [
     color: var(--fg-dim);
   }
 
+  .beat-tick {
+    width: 11px;
+    height: 11px;
+    margin-left: auto;
+  }
+
   .beat-note {
     font-size: 12px;
     line-height: 1.4;
@@ -1454,24 +1604,33 @@ const harnesses = [
   }
 
   /* ── Mission notes ────────────────────────────────────────── */
+  /* One rule across the top and a divider between each note, so the three
+     read as one group closing out the console rather than three columns
+     floating below it. */
   .mission-notes {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 40px;
-    padding-top: 8px;
-    padding-bottom: 104px;
+    gap: 0;
+    padding-top: 0;
+    padding-bottom: 92px;
+    margin-top: 34px;
+    border-top: 1px solid var(--border);
   }
 
   .note {
-    padding-top: 16px;
-    border-top: 1px solid var(--border);
+    padding: 22px 30px 0 0;
+  }
+
+  .note + .note {
+    padding-left: 30px;
+    border-left: 1px solid var(--border);
   }
 
   .note h3 {
     font-size: 15.5px;
     font-weight: 500;
     letter-spacing: -0.015em;
-    margin-bottom: 8px;
+    margin-bottom: 7px;
   }
 
   .note p {
@@ -2017,8 +2176,10 @@ const harnesses = [
       .readout-progress,
       .armed-row,
       .armed-state,
-      .rr-bar,
-      .beat {
+      .rr-seg,
+      .console-success,
+      .beat,
+      .mission-sticky .tick path {
         animation-timeline: --mission;
         animation-range: contain var(--from) contain var(--to);
       }
@@ -2110,10 +2271,53 @@ const harnesses = [
         to { transform: translateY(calc(-16 * 1.3em)); }
       }
 
-      .rr-bar {
-        animation-name: bar-fill;
+      /* The two figures are measured outward from the entry divider, in the
+         order the run creates them. A wipe keeps the numbers at true size,
+         so the motion says "this much" rather than just moving. */
+      .rr-seg {
         animation-timing-function: linear;
         animation-fill-mode: both;
+      }
+
+      .rr-seg--risk { animation-name: measure-down; }
+      .rr-seg--reward { animation-name: measure-up; }
+
+      @keyframes measure-down {
+        from { clip-path: inset(0 0 0 100%); }
+        to { clip-path: inset(0); }
+      }
+
+      @keyframes measure-up {
+        from { clip-path: inset(0 100% 0 0); }
+        to { clip-path: inset(0); }
+      }
+
+      /* Every checkmark draws itself. The slice comes from the `--from` and
+         `--to` set on the svg above it, which custom properties inherit. */
+      .mission-sticky .tick path {
+        stroke-dashoffset: 1;
+        animation-name: scrub-draw;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      .console-success {
+        animation-name: success-land;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      @keyframes success-land {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+          border-color: var(--border);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+          border-color: color-mix(in srgb, var(--ok) 34%, transparent);
+        }
       }
 
       .progress-fill {
@@ -2244,8 +2448,10 @@ const harnesses = [
     .readout-progress,
     .armed-row,
     .armed-state,
-    .rr-bar,
-    .beat {
+    .rr-seg,
+    .console-success,
+    .beat,
+    .mission-sticky .tick path {
       animation-range: cover var(--from) cover var(--to);
     }
 
@@ -2265,9 +2471,20 @@ const harnesses = [
 
     .mission-notes {
       grid-template-columns: 1fr;
-      gap: 24px;
-      padding-bottom: 76px;
+      margin-top: 28px;
+      padding-bottom: 72px;
     }
+
+    .note { padding: 20px 0 0; }
+
+    .note + .note {
+      padding-left: 0;
+      border-left: 0;
+      border-top: 1px solid var(--border);
+    }
+
+    .console-success { flex-wrap: wrap; gap: 10px 12px; }
+    .success-facts { margin-left: 0; width: 100%; }
 
     .harness-grid {
       grid-template-columns: 1fr 1fr;
