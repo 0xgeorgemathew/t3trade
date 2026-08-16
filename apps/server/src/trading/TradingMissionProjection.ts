@@ -253,10 +253,11 @@ interface StopAdjustmentRow {
   readonly adjusted_at: number;
 }
 
-/** One journal note (migration 066). */
+/** One journal note (migration 066; `author` since 067). */
 interface JournalNoteRow {
   readonly note: string;
   readonly created_at: number;
+  readonly author?: string;
 }
 
 /** A strategy publish. */
@@ -316,6 +317,9 @@ export function buildMissionTimeline(input: {
       at: toIso(note.created_at),
       kind: "journal",
       label: note.note,
+      // Narrowed rather than passed through: the column is NOT NULL DEFAULT
+      // 'model', so anything else is a row nothing in this codebase wrote.
+      author: note.author === "user" ? "user" : "model",
     });
   }
 
@@ -665,7 +669,7 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       `.pipe(Effect.mapError(sqlFail("timeline:publishes")));
 
       const journal = yield* sql<JournalNoteRow>`
-        SELECT note, created_at
+        SELECT note, created_at, author
         FROM trading_journal WHERE mission_id = ${missionId}
         -- rowid, because two notes in one turn share a millisecond and the
         -- timeline has to draw them in the order they were written.

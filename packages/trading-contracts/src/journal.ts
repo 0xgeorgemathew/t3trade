@@ -53,16 +53,37 @@ export const TRADING_JOURNAL_READ_LIMIT = 20;
 export const TRADING_JOURNAL_TURN_READ_LIMIT = 5;
 
 /**
+ * Who wrote a note — plan 29 step 8.4.
+ *
+ * The journal was built for one author and now has two: dragging a level on
+ * the panel publishes a real plan revision, and that revision is journaled
+ * like any other. Both directions need the distinction. A human reading the
+ * session back needs to know which decisions were theirs, and the model
+ * reading its own journal back needs to know which notes it did not write —
+ * an operator's note taken for the model's own past reasoning is a conclusion
+ * it never reached being fed back to it as one.
+ *
+ * Never author-supplied: the server decides this from which surface made the
+ * call, the same way it decides `at`.
+ */
+export const TradingJournalAuthor = Schema.Literals(["user", "model"]);
+export type TradingJournalAuthor = typeof TradingJournalAuthor.Type;
+
+/**
  * One note, as written.
  *
  * `at` is server-assigned. The model does not stamp its own entries: a
  * timestamp it supplied would be a claim, and the ordering the timeline draws
- * has to be a fact.
+ * has to be a fact. `author` is server-assigned for the same reason. It is
+ * required rather than defaulted: an entry is only ever built from a row, and
+ * migration 067's column is `NOT NULL DEFAULT 'model'`, so there is no row an
+ * author has to be invented for.
  */
 export const TradingJournalEntry = Schema.Struct({
   id: TradingId,
   note: Schema.String,
   at: UnixMillis,
+  author: TradingJournalAuthor,
 });
 export type TradingJournalEntry = typeof TradingJournalEntry.Type;
 

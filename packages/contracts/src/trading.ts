@@ -202,6 +202,15 @@ export const TradingMissionTimelineEntry = Schema.Struct({
    * every other kind.
    */
   cause: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Who wrote a journal note (plan 29 step 8.4). Absent on every other kind.
+   *
+   * The timeline is where the session is read back, so it is where the
+   * distinction has to survive: a level the operator dragged and a level the
+   * model published are two different accounts of the same session, and drawn
+   * identically the timeline says the model decided something it did not.
+   */
+  author: Schema.optional(Schema.Literals(["user", "model"])),
 });
 export type TradingMissionTimelineEntry = typeof TradingMissionTimelineEntry.Type;
 

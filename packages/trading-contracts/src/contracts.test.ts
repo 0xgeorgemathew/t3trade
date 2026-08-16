@@ -353,7 +353,7 @@ describe("§14.3 mission tool contracts", () => {
         },
       ],
       // What the mission has told itself, carried by the same read (step 6.4).
-      journal: [{ id: "jr_1", note: "3200 chopped me twice", at: 1_200 }],
+      journal: [{ id: "jr_1", note: "3200 chopped me twice", at: 1_200, author: "model" }],
     });
     assert(decoded.bound);
     expect(decoded.journal[0]?.note).toBe("3200 chopped me twice");

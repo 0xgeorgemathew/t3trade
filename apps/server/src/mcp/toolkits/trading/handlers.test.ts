@@ -518,7 +518,12 @@ const withMcpServer = <A, E>(
         );
       const httpClient = yield* HttpClient.HttpClient;
 
-      yield* runMigrations({ toMigrationInclusive: 66 }).pipe(Effect.provide(built), Effect.orDie);
+      // Unpinned: this endpoint serves whatever the production schema is, and a
+      // pin here silently withholds columns the handlers read. It was 66, so
+      // migration 067's `trading_journal.author` was missing and every tool
+      // call failed — the journal read rides every tool result, so one absent
+      // column took the whole toolkit down in a test that named none of it.
+      yield* runMigrations().pipe(Effect.provide(built), Effect.orDie);
       yield* missions
         .createMission({
           missionId: MISSION_ID,
@@ -909,6 +914,11 @@ it.effect("appends a note and reads it back in the words it was written in", () 
         first.result.structuredContent.entry.note,
         "3200 chopped me twice; waiting for a 15m close above it",
       );
+      // A note the model wrote says so (plan 29 step 8.4). The tool never takes
+      // an author from its caller — a model that could sign a note `user` could
+      // manufacture an instruction it was never given — so this is the server's
+      // statement about which surface made the call.
+      assert.equal(first.result.structuredContent.entry.author, "model");
 
       yield* callTool(BOUND_THREAD, "trading_journal", { note: "the 1m read disagrees" });
 
