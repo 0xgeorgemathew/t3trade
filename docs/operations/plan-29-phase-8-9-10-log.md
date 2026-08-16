@@ -166,3 +166,56 @@ passed (3 new). `pnpm lint` 35 warnings, same 2 pre-existing errors.
 **Verified in the browser.** No screenshot: nothing rendered changed. A still
 image cannot carry a claim about motion, and the claim this step rests on is a
 number — 0.21 viewBox units per second — which the test asserts directly.
+
+---
+
+## Step 8.3 — Sliding markers — `127465df5`
+
+**What changed.** The relative condition this step is about turned out to be
+the scheduled reassessment. There is no "stall trigger" in the watch
+vocabulary — I looked — and the only condition whose moment moves is the
+reassessment, including the staleness floor's. Every wake consumes the row
+carrying it and arms a new one minutes further out.
+
+The chart keyed its future markers by `persisted.id`, so a reset unmounted one
+rule and mounted another. The rule disappeared from one x and appeared at
+another with nothing connecting them, which is exactly the reading this step
+exists to fix: two rules rather than one that moved.
+
+Two changes, both small. `deriveChartTimeMarkers` re-keys the queue by rank
+once it has sorted it — `reassess-0`, `reassess-1` — so the nearest
+reassessment is one continuous identity whatever row is currently carrying it.
+And the marker rule is drawn at `x=0` under a `translate`, so its position is a
+transform the browser can transition rather than an attribute React redraws.
+500ms on a decelerating curve, applied to the rule and its caption together so
+they arrive as one thing, and switched off entirely under
+`prefers-reduced-motion`.
+
+**Decisions you might have made differently.** Keying by rank means that when
+the nearest reassessment fires and the second-nearest becomes the nearest, one
+DOM node eases outward from the old moment to the new one and the far node
+unmounts. That is the reading I wanted — the queue advancing — but it is a
+choice: keying by `armedReason` instead would have made the auto floor and the
+planned reassessment two separate continuous identities that never hand off to
+each other. I picked rank because the chart draws the queue in time order and
+that is what the operator is reading down.
+
+**Numbers.** `pnpm typecheck` 0 errors. `apps/web` trading suites 258 passed (4
+files), 1 new test — that two different watch rows at two different moments
+produce the same marker key, which is the property the whole slide rests on.
+`pnpm lint` 35 warnings, same 2 pre-existing errors.
+
+**Verified in the browser.** `8-3-sliding-markers-desktop.png` (1280) and
+`-phone.png` (375), which add a third harness panel whose reassessment flips
+between two moments. A still cannot show a slide, so the motion itself was
+checked differently: the rendered rule's computed style reads
+`transition-property: transform, right` at `0.5s, 0.5s`, and the marker is
+positioned by that transform (the third panel's rule stands at a visibly
+different x from the first two panels', which is the translate path working).
+I tried to sample the transform across frames from the page and could not —
+the harness's own timers throttle while the tab is backgrounded behind the
+screenshot driver — so the evidence for the ease is the computed style plus
+the keying test, not a filmstrip. If you want to see it move, run the harness
+and watch the third panel.
+
+**Found broken, not mine.** Nothing new.
