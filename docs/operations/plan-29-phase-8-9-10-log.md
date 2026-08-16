@@ -473,3 +473,94 @@ the accepted/rejected/refused-reconcile/withdrawn-entry branches already.
 that consumes this is the next commit and it is where the shots come.
 
 **Found broken, not mine.** Nothing new.
+
+---
+
+## Step 8.4 — Direct manipulation — `f7af73875` (server) and `9c4c48890` (client)
+
+Three commits with the extraction above: the path, the contract, the drag.
+
+**The server half (`f7af73875`).** A new RPC, `orchestration.reviseTradingPlan`,
+taking the eight authored fields and the mission version the panel last read,
+and running them through `publishPlanWithAftermath`. Scope is **operate**, not
+read: a drag publishes a plan and moves a live stop, and a read-scoped
+credential must not reach it — there is a test that says so.
+
+Two things the model's path never needed. `PlanProtectionOutcome` now reports
+`restingStopPrice` on every branch that has a position to measure, because a
+refused stop means the plan says one price and the exchange holds another, and
+a chart drawing only the plan's would show the operator a stop they do not
+have. And `composePlanRevisionNote` diffs the accepted plan against the one it
+replaced, journaling `"the operator revised the plan from the chart — stop
+moved to 1,858.10"` with `author: "user"`. **The client supplies no text at
+all.** A note is read back into the model's context on its next wake, so it has
+to be a fact about what happened rather than a caption the panel chose — and a
+caption the panel could choose is a way for a future bug to journal a change
+that did not happen. A revision that moved nothing draggable is not journaled.
+
+**The client half (`9c4c48890`).** Each draggable level carries an HTML grab
+strip (HTML, not SVG: the plot stretches, so a thin SVG hit area is unusably
+narrow at some widths and enormous at others). Dragging shows the level under
+the pointer at full ink with a live readout of the price and, for a stop with a
+position behind it, what it would plan to lose. Letting go publishes.
+
+Lock lost: the publish is refused, the level snaps back, and the panel says the
+model republished underneath. Refused reconcile: the rule stays where the stop
+rests, the plan's own price is drawn in 8.1's hypothetical register, and the
+refusal's own sentence sits below the chart.
+
+**Decisions you might have made differently.** Five, and the last two matter.
+
+1. _The refusal is shown in the system's own words_ — including the trailing
+   "trading_exit's move_stop can move it inside the envelope", which is model
+   vocabulary in front of a human. I kept it rather than composing an operator
+   sentence, because the standing rule is that whatever the model can write it
+   must read back in the same vocabulary, and a second wording of the same
+   refusal is a second thing to keep true. If you want an operator register
+   here, it belongs in `planStopRefusal` so both readers get it.
+2. _A refused plan price is pinned to the frame edge_ when it falls outside the
+   drawn domain — which it usually does, since being further out than the
+   envelope allows is the reason it was refused. Drawn at its true y it would
+   be off the frame entirely and the drag would read as having done nothing.
+   Same treatment `ChartLevel.offScale` already gives an excluded stop.
+3. _The dragged price is rounded_ — two decimals at ETH scale, four below a
+   dollar. A pointer gives fifteen significant figures, and this price is
+   published: it lands in the plan document, in the journal note, and on the
+   exchange.
+4. _`missionVersion` is read live rather than projected._ The mission view
+   gained the field, and `TradingMissionProjection` reads it straight from
+   `trading_missions` on each list rather than carrying it in
+   `projection_trading_missions`. That is one extra indexed lookup per mission
+   per 3s poll, and it avoids a migration — but the real reason is correctness:
+   a projected optimistic lock that lagged one publish would refuse every drag
+   with "the model republished underneath you" when nothing had.
+5. _Only the stop and the target are draggable today._ Trigger prices and the
+   reassessment horizon are in `applyPlanDrag` and tested, but the panel does
+   not wire them: a trigger's rule is one of up to three condition levels and
+   the chart has no way yet to say which trigger a rule belongs to, so a drag
+   would be publishing into an index the operator cannot see. That wants the
+   condition levels to carry their trigger index, which is a `ChartCondition`
+   change and belongs with 8.5's pass over what the panel says.
+
+**Numbers.** `pnpm typecheck` 0 errors. `apps/server` `src/trading` + `src/mcp`
+641 passed / 3 skipped (55 files); `src/server.test.ts` included in the earlier
+769-test run for the two new RPC tests. `apps/web` trading suites 262 passed (5
+files), 4 new on `applyPlanDrag` — the one that matters asserts the other seven
+fields come through identical. 6 new tests on `composePlanRevisionNote`.
+`pnpm lint` 35 warnings, same 2 pre-existing errors.
+
+**Verified in the browser.** `8-4-direct-manipulation-desktop.png` (1280) and
+`-phone.png` (375), both captured **mid-drag** — the pointer is down and the
+readout is live in both. The harness gained two panels: one where the stop is
+genuinely draggable and commits (I dragged it with real pointer input and read
+the committed value back off the DOM: `aria-valuenow` went 1858.1 → 1863.58 →
+and after the rounding change, two decimals), and one showing the refused
+state. I also read the refused rule's attributes back rather than trusting the
+pixels: `stroke-width 0.75`, dash `2 5`, opacity `0.75`, `y1 157` of a
+160-unit frame — pinned to the bottom edge, which is the clamp working.
+
+**Found broken, not mine.** The phone gutter truncation (`1,8|`) is visible in
+the phone shot and is the pre-existing 8.7 problem already flagged at the top
+of this log. New and mine to watch: at 375 the drag readout spans most of the
+plot width. It is legible, but it is a 8.7 question and I am noting it here
+rather than pretending it is fine.
