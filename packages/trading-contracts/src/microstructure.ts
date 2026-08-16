@@ -15,7 +15,7 @@
 import { Schema } from "effect";
 
 import type { MarketCandle, OrderBook } from "./market.ts";
-import { Price, UsdAmount } from "./primitives.ts";
+import { Price, UnixMillis, UsdAmount } from "./primitives.ts";
 import { realizedVolatilityPercent } from "./volatility.ts";
 
 /**
@@ -228,18 +228,30 @@ export const VolatilityRatio = Schema.Struct({
 export type VolatilityRatio = typeof VolatilityRatio.Type;
 
 /**
- * Where the mark sits against the window's volume-weighted average price.
+ * Where the mark sits against the session's volume-weighted average price.
  *
  * VWAP is where the volume actually traded, which makes it the level both
  * sides treat as fair. Distance from it in basis points says how stretched the
  * current price is from that agreement — and, read beside the cost line, how
  * much of a reversion to it a round trip would eat.
+ *
+ * The anchor is the point of the reading, not a detail of it. Every desk
+ * computes VWAP from the same origin — the session open — which is what makes
+ * the level one everybody reacts to. A rolling mean over the last N bars is
+ * just a smoothed price with no agreement behind it, so this reading anchors
+ * at the UTC session open and says so in `anchoredAt`. When the window handed
+ * in does not reach that far back, `anchor` says `window_start` and the number
+ * is the honest partial-session average, not a session VWAP.
  */
 export const VwapReading = Schema.Struct({
   priceUsd: Price,
   /** Mark less VWAP over VWAP, in basis points. Positive is above. */
   distanceBps: Schema.Number,
   bars: Schema.Number.check(Schema.isGreaterThan(0)),
+  /** Open time of the first bar summed — where this average starts. */
+  anchoredAt: UnixMillis,
+  /** `session_open` when the window reached back to 00:00 UTC. */
+  anchor: Schema.Literals(["session_open", "window_start"]),
 });
 export type VwapReading = typeof VwapReading.Type;
 
@@ -276,20 +288,27 @@ const depthUsd = (
  * Returns `null` when the book has no usable side — a one-sided or empty book
  * has no ratio to report, and reporting `±1` for it would read as conviction
  * where there is only an absent quote.
+ *
+ * Both sides are summed over the _same_ number of levels. Summing ten levels
+ * of bids against three of asks reports a book stacked with buyers when it is
+ * balanced level for level, and it does so in exactly the state where the
+ * thin side is thin — so the reading says "go long" into the book a buy order
+ * would walk straight up.
  */
 export const readBookImbalance = (
   book: OrderBook,
   levels: number = BOOK_IMBALANCE_LEVELS,
 ): BookImbalance | null => {
-  const bid = depthUsd(book.bids, levels);
-  const ask = depthUsd(book.asks, levels);
+  const depth = Math.min(book.bids.length, book.asks.length, levels);
+  const bid = depthUsd(book.bids, depth);
+  const ask = depthUsd(book.asks, depth);
   const total = bid.usd + ask.usd;
-  if (bid.counted === 0 || ask.counted === 0 || total <= 0) return null;
+  if (depth === 0 || total <= 0) return null;
   return {
     bidDepthUsd: bid.usd,
     askDepthUsd: ask.usd,
     imbalance: (bid.usd - ask.usd) / total,
-    levels: Math.min(bid.counted, ask.counted),
+    levels: depth,
   };
 };
 
@@ -309,18 +328,23 @@ export const readAggressorFlow = (
   const window = candles.slice(-bars);
   let volume = 0;
   let buyVolume = 0;
+  // Counted here rather than from the window length: a dead tape where 12 of
+  // the last 15 bars traded nothing reads as a quarter-hour of buyers paying
+  // up if the empty bars are counted. `readVwap` counts the same way.
+  let counted = 0;
   for (const candle of window) {
     if (candle.volume <= 0) continue;
     const range = candle.high - candle.low;
     const closeLocation = range > 0 ? (candle.close - candle.low) / range : 0.5;
     volume += candle.volume;
     buyVolume += candle.volume * closeLocation;
+    counted += 1;
   }
   if (volume <= 0) return null;
   return {
     buyShare: buyVolume / volume,
     volume,
-    bars: window.length,
+    bars: counted,
     basis: "bar_close_location",
   };
 };
@@ -441,34 +465,55 @@ export const readVolatilityRatio = (
   };
 };
 
+const MILLIS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** 00:00 UTC of the day `at` falls in — the session everyone anchors to. */
+const utcSessionOpen = (at: number): number => Math.floor(at / MILLIS_PER_DAY) * MILLIS_PER_DAY;
+
 /**
- * Volume-weighted average price over the window, and how far the mark is off it.
+ * Session volume-weighted average price, and how far the mark is off it.
  *
  * Each bar contributes its typical price — the mean of high, low and close —
- * weighted by its volume. Returns `null` for a window with no volume: an
- * unweighted average of prices is not a VWAP, and returning one under that name
- * would be worse than returning nothing.
+ * weighted by its volume. Only bars at or after the session open are summed,
+ * so the level is the one other desks are looking at rather than a rolling
+ * mean of the last couple of hours. Returns `null` for a window with no
+ * volume: an unweighted average of prices is not a VWAP, and returning one
+ * under that name would be worse than returning nothing.
  */
 export const readVwap = (
   candles: ReadonlyArray<MarketCandle>,
   markPrice: number,
 ): VwapReading | null => {
+  const last = candles.at(-1);
+  if (last === undefined) return null;
+  const sessionOpen = utcSessionOpen(last.openTime);
+
   let volume = 0;
   let weighted = 0;
   let bars = 0;
+  let anchoredAt = last.openTime;
   for (const candle of candles) {
-    if (candle.volume <= 0) continue;
+    if (candle.openTime < sessionOpen || candle.volume <= 0) continue;
     volume += candle.volume;
     weighted += ((candle.high + candle.low + candle.close) / 3) * candle.volume;
     bars += 1;
+    anchoredAt = Math.min(anchoredAt, candle.openTime);
   }
   if (volume <= 0 || bars === 0) return null;
   const priceUsd = weighted / volume;
   if (priceUsd <= 0) return null;
+
+  // The window is a fixed lookback, so early in a session it covers the whole
+  // of it and later in one it does not. Say which, rather than letting a
+  // partial average pass as the session's.
+  const first = candles[0];
+  const reachesSessionOpen = first !== undefined && first.openTime <= sessionOpen;
   return {
     priceUsd,
     distanceBps: ((markPrice - priceUsd) / priceUsd) * 10_000,
     bars,
+    anchoredAt,
+    anchor: reachesSessionOpen ? "session_open" : "window_start",
   };
 };
 
@@ -509,24 +554,12 @@ export const readMicrostructure = (input: {
     observedAt: input.observedAt,
     previous: input.previousSample,
   });
-  if (
-    bookImbalance === null &&
-    aggressorFlow === null &&
-    liquidity === null &&
-    positioning === null &&
-    volatilityRatio === null &&
-    vwap === null
-  ) {
-    return null;
-  }
-  return {
-    ...(bookImbalance === null ? {} : { bookImbalance }),
-    ...(aggressorFlow === null ? {} : { aggressorFlow }),
-    ...(liquidity === null ? {} : { liquidity }),
-    ...(positioning === null ? {} : { positioning }),
-    ...(volatilityRatio === null ? {} : { volatilityRatio }),
-    ...(vwap === null ? {} : { vwap }),
-  };
+  // Built as one object and filtered once, so a seventh reading is a one-line
+  // edit rather than a three-place one.
+  const readings = { bookImbalance, aggressorFlow, liquidity, positioning, volatilityRatio, vwap };
+  const taken = Object.entries(readings).filter(([, reading]) => reading !== null);
+  if (taken.length === 0) return null;
+  return Object.fromEntries(taken) as MarketMicrostructure;
 };
 
 /** What this observation should leave behind for the next one to compare against. */

@@ -1,12 +1,13 @@
 /**
  * What a round trip costs, as context — never as a gate.
  *
- * The harness could measure volatility precisely and still publish a target
- * below break-even, because nothing it could read told it what a trade costs.
- * Fees were modeled carefully in loss accounting and in the execution preview,
- * and exposed to the agent nowhere. A $1.70 target on ~$2,000 of notional was
- * the result: arithmetically correct, and under the ~$2.00 it costs to open and
- * close the position.
+ * Cost stopped being a gate in plan 29: nothing here refuses a trade for being
+ * too small to pay for itself. What it does is put the number in front of the
+ * model and into the sizer, so a target below break-even is a choice made in
+ * the open rather than one nothing could see. The harness could measure
+ * volatility precisely and still publish a $1.70 target on ~$2,000 of notional
+ * — arithmetically correct, and under the ~$2.00 it costs to open and close the
+ * position — because nothing it could read told it what a trade costs.
  *
  * Everything here is pure arithmetic over numbers the caller has already read —
  * the fee rate, the book, the mark. Nothing is modeled, assumed, or annualised,
@@ -328,19 +329,36 @@ export function estimateTradingCosts(input: CostEstimateInput): TradingCostEstim
 /**
  * The share of notional one round trip costs, as a fraction.
  *
- * Fees on both fills plus crossing the spread twice. Slippage past the touch is
- * deliberately absent: it is the one component that does not scale with
- * notional, so folding it in here would make the fraction a function of the
- * size it is used to compute. The caller holds the full
+ * The number depends on the order type, so the caller says which: an exit that
+ * rests pays the maker fee and crosses no spread, and pricing it as a taker
+ * both sides overstates the cost. That matters because this fraction is the
+ * divisor the position size is solved through — overstate it and the size
+ * comes out bigger, by 17% on a 30 bps move and 70% on a 15 bps one.
+ *
+ * Slippage past the touch is deliberately absent: it is the one component that
+ * does not scale with notional, so folding it in here would make the fraction a
+ * function of the size it is used to compute. The caller holds the full
  * {@link TradingCostEstimate} when it wants the whole number.
  */
 export function roundTripCostFractionOfNotional(input: {
   readonly takerFeeBpsPerSide: number;
   readonly halfSpreadUsd: number;
   readonly referencePrice: number;
+  /** True when the exit rests rather than crosses. */
+  readonly exitIsMaker?: boolean;
+  /** Priced at the taker rate when it could not be read — the pessimistic maker. */
+  readonly makerFeeBpsPerSide?: number;
 }): number {
-  const fees = (input.takerFeeBpsPerSide / 10_000) * 2;
-  const spread = input.referencePrice > 0 ? (input.halfSpreadUsd / input.referencePrice) * 2 : 0;
+  const exitIsMaker = input.exitIsMaker === true;
+  const exitFeeBps = exitIsMaker
+    ? (input.makerFeeBpsPerSide ?? input.takerFeeBpsPerSide)
+    : input.takerFeeBpsPerSide;
+  const fees = (input.takerFeeBpsPerSide + exitFeeBps) / 10_000;
+  // A resting exit crosses no spread, so the crossing is charged once. Same
+  // composition as `roundTripTakerMakerUsd` above, in fractions of notional.
+  const crossings = exitIsMaker ? 1 : 2;
+  const spread =
+    input.referencePrice > 0 ? (input.halfSpreadUsd / input.referencePrice) * crossings : 0;
   return fees + spread;
 }
 
@@ -438,6 +456,9 @@ export function targetNotionalForPlan(input: {
   readonly referencePrice: number;
   readonly takerFeeBpsPerSide: number;
   readonly halfSpreadUsd: number;
+  /** True when the take-profit rests rather than crosses. */
+  readonly exitIsMaker?: boolean;
+  readonly makerFeeBpsPerSide?: number;
 }): TargetNotional {
   return notionalForProfitTarget({
     targetProfitUsd: input.targetProfitUsd,
@@ -447,6 +468,10 @@ export function targetNotionalForPlan(input: {
       takerFeeBpsPerSide: input.takerFeeBpsPerSide,
       halfSpreadUsd: input.halfSpreadUsd,
       referencePrice: input.referencePrice,
+      ...(input.exitIsMaker === undefined ? {} : { exitIsMaker: input.exitIsMaker }),
+      ...(input.makerFeeBpsPerSide === undefined
+        ? {}
+        : { makerFeeBpsPerSide: input.makerFeeBpsPerSide }),
     }),
   });
 }

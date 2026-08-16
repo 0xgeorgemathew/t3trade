@@ -233,16 +233,17 @@ describe("assessEntryGovernance", () => {
     expect(evidence.reason).toContain("ranging");
   });
 
-  it("answers which setup actually paid, best net first", () => {
+  const named = (setup: string | null, net: number) => ({
+    scoredSetupBehindIt: setup !== null,
+    setupKindAtEntry: setup,
+    regimeAtEntry: "trending",
+    netPnlUsd: net,
+  });
+
+  it("answers which setup actually paid, best net per trade first", () => {
     // Plan 29 step 10.3: the inversion. Not "did having a reason pay" but "did
     // THIS reason pay" — which is the only form of the question a doctrine
     // change can be argued from.
-    const named = (setup: string | null, net: number) => ({
-      scoredSetupBehindIt: setup !== null,
-      setupKindAtEntry: setup,
-      regimeAtEntry: "trending",
-      netPnlUsd: net,
-    });
     const evidence = assessEntryGovernance([
       named("ema_cross", -4),
       named("ema_cross", -3),
@@ -256,6 +257,7 @@ describe("assessEntryGovernance", () => {
       wins: 1,
       losses: 0,
       netUsd: 9,
+      netUsdPerTrade: 9,
     });
     expect(evidence.bySetup).toContainEqual({
       setup: "ema_cross",
@@ -263,10 +265,35 @@ describe("assessEntryGovernance", () => {
       wins: 0,
       losses: 2,
       netUsd: -7,
+      netUsdPerTrade: -3.5,
     });
     // The unexplained entries are a row, not a silence.
     expect(evidence.bySetup.map((row) => row.setup)).toContain(null);
-    expect(evidence.reason).toContain("best setup at entry: momentum");
+  });
+
+  it("ranks by dollars per trade, not by total dollars", () => {
+    // Plan 29 A20: eighteen trades at $2.28 outrank two at $19 on total net,
+    // so the table put the worse setup first while the plan's own headline
+    // number is net per trade.
+    const evidence = assessEntryGovernance([
+      ...Array.from({ length: 18 }, () => named("momentum", 41 / 18)),
+      ...Array.from({ length: 6 }, () => named("rsi_reversion", 19)),
+    ]);
+
+    expect(evidence.bySetup[0]?.setup).toBe("rsi_reversion");
+    expect(evidence.bySetup[1]?.netUsd).toBeCloseTo(41, 6);
+  });
+
+  it("will not crown a setup on a sample too small to mean anything", () => {
+    // One lucky trade named itself "best setup" in a sentence that rides back
+    // to the model, which would reasonably act on it.
+    const lucky = assessEntryGovernance([named("momentum", 38), named("ema_cross", -1)]);
+    expect(lucky.reason).toContain("no setup has 5 closed trades yet");
+    expect(lucky.reason).not.toContain("best setup at entry");
+
+    const enough = assessEntryGovernance(Array.from({ length: 5 }, () => named("momentum", 4)));
+    expect(enough.reason).toContain("best setup at entry: momentum");
+    expect(enough.reason).toContain("4.00 USD net per trade over 5 trades");
   });
 
   it("admits an empty record instead of inventing a split", () => {

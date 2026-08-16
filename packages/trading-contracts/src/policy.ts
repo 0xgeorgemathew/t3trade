@@ -340,7 +340,25 @@ export interface SetupAttribution {
   readonly wins: number;
   readonly losses: number;
   readonly netUsd: number;
+  /**
+   * Net dollars per trade — what the table is sorted by.
+   *
+   * Total net ranks volume, not edge: eighteen trades at $2.28 outrank two at
+   * $19 and the table would put the worse setup first. The plan's own headline
+   * number is net per trade, and this is the same question asked of one setup.
+   */
+  readonly netUsdPerTrade: number;
 }
+
+/**
+ * How many closed trades a setup needs before the reason line calls it best.
+ *
+ * Five, chosen deliberately and matching nothing else in the codebase: below
+ * it a single lucky trade names itself the best setup in a sentence that rides
+ * back to the model, which will reasonably act on it. Nothing gates on the
+ * table — this bounds only what the prose is willing to assert.
+ */
+export const SETUP_RANKING_MINIMUM_TRADES = 5;
 
 export interface EntryGovernanceEvidence {
   /** Trades whose entry had a scored setup behind it. */
@@ -350,7 +368,8 @@ export interface EntryGovernanceEvidence {
   /** Losses attributed to the regime read in force at entry — plan 27 C3. */
   readonly lossesByRegime: ReadonlyArray<RegimeLossAttribution>;
   /**
-   * What each setup kind paid, best net first — plan 29 step 10.3. Trades with
+   * What each setup kind paid, best net PER TRADE first — plan 29 step 10.3.
+   * Trades with
    * no recorded setup are their own row rather than being dropped: the entries
    * nothing explains are the ones worth seeing beside the ones something does.
    */
@@ -402,19 +421,33 @@ export function assessEntryGovernance(
     else bucket.push(trade);
   }
   const bySetup = [...setups.entries()]
-    .map(([setup, bucket]): SetupAttribution => ({ setup, ...splitOf(bucket) }))
-    // Best net first: the question this table answers is which setup pays, and
-    // the answer should be the first row rather than the one you scan for.
-    .sort((left, right) => right.netUsd - left.netUsd);
+    .map(([setup, bucket]): SetupAttribution => {
+      const split = splitOf(bucket);
+      return {
+        setup,
+        ...split,
+        netUsdPerTrade: split.trades === 0 ? 0 : split.netUsd / split.trades,
+      };
+    })
+    // Best net PER TRADE first: the question this table answers is which setup
+    // pays, and the answer should be the first row rather than the one you
+    // scan for. Total net is kept as a column beside it.
+    .sort((left, right) => right.netUsdPerTrade - left.netUsdPerTrade);
 
-  const best = bySetup[0];
+  // Named only on a sample that could mean something. Below the floor the
+  // sentence says there is not enough to rank, rather than crowning one trade.
+  const best = bySetup.find((row) => row.trades >= SETUP_RANKING_MINIMUM_TRADES);
   const reason =
     trades.length === 0
       ? "no closed trades joined to an entry record yet — the split has nothing to say"
       : `${scored.trades} entries had a scored setup behind them (net ${scored.netUsd} USD), ` +
         `${unscored.trades} did not (net ${unscored.netUsd} USD); ` +
         `worst regime at entry: ${lossesByRegime[0]?.regime ?? "unrecorded"} at ${lossesByRegime[0]?.netUsd ?? 0} USD net; ` +
-        `best setup at entry: ${best?.setup ?? "unrecorded"} at ${best?.netUsd ?? 0} USD net over ${best?.trades ?? 0} trades`;
+        (best === undefined
+          ? `no setup has ${SETUP_RANKING_MINIMUM_TRADES} closed trades yet, so none is ranked best`
+          : `best setup at entry: ${best.setup ?? "unrecorded"} at ` +
+            `${best.netUsdPerTrade.toFixed(2)} USD net per trade over ${best.trades} trades ` +
+            `(${best.netUsd} USD total)`);
 
   return { scored, unscored, lossesByRegime, bySetup, reason };
 }

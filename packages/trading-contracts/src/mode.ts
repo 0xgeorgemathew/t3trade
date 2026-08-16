@@ -78,8 +78,55 @@ export const strategyModeDoctrine = (strategy: TradingPlaybookName): string =>
  *
  * `.` is not in the name class for the same reason — with it the capture runs
  * straight through a full stop and swallows the next sentence's verb.
+ *
+ * `trade` is deliberately not a verb here. In a trading product "trade
+ * momentum on ETH" is how someone says _lean momentum, use your judgement_,
+ * and reading it as a standing order turns a discretionary session into one
+ * that stands aside from every non-momentum setup. "Execute", "run" and
+ * "follow" are what an operator writes when they mean a procedure.
  */
-const MODE_PATTERN = /\b(?:execute|run|follow|trade)\s+(?:the\s+)?([a-z][a-z _-]{2,40})/gi;
+const MODE_PATTERN = /\b(?:execute|run|follow)\s+(?:the\s+)?([a-z][a-z _-]{2,40})/gi;
+
+/**
+ * Words that turn a match into its own refusal.
+ *
+ * "Do not run momentum today" contains "run momentum" and means the opposite,
+ * so the short run of text before the verb is checked for a negation and the
+ * match is skipped when one is there.
+ */
+const NEGATION_PATTERN = /\b(?:not|n't|never|avoid|except|without|no)\b/i;
+
+/** How far back of the verb is read for a negation. */
+const NEGATION_LOOKBEHIND_CHARS = 20;
+
+/**
+ * A negation only negates its own clause.
+ *
+ * `no` has to be in the list — "no need to run momentum" is a refusal and
+ * carries no other negation word — and `no` is common enough that twenty bare
+ * characters of lookbehind reach into the sentence before. "There is no edge in
+ * chop; run the range_reversion playbook" is an INSTRUCTION to execute, and
+ * reading its `no` would quietly drop the mission back to discretionary. So the
+ * lookbehind stops at the nearest clause boundary: the negation has to be in
+ * the same breath as the verb it cancels.
+ */
+const CLAUSE_BOUNDARY_PATTERN = /[.;,:\n]/g;
+
+/** The tail of the lookbehind window after the LAST boundary in it. */
+const currentClause = (window: string): string => {
+  let start = 0;
+  for (const boundary of window.matchAll(CLAUSE_BOUNDARY_PATTERN)) {
+    start = boundary.index + 1;
+  }
+  return window.slice(start);
+};
+
+const isNegated = (instruction: string, matchIndex: number): boolean =>
+  NEGATION_PATTERN.test(
+    currentClause(
+      instruction.slice(Math.max(0, matchIndex - NEGATION_LOOKBEHIND_CHARS), matchIndex),
+    ),
+  );
 
 /** `strategy: momentum` — the explicit form, for a mandate written by a tool. */
 const EXPLICIT_PATTERN = /\bstrategy\s*[:=]\s*([a-z][a-z _-]{2,24})\b/gi;
@@ -120,6 +167,7 @@ export function readMissionMode(instruction: string): TradingMissionModeState {
     // `matchAll` iterates a copy, so the module-level patterns keep no
     // `lastIndex` between calls.
     for (const match of instruction.matchAll(pattern)) {
+      if (isNegated(instruction, match.index)) continue;
       for (const name of candidateNames(match[1] ?? "")) {
         const strategy = EXECUTABLE_STRATEGIES.find((candidate) => candidate === name);
         if (strategy !== undefined) {

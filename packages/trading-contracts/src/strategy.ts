@@ -3,8 +3,9 @@
  *
  * This stores the harness's published conclusions, not its hidden reasoning.
  * The document is eight fields - market, intent, entry, stop, target,
- * invalidation, reassess, because - and every execution is still gated against
- * the version row that carries it.
+ * invalidation, reassess, because. The plan carries no version of its own and
+ * nothing gates on one: revising replaces the plan in place, and the current
+ * plan is simply the newest row in `trading_plan_history`.
  *
  * @module TradingPlan
  */
@@ -104,7 +105,7 @@ export function runtimeTimeframe(instruction: string): TradingTimeframe {
  * again in the other direction.
  */
 export const POC_STANDING_INSTRUCTION =
-  "Work on 1m candles unless your own read says otherwise, and arm each watch on that interval so a run wakes within a minute — the watch TYPE is the playbook's call, not this note's: a breakout confirms on the close, a range boundary triggers on the touch. One gate decides whether a trade is worth taking: is the expected move over your intended hold bigger than the round trip is worth? If not, stand down and say so in one line.";
+  "Work on 1m candles unless your own read says otherwise, and arm each watch on that interval so a run wakes within a minute — the watch TYPE is the playbook's call, not this note's: a breakout confirms on the close, a range boundary triggers on the touch. One gate decides whether a trade is worth taking: is the expected move over your intended hold bigger than the round trip is worth? If not, stand down and say so in one line. The reading that answers it is `microstructure.volatilityRatio`: the recent pace against the whole window's, so 0.4 means the last twenty minutes have moved at 40% of the two-hour pace and the move you need is probably not there. Time the entry with `bookImbalance` (positive is bid-heavy, over the same levels a side) and `aggressorFlow` (the share of volume closing near bar highs, over `bars` that actually traded), and read both against `liquidity` — a lopsided ratio across a thin book is where a crossing order walks.";
 
 /**
  * Prose the harness may leave out, decoded as an empty string.

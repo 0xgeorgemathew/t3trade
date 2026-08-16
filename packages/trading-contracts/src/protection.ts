@@ -156,6 +156,40 @@ export const PROTECTION_RECONCILIATION = {
  */
 export const PROTECTION_SIZE_EPSILON = 1e-9;
 
+/**
+ * Two prices closer than this share of their magnitude are the same price.
+ *
+ * Wire precision: a price makes a round trip through a decimal string and comes
+ * back a few ulps off the number that was sent. One constant rather than one
+ * per caller — three files had grown their own name for this same 1e-5, and
+ * the day they disagree is the day one of them stops recognising a stop it
+ * placed itself.
+ */
+export const PRICE_EPSILON_RELATIVE = 1e-5;
+
+/** True when two prices are the same price at wire precision. */
+export const samePrice = (a: number, b: number): boolean =>
+  Math.abs(a - b) <= Math.max(Math.abs(a), Math.abs(b)) * PRICE_EPSILON_RELATIVE;
+
+/**
+ * How far BEFORE a position was first observed open the record that opened it
+ * may have been written.
+ *
+ * The two timestamps come from opposite ends of an entry. An execution record's
+ * `created_at` is stamped before the order is signed (§17.2 step 2); a position
+ * snapshot's `opened_at` is stamped when a later reconcile pass first observes
+ * the position non-flat. So the row carrying this position's approved risk is
+ * always a little OLDER than the position itself, and a scope of
+ * `created_at >= opened_at` excludes precisely the row it exists to find.
+ *
+ * A minute of lead covers signing, the fill and the pass that saw it. It is the
+ * same slack `buildClosedTradeReview` gives the same gap. A previous trade that
+ * closed inside that minute could still put its own record first; that is a
+ * neighbouring approved envelope rather than no envelope at all, which is the
+ * right way round to be wrong.
+ */
+export const ENTRY_RECORD_LEAD_MILLIS = 60_000;
+
 /** The shape protection confirmation reads out of canonical open orders. */
 export interface ProtectiveOrderCandidate {
   readonly market: string;

@@ -246,6 +246,51 @@ describe("sizing a position to the target it is taken for", () => {
     expect(costFraction).toBeCloseTo(0.001 + 0.0001, 10);
   });
 
+  it("charges the maker fee and one crossing when the exit rests", () => {
+    // Step 2.5 made the take-profit a resting order. Costing it as a second
+    // taker fill overstates the round trip, shrinks the divisor the size is
+    // solved through, and demands a bigger position for a target the trade
+    // would have reached anyway.
+    const maker = roundTripCostFractionOfNotional({
+      takerFeeBpsPerSide: 4.5,
+      makerFeeBpsPerSide: 1.5,
+      halfSpreadUsd: 0.15,
+      referencePrice: 3_000,
+      exitIsMaker: true,
+    });
+    // 4.5 + 1.5 bps of fee, plus one 0.5 bp crossing.
+    expect(maker).toBeCloseTo(0.00065, 10);
+
+    const taker = roundTripCostFractionOfNotional({
+      takerFeeBpsPerSide: 4.5,
+      halfSpreadUsd: 0.15,
+      referencePrice: 3_000,
+    });
+    expect(taker).toBeCloseTo(0.001, 10);
+
+    // On a 30 bps expected move that is a $12,766 position rather than
+    // $15,000 — 17% smaller, for the same target.
+    const sizedMaker = notionalForProfitTarget({
+      targetProfitUsd: 30,
+      expectedPriceMoveUsd: 9,
+      referencePrice: 3_000,
+      costFractionOfNotional: maker,
+    });
+    expect(sizedMaker.notionalUsd).toBeCloseTo(12_765.96, 1);
+  });
+
+  it("prices a resting exit at the taker rate when no maker rate was read", () => {
+    // The pessimistic maker, same convention as `estimateTradingCosts`.
+    expect(
+      roundTripCostFractionOfNotional({
+        takerFeeBpsPerSide: 4.5,
+        halfSpreadUsd: 0,
+        referencePrice: 3_000,
+        exitIsMaker: true,
+      }),
+    ).toBeCloseTo(0.0009, 10);
+  });
+
   it("returns the notional that pays the target after the round trip", () => {
     const sized = notionalForProfitTarget({
       targetProfitUsd: 20,

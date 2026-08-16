@@ -25,9 +25,10 @@ const bar = (input: {
   readonly high: number;
   readonly close: number;
   readonly volume: number;
+  readonly openTime?: number;
 }): MarketCandle => ({
-  openTime: 0,
-  closeTime: 0,
+  openTime: input.openTime ?? 0,
+  closeTime: input.openTime ?? 0,
   open: input.low,
   close: input.close,
   high: input.high,
@@ -101,6 +102,21 @@ describe("readBookImbalance", () => {
   it("reports nothing when every served level is zero-sized", () => {
     assert.isNull(readBookImbalance(book({ bids: [level(100, 0)], asks: [level(101, 0)] })));
   });
+
+  it("compares the same number of levels a side", () => {
+    // Ten levels of bids against three of asks is not a lopsided book, it is a
+    // lopsided read: summing all of both says buyers are stacked two to one on
+    // a book that is balanced level for level — and says it in exactly the
+    // state where a buy order would walk up through the thin side.
+    const side = (levels: number) => Array.from({ length: levels }, () => level(100, 2));
+    const reading = readBookImbalance(
+      book({ bids: side(10), asks: side(3) }),
+      BOOK_IMBALANCE_LEVELS,
+    );
+    assert.strictEqual(reading?.imbalance, 0);
+    assert.strictEqual(reading?.levels, 3);
+    assert.strictEqual(reading?.bidDepthUsd, 600);
+  });
 });
 
 describe("readAggressorFlow", () => {
@@ -144,6 +160,19 @@ describe("readAggressorFlow", () => {
     const reading = readAggressorFlow([...old, ...recent]);
     assert.strictEqual(reading?.buyShare, 1);
     assert.strictEqual(reading?.bars, AGGRESSOR_FLOW_BARS);
+  });
+
+  it("counts only the bars that traded", () => {
+    // A dead tape: three bars traded out of fifteen, all near their highs.
+    // Reporting fifteen reads as a quarter-hour of buyers paying up.
+    const quiet = Array.from({ length: 12 }, () =>
+      bar({ low: 100, high: 100, close: 100, volume: 0 }),
+    );
+    const traded = Array.from({ length: 3 }, () =>
+      bar({ low: 100, high: 110, close: 110, volume: 2 }),
+    );
+    const reading = readAggressorFlow([...quiet, ...traded]);
+    assert.strictEqual(reading?.bars, 3);
   });
 
   it("reports nothing for a tape with no volume on it", () => {
@@ -430,6 +459,37 @@ describe("readVwap", () => {
   it("reports nothing rather than an unweighted average", () => {
     assert.isNull(readVwap([bar({ low: 100, high: 100, close: 100, volume: 0 })], 100));
     assert.isNull(readVwap([], 100));
+  });
+
+  it("anchors at the UTC session open, not at the start of the window", () => {
+    // Yesterday's late bars are in the window and must not move today's level:
+    // every other desk computes from 00:00, and a level nobody else has is not
+    // a level to reason about being stretched from.
+    const day = 24 * 60 * 60 * 1000;
+    const sessionOpen = 10 * day;
+    const reading = readVwap(
+      [
+        bar({ low: 200, high: 200, close: 200, volume: 100, openTime: sessionOpen - 60_000 }),
+        bar({ low: 100, high: 100, close: 100, volume: 1, openTime: sessionOpen }),
+        bar({ low: 100, high: 100, close: 100, volume: 1, openTime: sessionOpen + 60_000 }),
+      ],
+      100,
+    );
+    assert.closeTo(reading?.priceUsd ?? 0, 100, 1e-9);
+    assert.strictEqual(reading?.bars, 2);
+    assert.strictEqual(reading?.anchoredAt, sessionOpen);
+    assert.strictEqual(reading?.anchor, "session_open");
+  });
+
+  it("says so when the window does not reach back to the session open", () => {
+    const day = 24 * 60 * 60 * 1000;
+    const sessionOpen = 10 * day;
+    const reading = readVwap(
+      [bar({ low: 100, high: 100, close: 100, volume: 1, openTime: sessionOpen + 3 * 60_000 })],
+      100,
+    );
+    assert.strictEqual(reading?.anchor, "window_start");
+    assert.strictEqual(reading?.anchoredAt, sessionOpen + 3 * 60_000);
   });
 });
 
