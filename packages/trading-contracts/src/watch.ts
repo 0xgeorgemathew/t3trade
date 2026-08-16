@@ -80,6 +80,227 @@ export const MarketWatch = Schema.Union([
 ]);
 export type MarketWatch = typeof MarketWatch.Type;
 
+// ---------------------------------------------------------------------------
+// The one condition union the model writes (plan 29 step 6.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * What has to become true for a mission to be woken.
+ *
+ * `MarketWatch` above is eight sibling structs that a model had to choose
+ * between before it could say what it was waiting for, and three of those
+ * choices were encodings rather than decisions: `price_cross` vs
+ * `candle_close` is one level with two confirmations, `pnl_above` vs
+ * `pnl_below` is one number with a direction, and `order_update` vs
+ * `position_update` is one event — something filled — keyed differently.
+ * Picking the wrong one of a pair is not a different intention, it is the same
+ * intention armed with a predicate that cannot evaluate it, which is the
+ * failure `findMisarmedEntryConditions` exists to report after the fact.
+ *
+ * So the model names five things it can actually mean — a level, a PnL line, a
+ * give-back from the peak, a fill, a time — and the encoding is derived.
+ * `MarketWatch` remains the persisted and evaluated form; `toMarketWatch`
+ * below is the only place the mapping lives.
+ */
+export const WatchCondition = Schema.Union([
+  /**
+   * Price reaches a level. `confirm` is the whole `price_cross` /
+   * `candle_close` distinction: `touch` fires the moment the level trades,
+   * `close` waits for a bar on `interval` to finish beyond it.
+   */
+  Schema.Struct({
+    kind: Schema.Literal("price"),
+    market: TradingMarket,
+    direction: WatchCrossDirection,
+    price: Price,
+    confirm: Schema.optional(Schema.Literals(["touch", "close"])),
+    /** Required by `confirm: "close"`; meaningless to `touch`. */
+    interval: Schema.optional(TradingTimeframe),
+    /** `touch` only. Defaults to the mark. */
+    priceSource: Schema.optional(WatchPriceSource),
+  }),
+  /**
+   * Unrealised PnL on the mission's position reaches `valueUsd`.
+   *
+   * Signed, in both directions: `above` must be a gain (a target below zero is
+   * not a target), `below` may be either a loss line (`-6`) or a give-back
+   * floor under a winner (`+3`).
+   */
+  Schema.Struct({
+    kind: Schema.Literal("pnl"),
+    market: TradingMarket,
+    direction: WatchCrossDirection,
+    valueUsd: Schema.Number,
+  }),
+  /**
+   * Unrealised PnL has come `drawdownUsd` off its own high-water mark on this
+   * position. Kept separate from `pnl` because it is measured against a moving
+   * peak the runtime maintains, not against a level the model chose.
+   */
+  Schema.Struct({
+    kind: Schema.Literal("giveback"),
+    market: TradingMarket,
+    drawdownUsd: PositiveUsdAmount,
+  }),
+  /**
+   * Something filled. `cloid` watches one specific order; naming only `market`
+   * watches the position for any size change.
+   */
+  Schema.Struct({
+    kind: Schema.Literal("fill"),
+    market: Schema.optional(TradingMarket),
+    cloid: Schema.optional(Schema.String),
+  }),
+  /** Wake at a wall-clock time, whatever the market has done. */
+  Schema.Struct({
+    kind: Schema.Literal("time"),
+    runAt: UnixMillis,
+  }),
+]);
+export type WatchCondition = typeof WatchCondition.Type;
+
+/** Why a condition could not be armed as written. */
+export const WatchRefusalCode = Schema.Literals([
+  /** `confirm: "close"` with no `interval` to close a bar on. */
+  "close_needs_interval",
+  /** `direction: "above"` on a PnL line at or below zero. */
+  "pnl_target_not_a_gain",
+  /** A `fill` naming neither an order nor a market. */
+  "fill_needs_order_or_market",
+  /** The thread's mission is gone, ended, or was never there. */
+  "mission_not_found",
+]);
+export type WatchRefusalCode = typeof WatchRefusalCode.Type;
+
+/** A condition the server declined to arm, and why. */
+export interface WatchRefusal {
+  readonly code: WatchRefusalCode;
+  readonly detail: string;
+}
+
+/**
+ * Derive the persisted predicate from what the model said it is waiting for.
+ *
+ * Total in the sense that matters: every input either yields a `MarketWatch`
+ * or a named refusal, and nothing is guessed. The two defaults it does apply —
+ * `confirm` to `touch` and `priceSource` to `mark` — are the shapes the
+ * previous seven-type surface made the model spell out on every call, and
+ * neither can be wrong: a level with no stated confirmation is a level, and
+ * mark is the price every risk number in this system is already measured on.
+ *
+ * A missing `interval` under `confirm: "close"` is NOT defaulted. Guessing a
+ * timeframe there is how a 1h breakout becomes a 1m wick.
+ */
+export function toMarketWatch(condition: WatchCondition): MarketWatch | WatchRefusal {
+  switch (condition.kind) {
+    case "price": {
+      if ((condition.confirm ?? "touch") === "touch") {
+        return {
+          type: "price_cross",
+          market: condition.market,
+          priceSource: condition.priceSource ?? "mark",
+          direction: condition.direction,
+          price: condition.price,
+        };
+      }
+      if (condition.interval === undefined) {
+        return {
+          code: "close_needs_interval",
+          detail: 'confirm: "close" needs the interval whose bar has to close beyond the level',
+        };
+      }
+      return {
+        type: "candle_close",
+        market: condition.market,
+        interval: condition.interval,
+        direction: condition.direction,
+        price: condition.price,
+      };
+    }
+
+    case "pnl": {
+      if (condition.direction === "below") {
+        return { type: "pnl_below", market: condition.market, valueUsd: condition.valueUsd };
+      }
+      if (condition.valueUsd <= 0) {
+        return {
+          code: "pnl_target_not_a_gain",
+          detail: `an "above" PnL line has to be a gain; ${condition.valueUsd} is not`,
+        };
+      }
+      return { type: "pnl_above", market: condition.market, valueUsd: condition.valueUsd };
+    }
+
+    case "giveback":
+      return {
+        type: "pnl_giveback",
+        market: condition.market,
+        drawdownUsd: condition.drawdownUsd,
+      };
+
+    case "fill": {
+      if (condition.cloid !== undefined) return { type: "order_update", cloid: condition.cloid };
+      if (condition.market !== undefined) {
+        return { type: "position_update", market: condition.market };
+      }
+      return {
+        code: "fill_needs_order_or_market",
+        detail: "a fill watch needs either the cloid of one order or the market to watch",
+      };
+    }
+
+    case "time":
+      return { type: "scheduled_reassessment", runAt: condition.runAt };
+  }
+}
+
+/** Whether `toMarketWatch` refused. */
+export function isWatchRefusal(result: MarketWatch | WatchRefusal): result is WatchRefusal {
+  return "code" in result;
+}
+
+/**
+ * Read a persisted predicate back as the condition that would produce it.
+ *
+ * The inverse of `toMarketWatch` over its whole range, so a watch armed before
+ * this union existed still reads back in the model's vocabulary. Round-tripping
+ * a condition through both is the identity up to the two applied defaults.
+ */
+export function toWatchCondition(watch: MarketWatch): WatchCondition {
+  switch (watch.type) {
+    case "price_cross":
+      return {
+        kind: "price",
+        market: watch.market,
+        direction: watch.direction,
+        price: watch.price,
+        confirm: "touch",
+        priceSource: watch.priceSource,
+      };
+    case "candle_close":
+      return {
+        kind: "price",
+        market: watch.market,
+        direction: watch.direction,
+        price: watch.price,
+        confirm: "close",
+        interval: watch.interval,
+      };
+    case "pnl_above":
+      return { kind: "pnl", market: watch.market, direction: "above", valueUsd: watch.valueUsd };
+    case "pnl_below":
+      return { kind: "pnl", market: watch.market, direction: "below", valueUsd: watch.valueUsd };
+    case "pnl_giveback":
+      return { kind: "giveback", market: watch.market, drawdownUsd: watch.drawdownUsd };
+    case "order_update":
+      return { kind: "fill", cloid: watch.cloid };
+    case "position_update":
+      return { kind: "fill", market: watch.market };
+    case "scheduled_reassessment":
+      return { kind: "time", runAt: watch.runAt };
+  }
+}
+
 /** Watch lifecycle - spec §11.3. */
 export const PersistedWatchStatus = Schema.Literals([
   "active",
