@@ -5,14 +5,17 @@
 **An Agentic Trading Environment (ATE)** for running coding agents on perpetual
 futures markets with a defined strategy, loss budget, and deterministic controls.
 
-_Alpha · Hyperliquid **testnet only** · macOS + web · MIT_
+[![License: MIT](https://img.shields.io/badge/license-MIT-0f766e?style=flat-square)](./LICENSE)
+[![Network: Hyperliquid testnet](https://img.shields.io/badge/network-hyperliquid%20testnet-10b981?style=flat-square)](https://app.hyperliquid-testnet.xyz)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-eab308?style=flat-square)](https://github.com/0xgeorgemathew/t3trade/releases)
+[![Platform: macOS + web](https://img.shields.io/badge/platform-macOS%20%2B%20web-52525b?style=flat-square)](#running-it)
 
-**[t3trade.pages.dev](https://t3trade.pages.dev)** · [Releases](https://github.com/0xgeorgemathew/t3trade/releases)
+**[t3trade.pages.dev](https://t3trade.pages.dev)** · [Releases](https://github.com/0xgeorgemathew/t3trade/releases) · [Docs](./docs/user/install.md)
 
-<img src="docs/media/t3trade-mission.png" alt="T3 Trade showing a BTC mission with the agent's plan, active price watches, and position details" width="920" />
+<img src="docs/media/t3trade-mission.png" alt="T3 Trade showing an ETH mission: the agent's reasoning, its fills, an open position with entry, stop and target, and three armed market watches" width="920" />
 
-<sub>A live mission showing the agent's plan, active price watches, and position
-data from the exchange.</sub>
+<sub>One ETH mission: the agent's reasoning, its fills, the open position with
+its stop and target, and the watches that will wake it.</sub>
 
 </div>
 
@@ -26,6 +29,17 @@ The agent reads market data, creates a plan, and explains its actions. T3 Trade
 enforces the mission rules. Every proposed order must pass a deterministic
 checklist, every confirmed position increase requires an exchange-native stop,
 and you can pause, close, or revoke a mission without the agent running.
+
+```
+  your mandate  ->  agent plan  ->  17-check preview  ->  local signature
+                         ^                                      |
+                         |                                      v
+                    watch fires  <-  armed watches  <-  position + stop
+```
+
+The loop only advances when every check passes. It stops the moment the loss
+budget is spent, and the controls below the chart work whether or not the agent
+is running.
 
 > [!CAUTION]
 > This alpha software places real orders on Hyperliquid testnet. It supports
@@ -89,11 +103,13 @@ platforms run from source.
 
 Supported agent providers (install and log in to at least one):
 
-- Claude: [Claude Code](https://claude.com/product/claude-code) — `claude auth login`
-- Codex: [Codex CLI](https://developers.openai.com/codex/cli) — `codex login`
-- Cursor: [Cursor CLI](https://cursor.com/cli) — `agent login`
-- Grok Build: [Grok Build CLI](https://x.ai/cli) — `grok login`
-- OpenCode: [OpenCode](https://opencode.ai) — `opencode auth login`
+| Provider   | CLI                                                   | Sign in               | Trading missions |
+| ---------- | ----------------------------------------------------- | --------------------- | ---------------- |
+| Claude     | [Claude Code](https://claude.com/product/claude-code) | `claude auth login`   | yes              |
+| Codex      | [Codex CLI](https://developers.openai.com/codex/cli)  | `codex login`         | yes              |
+| OpenCode   | [OpenCode](https://opencode.ai)                       | `opencode auth login` | yes              |
+| Cursor     | [Cursor CLI](https://cursor.com/cli)                  | `agent login`         | coding only      |
+| Grok Build | [Grok Build CLI](https://x.ai/cli)                    | `grok login`          | coding only      |
 
 Without a signer key, T3 Trade runs in **read-only mode**. You can create
 missions, watch markets, and review the agent's proposed actions, but T3 Trade

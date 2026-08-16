@@ -2,16 +2,101 @@
 import Layout from "../layouts/Layout.astro";
 import { GITHUB_REPOSITORY_URL, UPSTREAM_REPOSITORY_URL } from "../lib/site";
 
+/* Headlines resolve one word at a time as the section scrolls past, so each
+   word needs its own slice of the shared view timeline. */
+function kineticWords(sentence: string) {
+  return sentence.split(" ").map((word, index) => ({
+    word,
+    range: `entry ${10 + index * 3}% cover ${36 + index * 3}%`,
+  }));
+}
+
+/* The lifecycle chart is generated at build time from a fixed seed so every
+   deploy renders the identical shape: a range, a break, then a run. No prices
+   are printed on it. It shows the structure of a mission, not a real trade. */
+const CANDLE_COUNT = 34;
+
+function tradeSeries() {
+  let seed = 20260814;
+  const rand = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+
+  const candles: { open: number; close: number; high: number; low: number; up: boolean }[] = [];
+  let price = 42;
+
+  for (let index = 0; index < CANDLE_COUNT; index += 1) {
+    const phase = index / CANDLE_COUNT;
+    const drift = phase < 0.5 ? (rand() - 0.5) * 3.2 : phase < 0.62 ? 3.4 : 1.6;
+    const open = price;
+    const close = Math.max(8, Math.min(88, open + drift + (rand() - 0.5) * 2.4));
+    const high = Math.max(open, close) + rand() * 2.6;
+    const low = Math.min(open, close) - rand() * 2.6;
+    price = close;
+    candles.push({ open, close, high, low, up: close >= open });
+  }
+
+  return candles;
+}
+
+/* Rescale the walk into the middle 66% of the chart so the levels above and
+   below it have room to sit. */
+const rawCandles = tradeSeries();
+const seriesLow = Math.min(...rawCandles.map((candle) => candle.low));
+const seriesHigh = Math.max(...rawCandles.map((candle) => candle.high));
+const fit = (value: number) => 17 + ((value - seriesLow) / (seriesHigh - seriesLow)) * 66;
+
+const candles = rawCandles.map((candle) => ({
+  open: fit(candle.open),
+  close: fit(candle.close),
+  high: fit(candle.high),
+  low: fit(candle.low),
+  up: candle.up,
+}));
+
+const CHART_W = 660;
+const CHART_H = 280;
+const SLOT = CHART_W / CANDLE_COUNT;
+const yOf = (value: number) => CHART_H - (value / 100) * CHART_H;
+
+const BREAK_INDEX = 17;
+const entry = candles[BREAK_INDEX].close;
+const stop = Math.min(...candles.slice(0, BREAK_INDEX).map((candle) => candle.low)) - 3;
+const target = candles[CANDLE_COUNT - 1].close + 7;
+
+const runPath = candles
+  .slice(BREAK_INDEX)
+  .map((candle, index) => {
+    const x = (BREAK_INDEX + index) * SLOT + SLOT / 2;
+    return `${index === 0 ? "M" : "L"}${x.toFixed(1)} ${yOf(candle.close).toFixed(1)}`;
+  })
+  .join(" ");
+
+/* Six of the seventeen, named the way the preview tool names them. */
 const previewChecks = [
-  { label: "mission active; entries allowed", detail: "authority current" },
+  { label: "mission active, entries allowed", detail: "authority current" },
   { label: "market, side, and leverage allowed", detail: "within mandate" },
   { label: "account and order book fresh", detail: "live exchange data" },
   { label: "size, price, and minimum valid", detail: "exchange rules" },
-  { label: "position and mission risk available", detail: "USD loss budget" },
-  { label: "valid reduce-only stop attached", detail: "required" },
+  { label: "position and mission risk available", detail: "usd loss budget" },
+  { label: "reduce-only stop attached", detail: "required" },
 ];
 
 const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
+
+/* Rendered as placeholders and filled in from the Hyperliquid testnet API on
+   the client. If that call fails the band removes itself rather than show a
+   number nobody can verify. */
+const tapeMarkets = ["BTC", "ETH", "SOL", "HYPE", "AVAX", "LINK", "ARB", "DOGE"];
+
+const harnesses = [
+  { name: "Claude Code", tag: "trading missions", icon: "claude-ai-icon.svg" },
+  { name: "Codex CLI", tag: "trading missions", icon: "openai_dark.svg" },
+  { name: "OpenCode", tag: "trading missions", icon: "opencode-dark.svg" },
+  { name: "Cursor", tag: "coding threads", icon: "cursor_light.svg" },
+  { name: "Grok CLI", tag: "coding threads", icon: "grok-dark.svg" },
+];
 ---
 
 <Layout>
@@ -20,21 +105,11 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     <div class="hero-grid" aria-hidden="true"></div>
 
     <div class="hero-float" aria-hidden="true">
-      <span class="hero-float-mark hf-claude" title="Claude Code">
-        <img src="/harnesses/claude-ai-icon.svg" alt="" />
-      </span>
-      <span class="hero-float-mark hf-codex" title="Codex">
-        <img src="/harnesses/openai_dark.svg" alt="" />
-      </span>
-      <span class="hero-float-mark hf-opencode" title="OpenCode">
-        <img src="/harnesses/opencode-dark.svg" alt="" />
-      </span>
-      <span class="hero-float-mark hf-cursor" title="Cursor">
-        <img src="/harnesses/cursor_light.svg" alt="" />
-      </span>
-      <span class="hero-float-mark hf-grok" title="Grok">
-        <img src="/harnesses/grok-dark.svg" alt="" />
-      </span>
+      <span class="hero-float-mark hf-claude"><img src="/harnesses/claude-ai-icon.svg" alt="" /></span>
+      <span class="hero-float-mark hf-codex"><img src="/harnesses/openai_dark.svg" alt="" /></span>
+      <span class="hero-float-mark hf-opencode"><img src="/harnesses/opencode-dark.svg" alt="" /></span>
+      <span class="hero-float-mark hf-cursor"><img src="/harnesses/cursor_light.svg" alt="" /></span>
+      <span class="hero-float-mark hf-grok"><img src="/harnesses/grok-dark.svg" alt="" /></span>
     </div>
 
     <div class="container hero-inner">
@@ -45,10 +120,8 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
       </h1>
 
       <p class="hero-sub">
-        T3 Trade is an open-source desktop and self-hosted web app for supervised perp
-        trading on Hyperliquid testnet. Give an agent a mandate in plain English. T3 Trade
-        gives it a fixed set of market and execution tools, checks every proposed entry
-        against hard limits, and signs locally only after every check passes.
+        Give an agent a mandate in plain English. T3 Trade holds it to hard limits and signs
+        every order locally.
       </p>
 
       <div class="hero-actions">
@@ -60,131 +133,195 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
           <span>Run from source</span>
           <svg class="hero-source-arrow" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M8 7h9v9"/></svg>
         </a>
-        <p class="hero-release" id="hero-release" hidden>
-          <span id="hero-release-tag"></span> · macOS arm64 · not notarized · see the install
-          note below if macOS refuses to open it
-        </p>
-        <p class="hero-caution">
-          Alpha software. Places orders on Hyperliquid <strong>testnet</strong> only. Testnet
-          funds have no real-world value. Mainnet is not supported.
-        </p>
       </div>
 
       <div class="hero-preview">
         <figure class="hero-screenshot-frame">
           <img
             src="/t3trade-screenshot.webp"
-            alt="T3 Trade desktop app showing a BTC trading thread, the agent's plan, market watches, and an open position"
+            alt="T3 Trade showing an ETH mission: the agent's reasoning, its fills, an open position with entry, stop and target, and three armed market watches"
             width="2400"
-            height="1520"
+            height="1535"
             loading="eager"
             decoding="async"
+            fetchpriority="high"
           />
         </figure>
         <figcaption class="hero-preview-caption">
-          The desktop app showing one BTC trading mission: agent conversation, current plan,
-          market watches, and exchange position data.
+          One ETH mission in the desktop app: the agent's reasoning, its fills, the open
+          position with its stop and target, and the watches that will wake it.
         </figcaption>
       </div>
     </div>
   </section>
 
-  <!-- ── Mission anatomy ──────────────────────────────────────── -->
-  <section id="missions" class="sec-missions">
-    <div class="container">
-      <div class="section-head">
-        <h2>One thread. One market. One mandate.</h2>
-        <p>
-          A mission is a trading thread inside T3 Trade. Choose a perp market and type your
-          mandate as the first message. T3 Trade binds that agent conversation to one testnet
-          account and limits its tools by market, direction, leverage, notional, planned risk
-          per position, cumulative loss in USD, and margin mode.
-        </p>
+  <!-- ── Live testnet band ─────────────────────────────────────── -->
+  <section class="sec-tape" aria-label="Hyperliquid testnet markets">
+    <div class="tape" id="tape" data-state="loading">
+      <div class="tape-track">
+        {[0, 1].map((copy) => (
+          <div class="tape-run" aria-hidden={copy === 1 ? "true" : undefined}>
+            {tapeMarkets.map((symbol) => (
+              <span class="tape-item" data-symbol={symbol} data-copy={copy}>
+                <span class="tape-sym">{symbol}</span>
+                <span class="tape-px">- - - -</span>
+                <span class="tape-chg">·</span>
+              </span>
+            ))}
+          </div>
+        ))}
       </div>
+    </div>
 
-      <div class="mission-grid">
-        <div class="tile mission-tile">
-          <div class="mission-tile-label">Resumes when a condition is met</div>
-          <p>
-            The agent can use a tool to register a price cross, candle close, position update,
-            or unrealised-PnL watch. T3 Trade evaluates the watch and resumes the same thread
-            with fresh market, account, position, order, and budget data.
-          </p>
-        </div>
-        <div class="tile mission-tile">
-          <div class="mission-tile-label">Reconciles with Hyperliquid</div>
-          <p>
-            T3 Trade reads canonical positions, orders, and fills from Hyperliquid after
-            submissions, fills, position updates, reconnects, and restarts. Local records do
-            not override the exchange.
-          </p>
-        </div>
-        <div class="tile mission-tile">
-          <div class="mission-tile-label">Accounts for risk before entry</div>
-          <p>
-            Realised loss, paid fees, protected open-position risk, and pending-entry risk all
-            count toward the mission's USD loss limit. When the budget is exhausted, T3 Trade
-            blocks new exposure and keeps valid reduce-only protection in place.
-          </p>
-        </div>
+    <div class="container tape-note">
+      <p>
+        Live mid prices from Hyperliquid testnet, the only network this alpha talks to.
+        Testnet funds have no real-world value and there is no mainnet configuration.
+      </p>
+    </div>
+  </section>
+
+  <!-- ── Mission lifecycle ─────────────────────────────────────── -->
+  <section id="missions" class="sec-mission">
+    <div class="container mission-inner">
+      <figure class="mission-chart" aria-hidden="true">
+        <svg viewBox={`0 0 ${CHART_W} ${CHART_H}`} preserveAspectRatio="none" class="chart-svg">
+          <line class="chart-level chart-level--target" x1="0" x2={CHART_W} y1={yOf(target)} y2={yOf(target)} />
+          <line class="chart-level chart-level--entry" x1="0" x2={CHART_W} y1={yOf(entry)} y2={yOf(entry)} />
+          <line class="chart-level chart-level--stop" x1="0" x2={CHART_W} y1={yOf(stop)} y2={yOf(stop)} />
+
+          {candles.map((candle, index) => {
+            const x = index * SLOT + SLOT / 2;
+            const top = yOf(Math.max(candle.open, candle.close));
+            const bottom = yOf(Math.min(candle.open, candle.close));
+            const start = 16 + index * 1.1;
+            return (
+              <g
+                class={`candle ${candle.up ? "candle--up" : "candle--down"}`}
+                style={`animation-range: entry ${start.toFixed(1)}% cover ${(start + 22).toFixed(1)}%; transform-origin: ${x.toFixed(1)}px ${CHART_H}px`}
+              >
+                <line class="candle-wick" x1={x} x2={x} y1={yOf(candle.high)} y2={yOf(candle.low)} />
+                <rect
+                  class="candle-body"
+                  x={x - SLOT * 0.3}
+                  width={SLOT * 0.6}
+                  y={top}
+                  height={Math.max(1.5, bottom - top)}
+                />
+              </g>
+            );
+          })}
+
+          <path class="chart-run" d={runPath} pathLength="1" />
+        </svg>
+
+        <figcaption class="chart-legend">
+          <span class="chart-key chart-key--target">target</span>
+          <span class="chart-key chart-key--entry">entry</span>
+          <span class="chart-key chart-key--stop">stop</span>
+        </figcaption>
+      </figure>
+
+      <div class="mission-copy">
+        <h2 class="section-title kinetic">
+          {kineticWords("One thread. One market. One mandate.").map(({ word, range }) => (
+            <>
+              <span style={`animation-range: ${range}`}>{word}</span>{" "}
+            </>
+          ))}
+        </h2>
+        <p class="section-lede scrub">
+          A mission is a trading thread. Pick a perp market, type your mandate as the first
+          message, and T3 Trade binds that conversation to one testnet account with a fixed
+          direction, leverage ceiling, notional cap, and loss budget in USD.
+        </p>
+
+        <ol class="mission-steps">
+          <li class="mission-step scrub">
+            <h3>It sleeps until the market moves</h3>
+            <p>
+              The agent registers a price cross, candle close, position update, or
+              unrealised-PnL watch. When one fires, the same thread resumes with fresh
+              account, position, order, and budget data.
+            </p>
+          </li>
+          <li class="mission-step scrub">
+            <h3>The exchange is the source of truth</h3>
+            <p>
+              Positions, orders, and fills are re-read from Hyperliquid after every
+              submission, fill, reconnect, and restart. Local records never override it.
+            </p>
+          </li>
+          <li class="mission-step scrub">
+            <h3>Risk is counted before entry, not after</h3>
+            <p>
+              Realised loss, paid fees, protected open risk, and pending-entry risk all draw
+              down the same budget. Exhaust it and new exposure is blocked while existing
+              stops stay in place.
+            </p>
+          </li>
+        </ol>
       </div>
     </div>
   </section>
 
-  <!-- ── Preview checklist (signature) ────────────────────────── -->
-  <section id="rails" class="sec-checklist">
-    <div class="container checklist-inner">
-      <div class="checklist-copy">
-        <div class="section-head" style="margin-bottom:0">
-          <h2>Every entry passes the same 17 checks.</h2>
-          <p>
-            Before signing a position-increasing order, T3 Trade checks mission status, entry
-            permission, current strategy and authority, agent lease, allowed direction and
-            market, signer approval, fresh account and order-book data, valid size and price,
-            exchange minimums, leverage, gross notional, per-position risk, cumulative loss
-            budget, pending execution conflicts, and the stop. One failure rejects the order.
-          </p>
-          <ul class="rail-list">
-            <li>
-              <strong>Every position increase requires a stop.</strong> T3 Trade submits an
-              exchange-native reduce-only stop, then confirms its size against the position
-              reported by Hyperliquid.
-            </li>
-            <li>
-              <strong>Retries reuse the same order identity.</strong> The client order ID and
-              local request key are deterministic, so a retry does not create a second order.
-            </li>
-            <li>
-              <strong>You keep direct control.</strong> Use the app to pause new entries, cancel
-              entry orders, reduce or close the position, and revoke the mission even when the
-              agent CLI is stopped.
-            </li>
-          </ul>
-        </div>
-      </div>
-
-      <div class="checklist-visual">
-        <div class="tile preview-card">
-          <div class="preview-head">
-            <span class="preview-title">trading_preview_order</span>
-            <span class="preview-status">17 required checks</span>
+  <!-- ── The seventeen checks ──────────────────────────────────── -->
+  <section id="rails" class="sec-checks">
+    <div class="checks-scroller">
+      <div class="checks-sticky">
+        <div class="container checks-inner">
+          <div class="checks-copy">
+            <h2 class="section-title">Every entry passes the same seventeen checks.</h2>
+            <p class="section-lede">
+              Before signing a position-increasing order, T3 Trade re-checks mission status,
+              authority, agent lease, direction, signer approval, data freshness, size, price,
+              exchange minimums, leverage, notional, per-position risk, the loss budget,
+              pending conflicts, and the stop. One failure rejects the order.
+            </p>
+            <ul class="rail-list">
+              <li><strong>Every position increase carries a stop.</strong> T3 Trade submits an exchange-native reduce-only stop, then reconciles its size against the position Hyperliquid reports.</li>
+              <li><strong>A retry is the same order.</strong> The client order ID and local request key are deterministic, so a resubmission cannot open a second position.</li>
+              <li><strong>You keep the controls.</strong> Pause, cancel entries, reduce, close, and revoke all work with the agent CLI stopped.</li>
+            </ul>
           </div>
-          <ul class="preview-list">
-            {previewChecks.map((check) => (
-              <li>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
-                <span class="preview-check-label">{check.label}</span>
-                <span class="preview-check-detail">{check.detail}</span>
-              </li>
-            ))}
-            <li class="preview-more">T3 Trade signs only after all 17 checks pass</li>
-          </ul>
-        </div>
-        <div class="controls-strip" aria-label="Deterministic mission controls">
-          <span class="controls-strip-label">Operator controls:</span>
-          {controls.map((control) => (
-            <span class="control-chip">{control}</span>
-          ))}
+
+          <div class="checks-visual">
+            <div class="tile preview-card">
+              <div class="preview-head">
+                <span class="preview-title">trading_preview_order</span>
+                <span class="preview-tally" aria-label="17 checks passing">
+                  <span class="tally-window">
+                    <span class="tally-reel">
+                      {Array.from({ length: 18 }, (_, n) => <span>{n}</span>)}
+                    </span>
+                  </span>
+                  <span class="tally-total">/ 17</span>
+                </span>
+              </div>
+
+              <ul class="preview-list">
+                {previewChecks.map((check, index) => (
+                  <li style={`animation-range: contain ${6 + index * 9}% contain ${20 + index * 9}%`}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+                    <span class="preview-check-label">{check.label}</span>
+                    <span class="preview-check-detail">{check.detail}</span>
+                  </li>
+                ))}
+              </ul>
+
+              <div class="preview-verdict">
+                <span class="preview-stamp">signed locally</span>
+                <span class="preview-verdict-note">all seventeen passed</span>
+              </div>
+            </div>
+
+            <div class="controls-strip">
+              <span class="controls-strip-label">Operator controls</span>
+              {controls.map((control, index) => (
+                <span class="control-chip" style={`animation-range: contain ${58 + index * 6}% contain ${70 + index * 6}%`}>{control}</span>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -193,66 +330,42 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
   <!-- ── Harnesses ─────────────────────────────────────────────── -->
   <section id="harnesses" class="sec-harness">
     <div class="container">
-      <div class="section-head">
-        <h2>Bring your coding-agent CLI.</h2>
-        <p>
-          The interface inherited from T3 Code supports five CLIs installed and authenticated
-          on your machine. Trading missions currently run with Claude Code, Codex, or OpenCode.
-          Cursor and Grok remain available for regular coding threads. The agent never receives
-          the signer key.
-        </p>
-      </div>
+      <h2 class="section-title kinetic">
+        {kineticWords("Bring your own agent CLI.").map(({ word, range }) => (
+          <>
+            <span style={`animation-range: ${range}`}>{word}</span>{" "}
+          </>
+        ))}
+      </h2>
+      <p class="section-lede scrub">
+        T3 Trade drives five CLIs already installed and authenticated on your machine. Three of
+        them can run trading missions today. None of them ever receives the signer key.
+      </p>
 
       <div class="harness-grid">
-        <div class="harness">
-          <div class="harness-mark"><img src="/harnesses/claude-ai-icon.svg" alt="" /></div>
-          <div class="harness-meta">
-            <div class="harness-name">Claude Code</div>
-            <div class="harness-tag">trading missions</div>
+        {harnesses.map((harness, index) => (
+          <div class="harness scrub" style={`animation-range: entry ${4 + index * 5}% cover ${26 + index * 5}%`}>
+            <div class="harness-mark"><img src={`/harnesses/${harness.icon}`} alt="" /></div>
+            <div class="harness-meta">
+              <div class="harness-name">{harness.name}</div>
+              <div class="harness-tag">{harness.tag}</div>
+            </div>
           </div>
-        </div>
-        <div class="harness">
-          <div class="harness-mark"><img src="/harnesses/openai_dark.svg" alt="" /></div>
-          <div class="harness-meta">
-            <div class="harness-name">Codex CLI</div>
-            <div class="harness-tag">trading missions</div>
-          </div>
-        </div>
-        <div class="harness">
-          <div class="harness-mark"><img src="/harnesses/opencode-dark.svg" alt="" /></div>
-          <div class="harness-meta">
-            <div class="harness-name">OpenCode</div>
-            <div class="harness-tag">trading missions</div>
-          </div>
-        </div>
-        <div class="harness">
-          <div class="harness-mark"><img src="/harnesses/cursor_light.svg" alt="" /></div>
-          <div class="harness-meta">
-            <div class="harness-name">Cursor</div>
-            <div class="harness-tag">coding threads only</div>
-          </div>
-        </div>
-        <div class="harness">
-          <div class="harness-mark"><img src="/harnesses/grok-dark.svg" alt="" /></div>
-          <div class="harness-meta">
-            <div class="harness-name">Grok CLI</div>
-            <div class="harness-tag">coding threads only</div>
-          </div>
-        </div>
+        ))}
       </div>
     </div>
   </section>
 
-  <!-- ── Arming / signer key ──────────────────────────────────── -->
+  <!-- ── Signer key ────────────────────────────────────────────── -->
   <section id="arming" class="sec-arming">
     <div class="container arming-inner">
-      <div class="tile arming-card">
+      <div class="tile arming-card scrub">
         <div class="arming-row">
           <span class="arming-state arming-state--safe">
             <span class="arming-dot"></span> No valid signer key
           </span>
           <span class="arming-desc">
-            Execution is disabled. T3 Trade rejects every action that requires a signature.
+            Execution is disabled. Every action that needs a signature is rejected.
           </span>
         </div>
         <div class="arming-divider" aria-hidden="true"></div>
@@ -261,50 +374,44 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
             <span class="arming-dot"></span> Valid key loaded
           </span>
           <span class="arming-desc">
-            Execution is enabled for the Hyperliquid testnet account derived from the key.
+            Execution is enabled for the Hyperliquid testnet account derived from that key.
           </span>
         </div>
       </div>
 
       <div class="arming-copy">
-        <div class="section-head" style="margin-bottom:0">
-          <h2>Execution requires a local testnet private key.</h2>
-          <p>
-            This alpha has no wallet onboarding. To trade, provide one 32-byte EVM private key
-            for the Hyperliquid testnet account in <code>~/.t3trade/secrets</code>. T3 Trade
-            derives the account address, holds the raw key in server memory, and uses it to
-            sign orders locally. It does not write the key to logs, reports, or the database.
-            Use a testnet-only key. This temporary key setup is the only wallet path today.
-          </p>
-        </div>
+        <h2 class="section-title">Execution needs one local testnet key.</h2>
+        <p class="section-lede">
+          This alpha has no wallet onboarding. Put a single 32-byte EVM private key for a
+          Hyperliquid testnet account in <code>~/.t3trade/secrets</code>. T3 Trade derives the
+          address, holds the raw key in server memory, and signs orders locally with it. The
+          key is never written to logs, reports, or the database. Use a testnet-only key.
+        </p>
       </div>
     </div>
   </section>
 
-  <!-- ── Current state ────────────────────────────────────────── -->
+  <!-- ── Scope ─────────────────────────────────────────────────── -->
   <section id="state" class="sec-state">
     <div class="container">
-      <div class="section-head">
-        <h2>What ships in this alpha.</h2>
-        <p>T3 Trade is for supervised trading experiments on Hyperliquid testnet.</p>
-      </div>
+      <h2 class="section-title">What ships in this alpha.</h2>
       <div class="state-grid">
-        <div class="tile state-card">
+        <div class="tile state-card scrub">
           <div class="state-card-label state-card-label--is">Today</div>
           <ul>
-            <li>Trading missions for Claude Code, Codex, and OpenCode</li>
-            <li>Hyperliquid testnet orders with fixed authority and USD loss limits</li>
-            <li>Required reduce-only stops, exchange reconciliation, and retry-safe submission</li>
-            <li>Apple Silicon macOS app and a self-hosted web app that runs from source</li>
+            <li>Trading missions on Claude Code, Codex, and OpenCode</li>
+            <li>Hyperliquid testnet orders under fixed authority and a USD loss limit</li>
+            <li>Required reduce-only stops, exchange reconciliation, retry-safe submission</li>
+            <li>An Apple Silicon macOS app and a self-hosted web app run from source</li>
           </ul>
         </div>
-        <div class="tile state-card">
+        <div class="tile state-card scrub" style="animation-range: entry 14% cover 38%">
           <div class="state-card-label state-card-label--isnt">Not today</div>
           <ul>
-            <li>No mainnet support</li>
+            <li>No mainnet support of any kind</li>
             <li>No packaged Windows, Linux, or Intel Mac builds</li>
-            <li>No wallet onboarding; execution uses one local testnet private key</li>
-            <li>No mobile app and no support for unattended trading with real funds</li>
+            <li>No wallet onboarding, only the local testnet key</li>
+            <li>No mobile app and no unattended trading with real funds</li>
           </ul>
         </div>
       </div>
@@ -313,25 +420,24 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
 
   <!-- ── Open source ───────────────────────────────────────────── -->
   <section id="open" class="sec-open">
-    <div class="container">
-      <div class="section-head" style="margin-bottom:0">
-        <div class="eyebrow" style="margin-bottom:14px">Open source</div>
-        <h2>Built on T3 Code. Open all the way down.</h2>
-        <p>
-          T3 Trade is an MIT-licensed fork
-          of <a class="inline-link" href={UPSTREAM_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">T3 Code</a>,
-          the open-source interface for running coding agents from one app. T3 Trade keeps the
-          upstream agent and repository workflows, adds trading in dedicated packages, and
-          records every intentional fork change in <code>PATCH_LEDGER.md</code>.
-        </p>
-        <div class="open-actions">
-          <a class="btn btn-primary" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">
-            Browse the source
-          </a>
-          <a class="btn btn-ghost" href={`${GITHUB_REPOSITORY_URL}/blob/main/docs/architecture/trading-execution.md`} target="_blank" rel="noopener noreferrer">
-            Read the execution design
-          </a>
-        </div>
+    <div class="container open-inner">
+      <p class="eyebrow open-eyebrow">Open source</p>
+      <h2 class="section-title kinetic open-title">
+        {kineticWords("Built on T3 Code. Open all the way down.").map(({ word, range }) => (
+          <>
+            <span style={`animation-range: ${range}`}>{word}</span>{" "}
+          </>
+        ))}
+      </h2>
+      <p class="section-lede scrub">
+        T3 Trade is an MIT-licensed fork of <a class="inline-link" href={UPSTREAM_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">T3 Code</a>,
+        Ping Labs' open-source interface for coding agents. It keeps the upstream agent and
+        repository workflows, adds trading in dedicated packages, and records every intentional
+        fork change in <code>PATCH_LEDGER.md</code>.
+      </p>
+      <div class="open-actions scrub">
+        <a class="btn btn-ghost" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">Browse the source</a>
+        <a class="btn btn-ghost" href={`${GITHUB_REPOSITORY_URL}/blob/main/docs/architecture/trading-execution.md`} target="_blank" rel="noopener noreferrer">Read the execution design</a>
       </div>
     </div>
   </section>
@@ -341,9 +447,8 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     <div class="container cta-inner">
       <h2 class="display cta-title">Run T3 Trade on testnet.</h2>
       <p class="cta-sub">
-        Download the Apple Silicon Mac app, or run the server and web app from source. Install
-        one supported trading-agent CLI, add a testnet-only signer key, choose a perp, and type
-        your mandate.
+        Install a supported agent CLI, add a testnet-only signer key, pick a perp, and type your
+        mandate.
       </p>
       <div class="cta-actions">
         <a id="cta-download-btn" class="btn btn-primary btn-lg" href="https://github.com/0xgeorgemathew/t3trade/releases">
@@ -351,16 +456,22 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
         </a>
         <a class="btn btn-ghost btn-lg" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noopener noreferrer">Run from source</a>
       </div>
+      <p class="cta-release" id="hero-release" hidden>
+        <span id="hero-release-tag"></span> · macOS arm64 · not notarized
+      </p>
+
       <p class="cta-install-label">or install it in one line</p>
       <pre class="cta-install"><code>curl -fsSL https://raw.githubusercontent.com/0xgeorgemathew/t3trade/main/scripts/install-macos.sh | bash</code></pre>
+
       <p class="cta-note">
-        The macOS build is Apple Silicon only and is not notarized by Apple, so a downloaded
-        copy is quarantined and macOS may refuse it — as &ldquo;damaged&rdquo; on older builds,
-        or as an app it cannot verify. The one-line installer above downloads the same DMG and
-        clears the quarantine flag for you; to do it by hand instead, drag the app to
-        Applications and run <code>xattr -dr com.apple.quarantine "/Applications/T3 Trade (Alpha).app"</code>.
-        Run from source on Windows, Linux, and Intel Macs.
-        Older builds and checksums are on the <a href="https://github.com/0xgeorgemathew/t3trade/releases" target="_blank" rel="noopener noreferrer">releases page</a>.
+        The macOS build is Apple Silicon only and is not notarized, so a downloaded copy is
+        quarantined and macOS may refuse to open it. The installer above fetches the same DMG
+        and clears that flag. To do it by hand, drag the app to Applications and run:
+      </p>
+      <pre class="cta-install cta-install--sm"><code>xattr -dr com.apple.quarantine "/Applications/T3 Trade (Alpha).app"</code></pre>
+      <p class="cta-note">
+        Older builds and checksums are on the
+        <a href="https://github.com/0xgeorgemathew/t3trade/releases" target="_blank" rel="noopener noreferrer">releases page</a>.
       </p>
     </div>
   </section>
@@ -392,64 +503,124 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     }
   }
 
-  function initChecklistReveal() {
-    const card = document.querySelector(".preview-card");
-    if (!card) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    if (!("IntersectionObserver" in window)) return;
+  /* Real mids from the same testnet the app trades on. The band starts in a
+     shimmering placeholder state and removes itself if the call fails, so it
+     never shows a price that did not come from the exchange. */
+  const TESTNET_INFO_URL = "https://api.hyperliquid-testnet.xyz/info";
 
-    card.classList.add("reveal-ready");
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            card.classList.add("is-live");
-            observer.disconnect();
-          }
+  type AssetCtx = { midPx: string | null; prevDayPx: string | null };
+  type MetaAndCtxs = [{ universe: { name: string }[] }, AssetCtx[]];
+
+  function formatPrice(value: number) {
+    const decimals = value >= 1000 ? 1 : value >= 1 ? 3 : 5;
+    return value.toLocaleString("en-US", {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    });
+  }
+
+  async function initTape() {
+    const tape = document.getElementById("tape");
+    if (!tape) return;
+
+    try {
+      const response = await fetch(TESTNET_INFO_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "metaAndAssetCtxs" }),
+      });
+      if (!response.ok) throw new Error(`hyperliquid info ${response.status}`);
+
+      const [meta, contexts] = (await response.json()) as MetaAndCtxs;
+      const bySymbol = new Map<string, AssetCtx>();
+      meta.universe.forEach((asset, index) => {
+        const context = contexts[index];
+        if (context) bySymbol.set(asset.name, context);
+      });
+
+      let filled = 0;
+      for (const item of tape.querySelectorAll<HTMLElement>(".tape-item")) {
+        const context = bySymbol.get(item.dataset.symbol ?? "");
+        const mid = Number(context?.midPx);
+        const prev = Number(context?.prevDayPx);
+        if (!Number.isFinite(mid) || mid <= 0) {
+          item.remove();
+          continue;
         }
-      },
-      { threshold: 0.35 },
-    );
-    observer.observe(card);
+
+        const priceEl = item.querySelector(".tape-px");
+        const changeEl = item.querySelector(".tape-chg");
+        if (priceEl) priceEl.textContent = formatPrice(mid);
+
+        if (changeEl && Number.isFinite(prev) && prev > 0) {
+          const change = ((mid - prev) / prev) * 100;
+          changeEl.textContent = `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`;
+          changeEl.classList.add(change >= 0 ? "is-up" : "is-down");
+        } else if (changeEl) {
+          changeEl.remove();
+        }
+        filled += 1;
+      }
+
+      tape.dataset.state = filled > 0 ? "live" : "empty";
+      if (filled === 0) tape.closest("section")?.remove();
+    } catch {
+      tape.dataset.state = "empty";
+      tape.closest("section")?.remove();
+    }
+  }
+
+  /* One pointer listener for the whole grid of tiles. It writes two custom
+     properties and nothing else, so hover lighting costs no layout work. */
+  function initTileSpotlight() {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    if (window.matchMedia("(hover: none)").matches) return;
+
+    for (const tile of document.querySelectorAll<HTMLElement>(".tile")) {
+      tile.addEventListener(
+        "pointermove",
+        (event) => {
+          const box = tile.getBoundingClientRect();
+          tile.style.setProperty("--mx", `${event.clientX - box.left}px`);
+          tile.style.setProperty("--my", `${event.clientY - box.top}px`);
+        },
+        { passive: true },
+      );
+    }
   }
 
   initDownload();
-  initChecklistReveal();
+  initTape();
+  initTileSpotlight();
 </script>
 
 <style>
   section {
     position: relative;
-    padding: 96px 0;
+    padding: 112px 0;
     border-top: 1px solid var(--border);
   }
 
-  .section-head {
-    margin-bottom: 56px;
-    max-width: 720px;
-  }
-
-  .section-head h2 {
-    font-size: clamp(32px, 4vw, 48px);
+  .section-title {
+    font-size: clamp(30px, 3.9vw, 46px);
     font-weight: 500;
     letter-spacing: -0.035em;
-    line-height: 1.05;
+    line-height: 1.06;
     margin-bottom: 18px;
+    max-width: 18ch;
+    text-wrap: balance;
   }
 
-  .section-head p {
+  .section-lede {
     color: var(--fg-muted);
-    font-size: 18px;
-    max-width: 620px;
+    font-size: 17px;
+    max-width: 62ch;
+    line-height: 1.6;
     letter-spacing: -0.005em;
   }
 
-  .section-head p strong {
-    color: var(--fg);
-    font-weight: 500;
-  }
-
-  .section-head code {
+  .section-lede code,
+  .cta-note code {
     font-family: var(--font-mono);
     font-size: 0.85em;
     padding: 1px 6px;
@@ -469,9 +640,28 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     text-decoration-color: var(--fg);
   }
 
+  /* Cursor lighting on every tile. Costs one custom property write. */
+  .tile::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    background: radial-gradient(
+      340px circle at var(--mx, 50%) var(--my, 0%),
+      color-mix(in srgb, var(--accent) 9%, transparent),
+      transparent 65%
+    );
+  }
+
+  .tile:hover::after {
+    opacity: 1;
+  }
+
   /* ── Hero ─────────────────────────────────────────────────── */
   .hero {
-    padding: 72px 0 60px;
+    padding: 64px 0 72px;
     position: relative;
     overflow: hidden;
     border-top: 0;
@@ -479,14 +669,14 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
 
   .hero-grid {
     position: absolute;
-    inset: 0;
+    inset: -10% 0;
     pointer-events: none;
     background-image:
       linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
       linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
     background-size: 48px 48px;
-    mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, black 40%, transparent 100%);
-    -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, black 40%, transparent 100%);
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 34%, black 38%, transparent 100%);
+    -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 34%, black 38%, transparent 100%);
   }
 
   .hero-inner {
@@ -494,7 +684,6 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     text-align: center;
   }
 
-  /* Staggered hero entrance */
   .hero-eyebrow,
   .hero-title,
   .hero-sub,
@@ -506,95 +695,9 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
   .hero-sub { animation-delay: 0.16s; }
   .hero-actions { animation-delay: 0.24s; }
 
-  .hero-preview {
-    animation: preview-in 1s ease-out 0.34s backwards;
-  }
-
-  @keyframes preview-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-
   .hero-eyebrow {
-    margin-top: 40px;
+    margin-top: 36px;
     color: var(--accent);
-  }
-
-  /* ── Floating harness marks ───────────────────────────────── */
-  .hero-float {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    z-index: 1;
-  }
-
-  .hero-float-mark {
-    --tilt: 0deg;
-    position: absolute;
-    width: 96px;
-    height: 96px;
-    border-radius: 24px;
-    display: grid;
-    place-items: center;
-    background: rgba(20, 20, 24, 0.9);
-    border: 1px solid var(--border);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    box-shadow:
-      0 20px 48px -16px rgba(0, 0, 0, 0.65),
-      0 2px 0 0 rgba(255, 255, 255, 0.04) inset,
-      0 0 0 1px color-mix(in srgb, var(--accent) 6%, transparent);
-    rotate: var(--tilt);
-    animation:
-      mark-enter 0.9s ease-out backwards,
-      float-drift 9s ease-in-out infinite;
-  }
-
-  .hero-float-mark img {
-    width: 54px;
-    height: 54px;
-    display: block;
-    object-fit: contain;
-  }
-
-  /* Entrance animates opacity/scale only so it can layer over the drift. */
-  @keyframes mark-enter {
-    from {
-      opacity: 0;
-      scale: 0.85;
-    }
-    to {
-      opacity: 1;
-      scale: 1;
-    }
-  }
-
-  /* Drift rises and leans a touch further into each mark's own tilt. */
-  @keyframes float-drift {
-    0%, 100% {
-      translate: 0 0;
-      rotate: var(--tilt);
-    }
-    50% {
-      translate: 0 -12px;
-      rotate: calc(var(--tilt) + 2.5deg);
-    }
-  }
-
-  .hero-float-mark.hf-claude   { --tilt: -8deg; background: radial-gradient(circle at 30% 25%, rgba(217, 119, 87, 0.22), rgba(20, 20, 24, 0.92) 65%); top: 8%;  left: 7%;  animation-delay: 0.5s, 0s; }
-  .hero-float-mark.hf-codex    { --tilt: 6deg;  background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 6%;  right: 7%; animation-delay: 0.62s, -2.5s; }
-  .hero-float-mark.hf-opencode { --tilt: 4deg;  background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.06), rgba(20, 20, 24, 0.92) 65%); top: 30%; left: 5%;  animation-delay: 0.74s, -5s; }
-  .hero-float-mark.hf-cursor   { --tilt: -5deg; background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 30%; right: 5%; animation-delay: 0.86s, -7s; }
-  .hero-float-mark.hf-grok     { --tilt: 3deg;  background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 52%; left: 6%;  animation-delay: 0.98s, -1.2s; }
-
-  @media (max-width: 1180px) {
-    .hero-float-mark { width: 76px; height: 76px; border-radius: 20px; }
-    .hero-float-mark img { width: 42px; height: 42px; }
-    .hero-float-mark.hf-claude   { top: 4%;  left: 3%; }
-    .hero-float-mark.hf-codex    { top: 2%;  right: 3%; }
-    .hero-float-mark.hf-opencode { top: 26%; left: 2%; }
-    .hero-float-mark.hf-cursor   { top: 24%; right: 2%; }
-    .hero-float-mark.hf-grok     { top: 48%; left: 2%; }
   }
 
   .hero-title {
@@ -607,15 +710,10 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
   .hero-sub {
     color: var(--fg-muted);
     font-size: clamp(16px, 1.4vw, 19px);
-    max-width: 680px;
-    margin: 0 auto 36px;
+    max-width: 560px;
+    margin: 0 auto 34px;
     letter-spacing: -0.005em;
     line-height: 1.55;
-  }
-
-  .hero-sub strong {
-    color: var(--fg);
-    font-weight: 500;
   }
 
   .hero-actions {
@@ -623,7 +721,7 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     flex-direction: column;
     align-items: center;
     gap: 16px;
-    margin-bottom: 56px;
+    margin-bottom: 60px;
   }
 
   .dl-icon {
@@ -658,49 +756,87 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     opacity: 1;
   }
 
-  .hero-release {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--fg-dim);
-    letter-spacing: 0.02em;
-    animation: fade-in 0.5s ease-out backwards;
+  /* ── Floating harness marks ───────────────────────────────── */
+  /* Bounded to the copy zone. Below this the screenshot claims the full
+     width, and a mark floating over it reads as a rendering bug. */
+  .hero-float {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 600px;
+    pointer-events: none;
+    z-index: 1;
   }
 
-  .hero-release span {
-    color: var(--fg-muted);
+  .hero-float-mark {
+    --tilt: 0deg;
+    position: absolute;
+    width: 96px;
+    height: 96px;
+    border-radius: 24px;
+    display: grid;
+    place-items: center;
+    background: rgba(20, 20, 24, 0.9);
+    border: 1px solid var(--border);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow:
+      0 20px 48px -16px rgba(0, 0, 0, 0.65),
+      0 2px 0 0 rgba(255, 255, 255, 0.04) inset;
+    rotate: var(--tilt);
+    animation:
+      mark-enter 0.9s ease-out backwards,
+      float-drift 9s ease-in-out infinite;
   }
 
-  .hero-caution {
-    color: var(--fg-dim);
-    font-size: 13px;
-    letter-spacing: -0.005em;
-    max-width: 460px;
+  .hero-float-mark img {
+    width: 54px;
+    height: 54px;
+    object-fit: contain;
   }
 
-  .hero-caution strong {
-    color: var(--warn);
-    font-weight: 500;
+  @keyframes mark-enter {
+    from { opacity: 0; scale: 0.85; }
+    to { opacity: 1; scale: 1; }
   }
 
+  @keyframes float-drift {
+    0%, 100% { translate: 0 0; rotate: var(--tilt); }
+    50% { translate: 0 -12px; rotate: calc(var(--tilt) + 2.5deg); }
+  }
+
+  .hero-float-mark.hf-claude   { --tilt: -8deg; background: radial-gradient(circle at 30% 25%, rgba(217, 119, 87, 0.22), rgba(20, 20, 24, 0.92) 65%); top: 10%; left: 6%;  animation-delay: 0.5s, 0s; }
+  .hero-float-mark.hf-codex    { --tilt: 6deg;  background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 7%;  right: 6%; animation-delay: 0.62s, -2.5s; }
+  .hero-float-mark.hf-opencode { --tilt: 4deg;  background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.06), rgba(20, 20, 24, 0.92) 65%); top: 44%; left: 3%;  animation-delay: 0.74s, -5s; }
+  .hero-float-mark.hf-cursor   { --tilt: -5deg; background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 42%; right: 3%; animation-delay: 0.86s, -7s; }
+  .hero-float-mark.hf-grok     { --tilt: 3deg;  background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 74%; left: 9%;  animation-delay: 0.98s, -1.2s; }
+
+  @media (max-width: 1180px) {
+    .hero-float-mark { width: 76px; height: 76px; border-radius: 20px; }
+    .hero-float-mark img { width: 42px; height: 42px; }
+    .hero-float-mark.hf-claude   { top: 6%;  left: 2%; }
+    .hero-float-mark.hf-codex    { top: 3%;  right: 2%; }
+    .hero-float-mark.hf-opencode { top: 44%; left: 1%; }
+    .hero-float-mark.hf-cursor   { top: 42%; right: 1%; }
+    .hero-float-mark.hf-grok     { display: none; }
+  }
+
+  /* ── Hero screenshot ──────────────────────────────────────── */
   .hero-preview {
     max-width: 1180px;
     margin: 0 auto;
-    transform: perspective(2000px) rotateX(2deg);
-    transition: transform 0.6s ease;
-  }
-
-  .hero-preview:hover {
-    transform: perspective(2000px) rotateX(0deg);
+    perspective: 2200px;
+    animation: fade-in 0.9s ease-out 0.32s backwards;
   }
 
   .hero-screenshot-frame {
     position: relative;
     overflow: hidden;
-    aspect-ratio: 2400 / 1520;
+    aspect-ratio: 2400 / 1535;
     border-radius: 14px;
     background: #0a0a0c;
     border: 1px solid var(--border);
-    box-shadow: 0 28px 64px -28px rgba(0, 0, 0, 0.75);
+    box-shadow: 0 40px 90px -40px rgba(0, 0, 0, 0.9);
+    transform-origin: 50% 100%;
   }
 
   .hero-screenshot-frame img {
@@ -712,54 +848,228 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
   }
 
   .hero-preview-caption {
-    margin-top: 16px;
+    margin: 18px auto 0;
     color: var(--fg-dim);
     font-size: 13px;
-    max-width: 640px;
-    margin-left: auto;
-    margin-right: auto;
+    max-width: 620px;
   }
 
-  /* ── Missions ─────────────────────────────────────────────── */
-  .mission-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
+  /* ── Live tape ────────────────────────────────────────────── */
+  .sec-tape {
+    padding: 0 0 96px;
+    border-top: 0;
   }
 
-  .mission-tile {
-    padding: 26px 24px;
+  .tape {
+    overflow: hidden;
+    border-block: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent);
+    mask-image: linear-gradient(90deg, transparent, black 6%, black 94%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, transparent, black 6%, black 94%, transparent);
   }
 
-  .mission-tile-label {
+  .tape-track {
+    display: flex;
+    width: max-content;
+  }
+
+  .tape-run {
+    display: flex;
+    flex-shrink: 0;
+  }
+
+  .tape-item {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 14px 26px;
     font-family: var(--font-mono);
-    font-size: 12px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--accent);
-    margin-bottom: 14px;
+    font-size: 13px;
+    border-right: 1px solid var(--border);
+    white-space: nowrap;
   }
 
-  .mission-tile p {
+  .tape-sym {
+    color: var(--fg-dim);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+  }
+
+  .tape-px {
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tape-chg {
+    font-size: 11px;
+    color: var(--fg-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tape-chg.is-up { color: var(--ok); }
+  .tape-chg.is-down { color: var(--loss); }
+
+  /* Placeholder shimmer while the exchange call is in flight. */
+  .tape[data-state="loading"] .tape-px {
+    color: transparent;
+    border-radius: 4px;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.05));
+    background-size: 300% 100%;
+    animation: tape-shimmer 1.4s linear infinite;
+  }
+
+  @keyframes tape-shimmer {
+    to { background-position: -300% 0; }
+  }
+
+  .tape-note {
+    margin-top: 20px;
+  }
+
+  .tape-note p {
+    color: var(--fg-dim);
+    font-size: 13.5px;
+    max-width: 62ch;
+    line-height: 1.6;
+  }
+
+  /* ── Mission lifecycle ────────────────────────────────────── */
+  .mission-inner {
+    display: grid;
+    grid-template-columns: 1.05fr 0.95fr;
+    gap: 72px;
+    align-items: start;
+  }
+
+  .mission-chart {
+    position: sticky;
+    top: 116px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.2));
+    padding: 20px 18px 14px;
+    overflow: hidden;
+  }
+
+  .chart-svg {
+    width: 100%;
+    height: 300px;
+    display: block;
+    overflow: visible;
+  }
+
+  .chart-level {
+    stroke-width: 1;
+    stroke-dasharray: 3 5;
+  }
+
+  .chart-level--entry { stroke: var(--fg-faint); }
+  .chart-level--stop { stroke: var(--loss); opacity: 0.7; }
+  .chart-level--target { stroke: var(--accent); opacity: 0.7; }
+
+  .candle-body { fill: currentColor; }
+  .candle-wick { stroke: currentColor; stroke-width: 1.2; }
+  .candle--up { color: var(--ok); }
+  .candle--down { color: var(--loss); }
+
+  .chart-run {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+  }
+
+  .chart-legend {
+    display: flex;
+    gap: 18px;
+    margin-top: 14px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .chart-key {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .chart-key::before {
+    content: "";
+    width: 14px;
+    height: 1px;
+    background: currentColor;
+  }
+
+  .chart-key--target { color: var(--accent); }
+  .chart-key--entry { color: var(--fg-dim); }
+  .chart-key--stop { color: var(--loss); }
+
+  .mission-steps {
+    list-style: none;
+    counter-reset: step;
+    margin-top: 44px;
+    display: flex;
+    flex-direction: column;
+    gap: 30px;
+  }
+
+  .mission-step {
+    counter-increment: step;
+    position: relative;
+    padding-left: 26px;
+    border-left: 1px solid var(--border);
+  }
+
+  .mission-step::before {
+    content: "";
+    position: absolute;
+    left: -1px;
+    top: 6px;
+    bottom: 6px;
+    width: 1px;
+    background: var(--accent);
+  }
+
+  .mission-step h3 {
+    font-size: 17px;
+    font-weight: 500;
+    letter-spacing: -0.015em;
+    margin-bottom: 8px;
+  }
+
+  .mission-step p {
     color: var(--fg-muted);
     font-size: 15px;
-    line-height: 1.55;
+    line-height: 1.6;
   }
 
-  .mission-tile em {
-    color: var(--fg);
-    font-style: normal;
-    font-weight: 500;
+  /* ── Checks ───────────────────────────────────────────────── */
+  .sec-checks {
+    padding: 0;
+    background: #08080a;
   }
 
-  /* ── Checklist (signature) ────────────────────────────────── */
-  .sec-checklist {
-    background: #09090b;
+  .checks-scroller {
+    min-height: 220vh;
   }
 
-  .checklist-inner {
+  .checks-sticky {
+    position: sticky;
+    top: 0;
+    min-height: 100dvh;
+    display: flex;
+    align-items: center;
+    padding: 96px 0;
+  }
+
+  .checks-inner {
     display: grid;
-    grid-template-columns: 1fr 1.05fr;
+    grid-template-columns: 1fr 1.02fr;
     gap: 64px;
     align-items: center;
   }
@@ -787,6 +1097,7 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
 
   .preview-card {
     padding: 20px;
+    background: rgba(9, 9, 11, 0.7);
   }
 
   .preview-head {
@@ -800,18 +1111,44 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
   .preview-title {
     font-family: var(--font-mono);
     font-size: 13px;
-    color: var(--fg);
   }
 
-  .preview-status {
+  /* Odometer: a reel of digits translated by the same scroll timeline that
+     ticks the checks, snapped to whole numbers. */
+  .preview-tally {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 13px;
     color: var(--accent);
-    padding: 2px 8px;
-    border: 1px solid var(--accent);
-    border-radius: 999px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+  }
+
+  .tally-window {
+    display: block;
+    height: 1.25em;
+    overflow: hidden;
+  }
+
+  /* Rests on 17 so a browser without scroll timelines shows the passing count
+     rather than a zero it will never count up from. */
+  .tally-reel {
+    display: block;
+    transform: translateY(calc(-17 * 1.25em));
+  }
+
+  .tally-reel span {
+    display: block;
+    height: 1.25em;
+    line-height: 1.25em;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    min-width: 2ch;
+  }
+
+  .tally-total {
+    color: var(--fg-dim);
+    font-size: 11px;
   }
 
   .preview-list {
@@ -824,7 +1161,7 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 9px 0;
+    padding: 10px 0;
     border-top: 1px dashed var(--border);
     font-family: var(--font-mono);
     font-size: 12px;
@@ -845,37 +1182,30 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     font-size: 11px;
   }
 
-  .preview-more {
+  .preview-verdict {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+
+  .preview-stamp {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    padding: 4px 10px;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: 999px;
+  }
+
+  .preview-verdict-note {
+    font-family: var(--font-mono);
+    font-size: 11px;
     color: var(--fg-dim);
-    justify-content: center;
-  }
-
-  /* Checks tick in one by one when the card scrolls into view. */
-  .preview-card.reveal-ready .preview-list li {
-    opacity: 0;
-  }
-
-  .preview-card.is-live .preview-list li {
-    animation: check-in 0.35s ease-out forwards;
-  }
-
-  .preview-card.is-live .preview-list li:nth-child(1) { animation-delay: 0.1s; }
-  .preview-card.is-live .preview-list li:nth-child(2) { animation-delay: 0.22s; }
-  .preview-card.is-live .preview-list li:nth-child(3) { animation-delay: 0.34s; }
-  .preview-card.is-live .preview-list li:nth-child(4) { animation-delay: 0.46s; }
-  .preview-card.is-live .preview-list li:nth-child(5) { animation-delay: 0.58s; }
-  .preview-card.is-live .preview-list li:nth-child(6) { animation-delay: 0.7s; }
-  .preview-card.is-live .preview-list li:nth-child(7) { animation-delay: 0.95s; }
-
-  @keyframes check-in {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
   }
 
   .controls-strip {
@@ -883,7 +1213,7 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
-    margin-top: 16px;
+    margin-top: 18px;
   }
 
   .controls-strip-label {
@@ -902,18 +1232,14 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     background: rgba(255, 255, 255, 0.02);
   }
 
-  /* ── Harnesses ─────────────────────────────────────────────── */
-  .sec-harness {
-    background: #09090b;
-  }
-
+  /* ── Harnesses ────────────────────────────────────────────── */
   .harness-grid {
     display: grid;
     grid-template-columns: repeat(5, 1fr);
-    gap: 0;
     border: 1px solid var(--border);
     border-radius: var(--radius);
     overflow: hidden;
+    margin-top: 48px;
   }
 
   .harness {
@@ -926,17 +1252,10 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     transition: background 0.2s ease;
   }
 
-  .harness:last-child {
-    border-right: 0;
-  }
-
-  .harness:hover {
-    background: rgba(255, 255, 255, 0.025);
-  }
+  .harness:last-child { border-right: 0; }
+  .harness:hover { background: rgba(255, 255, 255, 0.03); }
 
   .harness-mark {
-    color: var(--fg);
-    opacity: 0.95;
     flex-shrink: 0;
     width: 28px;
     height: 28px;
@@ -950,10 +1269,7 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     object-fit: contain;
   }
 
-  .harness-meta {
-    flex: 1;
-    min-width: 0;
-  }
+  .harness-meta { min-width: 0; }
 
   .harness-name {
     font-size: 14px;
@@ -968,7 +1284,7 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     color: var(--fg-dim);
   }
 
-  /* ── Arming ───────────────────────────────────────────────── */
+  /* ── Signer key ───────────────────────────────────────────── */
   .arming-inner {
     display: grid;
     grid-template-columns: 1fr 1.1fr;
@@ -1006,17 +1322,9 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     flex-shrink: 0;
   }
 
-  .arming-state--safe {
-    color: var(--fg-muted);
-  }
-
-  .arming-state--safe .arming-dot {
-    background: var(--fg-dim);
-  }
-
-  .arming-state--armed {
-    color: var(--ok);
-  }
+  .arming-state--safe { color: var(--fg-muted); }
+  .arming-state--safe .arming-dot { background: var(--fg-dim); }
+  .arming-state--armed { color: var(--ok); }
 
   .arming-state--armed .arming-dot {
     background: var(--ok);
@@ -1034,16 +1342,15 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     background: var(--border);
   }
 
-  /* ── Current state ────────────────────────────────────────── */
+  /* ── Scope ────────────────────────────────────────────────── */
   .state-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 16px;
+    margin-top: 48px;
   }
 
-  .state-card {
-    padding: 26px 24px;
-  }
+  .state-card { padding: 26px 24px; }
 
   .state-card-label {
     font-family: var(--font-mono);
@@ -1053,13 +1360,8 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     margin-bottom: 16px;
   }
 
-  .state-card-label--is {
-    color: var(--ok);
-  }
-
-  .state-card-label--isnt {
-    color: var(--warn);
-  }
+  .state-card-label--is { color: var(--ok); }
+  .state-card-label--isnt { color: var(--warn); }
 
   .state-card ul {
     list-style: none;
@@ -1077,24 +1379,40 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
   }
 
   .state-card li::before {
-    content: "·";
+    content: "";
     position: absolute;
-    left: 2px;
-    color: var(--fg-dim);
+    left: 0;
+    top: 0.66em;
+    width: 6px;
+    height: 1px;
+    background: var(--fg-faint);
   }
 
   /* ── Open source ──────────────────────────────────────────── */
+  .open-inner {
+    max-width: 760px;
+  }
+
+  .open-eyebrow {
+    color: var(--accent);
+    margin-bottom: 16px;
+  }
+
+  .open-title {
+    max-width: 20ch;
+  }
+
   .open-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 12px;
-    margin-top: 28px;
+    margin-top: 32px;
   }
 
   /* ── Final CTA ────────────────────────────────────────────── */
   .sec-cta {
     text-align: center;
-    padding: 120px 0;
+    padding: 130px 0;
     position: relative;
     overflow: hidden;
   }
@@ -1109,19 +1427,17 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     opacity: 0.6;
   }
 
-  .cta-inner {
-    position: relative;
-  }
+  .cta-inner { position: relative; }
 
   .cta-title {
-    font-size: clamp(40px, 6vw, 72px);
+    font-size: clamp(38px, 5.6vw, 66px);
   }
 
   .cta-sub {
     color: var(--fg-muted);
     font-size: 18px;
-    max-width: 560px;
-    margin: 20px auto 36px;
+    max-width: 520px;
+    margin: 20px auto 34px;
     line-height: 1.55;
     letter-spacing: -0.005em;
   }
@@ -1133,8 +1449,18 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     flex-wrap: wrap;
   }
 
+  .cta-release {
+    margin-top: 18px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-dim);
+    letter-spacing: 0.02em;
+  }
+
+  .cta-release span { color: var(--fg-muted); }
+
   .cta-install-label {
-    margin: 22px 0 8px;
+    margin: 26px 0 8px;
     color: var(--fg-dim);
     font-size: 12px;
     letter-spacing: 0.02em;
@@ -1147,7 +1473,7 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     max-width: 640px;
     overflow-x: auto;
     padding: 10px 14px;
-    border: 1px solid var(--border, rgba(161, 161, 170, 0.2));
+    border: 1px solid var(--border);
     border-radius: 8px;
     background: rgba(0, 0, 0, 0.25);
     text-align: left;
@@ -1160,12 +1486,17 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     white-space: pre;
   }
 
+  .cta-install--sm {
+    margin-top: 14px;
+    max-width: 560px;
+  }
+
   .cta-note {
-    margin: 24px auto 0;
-    max-width: 520px;
+    margin: 26px auto 0;
+    max-width: 560px;
     color: var(--fg-dim);
     font-size: 13px;
-    line-height: 1.55;
+    line-height: 1.6;
   }
 
   .cta-note a {
@@ -1180,27 +1511,146 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
     text-decoration-color: var(--fg);
   }
 
+  /* ── Scroll-driven layer ──────────────────────────────────────
+     Everything below is scrubbed by the wheel or the finger. Without support
+     the page renders at each animation's resting state, which is the final
+     frame, so nothing is hidden from anyone. */
+  @media (prefers-reduced-motion: no-preference) {
+    @supports (animation-timeline: view()) {
+      /* The screenshot lies back at load and rotates flat as you scroll into
+         it, so the wheel does the reveal instead of a canned transition. */
+      .hero-screenshot-frame {
+        transform: rotateX(9deg) scale(0.95);
+        animation: shot-settle linear both;
+        animation-timeline: view();
+        animation-range: entry 26% cover 46%;
+      }
+
+      @keyframes shot-settle {
+        from { transform: rotateX(9deg) scale(0.95); }
+        to { transform: rotateX(0deg) scale(1); }
+      }
+
+      /* The tape only advances while the page is moving, so prices stay
+         readable when the reader stops. */
+      .tape-track {
+        animation: tape-run linear both;
+        animation-timeline: scroll(root block);
+      }
+
+      @keyframes tape-run {
+        to { transform: translateX(-50%); }
+      }
+
+      /* Each candle prints in turn against the chart's own view timeline. */
+      .mission-chart {
+        view-timeline-name: --chart;
+        view-timeline-axis: block;
+      }
+
+      .candle {
+        animation: candle-print linear both;
+        animation-timeline: --chart;
+      }
+
+      @keyframes candle-print {
+        from { opacity: 0; transform: scaleY(0.05); }
+        to { opacity: 1; transform: scaleY(1); }
+      }
+
+      .chart-run {
+        stroke-dashoffset: 1;
+        animation: scrub-draw linear both;
+        animation-timeline: --chart;
+        animation-range: entry 42% cover 92%;
+      }
+
+      .chart-level {
+        animation: level-draw linear both;
+        animation-timeline: --chart;
+        animation-range: entry 20% cover 44%;
+      }
+
+      @keyframes level-draw {
+        from { opacity: 0; transform: scaleX(0); }
+        to { opacity: 1; transform: scaleX(1); }
+      }
+
+      /* The checks section pins for two viewports. The checks tick, the reel
+         counts to seventeen, and the controls arrive last. */
+      .checks-scroller {
+        view-timeline-name: --checks;
+        view-timeline-axis: block;
+      }
+
+      .preview-list li {
+        animation: check-in linear both;
+        animation-timeline: --checks;
+      }
+
+      @keyframes check-in {
+        from { opacity: 0.1; transform: translateY(8px); }
+        to { opacity: 1; transform: none; }
+      }
+
+      .tally-reel {
+        animation: tally-count steps(17, end) both;
+        animation-timeline: --checks;
+        animation-range: contain 4% contain 68%;
+      }
+
+      @keyframes tally-count {
+        from { transform: translateY(0); }
+        to { transform: translateY(calc(-17 * 1.25em)); }
+      }
+
+      .preview-stamp {
+        animation: stamp-land linear both;
+        animation-timeline: --checks;
+        animation-range: contain 70% contain 82%;
+      }
+
+      .preview-verdict-note {
+        animation: check-in linear both;
+        animation-timeline: --checks;
+        animation-range: contain 78% contain 88%;
+      }
+
+      @keyframes stamp-land {
+        from { opacity: 0; transform: scale(1.5) rotate(-6deg); }
+        to { opacity: 1; transform: none; }
+      }
+
+      .control-chip {
+        animation: check-in linear both;
+        animation-timeline: --checks;
+      }
+    }
+  }
+
   /* ── Responsive ───────────────────────────────────────────── */
-  @media (max-width: 960px) {
-    .hero-preview {
-      width: min(860px, calc(100vw - 24px));
-      margin-left: 50%;
-      transform: translateX(-50%) perspective(1600px) rotateX(1.5deg);
-    }
-
-    .hero-preview:hover {
-      transform: translateX(-50%) perspective(1600px) rotateX(0deg);
-    }
-
-    .mission-grid,
-    .state-grid {
-      grid-template-columns: 1fr;
-    }
-
-    .checklist-inner,
+  @media (max-width: 1080px) {
+    .mission-inner,
+    .checks-inner,
     .arming-inner {
       grid-template-columns: 1fr;
-      gap: 40px;
+      gap: 44px;
+    }
+
+    .mission-chart {
+      position: static;
+    }
+
+    /* Pinning costs too much of a small screen. The section becomes a normal
+       block and the checks scrub in as they enter instead. */
+    .checks-scroller {
+      min-height: 0;
+    }
+
+    .checks-sticky {
+      position: static;
+      min-height: 0;
+      padding: 96px 0;
     }
 
     .harness-grid {
@@ -1218,14 +1668,25 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
 
     .harness:nth-child(5):last-child {
       grid-column: 1 / -1;
-      border-right: 0;
       border-bottom: 0;
     }
   }
 
   @media (max-width: 820px) {
     section {
-      padding: 64px 0;
+      padding: 76px 0;
+    }
+
+    .sec-tape {
+      padding: 0 0 72px;
+    }
+
+    .sec-checks {
+      padding: 0;
+    }
+
+    .checks-sticky {
+      padding: 76px 0;
     }
 
     .sec-cta {
@@ -1237,12 +1698,40 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
       padding-right: 20px;
     }
 
-    .hero-title {
-      font-size: clamp(36px, 10vw, 52px);
+    .hero {
+      padding-top: 84px;
     }
 
-    .hero {
-      padding-top: 96px;
+    /* The eyebrow runs edge to edge at phone widths, so it loses some track. */
+    .hero-eyebrow {
+      font-size: 10px;
+      letter-spacing: 0.1em;
+    }
+
+    .hero-title {
+      font-size: clamp(34px, 9.4vw, 50px);
+    }
+
+    .section-title {
+      max-width: none;
+    }
+
+    .state-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .chart-svg {
+      height: 220px;
+    }
+
+    /* The full window is unreadable at phone width, so the frame crops into
+       the thread column where the position and its watches live. */
+    .hero-screenshot-frame {
+      aspect-ratio: 4 / 3;
+    }
+
+    .hero-screenshot-frame img {
+      object-position: 62% top;
     }
 
     .hero-float-mark {
@@ -1256,38 +1745,36 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
       height: 36px;
     }
 
-    /* Only the two top marks sit in clear space — the rest collide with the copy. */
-    .hero-float-mark.hf-claude   { top: 28px;  left: 8px; }
-    .hero-float-mark.hf-codex    { top: 28px;  right: 8px; }
+    /* Only the top two marks sit in clear space. The rest collide with copy. */
+    .hero-float-mark.hf-claude { top: 26px; left: 8px; }
+    .hero-float-mark.hf-codex { top: 26px; right: 8px; }
 
     .hero-float-mark.hf-opencode,
     .hero-float-mark.hf-cursor,
     .hero-float-mark.hf-grok {
       display: none;
     }
-
-    .hero-actions {
-      margin-bottom: 56px;
-    }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .hero-preview,
-    .hero-preview:hover {
-      transform: none;
-    }
-
     .hero-eyebrow,
     .hero-title,
     .hero-sub,
     .hero-actions,
     .hero-preview,
-    .hero-release,
     .hero-float-mark {
       animation: none;
     }
 
+    .hero-screenshot-frame {
+      transform: none;
+    }
+
     .arming-state--armed .arming-dot {
+      animation: none;
+    }
+
+    .tape[data-state="loading"] .tape-px {
       animation: none;
     }
   }

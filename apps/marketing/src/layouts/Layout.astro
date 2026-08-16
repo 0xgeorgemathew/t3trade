@@ -9,7 +9,7 @@ interface Props {
 }
 
 const {
-  title = "T3 Trade — Trading Interface for Coding Agents",
+  title = "T3 Trade · Trading Interface for Coding Agents",
   description =
     "T3 Trade is an open-source desktop and self-hosted web app for supervised perp trading with coding agents on Hyperliquid testnet.",
   pageClass,
@@ -35,6 +35,9 @@ const {
   </head>
   <body>
     <div class:list={["page", pageClass]}>
+      <!-- Reads as a position bar filling from flat to in-profit as you read down. -->
+      <div class="scroll-tape" aria-hidden="true"><span class="scroll-tape-fill"></span></div>
+
       <nav class="nav">
         <div class="nav-inner">
           <a href="/" class="nav-brand" aria-label="T3 Trade home">
@@ -77,16 +80,6 @@ const {
       </footer>
     </div>
 
-    <script>
-      const nav = document.querySelector(".nav");
-      const onScroll = () => {
-        if (!nav) return;
-        if (window.scrollY > 12) nav.classList.add("is-scrolled");
-        else nav.classList.remove("is-scrolled");
-      };
-      window.addEventListener("scroll", onScroll, { passive: true });
-      onScroll();
-    </script>
   </body>
 </html>
 
@@ -269,6 +262,47 @@ const {
   @keyframes blink {
     50% { opacity: 0; }
   }
+
+  /* ── Scroll-driven motion layer ─────────────────────────────
+     Every scrubbed animation on this site runs on a CSS scroll or view
+     timeline, so progress tracks the wheel or the finger directly instead of
+     a JS scroll listener. Browsers without the feature fall through to the
+     resting state, which is the finished frame of every animation. */
+
+  @keyframes scrub-rise {
+    from { opacity: 0; transform: translateY(28px); }
+    to { opacity: 1; transform: none; }
+  }
+
+  @keyframes scrub-word {
+    from { opacity: 0.06; transform: translateY(0.32em); }
+    to { opacity: 1; transform: none; }
+  }
+
+  @keyframes scrub-draw {
+    to { stroke-dashoffset: 0; }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    @supports (animation-timeline: view()) {
+      /* Generic "arrive as it enters" scrub. Communicates reading order. */
+      .scrub {
+        animation: scrub-rise linear both;
+        animation-timeline: view();
+        animation-range: entry 8% cover 32%;
+      }
+
+      /* Headlines resolve word by word, so the wheel literally reveals the
+         sentence. Each word carries its own range via an inline --d offset. */
+      .kinetic > span {
+        display: inline-block;
+        animation: scrub-word linear both;
+        animation-timeline: view();
+        animation-range: entry 12% cover 40%;
+        animation-delay: 0s;
+      }
+    }
+  }
 </style>
 
 <style>
@@ -277,6 +311,25 @@ const {
     display: flex;
     flex-direction: column;
     overflow-x: clip;
+  }
+
+  /* ── Scroll tape ──────────────────────────────────────────── */
+  .scroll-tape {
+    position: fixed;
+    inset: 0 0 auto 0;
+    height: 2px;
+    z-index: 60;
+    pointer-events: none;
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .scroll-tape-fill {
+    display: block;
+    height: 100%;
+    width: 100%;
+    transform-origin: 0 50%;
+    transform: scaleX(0);
+    background: linear-gradient(90deg, var(--fg-faint), var(--accent));
   }
 
   .nav {
@@ -290,8 +343,27 @@ const {
     transition: border-color 0.3s ease;
   }
 
-  .nav.is-scrolled {
-    border-bottom-color: var(--border);
+  @supports (animation-timeline: scroll()) {
+    .scroll-tape-fill {
+      animation: tape-fill linear both;
+      animation-timeline: scroll(root block);
+    }
+
+    /* The hairline under the nav is the same scroll timeline, snapped to a
+       single step so it reads as a state change rather than a fade. */
+    .nav {
+      animation: nav-settle steps(1, end) both;
+      animation-timeline: scroll(root block);
+      animation-range: 0 24px;
+    }
+  }
+
+  @keyframes tape-fill {
+    to { transform: scaleX(1); }
+  }
+
+  @keyframes nav-settle {
+    to { border-bottom-color: var(--border); }
   }
 
   .nav-inner {
