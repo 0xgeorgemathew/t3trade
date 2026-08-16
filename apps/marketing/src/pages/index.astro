@@ -482,7 +482,7 @@ const harnesses = [
                       style={`${span(from, from + 2.6)}; transform-origin: ${candle.x.toFixed(1)}px ${candle.bottom.toFixed(1)}px`}>
                       <line class="proj-wick" x1={candle.x} x2={candle.x}
                         y1={yOf(candle.high)} y2={yOf(candle.low)} />
-                      <rect class="proj-body" x={candle.x - PROJ_SLOT * 0.3} width={PROJ_SLOT * 0.6}
+                      <rect class="proj-body" x={candle.x - PROJ_SLOT * 0.32} width={PROJ_SLOT * 0.64}
                         y={candle.top} height={Math.max(1.6, candle.bottom - candle.top)} />
                     </g>
                   );
@@ -1458,19 +1458,10 @@ const harnesses = [
   .plan-path--up { stroke: var(--accent); }
   .plan-path--down { stroke: var(--loss); }
 
-  /* The projection prints hollow. The record is filled, so the two are never
-     mistaken for each other even though they share the colour scale. */
-  .proj-body {
-    fill: color-mix(in srgb, currentColor 16%, transparent);
-    stroke: currentColor;
-    stroke-width: 1.4;
-  }
-
-  .proj-wick {
-    stroke: currentColor;
-    stroke-width: 1.1;
-    opacity: 0.75;
-  }
+  /* Solid, like the record. The dashed line running under them is what marks
+     this half as the plan. */
+  .proj-body { fill: currentColor; }
+  .proj-wick { stroke: currentColor; stroke-width: 1.1; }
 
   .dip-dot { fill: var(--loss); }
 
