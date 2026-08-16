@@ -333,6 +333,10 @@ describe("§14.3 mission tool contracts", () => {
     const decoded = decodeGetMissionResult({
       bound: true,
       mission,
+      // Plan 29 step 9.1: every bound read says which mode the mission is in.
+      // Discretionary here, which is what a mandate that names no playbook to
+      // execute produces — the default, and the shape most reads carry.
+      mode: { kind: "discretionary" },
       authority: mission.authority,
       authorityVersion: 1,
       strategy,
@@ -789,6 +793,7 @@ describe("subpath exports", () => {
         "./account",
         "./authority",
         "./mission",
+        "./mode",
         "./strategy",
         "./watch",
         "./journal",

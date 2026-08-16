@@ -21,6 +21,7 @@ export * from "./microstructure.ts";
 export * from "./history.ts";
 export * from "./calibration.ts";
 export * from "./playbook.ts";
+export * from "./mode.ts";
 export * from "./decision.ts";
 export * from "./entry.ts";
 export * from "./exit.ts";

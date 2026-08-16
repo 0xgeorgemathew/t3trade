@@ -314,7 +314,7 @@ export const TradingHarnessWakeup = Schema.Struct({
    * the published plan is one candidate in it rather than the incumbent.
    *
    * The doctrine has always said a flat wake re-runs the tournament
-   * (`standing_rules`), but doctrine is a `trading_get_playbook` call away and
+   * (`standing_rules`), but doctrine is a `trading_strategy` call away and
    * a waiting mission reliably spent its wake re-checking the trigger it had
    * already published — the range it could have scalped while its momentum
    * breakout never came was never scored. Nothing branches on this: it is the

@@ -32,6 +32,7 @@ import type { MarketStructure } from "./marketStructure.ts";
 import type { TradingTradeHistory } from "./history.ts";
 import { TargetCalibration } from "./calibration.ts";
 import { TradingJournalEntry } from "./journal.ts";
+import { TradingMissionModeState } from "./mode.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./mission.ts";
 import { Price, TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
@@ -57,7 +58,7 @@ export const TRADING_PLAN_TOOL = "trading_plan";
 // 6.5. The grading is a read of the mission's own closed trades, so it rides
 // `trading_look` as `mission.targetCalibration` instead of costing a turn a
 // tool call to ask a question the one read was already answering.
-export const TRADING_GET_PLAYBOOK_TOOL = "trading_get_playbook";
+export const TRADING_STRATEGY_TOOL = "trading_strategy";
 // `trading_adjust_stop` retired into `trading_exit`'s `move_stop` action —
 // plan 29 step 6.5. The policy it answered to did not move; only the name did.
 
@@ -167,6 +168,14 @@ export const TradingBoundMissionResult = Schema.Struct({
   /** Discriminates this from the unbound-thread answer below. */
   bound: Schema.Literal(true),
   mission: TradingMission,
+  /**
+   * Which mode this mission runs in — plan 29 phase 9. Derived from the
+   * mandate on every read rather than stored, so it cannot disagree with the
+   * words in `mission.instruction` sitting beside it. `discretionary` unless
+   * the mandate names a playbook to execute, and in execute mode it carries
+   * the doctrine that says what executing means.
+   */
+  mode: TradingMissionModeState,
   authority: TradingAuthority,
   authorityVersion: Schema.Number,
   strategy: Schema.optional(TradingPlanState),

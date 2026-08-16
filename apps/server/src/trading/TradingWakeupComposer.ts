@@ -409,7 +409,7 @@ const TRIM_LADDER: ReadonlyArray<{
   {
     // The two review reminders go here too (only ever one is present): by this
     // rung the plan's own prose is being cut to a line, and doctrine the run
-    // can read with one `trading_get_playbook` call does not outrank the market
+    // can read with one `trading_strategy` call does not outrank the market
     // data beside it.
     name: "strategy_digest",
     apply: (wakeup) => {

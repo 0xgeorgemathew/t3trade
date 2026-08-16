@@ -168,15 +168,15 @@ export const TradingEnterTool = Tool.make("trading_enter", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, true);
 
-export const TradingGetPlaybookTool = Tool.make("trading_get_playbook", {
+export const TradingStrategyTool = Tool.make("trading_strategy", {
   description:
-    "Read one named playbook. Each returns whenItApplies (trigger), procedure[] (ordered steps), gates[] (must clear before entry), standDownIf[] (retire a setup). Static data; nothing in the runtime branches on it.",
+    "Read one named strategy. Each returns whenItApplies (trigger), procedure[] (ordered steps), gates[] (must clear before entry), standDownIf[] (retire a setup). In discretionary mode this is reference; when trading_look reports mode execute_strategy it is the decision procedure for the named one.",
   parameters: TradingGetPlaybookInput,
   success: Playbook,
   failure: TradingToolRejectedError,
   dependencies,
 })
-  .annotate(Tool.Title, "Get playbook")
+  .annotate(Tool.Title, "Strategy")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
@@ -201,7 +201,7 @@ export const TradingExitTool = Tool.make("trading_exit", {
 export const TradingToolkit = Toolkit.make(
   TradingLookTool,
   TradingPlanTool,
-  TradingGetPlaybookTool,
+  TradingStrategyTool,
   TradingWatchTool,
   TradingJournalTool,
   TradingEnterTool,

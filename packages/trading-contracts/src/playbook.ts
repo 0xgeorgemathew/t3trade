@@ -1,7 +1,7 @@
 /**
  * Trading playbooks - the procedure the harness used to carry as doctrine in
  * `POC_DEFAULT_INSTRUCTION`, split into one playbook per mode and reachable
- * through the `trading_get_playbook` tool.
+ * through the `trading_strategy` tool.
  *
  * Each playbook says when it applies, the steps it follows, the gates that stop
  * it from acting, and the conditions that make it stand down. A harness reads
@@ -45,7 +45,7 @@ export const PlaybookProcedure = Schema.Struct({
 export type PlaybookProcedure = typeof PlaybookProcedure.Type;
 
 /**
- * The playbooks the `trading_get_playbook` tool returns by name.
+ * The playbooks the `trading_strategy` tool returns by name.
  *
  * `classify` is the regime read; `momentum` and `range_reversion` are the two
  * modes a regime resolves to; `opening_range` is the ORB placeholder the plan
@@ -77,7 +77,7 @@ export const Playbook = Schema.Struct({
 export type Playbook = typeof Playbook.Type;
 
 /**
- * The playbooks, in the order `trading_get_playbook` returns them when no
+ * The playbooks, in the order `trading_strategy` returns them when no
  * name is asked for (the tool always takes a name, so this ordering is for
  * readability here, not a runtime guarantee).
  *

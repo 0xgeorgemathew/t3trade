@@ -68,6 +68,7 @@ import type {
 } from "@t3tools/trading-contracts/market";
 import { readMicrostructure } from "@t3tools/trading-contracts/microstructure";
 import { PLAYBOOKS } from "@t3tools/trading-contracts/playbook";
+import { readMissionMode } from "@t3tools/trading-contracts/mode";
 import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
 import { TradingCalibrationService } from "../../../trading/TradingCalibrationService.ts";
 import { TradingTradeHistoryService } from "../../../trading/TradingTradeHistoryService.ts";
@@ -237,9 +238,16 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (mission: 
     .read({ missionId: mission.id })
     .pipe(Effect.orDie);
 
+  // Plan 29 step 9.1. Derived from the mandate on every read, never stored: a
+  // column would be a second copy of a fact `mission.instruction` already
+  // states, and the instruction is what the model reads. The two cannot
+  // disagree if there is only one of them.
+  const mode = readMissionMode(mission.instruction);
+
   return {
     bound: true,
     mission,
+    mode,
     authority: mission.authority,
     authorityVersion: mission.authorityVersion,
     ...(Option.isNone(strategy) ? {} : { strategy: strategy.value }),
@@ -1122,7 +1130,7 @@ const handlers = {
   // boundary surfaces generically. `Effect.orDie` collapses the gateway's typed
   // errors into a defect so they never widen the handler's error channel.
 
-  trading_get_playbook: (input) =>
+  trading_strategy: (input) =>
     Effect.gen(function* () {
       // Static contract data, not mission state: an unbound thread reads it
       // too. The capability is still required; only the binding is optional.
@@ -1133,9 +1141,7 @@ const handlers = {
       // PLAYBOOKS keeping up, a die here is more honest than a silent undefined.
       const entry = PLAYBOOKS.find((playbook) => playbook.name === input.name);
       if (entry === undefined) {
-        return yield* Effect.die(
-          new Error(`trading_get_playbook: no playbook named ${input.name}`),
-        );
+        return yield* Effect.die(new Error(`trading_strategy: no playbook named ${input.name}`));
       }
       return entry;
     }),

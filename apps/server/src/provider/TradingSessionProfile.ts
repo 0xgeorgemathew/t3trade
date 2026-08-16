@@ -23,7 +23,7 @@
  * @module TradingSessionProfile
  */
 import {
-  TRADING_GET_PLAYBOOK_TOOL,
+  TRADING_STRATEGY_TOOL,
   TRADING_PLAN_TOOL,
   TRADING_WATCH_TOOL,
 } from "@t3tools/trading-contracts/tools";
@@ -45,7 +45,7 @@ export const TRADING_MCP_SERVER_NAME = "t3-trade";
 export const TRADING_TOOL_NAMES: ReadonlyArray<string> = [
   TRADING_LOOK_TOOL,
   TRADING_PLAN_TOOL,
-  TRADING_GET_PLAYBOOK_TOOL,
+  TRADING_STRATEGY_TOOL,
   TRADING_WATCH_TOOL,
   TRADING_JOURNAL_TOOL,
   TRADING_ENTER_TOOL,
@@ -81,7 +81,7 @@ COSTS ARE CONTEXT BEFORE THE ENTRY AND AN INSTRUMENT AFTER IT. To enter, ask one
 
 1. READ THE WAKE. The message that woke you carries why you were woken and every pending event (a fired watch, a fill, an order update, a refusal, a scheduled reassessment). There is no inbox to poll — it is already in front of you. Call ${TRADING_LOOK_TOOL} for everything else: the market, what you hold, and the mission's authority, plan, armed watches, controls, and pending executions.
 
-2. READ THE PLAYBOOK FOR WHAT YOU ARE WEIGHING. ${TRADING_GET_PLAYBOOK_TOOL} takes a name: call it with "classify" when you want the regime read, the name of the play you are weighing when you already know it, and "standing_rules" for what holds in every mode. The same market-structure read's \`candidates[]\` table joins each scored setup with what it costs to take, so what is on offer and what it costs is already in front of you. Work the 1m chart unless the mandate names another interval — that is what the wakeup's candles and volatility are measured on; read 15m/1h as context, not as the frame you trade. Follow the procedure, gates, and stand-down conditions the playbooks return.
+2. READ THE PLAYBOOK FOR WHAT YOU ARE WEIGHING. ${TRADING_STRATEGY_TOOL} takes a name: call it with "classify" when you want the regime read, the name of the play you are weighing when you already know it, and "standing_rules" for what holds in every mode. The same market-structure read's \`candidates[]\` table joins each scored setup with what it costs to take, so what is on offer and what it costs is already in front of you. Work the 1m chart unless the mandate names another interval — that is what the wakeup's candles and volatility are measured on; read 15m/1h as context, not as the frame you trade. Follow the procedure, gates, and stand-down conditions the playbooks return.
 
 3. GATHER THE EVIDENCE the playbook asks for. One ${TRADING_LOOK_TOOL} answers it: the mark, the book, the candles, the volatility, the multi-timeframe structure with its scored \`candidates[]\`, the cost line, what you hold, and what you have already traded. \`mission.targetCalibration\` on the same read grades the targets you published against what your trades actually reached.
 
@@ -111,7 +111,7 @@ ${DECISION_CONTRACT}
 
 You have no shell, no filesystem, no Read/Edit/Write, no web access, and no subagents. Everything you can possibly do is one of the mcp__${TRADING_MCP_SERVER_NAME}__* trading tools; if a task seems to need anything else, it is out of scope — say so rather than reach for a tool you do not have.
 
-Your trading strategy, entry rules, and risk parameters are NOT given here. Read them with ${TRADING_GET_PLAYBOOK_TOOL} and follow the procedure it returns.`;
+Your trading strategy, entry rules, and risk parameters are NOT given here. Read them with ${TRADING_STRATEGY_TOOL} and follow the procedure it returns.`;
 
 /**
  * The same contract as a prefix for adapters that cannot replace their system

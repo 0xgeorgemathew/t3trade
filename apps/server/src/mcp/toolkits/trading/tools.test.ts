@@ -1,6 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import {
-  TRADING_GET_PLAYBOOK_TOOL,
+  TRADING_STRATEGY_TOOL,
   TRADING_PLAN_TOOL,
   TRADING_WATCH_TOOL,
 } from "@t3tools/trading-contracts/tools";
@@ -26,7 +26,7 @@ it("exposes the read, the plan, the watch, the journal, and the two writes", () 
     [
       TRADING_LOOK_TOOL,
       TRADING_PLAN_TOOL,
-      TRADING_GET_PLAYBOOK_TOOL,
+      TRADING_STRATEGY_TOOL,
       TRADING_WATCH_TOOL,
       TRADING_JOURNAL_TOOL,
       TRADING_ENTER_TOOL,

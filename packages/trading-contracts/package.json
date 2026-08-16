@@ -84,6 +84,10 @@
       "types": "./src/playbook.ts",
       "import": "./src/playbook.ts"
     },
+    "./mode": {
+      "types": "./src/mode.ts",
+      "import": "./src/mode.ts"
+    },
     "./history": {
       "types": "./src/history.ts",
       "import": "./src/history.ts"
