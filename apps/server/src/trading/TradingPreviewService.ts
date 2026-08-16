@@ -134,7 +134,7 @@ export interface PreviewContext {
    */
   readonly pendingExecution: PendingExecution | null;
   /** Current loss-budget snapshot inputs (realised, open, pending). */
-  readonly budget: Parameters<typeof evaluateLossBudget>[0];
+  readonly budget: PreviewBudgetSnapshot;
   /**
    * The master wallet's taker fee rate in bps, read from `userFees` (or the
    * authority fallback when stale). Both the entry and exit side pay this.
@@ -155,6 +155,24 @@ export interface TradingPreview {
   /** The USD risk this execution must reserve before signing. */
   readonly reservedRiskUsd: number;
 }
+
+/**
+ * The loss-budget snapshot the checklist inspects: `LossBudgetInput`, plus
+ * the resting-entry notional `TradingBudgetReader` sums alongside it.
+ *
+ * The extra field is optional so a context assembled without the reader (an
+ * older caller, a test fixture) still typechecks — absent means no resting
+ * entries, which keeps the arithmetic identical to what it was.
+ */
+export type PreviewBudgetSnapshot = Parameters<typeof evaluateLossBudget>[0] & {
+  /**
+   * Notional (`size * limit_price`) of the mission's accepted, unfilled
+   * resting entries. Two patient entries resting at once both fill into real
+   * gross exposure, so the leverage and gross-notional caps count them; the
+   * loss-budget item does not need them (reservations already aggregate).
+   */
+  readonly pendingEntryNotionalUsd?: number | undefined;
+};
 
 const bps = (basisPoints: number): number => basisPoints / 10_000;
 
@@ -303,12 +321,16 @@ const exchangeMinimumMet: Check = (intent, _ctx) => {
 };
 
 /**
- * Existing open-position gross notional, from the budget snapshot. A scale-in
- * onto an existing position must clear the leverage and gross-notional ceilings
- * against `existing + proposed`, not the proposed order alone.
+ * Existing gross notional the aggregate caps measure against: open-position
+ * notional from the budget snapshot, PLUS the notional of accepted, unfilled
+ * resting entries. A scale-in onto an existing position must clear the
+ * leverage and gross-notional ceilings against `existing + proposed`, not the
+ * proposed order alone — and so must a second patient entry resting beside a
+ * first: both fill, and the aggregate is what they become together.
  */
 const existingNotional = (ctx: PreviewContext): number =>
-  ctx.budget.openPositions.reduce((sum, p) => sum + p.size * (p.weightedEntryPrice ?? 0), 0);
+  ctx.budget.openPositions.reduce((sum, p) => sum + p.size * (p.weightedEntryPrice ?? 0), 0) +
+  (ctx.budget.pendingEntryNotionalUsd ?? 0);
 
 const leverageWithinLimits: Check = (intent, ctx) => {
   // Combined leverage: the mission's total notional (existing + proposed) over

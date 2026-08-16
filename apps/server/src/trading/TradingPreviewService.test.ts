@@ -314,6 +314,74 @@ describe("previewOrder — §16.3 checklist", () => {
     }),
   );
 
+  // --- the aggregate caps count resting patient entries -----------------------
+  //
+  // The budget's loss side already aggregates resting entries through their
+  // reservations; the leverage and gross-notional caps did not, so two
+  // concurrent patient entries could both fill and transiently exceed the
+  // aggregate. `pendingEntryNotionalUsd` closes that: an entry that would
+  // have passed alone now rejects when the aggregate breaches.
+
+  it.effect("item 12: counts a resting entry toward the leverage cap", () =>
+    Effect.gen(function* () {
+      // Proposed 0.4 ETH @ 3750 = $1500; a $2000 entry already rests.
+      // Combined $3500 over $1000 capital = 3.5x > 3x cap — alone it is 1.5x.
+      const item = yield* rejectionItem(
+        goodIntent({ size: 0.4 }),
+        goodCtx(now, {
+          budget: { ...goodCtx(now).budget, pendingEntryNotionalUsd: 2_000 },
+        }),
+      );
+      expect(item).toBe("leverage_within_limits");
+    }),
+  );
+
+  it.effect("item 13: counts a resting entry toward the gross-notional cap", () =>
+    Effect.gen(function* () {
+      // Proposed 0.1 ETH @ 3750 = $375; a $2625 entry already rests.
+      // Combined $3000 breaches the $2900 ceiling; alone it does not.
+      const item = yield* rejectionItem(
+        goodIntent({ size: 0.1 }),
+        goodCtx(now, {
+          mission: goodMission({
+            authority: {
+              ...goodMission().authority,
+              maximumGrossNotionalUsd: 2_900,
+              maximumLeverage: 100,
+            },
+          }),
+          budget: { ...goodCtx(now).budget, pendingEntryNotionalUsd: 2_625 },
+        }),
+      );
+      expect(item).toBe("gross_notional_within_authority");
+    }),
+  );
+
+  it.effect(
+    "a new entry beside a resting one still passes when the aggregate is under the caps",
+    () =>
+      Effect.gen(function* () {
+        // Combined $1375 = 1.375x over $1000, and $1375 < $3000 gross.
+        const preview = yield* previewOrder(
+          goodIntent({ size: 0.1 }),
+          goodCtx(now, { budget: { ...goodCtx(now).budget, pendingEntryNotionalUsd: 1_000 } }),
+        );
+        expect(preview.intent.size).toBe(0.1);
+      }),
+  );
+
+  it.effect("an entry is still admitted when the aggregate sits just under the caps", () =>
+    Effect.gen(function* () {
+      // A $2700 entry already rests; proposed 0.05 @ 3750 = $187.5 more.
+      // Combined $2887.5 = 2.89x < 3x and < $3000 gross — under both caps.
+      const preview = yield* previewOrder(
+        goodIntent({ size: 0.05 }),
+        goodCtx(now, { budget: { ...goodCtx(now).budget, pendingEntryNotionalUsd: 2_700 } }),
+      );
+      expect(preview.reservedRiskUsd).toBeGreaterThan(0);
+    }),
+  );
+
   it.effect("item 14: rejects planned loss above the per-position ceiling", () =>
     Effect.gen(function* () {
       const item = yield* rejectionItem(

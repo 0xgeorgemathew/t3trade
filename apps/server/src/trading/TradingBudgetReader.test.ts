@@ -309,4 +309,179 @@ layer("TradingBudgetReader — stop-aware open-position risk", (it) => {
       assert.equal(result.pendingEntries.length, 0);
     }),
   );
+
+  // --- the resting-entry notional the aggregate exposure caps count ---------
+
+  /** Per-mission sequences are unique; one counter keeps the seeds legal. */
+  let execSequence = 0;
+
+  /** One execution record, with the shape the caller wants. */
+  const seedExec = (
+    sql: SqlClient.SqlClient,
+    row: {
+      readonly execution_id: string;
+      readonly action_type: string;
+      readonly reduce_only: number;
+      readonly time_in_force: string;
+      readonly status: string;
+      readonly size: number;
+      readonly limit_price: number;
+      readonly stop_price?: number | null;
+    },
+  ) =>
+    sql`
+      INSERT INTO trading_execution_records
+        (execution_id, mission_id, execution_sequence, action_type, cloid,
+         idempotency_key, market, side, size, limit_price, time_in_force, reduce_only,
+         signer_address, status, order_results_json, created_at, updated_at, stop_price)
+      VALUES
+        (${row.execution_id}, 'mission_1', ${++execSequence}, ${row.action_type},
+         ${`cloid_${row.execution_id}`}, ${`idem_${row.execution_id}`}, 'ETH', 'buy',
+         ${row.size}, ${row.limit_price}, ${row.time_in_force}, ${row.reduce_only},
+         '0xsigner', ${row.status}, '{}', 1, 2, ${row.stop_price ?? null})
+    `;
+
+  it.effect("sums the notional of accepted, unfilled resting entries", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+
+      // Two resting patient entries: 0.5 @ 2990 and 0.2 @ 3000 → 2095.
+      yield* seedExec(sql, {
+        execution_id: "exec_1",
+        action_type: "open",
+        reduce_only: 0,
+        time_in_force: "alo",
+        status: "accepted",
+        size: 0.5,
+        limit_price: 2_990,
+        stop_price: 2_950,
+      });
+      yield* seedExec(sql, {
+        execution_id: "exec_2",
+        action_type: "scale_in",
+        reduce_only: 0,
+        time_in_force: "alo",
+        status: "accepted",
+        size: 0.2,
+        limit_price: 3_000,
+        stop_price: 2_950,
+      });
+
+      const result = yield* read();
+      assert.equal(result.pendingEntryNotionalUsd, 0.5 * 2_990 + 0.2 * 3_000);
+    }),
+  );
+
+  it.effect(
+    "excludes TP-shaped, reduce-only, stop-less, filled and cancelled records from the pending entry notional",
+    () =>
+      Effect.gen(function* () {
+        yield* migrated;
+        const sql = yield* SqlClient.SqlClient;
+
+        // The one record that counts: 0.1 @ 3000 = 300.
+        yield* seedExec(sql, {
+          execution_id: "exec_counted",
+          action_type: "open",
+          reduce_only: 0,
+          time_in_force: "alo",
+          status: "accepted",
+          size: 0.1,
+          limit_price: 3_000,
+          stop_price: 2_950,
+        });
+        // A take-profit as it is recorded today (reduce-only; the take-profit
+        // path does not write records at all, but if one ever lands it is a
+        // reduce-only order removing notional, not adding it).
+        yield* seedExec(sql, {
+          execution_id: "exec_tp",
+          action_type: "take_profit_3100",
+          reduce_only: 1,
+          time_in_force: "alo",
+          status: "accepted",
+          size: 0.9,
+          limit_price: 3_100,
+          stop_price: null,
+        });
+        // The defensive half: a take-profit-shaped record that somehow carries
+        // reduce_only = 0 still stays out of the sum (the NOT LIKE).
+        yield* seedExec(sql, {
+          execution_id: "exec_tp_defensive",
+          action_type: "take_profit_3100",
+          reduce_only: 0,
+          time_in_force: "alo",
+          status: "accepted",
+          size: 0.9,
+          limit_price: 3_100,
+          stop_price: 2_950,
+        });
+        // A resting patient exit: reduce-only, exposure-reducing.
+        yield* seedExec(sql, {
+          execution_id: "exec_exit",
+          action_type: "close",
+          reduce_only: 1,
+          time_in_force: "alo",
+          status: "accepted",
+          size: 0.9,
+          limit_price: 3_010,
+          stop_price: null,
+        });
+        // Filled, cancelled, and non-ALO records rest nothing.
+        yield* seedExec(sql, {
+          execution_id: "exec_filled",
+          action_type: "open",
+          reduce_only: 0,
+          time_in_force: "alo",
+          status: "filled",
+          size: 0.5,
+          limit_price: 2_990,
+          stop_price: 2_950,
+        });
+        yield* seedExec(sql, {
+          execution_id: "exec_cancelled",
+          action_type: "open",
+          reduce_only: 0,
+          time_in_force: "alo",
+          status: "cancelled",
+          size: 0.5,
+          limit_price: 2_990,
+          stop_price: 2_950,
+        });
+        yield* seedExec(sql, {
+          execution_id: "exec_ioc",
+          action_type: "open",
+          reduce_only: 0,
+          time_in_force: "ioc",
+          status: "accepted",
+          size: 0.5,
+          limit_price: 2_990,
+          stop_price: 2_950,
+        });
+        // An entry record without a stop: not the working loop's population
+        // (the mandatory-stop gate owns that defect) and not this sum's.
+        yield* seedExec(sql, {
+          execution_id: "exec_stopless",
+          action_type: "open",
+          reduce_only: 0,
+          time_in_force: "alo",
+          status: "accepted",
+          size: 0.5,
+          limit_price: 2_990,
+          stop_price: null,
+        });
+
+        const result = yield* read();
+        assert.equal(result.pendingEntryNotionalUsd, 300);
+      }),
+  );
+
+  it.effect("pending entry notional is zero when nothing rests", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+
+      const result = yield* read();
+      assert.equal(result.pendingEntryNotionalUsd, 0);
+    }),
+  );
 });

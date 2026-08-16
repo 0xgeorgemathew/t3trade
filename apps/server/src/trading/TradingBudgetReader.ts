@@ -5,9 +5,11 @@
  * `evaluateLossBudget` (in trading-contracts) is pure; it takes already-
  * reconciled inputs. This reader is the single place that gathers those
  * inputs for one mission: realised PnL + paid fees from `trading_fills`,
- * open-position risk from `trading_position_snapshots`, and pending-entry
- * risk from `trading_risk_reservations`. The reactor and preview both call
- * it so the budget they enforce is the same budget the reconciler wrote.
+ * open-position risk from `trading_position_snapshots`, pending-entry
+ * risk from `trading_risk_reservations`, and the notional of the accepted,
+ * unfilled resting entries the aggregate exposure caps count. The reactor
+ * and preview both call it so the budget they enforce is the same budget
+ * the reconciler wrote.
  *
  * Local tables are themselves reconciled truth (the reconciler wrote them
  * from canonical exchange state), so reading here does not violate "local
@@ -22,6 +24,7 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import type { LossBudgetInput } from "@t3tools/trading-contracts/loss-accounting";
+import { EXPOSURE_REDUCING_ACTION_TYPES } from "@t3tools/trading-contracts/protection";
 
 /** A small typed row we read back from `trading_fills`. */
 interface FillBudgetRow {
@@ -46,10 +49,29 @@ interface ReservationBudgetRow {
   readonly status: string;
 }
 
+/**
+ * The §16.2 budget inputs plus the one aggregate the loss equations do not
+ * carry: the notional of the mission's accepted, unfilled resting entries.
+ * The loss budget already sees those through `pendingEntries` (their risk is
+ * reserved); the leverage and gross-notional caps did not — two concurrent
+ * resting patient entries both fill into real gross exposure, so the caps
+ * must count them too (the plan-29 aggregate-cap fix).
+ */
+export interface TradingBudgetSnapshot extends LossBudgetInput {
+  /**
+   * Sum of `size * limit_price` over the resting patient entries the
+   * working-order loop owns: `status='accepted' AND time_in_force='alo' AND
+   * reduce_only=0` with a stop and a position-increasing action type. A
+   * filled, cancelled, or expired record rests nothing and counts nothing.
+   */
+  readonly pendingEntryNotionalUsd: number;
+}
+
 export interface TradingBudgetReaderShape {
   /**
    * Read the §16.2 budget inputs for one mission: realised PnL/fees from
-   * fills, open-position risk, and pending-entry risk from reservations.
+   * fills, open-position risk, and pending-entry risk from reservations,
+   * plus the resting-entry notional the aggregate caps count.
    * `maximumCumulativeLossUsd` is supplied by the caller (from the mission
    * authority) since it is policy, not reconciled state. `takerFeeRateBps`
    * threads the live fee rate (read once by the reactor) into the open-position
@@ -59,7 +81,7 @@ export interface TradingBudgetReaderShape {
     readonly missionId: string;
     readonly maximumCumulativeLossUsd: number;
     readonly takerFeeRateBps: number;
-  }) => Effect.Effect<LossBudgetInput, PersistenceSqlReadError>;
+  }) => Effect.Effect<TradingBudgetSnapshot, PersistenceSqlReadError>;
 }
 
 export class TradingBudgetReader extends Context.Service<
@@ -166,6 +188,30 @@ export const makeTradingBudgetReader = Effect.gen(function* () {
           stopSlippageReserveUsd: 0,
         }));
 
+      // Resting-entry notional for the aggregate caps (leverage, gross
+      // notional): the exact population the working-order loop owns — an
+      // accepted, unfilled, post-only position increase with its stop. The
+      // loss budget already aggregates these through their reservations;
+      // this is the notional view the exposure caps read.
+      //
+      // Take-profit ALOs are excluded twice over: the take-profit path places
+      // through `submitReduceOnlyAlo`, which never writes an execution record,
+      // and the `NOT LIKE` keeps a take-profit-shaped record out of this sum
+      // even if a future change starts recording one — the exposure caps must
+      // not double-count a reduce-only order that removes notional.
+      const pendingNotional = yield* sql<{ readonly pending_entry_notional_usd: number }>`
+        SELECT COALESCE(SUM(size * limit_price), 0) AS pending_entry_notional_usd
+        FROM trading_execution_records
+        WHERE mission_id = ${input.missionId}
+          AND status = 'accepted'
+          AND time_in_force = 'alo'
+          AND reduce_only = 0
+          AND stop_price IS NOT NULL
+          AND NOT ${sql.in("action_type", EXPOSURE_REDUCING_ACTION_TYPES)}
+          AND action_type NOT LIKE 'take_profit_%'
+      `.pipe(Effect.mapError(sqlFail("pendingNotional")));
+      const pendingEntryNotionalUsd = pendingNotional[0]?.pending_entry_notional_usd ?? 0;
+
       // `observedAt` is the freshness anchor for preview item 9 (account-and-
       // bbo-fresh) and for the reactor's `accountObservedAt`. It must reflect
       // when the position/account snapshot was actually reconciled, not the
@@ -181,8 +227,9 @@ export const makeTradingBudgetReader = Effect.gen(function* () {
         allPaidTradingFeesUsd,
         openPositions,
         pendingEntries,
+        pendingEntryNotionalUsd,
         observedAt,
-      } satisfies LossBudgetInput;
+      } satisfies TradingBudgetSnapshot;
     });
 
   return { read } satisfies TradingBudgetReaderShape;
