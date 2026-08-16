@@ -672,7 +672,10 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
         output,
         "cost fees: 5 bps of entry notional (round trip; 1 of 1 trades priced)",
       );
-      assert.include(output, "cost spread, entry side: n/a (0 of 1 trades with entry quotes)");
+      // "entry quotes" became "an entry book" when the quote table went
+      // (c09da94fe); this assertion was not updated with it and has been
+      // failing on a clean tree ever since.
+      assert.include(output, "cost spread, entry side: n/a (0 of 1 trades with an entry book)");
       assert.include(output, "cost spread/slippage, exit side: n/a (no exit quotes recorded)");
       assert.include(output, "plan versions published: 1");
       assert.include(output, "wakes taken: 1");

@@ -36,6 +36,21 @@ describe("readMissionMode", () => {
     });
   });
 
+  it("finds the order behind an earlier clause that also has a verb", () => {
+    // An operator writes more than one sentence, and the first verb in a
+    // mandate is usually in front of the market. Reading only the first match
+    // dropped this mission to discretionary without telling anyone.
+    const mode = readMissionMode("Trade ETH on the 1m. Execute the momentum playbook.");
+    assert.equal(mode.kind === "execute_strategy" && mode.strategy, "momentum");
+  });
+
+  it("does not let a name run across a sentence boundary", () => {
+    const mode = readMissionMode(
+      "Run this one on ETH. Follow the range_reversion playbook step by step.",
+    );
+    assert.equal(mode.kind === "execute_strategy" && mode.strategy, "range_reversion");
+  });
+
   it("stays discretionary for a name that is not an executable strategy", () => {
     // `classify` is how to read the regime and `standing_rules` is what holds
     // in every mode; neither is a procedure a mission could be pointed at as

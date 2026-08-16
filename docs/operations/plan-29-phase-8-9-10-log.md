@@ -21,9 +21,12 @@ true.
   9 most likely to be yours to overturn, and it is one migration away.
 - **Phase 9 has no tool subset and I think the step is wrong to ask for one.**
   All seven tools are needed in both modes. See the phase 9 entry.
-- **The panel does not show the mode.** An operator looking at a mission in
-  execute mode cannot see that it is. Server and contract carry it; no UI reads
-  it yet.
+- ~~**The panel does not show the mode.**~~ Closed — the header now says
+  `execute · momentum` when a mandate puts the mission in execute mode, derived
+  client-side from the same `readMissionMode` and the same string the server
+  reads. It was closed because the parse turned out to be wrong on multi-clause
+  mandates (see the last entry), and an unobservable derivation is how that
+  survived.
 - **Trigger prices and the reassessment horizon are draggable in the code and
   not wired to the chart.** `applyPlanDrag` handles both and is tested; the
   panel only wires stop and target, because a condition rule does not yet carry
@@ -858,3 +861,56 @@ not, and whether the panel is readable while something is actually moving.
 **If something breaks.** The harness run log in `state.sqlite` holds every tool
 call, its arguments and its error text — that is the first place to look, ahead
 of the server log.
+
+---
+
+## Out of band — a mandate is more than one sentence
+
+Three fixes after the plan ran out, in one commit.
+
+**Execute mode was lost to the first verb in the mandate.** `readMissionMode`
+ran `MODE_PATTERN.exec` once per pattern and took only the first match. An
+operator writes more than one clause, and the first verb in a trading mandate is
+almost always in front of the market rather than in front of the playbook:
+
+    "Trade ETH on the 1m. Execute the momentum playbook."  ->  discretionary
+    "Run this one on ETH. Follow the range_reversion playbook."  ->  discretionary
+
+Both are plain instructions to execute a named playbook and both came back
+discretionary, silently — the mission simply thought for itself and nobody was
+told it had been asked not to. `.` was also in the name character class, so a
+capture ran straight through a full stop and swallowed the next sentence's verb
+along with it.
+
+Both patterns are now global, every match is tried, and `.` is out of the class.
+`matchAll` iterates a copy, so the module-level patterns keep no `lastIndex`
+between calls. Two tests, one per mandate above. The narrowness the step wanted
+is untouched: "momentum has been working lately, trade ETH" is still
+discretionary, and its test still passes.
+
+**The panel now says when a mission is in execute mode.** This was in the open
+questions as a gap and it is really the other half of the bug above: a mode
+derived from prose that nobody can see derived is a mode nobody can correct. The
+mandate is already on `OrchestrationTradingMission`, so the panel calls the same
+`readMissionMode` the server calls, against the same string — there is no second
+source to disagree. It renders in the band-legend register at the right of the
+header row (`execute · momentum`), and nothing at all in discretionary mode,
+which is the default and not worth a chip. Verified in the harness at 1280 and
+375: 10px, muted, no overflow at either width.
+
+Deriving it client-side is also what makes the parse falsifiable in the soak —
+if a mandate does not put the mission in execute mode, the header says so before
+the first wake rather than after the session.
+
+**`bin.test.ts`'s session-report failure is fixed, and it was never phase 10's.**
+It has been failing on a clean tree across four sessions. The cause: `c09da94fe`
+("the quote table goes") changed the wording from "trades with entry quotes" to
+"trades with an entry book", and this one assertion in `bin.test.ts` was not
+updated with it — `sessionReport.test.ts` was. Step 10.2 moved the line but did
+not touch its text, so the diagnosis in the phase 10 entry was right. One string.
+
+**Numbers.** Typecheck 0 errors. Full run `apps/server/src` +
+`packages/trading-contracts`: 3,044 tests, 1 failed before this commit (the
+`bin.test.ts` assertion above), 0 after. `apps/web/src/components/trading` 262
+passed. Lint unchanged at 35 warnings and the same 2 pre-existing errors in the
+untracked marketing script.

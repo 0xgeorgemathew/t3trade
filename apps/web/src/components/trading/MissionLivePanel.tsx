@@ -60,6 +60,7 @@ import type {
 import { ChevronDown, ChevronUp, ExternalLinkIcon } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 
+import { readMissionMode } from "@t3tools/trading-contracts/mode";
 import { runtimeTimeframe } from "@t3tools/trading-contracts/strategy";
 
 import type { ChartInterval } from "~/lib/tradingMarketChartState";
@@ -323,6 +324,13 @@ export function MissionLivePanel({
   // a plan published on 15m drew a 15m chart of a mission the runtime was
   // waking on 1m structure — two pictures of one mission that disagreed.
   const interval: ChartInterval = runtimeTimeframe(mission.instruction);
+  // Phase 9's mode is derived from the mandate rather than stored, which is the
+  // right call and leaves one gap: nothing on screen said whether the sentence
+  // the operator typed actually put the mission in execute mode. A mode read
+  // out of prose that nobody can see read is a mode nobody can correct. Derived
+  // here from the same function the server derives it from, off the same
+  // `instruction`, so the panel cannot disagree with the model's own read.
+  const mode = readMissionMode(mission.instruction);
   const chart = useTradingMarketChart(environmentId, mission.market, interval, {
     enabled: wantsChart,
   });
@@ -527,6 +535,15 @@ export function MissionLivePanel({
           </>
         )}
         <span className="ml-auto flex items-center gap-3">
+          {mode.kind === "execute_strategy" ? (
+            <span
+              data-testid="mission-mode"
+              className={BAND_LEGEND_CLASS}
+              title="This mission executes a named playbook rather than deciding for itself. It is read from the mandate."
+            >
+              execute · {mode.strategy.replaceAll("_", " ")}
+            </span>
+          ) : null}
           {delayedRead === null ? null : (
             <span
               className="text-armed"

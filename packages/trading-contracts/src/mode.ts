@@ -70,11 +70,19 @@ export const strategyModeDoctrine = (strategy: TradingPlaybookName): string =>
  * Deliberately narrow. A mandate that merely mentions momentum ("momentum has
  * been working") must not silently become a standing order to trade it, so the
  * verb has to be there and the name has to follow it.
+ *
+ * Global, and every match is tried, because an operator writes more than one
+ * clause: "Trade ETH on the 1m. Execute the momentum playbook" puts a verb in
+ * front of "ETH" before it puts one in front of the name, and reading only the
+ * first match would drop the mission back to discretionary without saying so.
+ *
+ * `.` is not in the name class for the same reason — with it the capture runs
+ * straight through a full stop and swallows the next sentence's verb.
  */
-const MODE_PATTERN = /\b(?:execute|run|follow|trade)\s+(?:the\s+)?([a-z][a-z ._-]{2,40})/i;
+const MODE_PATTERN = /\b(?:execute|run|follow|trade)\s+(?:the\s+)?([a-z][a-z _-]{2,40})/gi;
 
 /** `strategy: momentum` — the explicit form, for a mandate written by a tool. */
-const EXPLICIT_PATTERN = /\bstrategy\s*[:=]\s*([a-z][a-z ._-]{2,24})\b/i;
+const EXPLICIT_PATTERN = /\bstrategy\s*[:=]\s*([a-z][a-z _-]{2,24})\b/gi;
 
 const normalise = (raw: string): string =>
   raw
@@ -109,12 +117,14 @@ const candidateNames = (phrase: string): ReadonlyArray<string> => {
  */
 export function readMissionMode(instruction: string): TradingMissionModeState {
   for (const pattern of [EXPLICIT_PATTERN, MODE_PATTERN]) {
-    const match = pattern.exec(instruction);
-    if (match === null) continue;
-    for (const name of candidateNames(match[1] ?? "")) {
-      const strategy = EXECUTABLE_STRATEGIES.find((candidate) => candidate === name);
-      if (strategy !== undefined) {
-        return { kind: "execute_strategy", strategy, doctrine: strategyModeDoctrine(strategy) };
+    // `matchAll` iterates a copy, so the module-level patterns keep no
+    // `lastIndex` between calls.
+    for (const match of instruction.matchAll(pattern)) {
+      for (const name of candidateNames(match[1] ?? "")) {
+        const strategy = EXECUTABLE_STRATEGIES.find((candidate) => candidate === name);
+        if (strategy !== undefined) {
+          return { kind: "execute_strategy", strategy, doctrine: strategyModeDoctrine(strategy) };
+        }
       }
     }
   }
