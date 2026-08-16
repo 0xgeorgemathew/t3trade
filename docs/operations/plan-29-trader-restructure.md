@@ -380,11 +380,35 @@ vocabulary: they no longer instruct the model in type names it cannot write.
 
 Toolkit is still 12 tools at 3,640 description chars.
 
-### Step 6.4 — `journal(note?)`
+### Step 6.4 — `journal(note?)` — LANDED
 
 Append-only. This is the deliberate replacement for the memory role the plan
 document was accidentally serving, and it is the same object the UI timeline
 renders.
+
+One tool for both halves, because they are one vocabulary: `note` is the field
+the model writes and `note` is the field it reads back, in `entries`. A
+separate read tool would be a second name for the same thing and a second
+chance to drift — the split 6.3's review turned on.
+
+`trading_journal` with a `note` appends; without one it reads. The table
+(`trading_journal`, migration 066) has no update and no delete, which is the
+point: the plan document is replaced on every revision, so everything the model
+wanted to remember across revisions was being smuggled into `because` and lost
+with it.
+
+Two refusals are rules about the note (`note_empty`, `note_too_long` — refused,
+never truncated, since a note cut mid-sentence reads back as something the
+model did not say) and one is not (`mission_not_found`, the mission ending
+underneath the call). All three carry a `recovery` from `classifyFailure`, and
+the journal rides the refusal so a rejected note costs no second call.
+
+The notes join the wakes, the stop steps and the publishes on
+`missionTimeline`, read at projection-read time like every other source. They
+draw in muted grey rather than the armed amber a triggered wake uses — a note
+is the model talking, not the market moving.
+
+Toolkit is 13 tools at 3,928 description chars.
 
 ### Step 6.5 — Retire the rest
 

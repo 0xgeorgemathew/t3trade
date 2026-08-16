@@ -33,6 +33,7 @@ import {
 } from "@t3tools/trading-contracts/tools";
 import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
+import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
 import {
   TRADING_CANCEL_ORDER_TOOL,
   TRADING_CLOSE_POSITION_TOOL,
@@ -55,6 +56,7 @@ export const TRADING_TOOL_NAMES: ReadonlyArray<string> = [
   TRADING_GET_TARGET_CALIBRATION_TOOL,
   TRADING_GET_PLAYBOOK_TOOL,
   TRADING_WATCH_TOOL,
+  TRADING_JOURNAL_TOOL,
   TRADING_LIST_WATCHES_TOOL,
   TRADING_CANCEL_WATCH_TOOL,
   TRADING_ENTER_TOOL,

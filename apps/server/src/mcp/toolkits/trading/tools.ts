@@ -36,6 +36,7 @@ import {
   TradingReducePositionInput,
 } from "@t3tools/trading-contracts/exit";
 import { Playbook } from "@t3tools/trading-contracts/playbook";
+import { TradingJournalInput, TradingJournalResult } from "@t3tools/trading-contracts/journal";
 import { TargetCalibration } from "@t3tools/trading-contracts/calibration";
 import * as Crypto from "effect/Crypto";
 import { Tool, Toolkit } from "effect/unstable/ai";
@@ -55,6 +56,7 @@ import { TradingEntryService } from "../../../trading/TradingEntryService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
 import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
+import { TradingJournalService } from "../../../trading/TradingJournalService.ts";
 import { TradingWakeupComposer } from "../../../trading/TradingWakeupComposer.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 
@@ -92,6 +94,8 @@ const dependencies = [
   // `trading_look` is the composer's gather step, returned rather than
   // rendered (plan 29 step 6.1).
   TradingWakeupComposer,
+  // `trading_journal` appends to and reads back the mission's memory.
+  TradingJournalService,
   SqlClient.SqlClient,
 ];
 
@@ -180,6 +184,22 @@ export const TradingCancelWatchTool = Tool.make("trading_cancel_watch", {
   .annotate(Tool.Title, "Cancel watch")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+export const TradingJournalTool = Tool.make("trading_journal", {
+  description:
+    "Append one `note` to the mission's memory; omit `note` to read it back. Append-only — a note survives the plan revisions that overwrite `because`, so write what will still matter next turn: a level that chopped you, a read you are waiting on. Every call returns `entries`, newest first.",
+  parameters: TradingJournalInput,
+  success: TradingJournalResult,
+  failure: TradingToolRejectedError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Journal")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  // A second identical call appends a second note. Reading (no `note`) is
+  // idempotent, but the annotation describes the tool, not the branch.
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
@@ -277,6 +297,7 @@ export const TradingToolkit = Toolkit.make(
   TradingGetTargetCalibrationTool,
   TradingGetPlaybookTool,
   TradingWatchTool,
+  TradingJournalTool,
   TradingListWatchesTool,
   TradingCancelWatchTool,
   TradingEnterTool,

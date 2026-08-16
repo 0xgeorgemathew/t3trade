@@ -788,6 +788,7 @@ describe("subpath exports", () => {
         "./mission",
         "./strategy",
         "./watch",
+        "./journal",
         "./events",
         "./tools",
         "./market",

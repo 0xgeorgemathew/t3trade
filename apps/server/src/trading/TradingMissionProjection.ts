@@ -253,6 +253,12 @@ interface StopAdjustmentRow {
   readonly adjusted_at: number;
 }
 
+/** One journal note (migration 066). */
+interface JournalNoteRow {
+  readonly note: string;
+  readonly created_at: number;
+}
+
 /** A strategy publish. */
 interface StrategyVersionRow {
   readonly version: number;
@@ -260,7 +266,7 @@ interface StrategyVersionRow {
 }
 
 /**
- * Merge the three history sources into one bounded, newest-first list.
+ * Merge the history sources into one bounded, newest-first list.
  *
  * Pure, and separate from the queries, because the merge is where the rules
  * actually live: which moment each row is filed under, what it reads as, and
@@ -272,6 +278,7 @@ export function buildMissionTimeline(input: {
   readonly wakes: ReadonlyArray<HarnessRunRow>;
   readonly stopAdjustments: ReadonlyArray<StopAdjustmentRow>;
   readonly publishes: ReadonlyArray<StrategyVersionRow>;
+  readonly journal?: ReadonlyArray<JournalNoteRow>;
 }): ReadonlyArray<TradingMissionTimelineEntry> {
   const entries: Array<TradingMissionTimelineEntry & { readonly atMillis: number }> = [];
 
@@ -298,6 +305,17 @@ export function buildMissionTimeline(input: {
       kind: "stop_adjusted",
       label: adjustment.justification,
       priceLevel: adjustment.new_stop_price,
+    });
+  }
+
+  // The model's own words, on the same axis as what it did with them — the
+  // note is already prose, so it is the label verbatim (plan 29 step 6.4).
+  for (const note of input.journal ?? []) {
+    entries.push({
+      atMillis: note.created_at,
+      at: toIso(note.created_at),
+      kind: "journal",
+      label: note.note,
     });
   }
 
@@ -646,7 +664,13 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         ORDER BY created_at DESC LIMIT ${MISSION_TIMELINE_LIMIT}
       `.pipe(Effect.mapError(sqlFail("timeline:publishes")));
 
-      return buildMissionTimeline({ wakes, stopAdjustments, publishes });
+      const journal = yield* sql<JournalNoteRow>`
+        SELECT note, created_at
+        FROM trading_journal WHERE mission_id = ${missionId}
+        ORDER BY created_at DESC LIMIT ${MISSION_TIMELINE_LIMIT}
+      `.pipe(Effect.mapError(sqlFail("timeline:journal")));
+
+      return buildMissionTimeline({ wakes, stopAdjustments, publishes, journal });
     });
 
   const getByThreadId: TradingMissionProjectionShape["getByThreadId"] = (threadId) =>

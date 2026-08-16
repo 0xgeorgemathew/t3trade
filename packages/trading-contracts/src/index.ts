@@ -4,6 +4,7 @@ export * from "./authority.ts";
 export * from "./strategy.ts";
 export * from "./mission.ts";
 export * from "./watch.ts";
+export * from "./journal.ts";
 export * from "./events.ts";
 export * from "./tools.ts";
 export * from "./market.ts";

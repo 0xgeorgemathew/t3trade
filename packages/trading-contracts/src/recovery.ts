@@ -152,6 +152,14 @@ export function classifyFailure(failure: ClassifiableFailure): FailureRecovery {
         ? permanent("read_state", "watch_mission_not_found")
         : permanent("stand_down", `watch_${failure.reason ?? "refused"}`);
 
+    // A note `trading_journal` will not append (plan 29 step 6.4). Two of the
+    // three are rules about the note itself, so the fix is to write a
+    // different note; the third is the mission ending underneath the call.
+    case "TradingJournalRefusal":
+      return failure.reason === "mission_not_found"
+        ? permanent("read_state", "journal_mission_not_found")
+        : permanent("stand_down", `journal_${failure.reason ?? "refused"}`);
+
     default:
       return permanent("read_state", failure.reason ?? failure.tag ?? "unknown");
   }

@@ -50,6 +50,7 @@ import { TradingStopAdjustmentServiceLive } from "../../../trading/TradingStopAd
 import { TradingStrategyServiceLive } from "../../../trading/TradingStrategyService.ts";
 import { TradingTradeHistoryServiceLive } from "../../../trading/TradingTradeHistoryService.ts";
 import { TradingWatchServiceLive } from "../../../trading/TradingWatchService.ts";
+import { TradingJournalServiceLive } from "../../../trading/TradingJournalService.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpSessionRegistry from "../../McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
@@ -316,6 +317,7 @@ const tradingLayerOverExchange = (fake: FakeExchange) =>
     TradingMissionServiceLive,
     TradingStrategyServiceLive,
     TradingWatchServiceLive,
+    TradingJournalServiceLive,
     TradingTradeHistoryServiceLive,
     TradingCalibrationServiceLive,
     // `trading_adjust_stop` runs for real against the fake book.
@@ -516,7 +518,7 @@ const withMcpServer = <A, E>(
         );
       const httpClient = yield* HttpClient.HttpClient;
 
-      yield* runMigrations({ toMigrationInclusive: 65 }).pipe(Effect.provide(built), Effect.orDie);
+      yield* runMigrations({ toMigrationInclusive: 66 }).pipe(Effect.provide(built), Effect.orDie);
       yield* missions
         .createMission({
           missionId: MISSION_ID,
@@ -887,6 +889,66 @@ it.effect("refuses a condition it cannot arm, and arms nothing", () =>
       const listed = yield* callTool(BOUND_THREAD, "trading_list_watches", {});
       assert.equal(listed.result.structuredContent.length, 0);
       assert.deepStrictEqual(dispatchedCommands, []);
+    }),
+  ),
+);
+
+// Plan 29 step 6.4: the journal is append-only, and one tool both writes and
+// reads it — the field the model writes is the field it reads back.
+it.effect("appends a note and reads it back in the words it was written in", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      const first = yield* callTool(BOUND_THREAD, "trading_journal", {
+        missionId: MISSION_ID,
+        // The leading space is deliberate: a note is normalised, not rejected,
+        // for whitespace it did not mean.
+        note: "  3200 chopped me twice; waiting for a 15m close above it ",
+      });
+      assert.equal(first.result.isError, false);
+      assert.equal(first.result.structuredContent.outcome, "noted");
+      assert.equal(
+        first.result.structuredContent.entry.note,
+        "3200 chopped me twice; waiting for a 15m close above it",
+      );
+
+      yield* callTool(BOUND_THREAD, "trading_journal", { note: "the 1m read disagrees" });
+
+      // A call with no `note` writes nothing and hands back what is there,
+      // newest first.
+      const read = yield* callTool(BOUND_THREAD, "trading_journal", {});
+      assert.equal(read.result.structuredContent.outcome, "read");
+      assert.deepStrictEqual(
+        read.result.structuredContent.entries.map((entry: { note: string }) => entry.note),
+        ["the 1m read disagrees", "3200 chopped me twice; waiting for a 15m close above it"],
+      );
+      // Nothing was replaced: the first note is still exactly what it was.
+      assert.equal(read.result.structuredContent.entries.length, 2);
+      assert.equal(read.result.structuredContent.entry, undefined);
+    }),
+  ),
+);
+
+// The refusal carries a `recovery` from `classifyFailure`, like every other
+// refusal in the toolkit — and it still returns the journal, so a model told
+// its note was too long does not need a second call to see what it has.
+it.effect("refuses a note it will not record, and records nothing", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      yield* callTool(BOUND_THREAD, "trading_journal", { note: "kept" });
+
+      for (const bad of ["   ", "x".repeat(1_001)]) {
+        const refused = yield* callTool(BOUND_THREAD, "trading_journal", { note: bad });
+        assert.equal(refused.result.isError, false);
+        const body = refused.result.structuredContent;
+        assert.equal(body.outcome, "refused");
+        assert.equal(body.recovery.action, "stand_down");
+        assert.equal(body.recovery.retryable, false);
+        // The journal rides the refusal.
+        assert.deepStrictEqual(
+          body.entries.map((entry: { note: string }) => entry.note),
+          ["kept"],
+        );
+      }
     }),
   ),
 );

@@ -192,7 +192,7 @@ export type TradingMissionResultView = typeof TradingMissionResultView.Type;
  */
 export const TradingMissionTimelineEntry = Schema.Struct({
   at: IsoDateTime,
-  kind: Schema.Literals(["wake", "stop_adjusted", "strategy_published"]),
+  kind: Schema.Literals(["wake", "stop_adjusted", "strategy_published", "journal"]),
   /** Already-composed prose, so the client renders rather than interprets. */
   label: TrimmedNonEmptyString,
   /** The price the event happened at, where it had one — a stop step's new stop. */

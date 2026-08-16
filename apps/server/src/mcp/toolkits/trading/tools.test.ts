@@ -10,6 +10,7 @@ import {
 } from "@t3tools/trading-contracts/tools";
 import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
+import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
 import {
   TRADING_CANCEL_ORDER_TOOL,
   TRADING_CLOSE_POSITION_TOOL,
@@ -32,6 +33,7 @@ it("exposes one read, the mission tools, and the watch tools", () => {
       TRADING_GET_TARGET_CALIBRATION_TOOL,
       TRADING_GET_PLAYBOOK_TOOL,
       TRADING_WATCH_TOOL,
+      TRADING_JOURNAL_TOOL,
       TRADING_ENTER_TOOL,
       TRADING_CLOSE_POSITION_TOOL,
       TRADING_REDUCE_POSITION_TOOL,
@@ -225,7 +227,7 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 
-  expect(tools.length, "expected exactly 12 trading tools").toBe(12);
+  expect(tools.length, "expected exactly 13 trading tools").toBe(13);
 
   const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
   expect(total, "total description chars must stay under 4,000").toBeLessThan(4_000);

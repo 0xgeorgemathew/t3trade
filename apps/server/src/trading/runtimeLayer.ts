@@ -40,6 +40,7 @@ import { TradingStrategyServiceLive } from "./TradingStrategyService.ts";
 import { TradingTurnCoordinatorLive } from "./TradingTurnCoordinator.ts";
 import { TradingWakeupComposerLive } from "./TradingWakeupComposer.ts";
 import { TradingWatchServiceLive } from "./TradingWatchService.ts";
+import { TradingJournalServiceLive } from "./TradingJournalService.ts";
 import { TradingBudgetReaderLive } from "./TradingBudgetReader.ts";
 import { TradingFillReconcilerLive } from "./TradingFillReconciler.ts";
 import { TradingProtectionServiceLive } from "./TradingProtectionService.ts";
@@ -182,6 +183,8 @@ export const TradingLayerLive = Layer.mergeAll(
   TradingMissionSweepLive.pipe(Layer.provide(TradingMissionServiceLive)),
   TradingStrategyServiceLive,
   TradingWatchServiceLive,
+  // `trading_journal` appends to and reads back the mission's memory.
+  TradingJournalServiceLive,
   TradingEventInboxLive,
   // `trading_look` reads the book, the mark, and the fee rate — all
   // through the gateway the read layer already builds.

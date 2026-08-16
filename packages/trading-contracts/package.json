@@ -32,6 +32,10 @@
       "types": "./src/watch.ts",
       "import": "./src/watch.ts"
     },
+    "./journal": {
+      "types": "./src/journal.ts",
+      "import": "./src/journal.ts"
+    },
     "./events": {
       "types": "./src/events.ts",
       "import": "./src/events.ts"

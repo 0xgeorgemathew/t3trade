@@ -15,6 +15,12 @@ import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
 import type { TradingUrgency } from "@t3tools/trading-contracts/strategy";
 import { classifyFailure } from "@t3tools/trading-contracts/recovery";
 import { isWatchRefusal, toMarketWatch } from "@t3tools/trading-contracts/watch";
+import {
+  isJournalRefusal,
+  readJournalNote,
+  TRADING_JOURNAL_READ_LIMIT,
+  type TradingJournalEntry,
+} from "@t3tools/trading-contracts/journal";
 import type { TradingLookInput, TradingObservation } from "@t3tools/trading-contracts/observation";
 import { DEFAULT_TRADING_MARKET, type TradingMarket } from "@t3tools/trading-contracts/primitives";
 import { CommandId, ThreadId, TradingMissionId } from "@t3tools/contracts";
@@ -38,6 +44,7 @@ import { TradingEntryService } from "../../../trading/TradingEntryService.ts";
 import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
+import { TradingJournalService } from "../../../trading/TradingJournalService.ts";
 import { TradingWakeupComposer } from "../../../trading/TradingWakeupComposer.ts";
 import { allocateExecutionSequence } from "../../../trading/TradingExecutionSequence.ts";
 import { recordStructureRead } from "../../../trading/TradingLevelHistory.ts";
@@ -1257,6 +1264,71 @@ const handlers = {
         outcome: "armed" as const,
         watch: registered.watch,
         ...(registered.replaced === undefined ? {} : { replaced: registered.replaced }),
+      };
+    }),
+
+  /**
+   * Append one note, or read the recent ones back.
+   *
+   * One tool for both because they are one vocabulary: the field the model
+   * writes (`note`) is the field it reads back, in the entries it wrote. A
+   * separate read tool would be a second name for the same thing and a second
+   * chance to drift.
+   */
+  trading_journal: (input) =>
+    Effect.gen(function* () {
+      const { mission } = yield* resolveBoundCall(input.missionId);
+      const journal = yield* TradingJournalService;
+
+      const read = (
+        entries: ReadonlyArray<TradingJournalEntry>,
+      ): { readonly outcome: "read"; readonly entries: ReadonlyArray<TradingJournalEntry> } => ({
+        outcome: "read",
+        entries,
+      });
+
+      const entries = yield* journal
+        .list({ missionId: mission.id })
+        .pipe(Effect.catchTag("PersistenceSqlError", (error) => Effect.die(error)));
+
+      // No note is a read. Nothing is written and nothing can be refused.
+      if (input.note === undefined) return read(entries);
+
+      // The note is normalised before anything is written, so a note that
+      // cannot be recorded costs no transaction. What to do about it is the
+      // classifier's answer, not this handler's — the same rule the watch
+      // refusals moved onto in step 6.3.
+      const note = readJournalNote(input.note);
+      if (isJournalRefusal(note)) {
+        return {
+          outcome: "refused" as const,
+          reason: note.code,
+          detail: note.detail,
+          recovery: classifyFailure({ tag: "TradingJournalRefusal", reason: note.code }),
+          entries,
+        };
+      }
+
+      const appended = yield* journal
+        .append({ missionId: mission.id, note })
+        .pipe(Effect.catchTag("PersistenceSqlError", (error) => Effect.die(error)));
+      if (appended === null) {
+        return {
+          outcome: "refused" as const,
+          reason: "mission_not_found" as const,
+          detail: "this thread's mission is no longer active; nothing was recorded",
+          recovery: classifyFailure({
+            tag: "TradingJournalRefusal",
+            reason: "mission_not_found",
+          }),
+          entries,
+        };
+      }
+
+      return {
+        outcome: "noted" as const,
+        entry: appended,
+        entries: [appended, ...entries].slice(0, TRADING_JOURNAL_READ_LIMIT),
       };
     }),
 

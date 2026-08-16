@@ -135,6 +135,10 @@ function pastMarkerColor(marker: {
   if (marker.failed === true) return "var(--color-loss)";
   if (marker.kind === "stop_adjusted") return "var(--color-loss)";
   if (marker.kind === "strategy_published") return "var(--color-foreground)";
+  // A note is the model talking, not the market moving. Drawing it in the
+  // amber a triggered wake uses would put a level on the rug that never
+  // existed.
+  if (marker.kind === "journal") return "var(--color-muted-foreground)";
   // A wake the market caused is the one worth seeing; a scheduled one is the
   // backstop, and the rug should read as quieter where the clock did the work.
   return marker.cause === "scheduled_reassessment"
