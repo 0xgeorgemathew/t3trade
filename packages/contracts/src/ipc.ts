@@ -88,7 +88,12 @@ import type {
   OrchestrationSubscribeThreadInput,
   OrchestrationThreadStreamItem,
 } from "./orchestration.ts";
-import type { TradingMarketChartView, TradingMissionSnapshot } from "./trading.ts";
+import type {
+  OrchestrationReviseTradingPlanInput,
+  OrchestrationReviseTradingPlanResult,
+  TradingMarketChartView,
+  TradingMissionSnapshot,
+} from "./trading.ts";
 import { EnvironmentId } from "./baseSchemas.ts";
 import { AuthAccessTokenResult, AuthSessionState, AuthWebSocketTicketResult } from "./auth.ts";
 import { AdvertisedEndpoint } from "./remoteAccess.ts";
@@ -1268,6 +1273,9 @@ export interface EnvironmentApi {
     getTradingMarketChart: (
       input: OrchestrationGetTradingMarketChartInput,
     ) => Promise<TradingMarketChartView>;
+    reviseTradingPlan: (
+      input: OrchestrationReviseTradingPlanInput,
+    ) => Promise<OrchestrationReviseTradingPlanResult>;
     subscribeShell: (
       callback: (event: OrchestrationShellStreamItem) => void,
       options?: {

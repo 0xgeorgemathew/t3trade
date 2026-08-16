@@ -84,6 +84,15 @@ export interface PlanProtectionOutcome {
   readonly stopPrice: number | null;
   /** Why the plan's stop was not applied, when it was not. */
   readonly refusal?: string | undefined;
+  /**
+   * Where the protective trigger actually rests, as this pass observed it.
+   *
+   * Step 8.4 needs it and the model never did: when the envelope refuses the
+   * plan's stop, the plan states one price and the exchange holds another, and
+   * a chart drawing only the plan's would show the operator a stop they do not
+   * have. Undefined before the pass has a position to measure.
+   */
+  readonly restingStopPrice?: number | null | undefined;
   readonly stopOutcome?: ProtectionOutcome | undefined;
   /** The take-profit half's own outcome, verbatim. */
   readonly target: TakeProfitOutcome;
@@ -330,6 +339,7 @@ export const makeTradingPlanProtectionService = Effect.gen(function* () {
         return {
           stopStatus: "unchanged",
           stopPrice: planStopPrice,
+          restingStopPrice: resting,
           target,
         } satisfies PlanProtectionOutcome;
       }
@@ -370,6 +380,7 @@ export const makeTradingPlanProtectionService = Effect.gen(function* () {
         return {
           stopStatus: "refused",
           stopPrice: planStopPrice,
+          restingStopPrice: resting,
           refusal,
           target,
         } satisfies PlanProtectionOutcome;
@@ -405,6 +416,9 @@ export const makeTradingPlanProtectionService = Effect.gen(function* () {
       return {
         stopStatus: fullyCovered ? "moved" : "repaired",
         stopPrice: planStopPrice,
+        // The move confirmed unless it escalated, in which case the previous
+        // stop is what is still resting.
+        restingStopPrice: stopOutcome.status === "escalate" ? resting : planStopPrice,
         ...(stopOutcome.status === "escalate"
           ? {
               refusal:

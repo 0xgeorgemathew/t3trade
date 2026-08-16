@@ -40,6 +40,8 @@ import {
   TradingMissionStopAdjustedPayload,
   TradingExecutionRequestedPayload,
   TradingMarketChartView,
+  OrchestrationReviseTradingPlanInput,
+  OrchestrationReviseTradingPlanResult,
 } from "./trading.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
@@ -51,6 +53,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   getTradingMissionSnapshot: "orchestration.getTradingMissionSnapshot",
   getTradingMarketChart: "orchestration.getTradingMarketChart",
+  reviseTradingPlan: "orchestration.reviseTradingPlan",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
 } as const;
@@ -1808,6 +1811,10 @@ export const OrchestrationRpcSchemas = {
   getTradingMarketChart: {
     input: OrchestrationGetTradingMarketChartInput,
     output: TradingMarketChartView,
+  },
+  reviseTradingPlan: {
+    input: OrchestrationReviseTradingPlanInput,
+    output: OrchestrationReviseTradingPlanResult,
   },
   subscribeThread: {
     input: OrchestrationSubscribeThreadInput,

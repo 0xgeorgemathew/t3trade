@@ -76,6 +76,10 @@ import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngi
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { TradingMarketChart } from "./trading/TradingMarketChart.ts";
 import { isChartReadEntitled } from "./trading/chartReadEntitlement.ts";
+import { TradingMissionService } from "./trading/TradingMissionService.ts";
+import { TradingJournalService } from "./trading/TradingJournalService.ts";
+import { publishPlanWithAftermath } from "./trading/TradingPlanPublication.ts";
+import { composePlanRevisionNote } from "./trading/TradingPlanRevisionNote.ts";
 import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
 import { TradingMissionProjection } from "./trading/TradingMissionProjection.ts";
 import { TradingAutoMission } from "./trading/TradingAutoMission.ts";
@@ -1490,6 +1494,97 @@ const makeWsRpcLayer = (
                     message: "Failed to load the trading market chart",
                     cause,
                   }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        // Plan 29 step 8.4: a drag on the chart is a `plan()` revision. It goes
+        // through the same `publishPlanWithAftermath` the model's `trading_plan`
+        // goes through — the same optimistic lock, the same exchange reconcile,
+        // the same withdrawal of a resting entry — because a revision that only
+        // wrote the row would move the stop on screen and not on Hyperliquid.
+        [ORCHESTRATION_WS_METHODS.reviseTradingPlan]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.reviseTradingPlan,
+            Effect.gen(function* () {
+              const missions = yield* TradingMissionService;
+              const journal = yield* TradingJournalService;
+              const mission = yield* missions.getMission(input.missionId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationGetSnapshotError({
+                      message: `No mission ${input.missionId} to revise`,
+                      cause,
+                    }),
+                ),
+              );
+              const previousPlan = mission.strategy ?? null;
+              const outcome = yield* publishPlanWithAftermath({
+                threadId: mission.harness.threadId,
+                mission,
+                publish: {
+                  missionId: input.missionId,
+                  expectedMissionVersion: input.expectedMissionVersion,
+                  strategy: input.strategy,
+                },
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationGetSnapshotError({
+                      message: "The plan revision could not be published",
+                      cause,
+                    }),
+                ),
+              );
+              const published = outcome.published;
+              if (published.outcome !== "accepted") {
+                return {
+                  outcome: "rejected" as const,
+                  reason: published.reason,
+                  currentVersion: published.currentVersion,
+                  ...(published.detail === undefined ? {} : { detail: published.detail }),
+                };
+              }
+
+              // The operator dragged and said nothing, so the server says what
+              // moved. `author: "user"` is what stops this reading, on the
+              // model's next wake, as a decision the model made itself.
+              const note = composePlanRevisionNote(previousPlan, published.strategy);
+              if (note !== null) {
+                yield* journal
+                  .append({ missionId: input.missionId, note, author: "user" })
+                  // The plan is already durable and the exchange already moved;
+                  // a journal write that failed costs the model a sentence.
+                  .pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logWarning("could not journal an operator's plan revision", {
+                        missionId: input.missionId,
+                        cause,
+                      }),
+                    ),
+                  );
+              }
+
+              const reconciled = outcome.reconciled;
+              return {
+                outcome: "accepted" as const,
+                strategy: published.strategy,
+                warnings: outcome.warnings,
+                stop:
+                  reconciled === null
+                    ? null
+                    : {
+                        status: reconciled.stopStatus,
+                        planStopPrice: reconciled.stopPrice,
+                        restingStopPrice: reconciled.restingStopPrice ?? null,
+                        ...(reconciled.refusal === undefined
+                          ? {}
+                          : { refusal: reconciled.refusal }),
+                      },
+              };
+            }).pipe(
+              Effect.tapError((cause) =>
+                Effect.logError("trading plan revision failed", { cause }),
               ),
             ),
             { "rpc.aggregate": "orchestration" },

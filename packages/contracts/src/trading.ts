@@ -19,6 +19,8 @@ import {
   MarketWatch,
   TradingMarket,
   TradingPlanState,
+  PublishTradingPlanBody,
+  PublishTradingPlanRejection,
   PersistedWatch,
   PersistedWatchStatus,
   TradingAuthority,
@@ -639,3 +641,78 @@ export const TRADING_EVENT_TYPES = [
   "trading.mission-stop-adjusted",
   "trading.execution-requested",
 ] as const;
+
+// -- plan 29 step 8.4: the operator revises a plan by dragging a level -------
+
+/**
+ * How the stop half of a plan reconcile ended, as the workspace reads it.
+ *
+ * Mirrors the server's `PlanStopStatus` one literal for one literal. A drag
+ * that publishes is a `plan()` revision, so the operator is owed the same four
+ * outcomes the model is: nothing to protect, nothing stated, it moved, or the
+ * envelope refused to widen it.
+ */
+export const TradingPlanStopReconcileStatus = Schema.Literals([
+  "no_position",
+  "no_stop_stated",
+  "unchanged",
+  "moved",
+  "repaired",
+  "refused",
+]);
+export type TradingPlanStopReconcileStatus = typeof TradingPlanStopReconcileStatus.Type;
+
+/**
+ * What the exchange did with the revised plan's stop.
+ *
+ * `restingStopPrice` is the load-bearing field and the reason this is a
+ * structure rather than the warning sentence: when the reconcile refuses, the
+ * plan says one price and the exchange rests at another, and a chart that drew
+ * only the plan's would be showing the operator a stop they do not have.
+ */
+export const TradingPlanStopReconcileView = Schema.Struct({
+  status: TradingPlanStopReconcileStatus,
+  /** The stop price the plan stated, when it stated one. */
+  planStopPrice: Schema.NullOr(Schema.Number),
+  /** Where the stop actually rests on the exchange. Null when nothing rests. */
+  restingStopPrice: Schema.NullOr(Schema.Number),
+  /** The refusal in the system's own words, when the stop was refused. */
+  refusal: Schema.optional(TrimmedNonEmptyString),
+});
+export type TradingPlanStopReconcileView = typeof TradingPlanStopReconcileView.Type;
+
+/**
+ * A drag on the chart, on its way to `publishPlan`.
+ *
+ * The strategy is the eight authored fields verbatim — the same body the model
+ * publishes, with exactly one leaf replaced. There is deliberately no
+ * "which level moved" field: the server diffs the accepted plan against the
+ * one it replaced to compose the journal note, so the note is a fact about what
+ * happened rather than a caption the client supplied.
+ */
+export const OrchestrationReviseTradingPlanInput = Schema.Struct({
+  missionId: TradingMissionId,
+  /** The mission version the panel last read. A stale one is refused, never retried. */
+  expectedMissionVersion: NonNegativeInt,
+  strategy: PublishTradingPlanBody,
+});
+export type OrchestrationReviseTradingPlanInput = typeof OrchestrationReviseTradingPlanInput.Type;
+
+export const OrchestrationReviseTradingPlanResult = Schema.Union([
+  Schema.Struct({
+    outcome: Schema.Literal("accepted"),
+    strategy: TradingPlanState,
+    /** Everything the publish and its aftermath want said, in prose. */
+    warnings: Schema.Array(Schema.String),
+    /** Null when the publish never reached the exchange reconcile. */
+    stop: Schema.NullOr(TradingPlanStopReconcileView),
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("rejected"),
+    reason: PublishTradingPlanRejection,
+    /** The version the server holds, so the panel can re-read and re-drag. */
+    currentVersion: NonNegativeInt,
+    detail: Schema.optional(TrimmedNonEmptyString),
+  }),
+]);
+export type OrchestrationReviseTradingPlanResult = typeof OrchestrationReviseTradingPlanResult.Type;

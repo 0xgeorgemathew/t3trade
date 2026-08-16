@@ -25,6 +25,7 @@ import {
   ORCHESTRATION_WS_METHODS,
   type PreviewEvent,
   ProjectId,
+  TradingMissionId,
   ProviderDriverKind,
   ProviderInstanceId,
   ResolvedKeybindingRule,
@@ -114,6 +115,11 @@ import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { TradingMarketChart } from "./trading/TradingMarketChart.ts";
 import { TradingMarketPrice } from "./trading/TradingMarketPrice.ts";
 import { TradingMissionProjectionLive } from "./trading/TradingMissionProjection.ts";
+import { TradingStrategyServiceLive } from "./trading/TradingStrategyService.ts";
+import { TradingMissionServiceLive } from "./trading/TradingMissionService.ts";
+import { TradingJournalServiceLive } from "./trading/TradingJournalService.ts";
+import { TradingPlanProtectionService } from "./trading/TradingPlanProtectionService.ts";
+import { TradingWorkingOrderService } from "./trading/TradingWorkingOrderService.ts";
 import { TradingAutoMission } from "./trading/TradingAutoMission.ts";
 import { TradingTurnCoordinator } from "./trading/TradingTurnCoordinator.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
@@ -414,6 +420,8 @@ const buildAppUnderTest = (options?: {
     tradingAutoMission?: Partial<TradingAutoMission["Service"]>;
     tradingMarketPrice?: Partial<TradingMarketPrice["Service"]>;
     tradingMarketChart?: Partial<TradingMarketChart["Service"]>;
+    tradingPlanProtection?: Partial<TradingPlanProtectionService["Service"]>;
+    tradingWorkingOrder?: Partial<TradingWorkingOrderService["Service"]>;
     browserTraceCollector?: Partial<BrowserTraceCollector.BrowserTraceCollector["Service"]>;
     serverLifecycleEvents?: Partial<ServerLifecycleEvents.ServerLifecycleEvents["Service"]>;
     serverRuntimeStartup?: Partial<ServerRuntimeStartup.ServerRuntimeStartup["Service"]>;
@@ -874,6 +882,37 @@ const buildAppUnderTest = (options?: {
         Layer.mock(TradingAutoMission)({
           claimFirstMessage: () => Effect.succeed({ kind: "not_applicable" as const }),
           ...options?.layers?.tradingAutoMission,
+        }),
+      ),
+      // Plan 29 step 8.4: the plan-revision RPC publishes through the same
+      // path `trading_plan` does, so the routes layer now needs the four
+      // services that path touches. The three SQL-only ones are live — a mock
+      // would be a second definition of what a publish does. The two that
+      // reach the exchange are mocked flat: these tests seed no position, and
+      // an accepted publish with nothing to reconcile is a real outcome.
+      Layer.provide(TradingStrategyServiceLive),
+      Layer.provide(TradingMissionServiceLive),
+      Layer.provide(TradingJournalServiceLive),
+      Layer.provide(
+        Layer.mock(TradingPlanProtectionService)({
+          reconcilePlan: () =>
+            Effect.succeed({
+              stopStatus: "no_position" as const,
+              stopPrice: null,
+              target: {
+                status: "flat" as const,
+                positionSize: 0,
+                targetPrice: null,
+                cancelledCloids: [],
+              },
+            }),
+          ...options?.layers?.tradingPlanProtection,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(TradingWorkingOrderService)({
+          abandon: () => Effect.succeed({ found: false, cancelledCloids: [] }),
+          ...options?.layers?.tradingWorkingOrder,
         }),
       ),
       Layer.provide(SqlitePersistenceMemory),
@@ -3481,6 +3520,81 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
       assert.equal(rpcError._tag, "OrchestrationGetSnapshotError");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("refuses a plan revision for a mission that does not exist", () =>
+    Effect.gen(function* () {
+      // The drag RPC is wired, authorized for the owner, and reaches the
+      // mission read before it can publish anything. The default test state
+      // seeds no missions, so the read is what refuses. Proving the refusal
+      // arrives as OrchestrationGetSnapshotError rather than an auth error is
+      // the point: the caller was allowed, and the domain said no.
+      yield* buildAppUnderTest();
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const rpcError = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.reviseTradingPlan]({
+              missionId: TradingMissionId.make("mission-that-is-not-there"),
+              expectedMissionVersion: 0,
+              strategy: {
+                market: "ETH",
+                intent: "long",
+                entry: { triggers: [], urgency: "now" },
+                stop: { method: "structure", price: 1800 },
+                target: {},
+                invalidation: [],
+                reassess: { afterMinutes: 90 },
+                because: "",
+              },
+            }),
+          ),
+        ),
+      );
+      assert.equal(rpcError._tag, "OrchestrationGetSnapshotError");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("requires orchestration operate scope to revise a trading plan", () =>
+    Effect.gen(function* () {
+      // A drag publishes a plan and moves the exchange stop, so it is an
+      // operate and not a read. A read-scoped credential must not reach it.
+      yield* buildAppUnderTest();
+
+      const { body: tokenBody } = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+        scope: "access:write",
+      });
+      const wsTicketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: { authorization: `Bearer ${tokenBody.access_token ?? ""}` },
+      });
+      const wsTicketBody = (yield* wsTicketResponse.json) as { readonly ticket: string };
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(wsTicketBody.ticket)}`;
+      const rpcError = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.reviseTradingPlan]({
+              missionId: TradingMissionId.make("mission-that-is-not-there"),
+              expectedMissionVersion: 0,
+              strategy: {
+                market: "ETH",
+                intent: "long",
+                entry: { triggers: [], urgency: "now" },
+                stop: { method: "structure" },
+                target: {},
+                invalidation: [],
+                reassess: { afterMinutes: 90 },
+                because: "",
+              },
+            }),
+          ),
+        ),
+      );
+      assert.equal(rpcError._tag, "EnvironmentAuthorizationError");
+      if (rpcError._tag === "EnvironmentAuthorizationError") {
+        assert.equal(rpcError.requiredScope, "orchestration:operate");
+      }
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
