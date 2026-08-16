@@ -26,7 +26,7 @@ import {
   analyseTimeframe,
   type CandidateSetup,
   type TimeframeReading,
-} from "./momentum.ts";
+} from "./marketStructure.ts";
 import { ACTIVE_TRADING_POLICY, type TradingPolicy } from "./policy.ts";
 
 /** One recorded window: what the policy may read, and what settles it. */

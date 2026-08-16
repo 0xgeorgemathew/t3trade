@@ -1,5 +1,5 @@
 /**
- * Momentum context - the structure a directional thesis is supposed to rest on.
+ * Market structure context - the structure a directional thesis is supposed to rest on.
  *
  * `measureVolatility` answers "how far does this thing move?" It cannot answer
  * "which way is it going, is it speeding up, where did the last leg start, and
@@ -13,7 +13,7 @@
  * smoothing beyond a stated average, and nothing that needs tuning to mean what
  * it says.
  *
- * @module TradingMomentum
+ * @module TradingMarketStructure
  */
 import { Schema } from "effect";
 import { MarketCandle, MarketCandleInterval } from "./market.ts";

@@ -21,7 +21,7 @@ import { TradingText } from "./primitives.ts";
  * The thresholds this doctrine states, read from the version in force.
  *
  * Every number below used to be typed into the prose by hand next to the same
- * number typed into `momentum.ts` and `costs.ts`. Two of them — the session
+ * number typed into `marketStructure.ts` and `costs.ts`. Two of them — the session
  * cutoff and the losing-streak cooldown — existed ONLY here, which made them
  * rules with no definition anywhere a change could be reviewed against.
  */

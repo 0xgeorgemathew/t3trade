@@ -28,7 +28,7 @@ import {
   ResolvedMarket,
 } from "./market.ts";
 import type { TradingCostEstimate } from "./costs.ts";
-import type { MarketStructure } from "./momentum.ts";
+import type { MarketStructure } from "./marketStructure.ts";
 import type { TradingTradeHistory } from "./history.ts";
 import type { TargetCalibration } from "./calibration.ts";
 import { ObservedVolatility } from "./volatility.ts";

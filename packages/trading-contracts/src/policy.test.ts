@@ -11,7 +11,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { PROFIT_TARGET_COST_MULTIPLE } from "./costs.ts";
-import { DIRECTION_SCORE_THRESHOLD } from "./momentum.ts";
+import { DIRECTION_SCORE_THRESHOLD } from "./marketStructure.ts";
 import { PLAYBOOKS } from "./playbook.ts";
 import {
   ACTIVE_TRADING_POLICY,

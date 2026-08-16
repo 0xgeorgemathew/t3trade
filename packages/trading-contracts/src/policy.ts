@@ -5,7 +5,7 @@
  * directional score has to be, how much a range is worth working, how close to
  * a boundary an entry counts as a boundary entry, when a session stops taking
  * new entries, and how long a losing streak sits out. They were true constants
- * — some in `momentum.ts`, some written only into playbook prose — so the same
+ * — some in `marketStructure.ts`, some written only into playbook prose — so the same
  * value could be tightened in the arithmetic and left stale in the doctrine
  * the harness actually reads, and nothing would notice.
  *

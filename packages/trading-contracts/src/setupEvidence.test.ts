@@ -9,7 +9,11 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import type { MarketCandle } from "./market.ts";
-import { analyseMarketStructure, analyseTimeframe, findCandidateSetups } from "./momentum.ts";
+import {
+  analyseMarketStructure,
+  analyseTimeframe,
+  findCandidateSetups,
+} from "./marketStructure.ts";
 import { findMisarmedEntryConditions, type PersistedWatch } from "./watch.ts";
 
 const bar = (input: {

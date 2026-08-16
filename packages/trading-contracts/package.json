@@ -64,9 +64,9 @@
       "types": "./src/costs.ts",
       "import": "./src/costs.ts"
     },
-    "./momentum": {
-      "types": "./src/momentum.ts",
-      "import": "./src/momentum.ts"
+    "./market-structure": {
+      "types": "./src/marketStructure.ts",
+      "import": "./src/marketStructure.ts"
     },
     "./calibration": {
       "types": "./src/calibration.ts",

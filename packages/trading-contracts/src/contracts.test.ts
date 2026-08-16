@@ -825,7 +825,7 @@ describe("subpath exports", () => {
         "./wakeup",
         "./volatility",
         "./costs",
-        "./momentum",
+        "./market-structure",
         "./history",
         "./calibration",
         "./playbook",

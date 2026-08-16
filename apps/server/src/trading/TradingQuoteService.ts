@@ -42,7 +42,7 @@ import {
   analyseMarketStructure,
   MARKET_STRUCTURE_LOOKBACK_BARS,
   MARKET_STRUCTURE_TIMEFRAMES,
-} from "@t3tools/trading-contracts/momentum";
+} from "@t3tools/trading-contracts/market-structure";
 import { targetNotionalForPlan } from "@t3tools/trading-contracts/costs";
 import { stopNoiseFloorUsd } from "@t3tools/trading-contracts/stop-adjustment";
 import { ACTIVE_TRADING_POLICY } from "@t3tools/trading-contracts/policy";

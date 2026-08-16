@@ -47,7 +47,7 @@ import {
   compareCandidates,
   MARKET_STRUCTURE_LOOKBACK_BARS,
   MARKET_STRUCTURE_TIMEFRAMES,
-} from "@t3tools/trading-contracts/momentum";
+} from "@t3tools/trading-contracts/market-structure";
 import { PLAYBOOKS } from "@t3tools/trading-contracts/playbook";
 import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
 import { TradingCalibrationService } from "../../../trading/TradingCalibrationService.ts";

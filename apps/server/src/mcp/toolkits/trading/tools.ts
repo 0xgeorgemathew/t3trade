@@ -60,7 +60,7 @@ import {
   ResolvedMarket,
 } from "@t3tools/trading-contracts/market";
 import { TradingCostEstimate } from "@t3tools/trading-contracts/costs";
-import { MarketStructure } from "@t3tools/trading-contracts/momentum";
+import { MarketStructure } from "@t3tools/trading-contracts/market-structure";
 import { TradingTradeHistory } from "@t3tools/trading-contracts/history";
 import { TargetCalibration } from "@t3tools/trading-contracts/calibration";
 import { ObservedVolatility } from "@t3tools/trading-contracts/volatility";

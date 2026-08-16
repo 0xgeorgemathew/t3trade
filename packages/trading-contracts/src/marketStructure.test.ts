@@ -17,7 +17,7 @@ import {
   DIRECTION_SCORE_THRESHOLD,
   findPivots,
   MIN_MARKET_STRUCTURE_BARS,
-} from "./momentum.ts";
+} from "./marketStructure.ts";
 
 /** A bar with a given close and a fixed range around it. */
 const bar = (close: number, spread = 1): MarketCandle => ({
