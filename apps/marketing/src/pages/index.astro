@@ -239,6 +239,13 @@ const pnlArc = [
    progress to report, and a negative percentage reads as a bug. */
 const pctArc = pnlArc.map((value) => Math.max(0, Math.round((value / reward) * 100)));
 
+/* Return on the margin the position ties up, which is the second figure the
+   app's header prints next to the dollar one. It is the same reel divided by
+   the same margin, so the two numbers can never disagree. */
+const roiArc = pnlArc.map(
+  (value) => `${value >= 0 ? "+" : "-"}${Math.abs((value / MISSION.margin) * 100).toFixed(2)}%`,
+);
+
 /* The mark the PnL implies, so the readout never claims a price and a profit
    that disagree. Step zero is the fill and the last step is the target. */
 const markArc = pnlArc.map((value) => px(MISSION.entry + value / MISSION.size));
@@ -251,10 +258,35 @@ const DIP_MARK = (((RUN_STEPS + DIP_STEPS) / PNL_STEPS) * 100).toFixed(2);
 /* Each watch is armed on the beat the agent registers it and met on the beat
    the market satisfies it. The second one never fires, which is the point:
    the drawdown bottoms out above it and nothing wakes the thread. */
+/* `reads` is the reel that supplies the row's observed value, the way the app
+   prints the live reading a condition is measured against. A candle close has
+   no continuous reading, so that row shows an em dash, exactly as the app
+   does when a condition has nothing to observe yet. */
 const armedWatches = [
-  { label: `ETH mark crosses above ${px(MISSION.trigger)}`, armedAt: 21, metAt: 32 },
-  { label: `ETH 15m candle closes below ${px(MISSION.wake)}`, armedAt: 59, metAt: null },
-  { label: `ETH unrealised PnL reaches ${usd(reward)}`, armedAt: 60, metAt: 92 },
+  { label: `ETH mark crosses above ${px(MISSION.trigger)}`, armedAt: 21, metAt: 32, reads: "mark" },
+  { label: `ETH 15m candle closes below ${px(MISSION.wake)}`, armedAt: 59, metAt: null, reads: null },
+  { label: `ETH unrealised PnL reaches ${usd(reward)}`, armedAt: 60, metAt: 92, reads: "pnl" },
+];
+
+/* The schedule strip the app draws under the chart: what can happen next, in
+   the order it can arrive. Every figure here is one of the mission's own
+   levels — nothing is a distance that would have to move with the mark. */
+const upNext = [
+  { label: `stop ${px(MISSION.stop)}`, detail: `$${risk.toFixed(2)} risk`, at: 52 },
+  { label: `wake @ ${px(MISSION.wake)}`, detail: null, at: 59 },
+  { label: `bank at ${usd(reward)}`, detail: null, at: 60 },
+];
+
+/* What the position is, at the foot of the panel: one wrapping line of
+   `label value` pairs. The stop is not among them — it belongs to the
+   schedule above, and a figure appears exactly once. */
+const heldStats = [
+  { term: "Size", value: MISSION.size.toFixed(4), at: 46 },
+  { term: "Entry", value: px(MISSION.entry), at: 46 },
+  { term: "Mark", value: null, at: 63 },
+  { term: "Liq", value: px(MISSION.liquidation), at: 55 },
+  { term: "Protected", value: "Full", at: 53 },
+  { term: "Margin", value: `$${MISSION.margin}`, at: 48 },
 ];
 
 /* Six of the seventeen, named the way the preview tool names them. */
@@ -567,12 +599,20 @@ const harnesses = [
               </figcaption>
             </figure>
 
-            <!-- The position readout, the same fields the app shows. -->
+            <!-- The position readout, drawn as the app's live panel draws it:
+                 the header figures, then the schedule, then the armed
+                 checklist, then what is held. Same bands, same order, same
+                 rule that a number appears exactly once — the P&L, the ROI and
+                 the progress live in the header, so the foot never repeats
+                 them, and the stop is a schedule pill rather than a held
+                 field because it is what happens next, not what is owned. -->
             <div class="console-readout">
               <div class="readout-head">
-                <span class="tag tag--market">{MISSION.market}</span>
-                <span class="tag">{MISSION.leverage}</span>
-                <span class="tag">{MISSION.side}</span>
+                <span class="side-chip">
+                  <span>{MISSION.market}</span>
+                  <span class="side-chip-lev">{MISSION.leverage}</span>
+                  <span>{MISSION.side}</span>
+                </span>
                 <!-- One reel walks the whole arc, and the container flashes
                      on the step that lands the target. -->
                 <span class="readout-pnl" style={`${span(90, 96)}`}>
@@ -581,73 +621,101 @@ const harnesses = [
                       <span class={value < 0 ? "pnl-step pnl-step--down" : "pnl-step"}>{usd(value)}</span>
                     ))}
                   </span></span>
-                  <svg class="tick pnl-tick" style={`${span(92, 96)}`} viewBox="0 0 16 16" aria-hidden="true">
-                    <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
-                  </svg>
                 </span>
-              </div>
-
-              <div class="readout-progress" style={`${span(61, 66)}`}>
-                <span class="progress-track"><span class="progress-fill" style={`${span(63, 92)}`}></span></span>
-                <span class="progress-label">
-                  <span class="pnl-window"><span class="pct-reel" style={`${span(63, 92)}`}>
-                    {pctArc.map((value) => <span class="pnl-step">{value}%</span>)}
+                <span class="readout-roi">
+                  <span class="pnl-window"><span class="roi-reel" style={`${span(63, 92)}`}>
+                    {roiArc.map((value) => (
+                      <span class={value.startsWith("-") ? "pnl-step pnl-step--down" : "pnl-step"}>{value}</span>
+                    ))}
                   </span></span>
-                  <span>to target</span>
+                </span>
+
+                <span class="readout-progress" style={`${span(61, 66)}`}>
+                  <span class="progress-track"><span class="progress-fill" style={`${span(63, 92)}`}></span></span>
+                  <span class="progress-label">
+                    <span class="pnl-window"><span class="pct-reel" style={`${span(63, 92)}`}>
+                      {pctArc.map((value) => <span class="pnl-step">{value}%</span>)}
+                    </span></span>
+                    <span>to target</span>
+                  </span>
                 </span>
               </div>
 
-              <dl class="readout-grid">
-                {[
-                  { term: "Size", value: MISSION.size.toFixed(4), at: 46, ok: false },
-                  { term: "Entry", value: px(MISSION.entry), at: 46, ok: true },
-                  { term: "Mark", value: null, at: 63, ok: false },
-                  { term: "Stop", value: px(MISSION.stop), at: 53, ok: true },
-                  { term: "Liq", value: px(MISSION.liquidation), at: 55, ok: false },
-                  { term: "Margin", value: `$${MISSION.margin}`, at: 48, ok: false },
-                ].map((row) => (
-                  <div class="readout-row" style={`${span(row.at, row.at + 8)}`}>
-                    <dt>{row.term}</dt>
-                    <dd>
-                      {row.ok && (
-                        <svg class="tick" style={`${span(row.at + 3, row.at + 7)}`} viewBox="0 0 16 16" aria-hidden="true">
-                          <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
-                        </svg>
-                      )}
-                      {row.value ?? (
+              <!-- The schedule. Left-aligned under its own label, the way
+                   every other band on the panel starts at the same rule. -->
+              <div class="readout-next">
+                <span class="readout-legend">Next</span>
+                {upNext.map((item) => (
+                  <span class="next-pill" style={`${span(item.at, item.at + 6)}`}>
+                    <span class="next-pill-label">{item.label}</span>
+                    {item.detail && <span>{item.detail}</span>}
+                  </span>
+                ))}
+              </div>
+
+              <div class="readout-armed">
+                <span class="readout-legend">Armed</span>
+                {armedWatches.map((watch) => (
+                  <div class="armed-row" style={`${span(watch.armedAt, watch.armedAt + 6)}`}>
+                    {/* Glyph, description, the reading, the state — the app's
+                        checklist row. Its threshold column is not repeated
+                        here: the description already names the level, and this
+                        panel is a third of the width the app gives the row. */}
+                    {watch.metAt ? (
+                      <span class="armed-swap armed-glyph">
+                        <span class="armed-state armed-state--wait"
+                          style={`${span(watch.metAt, watch.metAt + 4)}`}>○</span>
+                        <span class="armed-state armed-state--met"
+                          style={`${span(watch.metAt, watch.metAt + 5)}`}>✓</span>
+                      </span>
+                    ) : (
+                      <span class="armed-glyph armed-state">○</span>
+                    )}
+                    <span class="armed-label">{watch.label}</span>
+                    <span class="armed-read">
+                      {watch.reads === null ? (
+                        <span class="armed-read-none">—</span>
+                      ) : watch.reads === "pnl" ? (
+                        <span class="pnl-window"><span class="pnl-reel" style={`${span(63, 92)}`}>
+                          {pnlArc.map((value) => (
+                            <span class={value < 0 ? "pnl-step pnl-step--down" : "pnl-step"}>{usd(value)}</span>
+                          ))}
+                        </span></span>
+                      ) : (
                         <span class="pnl-window"><span class="mark-reel" style={`${span(63, 92)}`}>
                           {markArc.map((value) => <span class="pnl-step">{value}</span>)}
                         </span></span>
                       )}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-
-              <div class="readout-armed">
-                <span class="readout-legend">Armed watches</span>
-                {armedWatches.map((watch) => (
-                  <div class={`armed-row ${watch.metAt ? "armed-row--met" : ""}`}
-                    style={`${span(watch.armedAt, watch.armedAt + 6)}`}>
-                    <span class="armed-label">{watch.label}</span>
+                    </span>
                     {/* A watch reads `waiting` until the market satisfies it,
                         then the two states cross over on that beat. */}
                     {watch.metAt ? (
-                      <span class="armed-swap">
+                      <span class="armed-swap armed-tail">
                         <span class="armed-state armed-state--wait"
                           style={`${span(watch.metAt, watch.metAt + 4)}`}>waiting</span>
                         <span class="armed-state armed-state--met"
-                          style={`${span(watch.metAt, watch.metAt + 5)}`}>
-                          <svg class="tick" style={`${span(watch.metAt + 1, watch.metAt + 5)}`} viewBox="0 0 16 16" aria-hidden="true">
-                            <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
-                          </svg>
-                          met
-                        </span>
+                          style={`${span(watch.metAt, watch.metAt + 5)}`}>met</span>
                       </span>
                     ) : (
-                      <span class="armed-state">waiting</span>
+                      <span class="armed-state armed-tail">waiting</span>
                     )}
                   </div>
+                ))}
+              </div>
+
+              <div class="readout-held">
+                <span class="readout-legend">Held</span>
+                {heldStats.map((stat) => (
+                  <span class="held-stat" style={`${span(stat.at, stat.at + 8)}`}>
+                    {stat.term}
+                    <b>
+                      {stat.value ?? (
+                        <span class="pnl-window"><span class="mark-reel" style={`${span(63, 92)}`}>
+                          {markArc.map((value) => <span class="pnl-step">{value}</span>)}
+                        </span></span>
+                      )}
+                    </b>
+                  </span>
                 ))}
               </div>
             </div>
@@ -1736,52 +1804,67 @@ const harnesses = [
   .fire-ping { fill: none; stroke: var(--warn); stroke-width: 1.5; opacity: 0; }
   .mark-dot { fill: var(--accent); stroke: var(--bg); stroke-width: 2; }
 
-  /* ── Position readout ─────────────────────────────────────── */
+  /* ── Position readout ─────────────────────────────────────────
+     Banded like the app's live panel: each band owns its padding and a
+     hairline above it, and the two context strips — the schedule and the
+     held line — carry the same faint ground they carry in the app. */
   .console-readout {
-    padding: 16px;
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    overflow: hidden;
   }
 
   .readout-head {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    gap: 5px 9px;
+    padding: 11px 14px;
   }
 
-  .tag {
+  /* One chip for the exposure, tinted by its direction, with the leverage
+     set on its own ground inside it. */
+  .side-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: none;
     font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--fg-muted);
-    padding: 3px 8px;
-    border: 1px solid var(--border);
+    font-size: 11px;
+    padding: 2px 8px;
     border-radius: 999px;
+    color: var(--ok);
+    border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+    background: color-mix(in srgb, var(--ok) 10%, transparent);
   }
 
-  .tag--market {
-    color: var(--ok);
-    border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+  .side-chip-lev {
+    padding: 0 4px;
+    border-radius: 3px;
+    background: color-mix(in srgb, currentColor 16%, transparent);
+    font-variant-numeric: tabular-nums;
   }
 
   .readout-pnl {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-left: auto;
     font-family: var(--font-mono);
-    font-size: 19px;
+    font-size: 16px;
     font-variant-numeric: tabular-nums;
     color: var(--ok);
     letter-spacing: -0.01em;
-    transform-origin: 100% 50%;
+    transform-origin: 0 50%;
   }
 
-  .pnl-tick {
-    width: 15px;
-    height: 15px;
+  /* Return on the margin the position ties up, next to the dollars it is
+     the same number as. */
+  .readout-roi {
+    display: flex;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ok);
   }
 
   .pnl-window {
@@ -1795,7 +1878,8 @@ const harnesses = [
      never count up from. */
   .pnl-reel,
   .pct-reel,
-  .mark-reel {
+  .mark-reel,
+  .roi-reel {
     display: block;
     transform: translateY(calc(-32 * 1.3em));
   }
@@ -1812,14 +1896,17 @@ const harnesses = [
      the drawdown without a second animation. */
   .pnl-step--down { color: var(--loss); }
 
+  /* The rule and the figure it stands for, on the header line rather than in
+     a band of its own — the same trade the app makes. */
   .readout-progress {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 10px;
+    gap: 7px;
   }
 
   .progress-track {
-    flex: 1;
+    width: 28px;
+    flex: none;
     height: 3px;
     border-radius: 999px;
     background: rgba(255, 255, 255, 0.07);
@@ -1849,45 +1936,32 @@ const harnesses = [
   .progress-label .pnl-window { height: 1.3em; }
   .progress-label .pnl-step { color: inherit; }
 
-  .readout-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1px;
-    background: var(--border);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    overflow: hidden;
-  }
-
-  .readout-row {
+  /* ── The schedule ─────────────────────────────────────────── */
+  .readout-next {
     display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 9px 11px;
-    background: rgba(9, 9, 11, 0.9);
-  }
-
-  .readout-row dt {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--fg-faint);
-  }
-
-  .readout-row dd .pnl-window { height: 1.3em; }
-  .readout-row dd .pnl-step { color: inherit; text-align: right; }
-
-  .readout-row dd {
-    display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    font-family: var(--font-mono);
-    font-size: 12.5px;
-    font-variant-numeric: tabular-nums;
-    color: var(--fg);
+    padding: 8px 14px;
+    border-top: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.018);
   }
+
+  .next-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.03);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-dim);
+  }
+
+  .next-pill-label { color: var(--fg); }
 
   .readout-legend {
     font-family: var(--font-mono);
@@ -1897,33 +1971,74 @@ const harnesses = [
     color: var(--fg-faint);
   }
 
+  /* ── The checklist ────────────────────────────────────────── */
+  /* The checklist takes the slack between the two context strips, and sits
+     centred in it: the readout is stretched to the chart's height, and
+     leaving the whole surplus under the last row read as a hole. */
   .readout-armed {
     display: flex;
     flex-direction: column;
-    gap: 7px;
-    margin-top: auto;
+    justify-content: center;
+    flex: 1;
+    padding: 9px 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .readout-armed .readout-legend {
+    padding: 0 14px 3px;
   }
 
   .armed-row {
     display: flex;
-    align-items: center;
-    gap: 10px;
-    padding-top: 7px;
-    border-top: 1px dashed var(--border);
+    align-items: baseline;
+    gap: 9px;
+    padding: 6px 14px;
     font-family: var(--font-mono);
     font-size: 11px;
   }
 
+  .armed-row + .armed-row {
+    border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  }
+
+  .armed-glyph {
+    width: 11px;
+    flex: none;
+    justify-content: center;
+  }
+
   .armed-label {
     flex: 1;
+    min-width: 0;
     color: var(--fg-muted);
     line-height: 1.35;
+  }
+
+  /* The reading the condition is measured against, right-aligned so the rows
+     are read down the list against each other. */
+  .armed-read {
+    width: 68px;
+    flex: none;
+    text-align: right;
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .armed-read .pnl-window { height: 1.3em; }
+  .armed-read .pnl-step { text-align: right; }
+  .armed-read .mark-reel .pnl-step { color: inherit; }
+  .armed-read-none { color: var(--fg-faint); }
+
+  .armed-tail {
+    width: 44px;
+    flex: none;
   }
 
   .armed-state {
     display: flex;
     align-items: center;
     gap: 6px;
+    justify-content: flex-end;
     color: var(--fg-faint);
     flex-shrink: 0;
   }
@@ -1941,10 +2056,45 @@ const harnesses = [
     justify-content: flex-end;
   }
 
+  .armed-glyph.armed-swap .armed-state {
+    justify-content: center;
+  }
+
   /* Resting on the met state, so a browser without scroll timelines shows
      the outcome rather than a wait that never resolves. */
   .armed-state--met { color: var(--ok); }
   .armed-state--wait { opacity: 0; }
+
+  /* ── What is held ─────────────────────────────────────────────
+     One wrapping line of `label value` pairs at the foot of the panel, the
+     way the app closes it out. */
+  .readout-held {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 12px;
+    padding: 8px 14px;
+    border-top: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.018);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-faint);
+  }
+
+  .held-stat b {
+    margin-left: 4px;
+    font-weight: 400;
+    color: var(--fg);
+  }
+
+  .held-stat .pnl-window {
+    display: inline-block;
+    height: 1.3em;
+    vertical-align: -0.26em;
+  }
+
+  .held-stat .pnl-step { color: inherit; text-align: left; }
 
   /* ── The run came out clean ───────────────────────────────── */
   .console-success {
@@ -2617,9 +2767,11 @@ const harnesses = [
       .pnl-reel,
       .pct-reel,
       .mark-reel,
+      .roi-reel,
       .readout-pnl,
       .progress-fill,
-      .readout-row,
+      .next-pill,
+      .held-stat,
       .readout-progress,
       .armed-row,
       .armed-state,
@@ -2728,7 +2880,8 @@ const harnesses = [
         animation-fill-mode: both;
       }
 
-      .readout-row,
+      .next-pill,
+      .held-stat,
       .readout-progress,
       .armed-row {
         animation-name: check-in;
@@ -2741,7 +2894,8 @@ const harnesses = [
          the target. */
       .pnl-reel,
       .pct-reel,
-      .mark-reel {
+      .mark-reel,
+      .roi-reel {
         animation-name: pnl-count;
         animation-timing-function: steps(32, end);
         animation-fill-mode: both;
@@ -3040,9 +3194,11 @@ const harnesses = [
     .pnl-reel,
     .pct-reel,
     .mark-reel,
+    .roi-reel,
     .readout-pnl,
     .progress-fill,
-    .readout-row,
+    .next-pill,
+    .held-stat,
     .readout-progress,
     .armed-row,
     .armed-state,
