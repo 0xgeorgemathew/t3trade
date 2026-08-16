@@ -30,10 +30,7 @@ const path = require("node:path");
 exports.default = async function adhocSignMac(context) {
   if (context.electronPlatformName !== "darwin") return;
 
-  const appPath = path.join(
-    context.appOutDir,
-    `${context.packager.appInfo.productFilename}.app`,
-  );
+  const appPath = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);
 
   // --deep is the wrong tool for a real identity (Apple says so: it does not
   // sign nested code in dependency order). For an ad-hoc signature over an

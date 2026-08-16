@@ -10,18 +10,18 @@ Every number below is read off the log and traced to the code that produced it.
 
 ## What the log actually shows
 
-| Time | Version | EMA spread | Gate | Round trip | Min target |
-|---|---|---|---|---|---|
-| 13:10 | 2 | $0.025 | $2.13 | $18.50 | $24.05 |
-| 13:11 | 3 | $0.025 | $2.13 | $17.61 | $22.90 |
-| 13:13 | 4 | $0.60 | $1.93 | $16.26 | $21.14 |
-| 13:13 | 5 | $0.85 | $1.66 | $15.88 | $20.64 |
-| 13:14 | 6 | $1.16 | $1.52 | $17.52 | $22.78 |
-| 13:15 | 7 | $1.16 | $1.52 | $17.54 | $22.80 |
-| 13:16 | 8 | — | — | $17.50 | $22.74 |
-| 13:17 | 9 | stale | — | — | $23.22 |
-| 13:17 | 10 | 7 bars old | — | $16.96 | — |
-| 13:18 | 11, 13 | stale | — | $18.39 | — |
+| Time  | Version | EMA spread | Gate  | Round trip | Min target |
+| ----- | ------- | ---------- | ----- | ---------- | ---------- |
+| 13:10 | 2       | $0.025     | $2.13 | $18.50     | $24.05     |
+| 13:11 | 3       | $0.025     | $2.13 | $17.61     | $22.90     |
+| 13:13 | 4       | $0.60      | $1.93 | $16.26     | $21.14     |
+| 13:13 | 5       | $0.85      | $1.66 | $15.88     | $20.64     |
+| 13:14 | 6       | $1.16      | $1.52 | $17.52     | $22.78     |
+| 13:15 | 7       | $1.16      | $1.52 | $17.54     | $22.80     |
+| 13:16 | 8       | —          | —     | $17.50     | $22.74     |
+| 13:17 | 9       | stale      | —     | —          | $23.22     |
+| 13:17 | 10      | 7 bars old | —     | $16.96     | —          |
+| 13:18 | 11, 13  | stale      | —     | $18.39     | —          |
 
 Two watch firings were thrown away: one "misarmed", one "from superseded
 version 5". No entry was ever attempted.
@@ -30,7 +30,7 @@ version 5". No entry was ever attempted.
 
 ## Defect 1 — the publish/supersede/re-arm loop is self-sustaining
 
-**Cause.** `playbook.ts:248` makes a publish mandatory on *every* assessment
+**Cause.** `playbook.ts:248` makes a publish mandatory on _every_ assessment
 turn, stand-downs included. `TradingStrategyService.ts:268` supersedes the prior
 version's active watches on every publish. So each stand-down turn destroys the
 watches it armed one turn earlier and arms replacements — and any watch that
@@ -43,11 +43,12 @@ on. They fire in well under the 5-minute reassessment floor
 faster than the floor was ever meant to allow.
 
 **Fix.**
+
 1. Add a `republish` path that carries watches forward: when the new version's
    `entryPlan.conditions[]` name the same level, type, direction and timeframe
    as a live watch, rebind that watch to the new version instead of superseding
    and re-arming it. Only genuinely changed conditions get a new watch.
-2. Introduce a stand-down *amendment* distinct from a version bump. A turn that
+2. Introduce a stand-down _amendment_ distinct from a version bump. A turn that
    re-runs the tournament and reaches the same verdict should record an
    observation against the current version, not mint version N+1. Reserve the
    bump for a changed thesis, a changed mandate, or a changed level set.
@@ -84,13 +85,14 @@ wake-time check as a backstop for watches armed outside a publish.
 ## Defect 3 — the separation gate's goalposts move faster than the signal
 
 **Cause.** `readEmaCross` gates on `separation < policy.emaCross.minSpreadAtrRatio`
-(`momentum.ts:1371-1372`) — 0.15 × the *1m* ATR, re-measured every turn. Over the
+(`momentum.ts:1371-1372`) — 0.15 × the _1m_ ATR, re-measured every turn. Over the
 eight logged minutes the required spread went $2.13 → $0.93 → $1.52 → $1.66 →
 $1.93: the 1m ATR swung more than 2x while the EMA spread crawled from $0.025 to
 $1.16. The harness is chasing a target that moves faster than the thing being
 measured.
 
 **Fix.**
+
 1. Measure the separation gate against a smoothed ATR — the median of the last
    N bars' ATR, or the higher-timeframe ATR — so the gate is a property of the
    market rather than of the last candle. Ship it as `TRADING_POLICY_V3` with a
@@ -117,7 +119,7 @@ tournament actually returned). Those two statements are about the same signal.
 
 **Fix.** Return the candidate with a `rejectedBy` field naming the gate it
 failed and its margin, instead of `null`. `compareCandidates` carries it through
-as a non-competing row. The stand-down then records *which* gate stopped the
+as a non-competing row. The stand-down then records _which_ gate stopped the
 session, which is the evidence `EnrichmentEvidence` (`policy.ts:337`) is
 supposed to be drawn from and currently cannot be.
 
@@ -130,7 +132,7 @@ supposed to be drawn from and currently cannot be.
 
 **Cause.** Slippage is 55–60% of every logged round trip ($9.56 of $17.50, $10.29
 of $16.96, $9.99 of $18.39). `walkBook` (`costs.ts:132`) walks the visible book
-for the *full* requested size, and the size being costed is the approved ceiling
+for the _full_ requested size, and the size being costed is the approved ceiling
 — the $7,281.89 gross the 13:18 turn quoted. On a thin book that prices the
 worst fill the mission could possibly take and then gates every candidate
 against it.
@@ -140,11 +142,12 @@ displayed liquidity is not fully priced"), which sets `degraded: true`
 (`costs.ts:208-213`) — and the estimate is used as a hard gate anyway.
 
 And the new `roundTripCostFractionOfNotional` (`costs.ts`, uncommitted)
-deliberately *excludes* slippage because it does not scale with notional, while
+deliberately _excludes_ slippage because it does not scale with notional, while
 `estimateTradingCosts` includes it in full at ceiling size. The sizing path and
 the gating path are now answering the same question two different ways.
 
 **Fix.**
+
 1. Cost the gate at the size the mission would actually take, not the ceiling.
    Feed `notionalForProfitTarget`'s result back as the `sizeEth` for the gating
    estimate; the ceiling stays a ceiling.
