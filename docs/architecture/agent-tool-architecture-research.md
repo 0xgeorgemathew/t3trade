@@ -64,7 +64,7 @@ loss per trade, max loss for the session.
 ### Mode B — "Execute strategy X" (opt-in, sophisticated users)
 
 A named strategy is a **decision procedure**, and the model's job changes
-completely: from *decide* to *execute faithfully and report*. The rules gate the
+completely: from _decide_ to _execute faithfully and report_. The rules gate the
 trade, deviations are reported, and the run is reproducible. This is where the
 existing playbooks belong — `momentum`, `range_reversion`, `opening_range`,
 `ema_cross`, `rsi_reversion` become the strategy library for this mode.
@@ -77,21 +77,21 @@ who asked for it. That's a much better fit for what it is.
 
 The `classify` playbook opens with:
 
-> *"READ THE REGIME BEFORE YOU LOOK FOR A TRADE. The first thing every turn
-> produces is a classification, not an entry."*
+> _"READ THE REGIME BEFORE YOU LOOK FOR A TRADE. The first thing every turn
+> produces is a classification, not an entry."_
 
 Fixed order: label the market → the label picks a playbook → that playbook has
 gates → those gates decide if you may enter. Four vetoes before anyone asks
 whether money can be made.
 
 And "trending or ranging" is a lossy answer to the wrong question. The useful
-question isn't *what kind of market is this* — it's *how far is price likely to
-move in the next N minutes, and is that more than it costs to get in and out?*
+question isn't _what kind of market is this_ — it's _how far is price likely to
+move in the next N minutes, and is that more than it costs to get in and out?_
 
 The system **already measures the answer**: `observedVolatility.horizons[]`
 gives p25/p50/p75 of the move over each holding period, up and down separately.
 That's a distribution — strictly more information than a one-word label. The
-label is derived *from* it, a veto is attached to the label, and the
+label is derived _from_ it, a veto is attached to the label, and the
 distribution is demoted to "evidence, never permission."
 
 **Regime is a hidden variable. Let the model infer it silently.** A modern model
@@ -102,8 +102,8 @@ in-between cases, which is exactly where the current system stalls.
 ### Near-misses are deleted before the model sees them
 
 `readEmaCross` returns `null` if a cross fails on age, separation, or close
-agreement. A `null` never reaches the candidate list. So *"a cross 5% under
-threshold"* and *"no cross at all"* are indistinguishable downstream.
+agreement. A `null` never reaches the candidate list. So _"a cross 5% under
+threshold"_ and _"no cross at all"_ are indistinguishable downstream.
 
 That's why the log alternates between the model computing "spread $1.16 vs $1.52
 required" in prose and the tournament reporting "no scored candidate" — same
@@ -121,10 +121,10 @@ recommendation from the last draft.
 
 Perps, base tier (under $5M of 14-day volume — where every normal user sits):
 
-| | Rate | Basis points |
-|---|---|---|
-| **Taker** (crossing the spread) | 0.045% | **4.5 bps** |
-| **Maker** (resting, adding liquidity) | 0.015% | **1.5 bps** |
+|                                       | Rate   | Basis points |
+| ------------------------------------- | ------ | ------------ |
+| **Taker** (crossing the spread)       | 0.045% | **4.5 bps**  |
+| **Maker** (resting, adding liquidity) | 0.015% | **1.5 bps**  |
 
 **Taker costs exactly 3× maker.** That ratio holds across every tier.
 
@@ -134,7 +134,7 @@ retail setup — base tier, referral, small stake — lands around **4.1 bps tak
 1.37 bps maker.** Close enough to base that I'll use 4.5/1.5 throughout.
 
 **Maker rebates are not available to you.** The negative-fee tiers (−0.001% to
-−0.003%) require being 0.5%+ of *total exchange maker volume*. Ignore them.
+−0.003%) require being 0.5%+ of _total exchange maker volume_. Ignore them.
 
 ### The order types that matter
 
@@ -174,7 +174,7 @@ target was fixed in advance. **This is close to free money and it's the single
 easiest change.**
 
 **Reversion entries: yes.** If the thesis is "price is stretched, it'll bounce",
-you *want* to be filled on the extension. Adverse selection works in your
+you _want_ to be filled on the extension. Adverse selection works in your
 favour — the fill you get is the fill you wanted.
 
 **Momentum entries: no.** You want in now because the move is happening. A
@@ -186,11 +186,11 @@ to get out is the cheapest part of being wrong.
 
 ### The resulting cost table
 
-| Trade | Entry | Exit | Round trip |
-|---|---|---|---|
-| Momentum, wins | taker 4.5 | maker 1.5 | **6.0 bps** |
-| Momentum, stopped | taker 4.5 | taker 4.5 | **9.0 bps** |
-| Reversion, wins | maker 1.5 | maker 1.5 | **3.0 bps** |
+| Trade              | Entry     | Exit      | Round trip  |
+| ------------------ | --------- | --------- | ----------- |
+| Momentum, wins     | taker 4.5 | maker 1.5 | **6.0 bps** |
+| Momentum, stopped  | taker 4.5 | taker 4.5 | **9.0 bps** |
+| Reversion, wins    | maker 1.5 | maker 1.5 | **3.0 bps** |
 | Reversion, stopped | maker 1.5 | taker 4.5 | **6.0 bps** |
 
 Against today's uniform 9.0 bps, that's a **33% saving on momentum winners and
@@ -242,8 +242,8 @@ no `regime_unclear`, no five-gate chain. And it correctly produces bursts of
 activity when the market is moving and silence when it isn't — which is what a
 good day trader actually does.
 
-**"Many small trades" is right, but conditional on volatility.** Aim for *as
-many trades as have real edge after costs*, not as many trades as possible. A
+**"Many small trades" is right, but conditional on volatility.** Aim for _as
+many trades as have real edge after costs_, not as many trades as possible. A
 system optimising for frequency will overtrade into negative expectancy and feel
 busy while losing.
 
@@ -272,7 +272,7 @@ indicators, it's microstructure.**
 
 EMA, RSI, MACD, Bollinger, stochastics are all monotone transformations of a
 price series the model can already see as candles. They cost tokens and add
-little the model can't infer. What the model genuinely *cannot* see from candles
+little the model can't infer. What the model genuinely _cannot_ see from candles
 is **order flow** — and order flow is what actually predicts the next few
 minutes, which is exactly your holding period.
 
@@ -282,7 +282,7 @@ minutes, which is exactly your holding period.
    The best-documented short-horizon predictor there is, and its horizon
    (seconds to minutes) matches your holding period exactly. Highest value.
 2. **Aggressor flow** — of recent trades, how much volume crossed into the ask
-   vs the bid. Says who is *paying* to get in. Available from the trades feed.
+   vs the bid. Says who is _paying_ to get in. Available from the trades feed.
 3. **Book depth and spread stability** — is the book thinning? A thinning book
    means slippage is about to rise and stops are about to get run. Feeds the
    cost model directly and warns before the market gets expensive.
@@ -292,7 +292,7 @@ minutes, which is exactly your holding period.
 5. **VWAP and distance from it** — the anchor most intraday traders actually
    use, which makes reversion to it partly self-fulfilling.
 6. **Short-window vs long-window realized volatility** — one number saying
-   whether volatility is expanding or contracting *right now*. This is what
+   whether volatility is expanding or contracting _right now_. This is what
    gates whether to trade at all (Part 3).
 7. **Recent high-volume price nodes** — where trades actually happened, which
    is where stops cluster and where price tends to react.
@@ -313,7 +313,7 @@ don't.
 verified it works, so drop that objection — it was my main argument and it's
 withdrawn. The model can manage positions turn by turn.
 
-Two reasons to still pre-commit *some* decisions remain, and neither is about
+Two reasons to still pre-commit _some_ decisions remain, and neither is about
 whether waking works:
 
 1. **Protection against things that aren't the model.** If the server dies, the
@@ -342,7 +342,7 @@ care about.
 
 ## Part 6 — The flow you described
 
-> *"Based on my analysis we go short in about 5m, or when price hits X."* → user
+> _"Based on my analysis we go short in about 5m, or when price hits X."_ → user
 > does nothing → model acts.
 
 **The plan is what makes this work, and it stays.** Asked to trade BTC the model
@@ -350,7 +350,7 @@ won't decline — it lands on something: open now, or wait for X. That commitmen
 is the plan, it has to be durable because it must survive until the trigger
 fires, and it's what the user reads and amends.
 
-What changes is what the plan is *about*. Today it describes a strategy. It
+What changes is what the plan is _about_. Today it describes a strategy. It
 should describe **the position we intend to have and the conditions around it**:
 
 ```
@@ -399,7 +399,7 @@ Strategy name, mode, regime verdict, `belief.evidence[]`, `timeframes[]`,
 
 Where do the strategies and indicators go? **Into `because`, as prose, and into
 the journal.** "Short — the 9/21 crossed down and the book is offered." The
-strategy is a *reason*, not a structure. That is exactly what "strategies are
+strategy is a _reason_, not a structure. That is exactly what "strategies are
 reference points, not doctrine" means when you write it down as a schema.
 
 ### Acting without approval
@@ -416,30 +416,30 @@ clear envelope, "act and tell me" is reasonable. Given a vague one, it isn't.
 
 Today: 24 tools, ~15,000 characters of description — about 3,700 tokens of
 rulebook before any market data, most of it explaining what will be rejected.
-Descriptions are long *because* the tools refuse so much. Remove the refusals and
+Descriptions are long _because_ the tools refuse so much. Remove the refusals and
 they collapse.
 
 **Six tools.** The design rule behind them: **the model expresses intent and
 urgency; it never computes.**
 
-| Tool | What it does |
-|---|---|
-| `look(market?)` | One call, the whole read: price, book, candles across timeframes, expected-move distribution, indicator readings with context, order flow and book imbalance, position, account. Plus **one line of cost context** — see below. Replaces eight read tools. |
-| `plan(...)` | Write or revise the plan (Part 6). Arms its triggers **and makes the exchange match it** — a stop moved in the plan is a stop moved on the exchange. Announces itself to the user. **Gates nothing.** |
-| `enter(market, side, size?, stop, urgency)` | Go. `urgency` is `now` or `patient`; the server turns that into IOC or ALO. **Works with or without a plan.** |
-| `exit(market, fraction?, urgency)` | Get out, all or part, now or patiently. |
-| `watch(condition)` | An ad-hoc wake, when the model wants to look again without changing the plan. |
-| `journal(note?)` | Write and read what happened. The model's memory. |
+| Tool                                        | What it does                                                                                                                                                                                                                                               |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `look(market?)`                             | One call, the whole read: price, book, candles across timeframes, expected-move distribution, indicator readings with context, order flow and book imbalance, position, account. Plus **one line of cost context** — see below. Replaces eight read tools. |
+| `plan(...)`                                 | Write or revise the plan (Part 6). Arms its triggers **and makes the exchange match it** — a stop moved in the plan is a stop moved on the exchange. Announces itself to the user. **Gates nothing.**                                                      |
+| `enter(market, side, size?, stop, urgency)` | Go. `urgency` is `now` or `patient`; the server turns that into IOC or ALO. **Works with or without a plan.**                                                                                                                                              |
+| `exit(market, fraction?, urgency)`          | Get out, all or part, now or patiently.                                                                                                                                                                                                                    |
+| `watch(condition)`                          | An ad-hoc wake, when the model wants to look again without changing the plan.                                                                                                                                                                              |
+| `journal(note?)`                            | Write and read what happened. The model's memory.                                                                                                                                                                                                          |
 
-Mode B ("Execute strategy X") adds `strategy(name)`, which in that mode *is* the
+Mode B ("Execute strategy X") adds `strategy(name)`, which in that mode _is_ the
 decision procedure.
 
 ### Why `protect` disappeared
 
 An earlier draft had a separate `protect` tool. It's redundant: the plan already
 carries the stop and the target, so **writing the plan is how you move them.**
-That gives a clean declarative model — the plan is the position's *declared
-state*, and the server reconciles the exchange to it, which is exactly how the
+That gives a clean declarative model — the plan is the position's _declared
+state_, and the server reconciles the exchange to it, which is exactly how the
 rest of the system already thinks.
 
 ### Why the model never sees an order type
@@ -481,7 +481,7 @@ case of the abstraction fighting the product.
 The principle the code already gets right and should generalise: **user
 instructions bypass discretionary gates but never the risk envelope.**
 `trading_close_position` is documented as working where an entry wouldn't —
-*"Getting out never fails for a reason belonging to getting in."*
+_"Getting out never fails for a reason belonging to getting in."_
 
 ---
 
@@ -493,10 +493,10 @@ only one is what you want:
 - **It caps loss.** At 1x a 1% adverse move costs 1% of the account. Keep this.
 - **It does not improve the trade.** Cost in basis points is flat until your
   order is big enough to eat through the book. On BTC that's a long way up —
-  $10,000 notional costs the same *in bps* as $1,000. It just makes ten times
+  $10,000 notional costs the same _in bps_ as $1,000. It just makes ten times
   the dollars.
 
-So: *1x/$1,000 makes each trade small, not better.* If a user states $10,000 of
+So: _1x/$1,000 makes each trade small, not better._ If a user states $10,000 of
 tradable capital, run $10,000 at 1x — identical safety per percentage point, ten
 times the result. **Scale size with stated capital; keep leverage at 1x.**
 
@@ -512,7 +512,7 @@ trading you want.
 
 Most of the 50,000 lines, and they're the hard parts: the Hyperliquid gateway,
 execution service and reconciler; the cost model in `costs.ts` (it needs maker
-rates and a cost *curve*, but the foundation is right); every measurement in
+rates and a cost _curve_, but the foundation is right); every measurement in
 `momentum.ts` — kept as **readings**, retired as **gates**; the watch evaluator,
 event inbox, and decision lease; `levelHistory`, which is a good idea and
 underused; the replay and policy-versioning discipline; and the playbooks, now
@@ -531,7 +531,7 @@ allowed to trade.
 2. **Maker entries will sometimes cost more than they save.** Adverse selection
    is real. Measure fill rate and post-fill drift on resting entries; if resting
    bids fill 80% of the time and the market keeps going against you, that's
-   adverse selection and those entries should go back to taker. Maker *exits*
+   adverse selection and those entries should go back to taker. Maker _exits_
    carry almost none of this risk — start there.
 3. **Removing gates produces more trades before it produces better ones.** The
    replacement is the risk envelope plus a journal that measures whether trades
@@ -579,7 +579,7 @@ a stop is a stop.
 The same applies to the file itself. `momentum.ts` is named after a strategy but
 contains generic market readings — pivots, EMAs, RSI, ATR, swing structure,
 excursion distributions, breakouts. None of that belongs to momentum. It's just
-*what the market is doing*, and it should be named that way.
+_what the market is doing_, and it should be named that way.
 
 **`strategyVersion` reaches all the way down to the exchange.** 69 references
 across 22 files, including `HyperliquidExecutionService`, `TradingExitService`,
@@ -609,9 +609,9 @@ change with it. There's no supersede problem because there's no version to
 supersede.
 
 **The gate layer splits in two and half of it goes.** The preview pipeline
-currently mixes two different kinds of check. Risk gates ask *does this fit the
-envelope* — size, leverage, loss per trade, loss per session. Those protect the
-user and they stay. Discipline gates ask *did the model show its work* — is the
+currently mixes two different kinds of check. Risk gates ask _does this fit the
+envelope_ — size, leverage, loss per trade, loss per session. Those protect the
+user and they stay. Discipline gates ask _did the model show its work_ — is the
 plan version current, does the target basis validate, did you restate ATR
 correctly. Those protect the system from the model, and they're what's costing
 every trade. They go.
@@ -715,7 +715,7 @@ be hard, small, and completely separate from the decision layer:
 Today these are tangled — discipline gates are implemented alongside risk gates
 in the same preview pipeline, so loosening the model's freedom looks like
 loosening safety. Once they're separated you can give the model a genuinely free
-hand *and* tell the user exactly what they've risked. That separation is what
+hand _and_ tell the user exactly what they've risked. That separation is what
 makes "load your money and let it trade" a defensible product rather than a scary
 one.
 
@@ -744,13 +744,13 @@ mission's status machine has an edge that only the publish act can take.
 So the plan isn't decoration on the side of the loop — it's the gear the loop
 turns on. That's why removing it feels bigger than it should: the status machine
 has to learn a new reason to move. In a position-centric model the natural
-edge is *"a plan now exists and its triggers are armed"* — which is the same
+edge is _"a plan now exists and its triggers are armed"_ — which is the same
 event, minus the version.
 
 ### F2 — A run cannot start without a published plan
 
-From the reactor: *"the `mission_created` cause is the only one allowed to
-proceed without a published strategy (coordinator check 7)."*
+From the reactor: _"the `mission_created` cause is the only one allowed to
+proceed without a published strategy (coordinator check 7)."_
 
 **This is the ignition of the churn loop.** The model must publish before it can
 ever be woken again. Combine with the fact that publishing supersedes the prior
@@ -799,13 +799,17 @@ open the same position.
 The order mapper is a two-way branch:
 
 ```ts
-t: { limit: { tif: order.timeInForce === "ioc" ? "Ioc" : "Gtc" } }
+t: {
+  limit: {
+    tif: order.timeInForce === "ioc" ? "Ioc" : "Gtc";
+  }
+}
 ```
 
 There is no `Alo`. And this matters more than "a missing enum value", because
 **GTC is not a maker guarantee.** A GTC limit priced through the book crosses
-and pays taker. So today's `resting_limit` gives you the maker fee *only if the
-price happens not to cross* — and silently pays 3× more if the market moves into
+and pays taker. So today's `resting_limit` gives you the maker fee _only if the
+price happens not to cross_ — and silently pays 3× more if the market moves into
 you first.
 
 **Only ALO guarantees maker.** Every number in Part 3 depends on a branch that
@@ -818,23 +822,23 @@ and it's currently absent.
 I expected to find the gates concentrated here. They aren't. Of the 17 entry
 checks:
 
-| Kind | Checks | Verdict |
-|---|---|---|
-| **Risk** — protects the user | `direction_permitted`, `leverage_within_limits`, `gross_notional_within_authority`, `planned_loss_within_per_position_ceiling`, `reservations_plus_proposed_within_budget`, `valid_stop_defined` | keep, unchanged |
-| **Correctness** — can this order be sent | `execution_wallet_approved`, `account_and_bbo_fresh`, `size_and_price_valid`, `exchange_minimum_met` | keep |
-| **Control** — user switches | `mission_active`, `entries_allowed` | keep |
-| **Concurrency** | `harness_run_owns_lease`, `no_conflicting_execution_pending` | keep |
-| **Discipline** — protects the system from the model | `strategy_version_current`, `authority_version_current`, `market_is_eth` | **remove** |
+| Kind                                                | Checks                                                                                                                                                                                           | Verdict         |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------- |
+| **Risk** — protects the user                        | `direction_permitted`, `leverage_within_limits`, `gross_notional_within_authority`, `planned_loss_within_per_position_ceiling`, `reservations_plus_proposed_within_budget`, `valid_stop_defined` | keep, unchanged |
+| **Correctness** — can this order be sent            | `execution_wallet_approved`, `account_and_bbo_fresh`, `size_and_price_valid`, `exchange_minimum_met`                                                                                             | keep            |
+| **Control** — user switches                         | `mission_active`, `entries_allowed`                                                                                                                                                              | keep            |
+| **Concurrency**                                     | `harness_run_owns_lease`, `no_conflicting_execution_pending`                                                                                                                                     | keep            |
+| **Discipline** — protects the system from the model | `strategy_version_current`, `authority_version_current`, `market_is_eth`                                                                                                                         | **remove**      |
 
 Three of seventeen. The pipeline is in good shape.
 
 Better still, **the codebase has already discovered the split I was going to
 recommend** — and applied it once, to exits:
 
-> *"None of those rules is wrong about entries. They are simply about entries.
+> _"None of those rules is wrong about entries. They are simply about entries.
 > The exit list below keeps every check that is about whether this exit can be
 > executed correctly, and drops every check that is about whether more exposure
-> should be permitted."*
+> should be permitted."_
 
 That is exactly the right reasoning. The recommendation is just: **apply it a
 second time, to entries.**
@@ -844,7 +848,7 @@ second time, to entries.**
 This is the most encouraging finding in the whole review, and it reframes the
 effort.
 
-Very little actually *rejects*. Enforced rejections are: three discipline checks
+Very little actually _rejects_. Enforced rejections are: three discipline checks
 in preview, two target-basis defects at publish, and nine checks in the stop
 adjuster. That's it.
 
@@ -884,9 +888,9 @@ $10,000 notional   taker/taker 9.4 bps $9.40 · taker/maker 6.2 bps $6.20 · mak
 
 It writes a plan and one line to the user:
 
-> *"Sellers are leaning on it — book is offered 1.7:1 and we've failed twice at
+> _"Sellers are leaning on it — book is offered 1.7:1 and we've failed twice at
 > 104,400. I'll short $10,000 if we tag 104,300, stop 104,650, target 103,700.
-> Risk $34, aiming for $58. If it doesn't trigger by 10:00 I'll look again."*
+> Risk $34, aiming for $58. If it doesn't trigger by 10:00 I'll look again."_
 
 Under the hood that's one plan object, one price trigger armed at 104,300, and
 one time trigger at 10:00. Nothing is on the exchange yet. The user's phone shows
@@ -900,8 +904,8 @@ It re-reads. Imbalance still offered, no news, the level held. It enters —
 
 Immediately it places two resting orders: a **stop-market at 104,650** (the
 seatbelt, on the exchange, not negotiable) and a **reduce-only ALO take-profit at
-103,700** (maker, 1.5 bps instead of 4.5). It sets two wake conditions: *price
-moves 25 bps either way*, and *20 minutes with no new low*.
+103,700** (maker, 1.5 bps instead of 4.5). It sets two wake conditions: _price
+moves 25 bps either way_, and _20 minutes with no new low_.
 
 The plan hasn't been replaced. `entry` is now history; stop, target and
 invalidation still apply. The user's panel shows: short 0.096 BTC from 104,296,
@@ -916,19 +920,19 @@ funding or risk a reversal for $11.
 It cancels the take-profit and exits — **taker**, because it wants out now.
 Result: **+$11 gross, −$9.40 costs, −$1.60 net.** A small loss.
 
-It writes to the journal: *"stalled, flow flattened, cut it. Entry was fine, the
-follow-through wasn't."* The user's panel logs one line. They still haven't
+It writes to the journal: _"stalled, flow flattened, cut it. Entry was fine, the
+follow-through wasn't."_ The user's panel logs one line. They still haven't
 looked.
 
 **10:20 — a second setup, this one reversion.**
 
 Price has run to 104,610 and the 5m RSI is stretched with a fresh high on
-falling volume. The model wants to fade it, and because it's *fading* it can
+falling volume. The model wants to fade it, and because it's _fading_ it can
 afford to wait: it places a **maker ALO sell at 104,640**, above the market. If
 price extends into it, that's the fill it wanted.
 
-> *"It's stretched. I'll short at 104,640 if it pushes there — resting, so we pay
-> a third of the fee. Stop 104,900, target 104,200."*
+> _"It's stretched. I'll short at 104,640 if it pushes there — resting, so we pay
+> a third of the fee. Stop 104,900, target 104,200."_
 
 **10:26 — filled at 104,640** (1.5 bps, $1.50). Stop and a maker take-profit go
 on immediately.
@@ -1035,7 +1039,7 @@ depth-and-spread-collapse trigger is the minimum, and it's not built.
 
 If the server dies with a position open, the only thing between the user and a
 large loss is the resting stop on the exchange. That's why it isn't optional and
-why it goes on *at the same time as the entry*, not on the next wake.
+why it goes on _at the same time as the entry_, not on the next wake.
 
 ### It's the user's money and keys
 
@@ -1069,7 +1073,7 @@ ignores this will take 8 bps trades all day and lose money reliably — not
 because it's badly designed, but because it's paying more to trade than the
 trade is worth.
 
-So the constraint can't be *removed*. But it can be **moved off the model.**
+So the constraint can't be _removed_. But it can be **moved off the model.**
 
 ### The resolution: make the fee small enough to ignore, and put it where the model isn't
 
@@ -1080,7 +1084,7 @@ Two moves, and together they give you what you actually want:
    fee tiers, never does basis-point arithmetic. Cost discipline becomes
    mechanical and universal instead of a per-decision tax.
 2. **The cost appears once, as one line of context, and gates nothing.**
-   *"Round trip here ≈ 6 bps (~$6 on $10,000)."* The model reads it the way a
+   _"Round trip here ≈ 6 bps (~$6 on $10,000)."_ The model reads it the way a
    trader glances at the spread — it informs, it doesn't permit.
 
 **The fee work is not a constraint on boldness. It is what makes boldness
@@ -1109,8 +1113,8 @@ and modest size actually buy — not safety in the abstract, but **the right to 
 wrong often**, which is the precondition for the coding-tool interaction model to
 work at all.
 
-So the 1x default has a better justification than caution: *it's what makes
-iteration affordable.* Twenty small trades where four are mistakes is a fine day.
+So the 1x default has a better justification than caution: _it's what makes
+iteration affordable._ Twenty small trades where four are mistakes is a fine day.
 Two large trades where one is a mistake is not.
 
 ### What I'd do
@@ -1133,11 +1137,11 @@ The change is smaller than it sounds, and it's mostly one type signature.
 
 ### The mechanical change: from verdict to reading
 
-**Today** an indicator is a *producer of candidates*. `readEmaCross` returns a
+**Today** an indicator is a _producer of candidates_. `readEmaCross` returns a
 setup or `null`, and `null` means no candidate exists — the signal is deleted
 before the model sees it. The indicator holds a veto.
 
-**After**, an indicator is a *field in the observation*. Always present, always
+**After**, an indicator is a _field in the observation_. Always present, always
 numeric, never null, never pass/fail:
 
 ```
@@ -1157,12 +1161,12 @@ no threshold any more — just a separation number the model can weigh.
 ### Four ways they stay genuinely useful
 
 **1. As compression.** "9/21 crossed down 3 bars ago, separation 0.4 ATR" is a
-compact summary of 120 candles. The model *could* derive it, but handing it over
+compact summary of 120 candles. The model _could_ derive it, but handing it over
 is cheaper and more reliable than making it recompute — and unlike the current
 arrangement, nothing depends on it being decisive.
 
 **2. As vocabulary for the user.** The `because` line has to be readable by a
-human who trades: *"it's stretched and the book's offered"* lands instantly with
+human who trades: _"it's stretched and the book's offered"_ lands instantly with
 someone who knows RSI and depth. Indicators are the shared language between the
 model and the user, which is a real job even when they aren't driving the
 decision.
@@ -1174,11 +1178,11 @@ it was written for — just for the users who asked for it.
 
 **4. As journal tags — and this is the best one.** Every trade records which
 readings were notable at entry. After a couple of hundred trades you can ask:
-*do my EMA-cross entries actually pay? Do RSI fades? Which readings precede the
-losers?*
+_do my EMA-cross entries actually pay? Do RSI fades? Which readings precede the
+losers?_
 
 That **inverts the relationship**. Today a strategy asserts up front that it
-works and is given a veto on that basis. After, the journal *measures* whether it
+works and is given a veto on that basis. After, the journal _measures_ whether it
 works and feeds that back as evidence the model can weigh. Strategies stop being
 a priori rules and become a posteriori evidence — which is the only honest way to
 know whether one is any good.
@@ -1190,7 +1194,7 @@ just needs trades to measure.
 
 ### What's genuinely lost
 
-Only one thing: the model can no longer be *made* to consider a strategy it
+Only one thing: the model can no longer be _made_ to consider a strategy it
 would otherwise ignore. Today the doctrine forces the tournament — every
 strategy scored, every turn. Without it, a model that has settled into reading
 momentum may simply stop noticing ranges.
@@ -1213,7 +1217,7 @@ doesn't cost a turn every time.
 `MissionStrip` adds eleven more values, `PositionStrip` adds Size/Entry/Mark/Liq,
 and `WakeupCard` renders raw JSON.
 
-It wasn't designed cluttered. It was *reflected* cluttered. Which means the plan
+It wasn't designed cluttered. It was _reflected_ cluttered. Which means the plan
 work in Part 6 removes most of it for free — a seven-field plan cannot produce a
 thirteen-row disclosure. But shrinking it isn't the same as designing it.
 
@@ -1221,7 +1225,7 @@ thirteen-row disclosure. But shrinking it isn't the same as designing it.
 
 In priority order, for someone who typed "trade BTC" and closed the laptop:
 
-1. Am I up or down? *(one number)*
+1. Am I up or down? _(one number)_
 2. What am I in?
 3. What's protecting me, and what's the worst case in dollars?
 4. **What is it about to do next?**
@@ -1242,29 +1246,29 @@ cross the "now" divider, and recede leftward as record.** Past is what happened,
 the divider is the present, the gutter to its right is what the model intends.
 
 That is what makes left-to-right motion meaningful rather than decorative. A
-trigger visibly *approaches* the divider; when it fires it becomes a fill marker.
+trigger visibly _approaches_ the divider; when it fires it becomes a fill marker.
 **The plan turns into history in front of the user.**
 
-It also answers question 4 — *what is it about to do* — spatially, with no text
+It also answers question 4 — _what is it about to do_ — spatially, with no text
 panel, which is the thing a stats layout can never do well.
 
 ### Let the geometry carry the meaning
 
 Five shapes, no legend needed, because the form says what the thing is:
 
-| Thing | Shape |
-|---|---|
-| Price trigger | horizontal segment in the gutter that **stops at its expiry** — bounded, not infinite, so "at what price" and "until when" read as one mark |
-| Scheduled reassessment | vertical rule at its time |
-| Time-stop | vertical rule in the position's colour |
-| Stop and target | the only lines that cross the divider, because they're the only commitments that persist |
-| Stall trigger ("out if no new low for 20 min") | a marker that **slides right** each time a new low prints — watching the deadline reset is honest about how the rule works |
+| Thing                                          | Shape                                                                                                                                       |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Price trigger                                  | horizontal segment in the gutter that **stops at its expiry** — bounded, not infinite, so "at what price" and "until when" read as one mark |
+| Scheduled reassessment                         | vertical rule at its time                                                                                                                   |
+| Time-stop                                      | vertical rule in the position's colour                                                                                                      |
+| Stop and target                                | the only lines that cross the divider, because they're the only commitments that persist                                                    |
+| Stall trigger ("out if no new low for 20 min") | a marker that **slides right** each time a new low prints — watching the deadline reset is honest about how the rule works                  |
 
 ### Most of this is already built
 
 The in-flight geometry work has the foundation: `nowX`, a **future gutter**
-(*"the share of the plot held empty to the right of now"*), `ChartTimeMarker` for
-*"a future moment the plan is committed to, drawn as a vertical rule"*,
+(_"the share of the plot held empty to the right of now"_), `ChartTimeMarker` for
+_"a future moment the plan is committed to, drawn as a vertical rule"_,
 domain-pinning with chevrons for levels outside the visible range, and
 `findLevelAtPrice` — which is hit-testing, the seed of interactivity.
 
@@ -1272,7 +1276,7 @@ So this is not a new design. It's a half-built one worth finishing deliberately.
 
 **What's missing:**
 
-1. **Motion.** Re-rendering per projection update makes the chart *jump*.
+1. **Motion.** Re-rendering per projection update makes the chart _jump_.
    Advancing `nowX` smoothly is the difference between a chart that updates and a
    chart that moves.
 2. **Bounded segments.** Triggers currently read as full-width rules; they should
@@ -1281,7 +1285,7 @@ So this is not a new design. It's a half-built one worth finishing deliberately.
 4. **Sliding markers** for relative conditions.
 5. **A visual register for "hypothetical."** Gutter contents should be quieter
    than the past — thinner, dashed, lower opacity. Today a future line and a past
-   line would read as equally real. The future should *look* like it hasn't
+   line would read as equally real. The future should _look_ like it hasn't
    happened.
 
 ### Interactivity, and why it matters architecturally
@@ -1294,7 +1298,7 @@ moves, with a live dollar-risk readout under the finger. Drag the target. Drag a
 trigger's price. Drag the end of a trigger segment to extend its expiry.
 
 That's more than a nice gesture. **Dragging the stop is a `plan()` revision.** The
-UI writes the same object the model writes — *one object, two authors*. It is the
+UI writes the same object the model writes — _one object, two authors_. It is the
 cleanest possible expression of "the user can intervene at any time": no separate
 command path, no special-case API, and the model simply finds a plan it didn't
 author on its next wake.
@@ -1360,7 +1364,7 @@ because the walk-away user is who this is for.
 2. Take `strategyVersion` out of execution. An order should carry market, side,
    size, price, urgency, stop — and nothing about why.
 3. Stop making the model classify the market before it can look for a trade.
-4. One question — *is the expected move bigger than ~30 bps?* — instead of five
+4. One question — _is the expected move bigger than ~30 bps?_ — instead of five
    gates.
 5. Fix order type first: maker exits always, maker entries on reversions, taker
    on momentum. Worth 33–67% of the fee bill and more than any strategy change.
@@ -1372,6 +1376,50 @@ because the walk-away user is who this is for.
 9. The chart is the mission: past on the left, now in the middle, the model's
    intentions in the gutter on the right — draggable, and busy only when the plan
    is too complicated.
+
+---
+
+## Postscript — what got built, and the four places it differs
+
+Added 2026-08-16, after plan 29 landed phases 0–10. This document is the
+argument, not the record; the record is
+[`plan-29-trader-restructure.md`](../operations/plan-29-trader-restructure.md),
+and its Appendix B lists every decision taken against this text. Almost all of
+the nine lines above were built as written. Four were not, and a reader coming
+to this document later should not be misled by them.
+
+**1. Seven tools, not six — and `strategy` is not mode-B-only.** Part 8's table
+lists six and says `strategy(name)` is what Mode B adds. What shipped is
+`trading_look`, `trading_plan`, `trading_enter`, `trading_exit`,
+`trading_watch`, `trading_journal` and `trading_strategy`, all seven available
+in both modes. The playbooks turned out to be worth reading in discretionary
+mode too — `classify` for a regime read and `standing_rules` for what holds
+always — so denying the tool would have cost the free-hand mode something it
+uses. Execute mode changes what the playbook _means_, not what the model can
+call.
+
+**2. The mode is derived from the mandate, not stored on the mission.** Part 2
+describes Mode A and Mode B as a setting. `mode.ts` reads them out of the
+mandate text on every look, so the mode can never disagree with the words the
+operator typed. It also means the reading is a regex over English, which took
+two passes to make safe — see Appendix B, A17.
+
+**3. Leverage is not 1×.** Part 9 argues for "scale size with stated capital;
+keep leverage at 1×", and the reasoning holds. The shipped testnet authority
+allows up to 20× and 8× capital of gross notional
+([authority.ts](../../packages/trading-contracts/src/authority.ts)). The
+per-trade and per-session dollar ceilings — 7% and 35% of capital — are what
+actually bounds the loss, and they bound it the same way at any leverage. The
+argument was not rejected; it was made redundant by expressing the limit in
+dollars instead.
+
+**4. Dragging a trigger was not built.** Part 17 asks for the stop, the target,
+a trigger's price and a trigger segment's expiry to all be draggable. Stop and
+target are. A trigger is not, deliberately: the trigger's DESCRIPTION carries
+the authoritative price, so moving a `priceLevel` alone publishes a plan that
+contradicts itself in prose; and the armed watch does not move with a revision,
+so the mission would keep waking at the old level. The reasons are written into
+the `PlanDragTarget` type so the next person to reach for it finds them.
 
 ---
 

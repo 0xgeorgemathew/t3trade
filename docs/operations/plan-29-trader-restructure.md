@@ -8,11 +8,14 @@ Read that first; this document does not re-argue any of it.
 under hard constraints — taking many small positive-expectancy trades, keeping a
 plan it revises, setting its own triggers, and narrating in plain language.
 
-**Baseline at time of writing.** Typecheck clean; `pnpm test` 2,518 passed / 10
-skipped / 0 failed across 271 files; `pnpm lint` exit 0 with ~25 pre-existing
-warnings. There is uncommitted work in flight across 18 files (chart geometry,
-cost sizing, quote service, momentum detectors) — Phase 0 lands it or stashes it
-before anything else starts.
+**Baseline at time of writing.** `pnpm test` 2,518 passed / 10 skipped across
+271 files; `pnpm lint` exit 0 with ~25 pre-existing warnings. That line is out
+of date — the current count is in Appendix A, which is the one to read.
+
+At the time this was written there was uncommitted work in flight across 18
+files (chart geometry, cost sizing, quote service, momentum detectors). It was
+NOT landed before phases 1–7 ran, despite step 0.1 saying so; it landed with
+phase 8. See Appendix A, A15.
 
 ---
 
@@ -31,18 +34,17 @@ before anything else starts.
 
 ## Phase order and why
 
+The order this plan intended is no longer the order that happened — P6 landed
+before P4, and P8, P9 and P10 landed together in an afternoon. What actually
+ran, from the commit history:
+
 ```
-P0 Baseline ──┬── P1 Doctrine ────┐
-              ├── P2 Cost & maker ─┼── P3 Un-gate ──┐
-              └── P7 Observation ──┘                │
-                                                    ├── P4 Plan reshape ── P5 Execution ── P6 Tools
-                                                    │        │
-                                                    │        └── P8 Chart
-                                                    └── P9 Mode B ── P10 Soak
+P0 → P1 → P2 → P3 → P6 → P4 → P5 → P7 → P8 → P9 → P10
 ```
 
-P1, P2 and P7 are independent of each other and of everything else. P4 is the
-entangled one and is deliberately late.
+P1, P2 and P7 were independent of each other and of everything else, which is
+why the order could move without anything breaking. P4 was the entangled one
+and was deliberately late.
 
 ---
 
@@ -136,7 +138,10 @@ change. Research Part 3: this is worth more than any strategy improvement.
 - **GTC is not a maker guarantee** — a GTC priced through the book crosses and
   pays taker. Only ALO guarantees maker. Add a rejection path for "would have
   crossed".
-- Extend `MomentumOrderPreference` (or its successor) with `post_only`.
+- ~~Extend `MomentumOrderPreference` (or its successor) with `post_only`.~~
+  **Overtaken by step 2.3 before it landed.** The model names no order type at
+  all now: `OrderPreference` (`strategy.ts`) is server-internal and the tools
+  take `urgency`. Right outcome, stale step text.
 
 ### Step 2.3 — Urgency on entry and exit
 
@@ -175,6 +180,16 @@ Fee share of gross, and maker fill rate.
 **Done when:** realised cost per round trip falls from ~9 bps toward ~6 bps
 blended, measured on real fills — not modelled.
 
+**Which number that is.** The 9→6 measure is `economics.feesBps +
+entrySpreadBps + entrySlippageBps` — cost per ROUND TRIP. It is not
+`feeShareOfGross`, which is fees over PER-FILL notional and therefore prints
+~0.05% at the old all-taker rate; a round trip is two fills, so the two cannot
+be compared digit for digit. `feeShareOfGross` measures something else worth
+measuring: how much maker execution you are actually getting, per side. Step
+10.2 put `feeShareOfGross` in the report's headline block and demoted the
+round-trip number below it, so a reader checking 9→6 must scroll past the
+headline to the line that answers them.
+
 **Risk to watch:** adverse selection on maker _entries_. Track fill rate and
 post-fill drift. If resting entries fill 85% of the time and price keeps going
 against you, revert entries to taker and keep maker exits only.
@@ -200,9 +215,16 @@ context** in the observation and nothing compares against it.
 
 ### Step 3.3 — Discipline checks out of preview
 
-From the 17-item entry checklist remove exactly three: `strategy_version_current`,
-`authority_version_current`, `market_is_eth`. **Keep all risk, correctness,
-control and concurrency checks.** This is the same reasoning the exit checklist
+From the 17-item ENTRY checklist remove exactly three:
+`strategy_version_current`, `authority_version_current`, `market_is_eth`.
+**Keep all risk, correctness, control and concurrency checks.**
+
+`market_is_eth` is removed from the ENTRY list only. It survives in
+`EXIT_CHECKS` (`TradingPreviewService.ts`), where refusing to close a position
+in a market the mandate does not name would be the wrong answer, and the entry
+side keeps the same check earlier under the same name in
+`TradingEntryService.ts`. That is the right call; this text is amended to
+match what landed. This is the same reasoning the exit checklist
 already applies — apply it a second time.
 
 ### Step 3.4 — Detectors report near-misses
@@ -301,6 +323,13 @@ plan revision, and discarded wake firings fall to zero.
 **Target state:** the execution path takes market, side, size, price, urgency and
 stop — and nothing about why. Trade history records the reason as an annotation,
 never as a key that can invalidate an order.
+
+**Done when:** a grep in `HyperliquidExecutionService`, `TradingExitService`,
+`execution.ts`, `quote.ts` and `watch.ts` returns nothing. NOT "grep returns
+nothing" anywhere: `strategyVersion` survives on purpose as a label on trade
+history (`history.ts`, `calibration.ts`, `TradingTradeHistoryService`,
+`TradingClosedTradeReview`, `TradingCalibrationService`), which is the target
+state, not a leftover.
 
 ### Step 5.2 — Rename the strategy-coupled types
 
@@ -412,7 +441,8 @@ Toolkit is 13 tools at 3,928 description chars.
 
 ### Step 6.5 — Retire the rest — LANDED except `trading_get_playbook`
 
-Thirteen tools to seven, at 2,797 description chars. Per tool:
+Thirteen tools to seven. `trading_get_playbook` was later renamed
+`trading_strategy` (step 9.2) rather than retired, which is the right outcome. Per tool:
 
 - **`trading_publish_plan` → renamed `trading_plan`.** Nothing else moved: the
   same `tradingPlanAuthoredFields`, the same `expectedMissionVersion` guard,
@@ -519,6 +549,12 @@ The vol ratio is the single number gating whether to trade at all.
 
 `readEmaCross() → CandidateSetup | null` becomes an always-present reading with
 no score, no `clearsCostGate`, no null. Depends on Step 3.4.
+
+**Landed for the EMA cross only.** `readEmaCross` is gone and `EmaTrend` always
+carries `direction` and `separationAtr`; `readRsiReversion` and
+`readTrendContinuation` still return a 0–1 score. Step 3.4's `rejectedBy` means
+near-misses survive either way, so the problem this step was aimed at is
+solved — but "no score, no null" is true of one detector out of four.
 
 **Explicitly not adding:** MACD, Bollinger, Ichimoku, stochastics — same
 information as the candles, more tokens.
@@ -641,7 +677,24 @@ more than five future markers are ever visible.
 
 ### Step 9.1 — Mode on the mission
 
-Selects a system prompt and a tool subset. Discretionary is the default.
+Discretionary is the default.
+
+**Amended to what landed and what was decided.** The mode is DERIVED from the
+mandate rather than stored beside it (`mode.ts`), which keeps one source of
+truth and costs no migration; the panel shows it, so a wrong read is visible in
+the first ten seconds.
+
+- **System prompt: done, as one paragraph rather than two prompts.** Step 2 of
+  the decision contract in `TradingSessionProfile` now points at
+  `mission.mode`, says the doctrine there wins, and states what execute mode
+  means. Two whole prompts were not built: the mode is known at
+  `trading_look`-time, not at the seam where the five adapters build a session,
+  and threading a mission read into all five to vary one paragraph buys less
+  than it costs.
+- **Tool subset: dropped deliberately.** There are seven tools and no subset of
+  them that execute mode should be denied — an execute-mode mission still
+  looks, plans, arms, journals, enters and exits. The step should not have
+  promised one.
 
 ### Step 9.2 — `strategy(name)` tool
 
@@ -697,3 +750,983 @@ veto and become a posteriori evidence the model weighs.
 `idx_trading_harness_runs_one_active_per_mission` — at most one non-terminal run
 per mission, enforced in SQLite — survives every phase untouched. It is what
 stops two turns racing to open the same position.
+
+---
+
+# Appendix A — Audit before human testing
+
+First pass 2026-08-16 at commit `add220b1a` (phases 0–7). **Re-run at commit
+`a15c4dd1e`**, after 27 more commits landed phases 8, 9 and 10.
+
+**The numbers in every example below** are the testnet defaults the code ships
+([authority.ts:152-161](../../packages/trading-contracts/src/authority.ts:152)),
+so you can check any of them against a real session:
+
+| Setting                         | Value            | On $100 of capital     |
+| ------------------------------- | ---------------- | ---------------------- |
+| Market                          | ETH (default)    | —                      |
+| Max position size               | 8 × capital      | $800                   |
+| Max you can lose on one trade   | 7% of capital    | $7                     |
+| Max you can lose in the session | 35% of capital   | $35                    |
+| Max leverage                    | 20×              | —                      |
+| Taker fee (crossing)            | 4.5 bps per side | $0.045 per $100 traded |
+| Maker fee (resting)             | 1.5 bps per side | $0.015 per $100 traded |
+
+ETH is priced at $3,000 throughout. One basis point (bp) is 0.01%, so 30 bps of
+ETH is $9.
+
+**Test run at `a15c4dd1e`.** `pnpm typecheck` passed. `pnpm test`: 2,249 passed,
+14 skipped, **1 failed**, 2 files failed, across 226 files.
+
+Both failures are timeouts in the jsdom web suite, not assertions: a 15-second
+test timeout in `apps/web/src/lib/imageCompression.test.ts`, and a 30-second
+`beforeAll` hook timeout while `MessagesTimeline.test.tsx` was importing its
+module. **The first pass at `add220b1a` had four such timeouts in a different
+set of files** (`imageCompression` ×3 and `Sidebar.logic`), which is what a
+load-sensitive flake looks like rather than a regression. No trading test fails
+in either run.
+
+**I re-ran those two files on their own: both pass, 26 tests in 3.0 seconds.**
+So they are not broken — they are timing out because the full run has them
+competing for the machine. Raise the timeouts or mark them serial before the
+soak: a suite that fails in a different file every run cannot tell you a real
+regression from a busy machine, and during a soak that is exactly the signal you
+will be relying on.
+
+The number at the top of this plan (2,518 across 271 files) is out of date — use
+this line.
+
+---
+
+## Where the first pass stands
+
+|         | Finding                                                 | Status at `a15c4dd1e`                                   |
+| ------- | ------------------------------------------------------- | ------------------------------------------------------- |
+| **A1**  | Stop can be widened past your per-trade limit           | **Fixed** in `542fbf1a0`. Two follow-ups left — see A1. |
+| **A2**  | Every trade sized as if both sides pay the taker fee    | Open                                                    |
+| **A3**  | Book imbalance compares unequal sides                   | Open                                                    |
+| **A4**  | `aggressorFlow.bars` counts empty bars                  | Open                                                    |
+| **A5**  | "VWAP" is a rolling two-hour average                    | Open                                                    |
+| **A6**  | Publishing a plan is two writes with no transaction     | Open — **and now on two code paths**                    |
+| **A7**  | One bad plan row kills the mission                      | Open                                                    |
+| **A8**  | Phase-7 readings vanish silently from an oversized wake | Open                                                    |
+| **A9**  | `move_stop` still requires proof you read the plan      | Open                                                    |
+| **A14** | The model is never told what the phase-7 readings mean  | Open                                                    |
+| **A15** | Phase-8 chart work uncommitted                          | **Resolved** — committed, and phases 8–10 finished      |
+| **A16** | Code that could be shorter                              | Open, and two items got bigger                          |
+
+Phases 8, 9 and 10 brought four new findings: **A17** (mode is guessed from
+your sentence, and guesses wrong), **A18** (mode selects neither a prompt nor a
+tool subset, so step 9.1 is half-done), **A19** (a dragged target has no failure
+feedback and a dragged trigger would be wrong if it were reachable), **A20**
+(the learning loop ranks setups by total dollars, so one lucky trade wins).
+
+> **This table is the audit as it stood, and is left that way on purpose.**
+> Every row in it has since been fixed, decided or declined — **Appendix B** is
+> the record of what was actually done, and is the one to read for current
+> state. Nothing below this line is outstanding work.
+
+---
+
+## A1 — Fixed, with two follow-ups
+
+`542fbf1a0` fixed it exactly as described: the envelope lookup now gives the
+entry record a minute of lead
+([TradingPlanProtectionService.ts:221](../../apps/server/src/trading/TradingPlanProtectionService.ts:221),
+[:361](../../apps/server/src/trading/TradingPlanProtectionService.ts:361)), and
+the test fixture now stamps the two timestamps in the order production does.
+
+**Two of the four fixes are still outstanding.**
+
+### A1a — The same query in `move_stop` was not fixed
+
+[TradingStopAdjustmentService.ts:254](../../apps/server/src/trading/TradingStopAdjustmentService.ts:254)
+still reads `AND created_at >= ${openedAt}`, with no lead. It looks for the
+entry's approved stop and, for the same reason A1 explained, never finds it —
+so it falls back to _the stop that is currently resting_
+([:258](../../apps/server/src/trading/TradingStopAdjustmentService.ts:258)).
+
+The direction is safe, but the behaviour is not what the code says. What you
+will see in a session:
+
+```
+Entry:    long 0.13 ETH @ $3,000, stop $2,946   (risk $7.02, approved)
+10:38     good move — model tightens the stop to $2,970
+10:51     pullback — model wants to give it room back to $2,955
+          (still $5.85 of risk, well inside the approved $7)
+          → refused: risk_envelope
+```
+
+Once the stop moves in, it can never move back out, even inside the approval.
+The comment at
+[TradingStopAdjustmentService.ts:246-250](../../apps/server/src/trading/TradingStopAdjustmentService.ts:246)
+describes a scoping rule that never takes effect. **Fix:** apply the same
+`ENTRY_RECORD_LEAD_MILLIS` lead, and add a test that seeds `opened_at` later
+than the entry record (no test seeds it at all today, so this path only ever
+runs with `openedAt = 0`).
+
+### A1b — A missing approval still permits the widening
+
+[TradingPlanProtectionService.ts:141](../../apps/server/src/trading/TradingPlanProtectionService.ts:141)
+still returns "allowed" when the limit comes back `null`. With the query fixed
+this is now rare rather than routine — but "we could not read what you approved"
+should not mean "so anything goes" on a live position. **Fix:** return
+`stopStatus: "refused"` with a refusal naming the missing approval. The model
+still has `trading_exit`'s `move_stop`.
+
+---
+
+## A2 — Every trade is sized as if it will pay the expensive fee twice
+
+**Unchanged.** `roundTripCostFractionOfNotional`
+([costs.ts:337-345](../../packages/trading-contracts/src/costs.ts:337)) still
+takes only `takerFeeBpsPerSide` and still charges the spread twice, with no
+maker rate — even though `estimateTradingCosts` in the same file has one at
+[costs.ts:238](../../packages/trading-contracts/src/costs.ts:238).
+
+Step 2.5 made the take-profit a resting order paying 1.5 bps instead of 4.5.
+The position sizer never heard about it. That function is the floor every entry
+is sized up to
+([TradingEntryService.ts:318-324](../../apps/server/src/trading/TradingEntryService.ts:318)),
+and the arithmetic at
+[costs.ts:412](../../packages/trading-contracts/src/costs.ts:412) is:
+
+```
+position size = target profit ÷ (expected move − round-trip cost)
+```
+
+Overstate the cost, shrink the divisor, and the position comes out bigger.
+
+**Worked example.** $10,000 of capital, ETH at $3,000, aiming for $30 of profit
+with a take-profit $9 above entry (a 30 bps move). Half the ETH spread is about
+$0.15, or 0.5 bps.
+
+|                                           | Cost it charges                      | Divisor  | Position it demands |
+| ----------------------------------------- | ------------------------------------ | -------- | ------------------- |
+| What the code does (taker both sides)     | 4.5 + 4.5 + 0.5 + 0.5 = **10.0 bps** | 20 bps   | **$15,000**         |
+| What the trade actually pays (maker exit) | 4.5 + 1.5 + 0.5 = **6.5 bps**        | 23.5 bps | **$12,766**         |
+
+$2,234 too big — 17% — for a target it would have reached anyway. With a stop
+1% away that is $150 at risk instead of $128: **$22 more per trade for
+nothing.**
+
+It gets worse on the small moves this plan exists to make tradeable:
+
+| Expected move      | Sized as    | Should be   | Too big by |
+| ------------------ | ----------- | ----------- | ---------- |
+| 30 bps ($9 on ETH) | $15,000     | $12,766     | 17%        |
+| 20 bps ($6)        | $30,000     | $22,222     | 35%        |
+| **15 bps ($4.50)** | **$60,000** | **$35,294** | **70%**    |
+
+Every risk ceiling still binds above this floor, so it cannot break your
+mandate — but it pushes size against the ceiling on every small-move trade, and
+a bigger position loses more when the stop is hit.
+
+**Fix:** give `roundTripCostFractionOfNotional` two more inputs —
+`exitIsMaker: boolean` and `makerFeeBpsPerSide?: number`. When the exit rests,
+charge taker + maker fees and **one** spread crossing, exactly as
+`roundTripTakerMakerUsd` already does at
+[costs.ts:266-267](../../packages/trading-contracts/src/costs.ts:266). Thread it
+through `targetNotionalForPlan`
+([costs.ts:434](../../packages/trading-contracts/src/costs.ts:434)) and pass
+`exitIsMaker: true` from
+[TradingEntryService.ts:318](../../apps/server/src/trading/TradingEntryService.ts:318).
+Leave slippage out — the reasoning at
+[costs.ts:332-335](../../packages/trading-contracts/src/costs.ts:332) is right
+and it errs small — but note in that comment that the number now depends on
+order type.
+
+---
+
+## A3 — Book imbalance compares ten levels of bids against three levels of asks
+
+**Unchanged.** [microstructure.ts:280-294](../../packages/trading-contracts/src/microstructure.ts:280)
+still asks for the top 10 levels of each side independently, and still reports
+`levels: Math.min(bid.counted, ask.counted)`
+([:292](../../packages/trading-contracts/src/microstructure.ts:292)) — a level
+count it did not actually compare over.
+
+**Worked example (I ran this).** ETH at $3,000, quiet hour, 2 ETH resting at
+every level. The bid side shows 10 levels; the ask side has been swept and shows 3.
+
+```
+bid depth summed:  10 levels × 2 ETH × $3,000 = $60,000
+ask depth summed:   3 levels × 2 ETH × $3,000 = $18,000
+imbalance = (60,000 − 18,000) / 78,000 = +0.538
+reported levels: 3
+```
+
+The model reads **+0.54 — bids outweigh asks nearly 2 to 1** and concludes
+buyers are stacked. Comparing three levels against three, the honest answer is
+**0.0, perfectly balanced.**
+
+The two errors point the same way, which is what makes it worse than a wrong
+number: it says "go long" _because_ the ask side is thin — which is exactly the
+state where a buy order walks up through an empty book and pays slippage.
+
+This is not a freak case. The field's own comment at
+[microstructure.ts:53](../../packages/trading-contracts/src/microstructure.ts:53)
+says "a thin book serves fewer".
+
+**Fix:**
+
+```ts
+const depth = Math.min(book.bids.length, book.asks.length, levels);
+const bid = depthUsd(book.bids, depth);
+const ask = depthUsd(book.asks, depth);
+```
+
+and report `levels: depth`. Add a test with more bid levels than ask levels and
+identical size per level, asserting `imbalance === 0`.
+
+---
+
+## A4 — `aggressorFlow.bars` counts bars that had no trades in them
+
+**Unchanged.** [microstructure.ts:313](../../packages/trading-contracts/src/microstructure.ts:313)
+skips bars with no volume; [:323](../../packages/trading-contracts/src/microstructure.ts:323)
+reports `bars: window.length` — the whole window. The field says "Bars actually
+read".
+
+**Example.** ETH at 03:00 UTC, dead tape. Of the last 15 one-minute bars, 12 had
+no trades. The three that did all closed near their highs. The model is told:
+
+```
+aggressorFlow: buyShare 0.87, bars 15, basis bar_close_location
+```
+
+which reads as "buyers have been paying up for a quarter of an hour". It should
+say `bars: 3`. `readVwap` gets this right
+([:463](../../packages/trading-contracts/src/microstructure.ts:463)), so two
+readings in the same payload count the same thing two different ways.
+
+**Fix:** count a local `bars` inside the loop, incremented where `volume` is.
+
+---
+
+## A5 — What is labelled "VWAP" is a rolling two-hour average
+
+**Unchanged.** `readVwap`
+([microstructure.ts:452-473](../../packages/trading-contracts/src/microstructure.ts:452))
+gets the whole 120-bar window from
+[TradingWakeupComposer.ts:885](../../apps/server/src/trading/TradingWakeupComposer.ts:885).
+On the 1-minute timeframe that is the last two hours, rolling forward every
+minute.
+
+When a trader says VWAP they mean the average from a **fixed** starting point,
+usually the session open. That is the entire point: everyone computes it from
+the same origin, so everyone reacts to the same level. A rolling two-hour mean
+has no such agreement behind it — it is a smoothed price. The research doc's
+argument for adding VWAP (Part 4, item 5) rests wholly on the shared anchor.
+
+**Example.** ETH ran from $2,950 to $3,050 over the last two hours and sits at
+$3,050.
+
+- Rolling 120-bar VWAP ≈ $3,000 → the model is told **+166 bps above VWAP**.
+- Session VWAP anchored at 00:00 UTC ≈ $2,970 → every other desk sees
+  **+269 bps**.
+
+The model reasons about being "stretched above VWAP" using a number nobody else
+has.
+
+**Fix,** pick one and write it into the field's comment:
+
+- Cheap: rename it (`RollingVwapReading`), add `barsSpanMinutes`, and say in
+  `distanceBps` that the anchor rolls.
+- Right: anchor it to the UTC session open or the mission's own start, and
+  publish `anchoredAt` on the reading.
+
+Prefer the second. As it stands the reading does not do the job it was added
+for.
+
+---
+
+## A6 — Publishing a plan is two database writes with nothing tying them together
+
+**Unchanged, and now more exposed.**
+[TradingStrategyService.ts:325-357](../../apps/server/src/trading/TradingStrategyService.ts:325)
+still has no transaction around the `UPDATE` that bumps the mission version and
+flips `analysing → waiting`, and the `INSERT` that stores the plan.
+
+If the second write fails — disk full, `SQLITE_BUSY`, process killed between
+them:
+
+```
+Mission version:   7 → 8                 ✓ written
+Mission status:    analysing → waiting   ✓ written
+Plan rows stored:  0                     ✗ never written
+```
+
+The mission says it is waiting on a plan that does not exist.
+`getCurrentStrategy` returns nothing. The panel shows "Waiting" with nothing
+under it. `move_stop` skips its staleness check because there is no plan to be
+stale against.
+
+**What changed since the first pass:** step 8.4 gave this path a second caller.
+A drag on the chart now runs the same `publishPlanWithAftermath`
+([TradingPlanPublication.ts:129](../../apps/server/src/trading/TradingPlanPublication.ts:129)),
+so the half-written state is now reachable by an operator dragging a stop, not
+only by the model publishing. And an operator who sees "Waiting" with no plan
+after dragging has no idea what happened.
+
+Step 6.3 keeps a watch cancel and its replacement insert in one transaction.
+This deserves the same.
+
+**Fix:** wrap lines 325–357 in `sql.withTransaction`.
+
+---
+
+## A7 — One unreadable plan row kills the mission instead of degrading it
+
+**Unchanged.** [TradingStrategyService.ts:205](../../apps/server/src/trading/TradingStrategyService.ts:205)
+calls `decodeStrategyJson`, which **throws** when the stored JSON does not match
+the current schema. Twelve lines earlier,
+[:170-174](../../apps/server/src/trading/TradingStrategyService.ts:170) catches
+exactly that failure and skips the row, with a comment saying why one bad row
+should not cost the caller everything.
+
+So the history read survives a bad row and the current-plan read crashes on it —
+and the current-plan read is on the wake path, the `trading_look` path, the
+`move_stop` staleness check, and now the drag path too.
+
+**When this bites.** Migration 062 rewrote every stored plan. On the next change
+like that, if one row does not convert: the wake throws → the run is marked
+failed → the watch that woke it is consumed → nothing is left to wake the
+mission → **the mission goes permanently deaf.** Same shape as the stuck-mission
+bug from plan 23.
+
+**Fix:** wrap the decode in `try`/`catch`, return `Option.none()`, log a warning
+naming the mission. A mission with an unreadable plan should behave like a
+mission with no plan, not like a crashed turn.
+
+---
+
+## A8 — When the wake gets too big, the phase-7 readings vanish without saying so
+
+**Unchanged.** The last-resort projection
+([TradingWakeupComposer.ts:472-510](../../apps/server/src/trading/TradingWakeupComposer.ts:472))
+lists its fields by hand and `microstructure` is not among them, so book
+imbalance, aggressor flow, depth change, positioning and the vol ratio all
+disappear.
+
+Cutting them is fair. Not saying so is not: the `omitted` line at
+[:509](../../apps/server/src/trading/TradingWakeupComposer.ts:509) mentions the
+plan, authority, watches and pending state, and nothing else. A model that has
+read book imbalance every turn for an hour gets a wake without it and no
+statement that it was dropped — it just looks like the reading could not be
+taken. Every other omission in this renderer is announced: trim steps are
+logged, truncated lists say `(+4 more)`.
+
+**Fix:** add `microstructure` to the `omitted` string, or add a `microstructure`
+step to `TRIM_LADDER`
+([:387](../../apps/server/src/trading/TradingWakeupComposer.ts:387)) so the drop
+is logged.
+
+---
+
+## A9 — Moving a stop still requires the model to prove it read the plan first
+
+**Unchanged.** A stop move must carry `expectedPlanUpdatedAt`
+([exit.ts:154-165](../../packages/trading-contracts/src/exit.ts:154),
+[TradingStopAdjustmentService.ts:127-133](../../apps/server/src/trading/TradingStopAdjustmentService.ts:127)),
+and `trading_exit`'s description
+([tools.ts:187](../../apps/server/src/mcp/toolkits/trading/tools.ts:187)) does
+not mention it, so the model finds out by being refused.
+
+**What it costs.** Price is running against a position and the model wants to
+tighten the stop. It cannot just call `trading_exit` — it has to call
+`trading_look` first for `plan.updatedAt`, then `trading_exit`. Two round trips
+of inference, roughly 8–15 seconds, on the tool it reaches for when a trade is
+going wrong.
+
+This is the same kind of check as `strategy_version_current` (removed by step
+3.3) and `atr_mismatch` (removed by step 3.5 **from this very tool**).
+
+**It is a judgement call, not a defect** — since step 4.5 a publish moves the
+stop, so a stop move racing a publish is a real conflict, and step 8.4 added a
+second publisher. Decide it deliberately:
+
+- **Keep it** and put `expectedPlanUpdatedAt` into `trading_exit`'s description.
+  There is room: the toolkit spends 2,882 characters of a ~4,000 budget.
+- **Or drop it** and have `TradingStopAdjustmentService` read the plan itself.
+  Every gate that protects _you_ — the risk limit, the ATR step cap, the noise
+  floor, the breakeven ratchet, the rate limit — still runs.
+
+Write the decision down here either way.
+
+---
+
+## A10 — Where the code went a different way, and was right to
+
+- **`market_is_eth` survives, on exits only.** Step 3.3 says remove it. It is
+  gone from the entry list and kept in `EXIT_CHECKS`
+  ([TradingPreviewService.ts:545](../../apps/server/src/trading/TradingPreviewService.ts:545)),
+  and the entry side checks the mandate earlier at
+  [TradingEntryService.ts:233-237](../../apps/server/src/trading/TradingEntryService.ts:233)
+  under the same name. Right call. **Amend step 3.3** to say "remove from the
+  entry checklist" and note where the check moved.
+- **Step 7.6 was done for the EMA cross only.** `readEmaCross` is gone
+  ([marketStructure.ts:1424-1435](../../packages/trading-contracts/src/marketStructure.ts:1424))
+  and `EmaTrend` always carries `direction` and `separationAtr`. But
+  `readRsiReversion` and `readTrendContinuation` still return a 0–1 `score`
+  ([marketStructure.ts:263](../../packages/trading-contracts/src/marketStructure.ts:263)).
+  Step 3.4's `rejectedBy` means near-misses survive either way, so the problem
+  the step was aimed at is solved — but its words ("no score, no null") are true
+  of one detector out of four. **Amend step 7.6**, or finish it.
+- **`strategyVersion` survives as a label on trade history, which is the target
+  state.** The remaining mentions are all in `history.ts`, `calibration.ts`,
+  `TradingTradeHistoryService`, `TradingClosedTradeReview` and
+  `TradingCalibrationService`. Nothing in the execution path reads it. **Step
+  5.1's "Done when: grep returns nothing" is wrong as written.** Restate as:
+  "grep in `HyperliquidExecutionService`, `TradingExitService`, `execution.ts`,
+  `quote.ts` and `watch.ts` returns nothing."
+- **`trading_get_playbook` was renamed to `trading_strategy`** (phase 9), which
+  is what step 9.2 asked for. Step 6.5's "NOT retired" note stands and should
+  add the new name. The toolkit is 7 tools at **2,882** characters, up from
+  2,797.
+- **Migration 067 landed** as the journal's `author` column
+  ([067_TradingJournalAuthor.ts](../../apps/server/src/persistence/Migrations/067_TradingJournalAuthor.ts)),
+  exactly as §8.4 reserved it. `NOT NULL DEFAULT 'model'` with the backfill as
+  the default — clean.
+
+---
+
+## A11 — Where this plan itself was wrong
+
+- **The phase diagram at the top no longer matches what happened.** It puts P6
+  after P4; P6 landed first, and P8–P10 then landed in three hours. Redraw it
+  against the commit history or delete it.
+- **Step 0.1 says the in-flight files were landed.** They were not, at the time
+  — they are now (see A15). Fix the sentence so it stops asserting something
+  that was untrue for the whole of phases 1–7.
+- **Step 2.7's target and the tool that measures it use different units, and
+  step 10.2 made this worse.** The step says "cost per round trip falls from ~9
+  bps toward ~6". `feeShareOfGross`
+  ([sessionReport.ts:177](../../apps/server/src/cli/sessionReport.ts:177)) is
+  fees ÷ **per-fill** notional, and a round trip is two fills — so at the old
+  all-taker rate it prints **0.05%**, not 9 bps. Step 10.2 then lifted that very
+  number into the new "the four numbers" block at the top of the report
+  ([sessionReport.ts:276-292](../../apps/server/src/cli/sessionReport.ts:276))
+  and demoted the round-trip number (`economics.feesBps`) into the block below.
+  So the report now leads with:
+
+  ```
+  the four numbers
+    trades: 8
+    net bps per trade: 4.1
+    cost fees, share of gross notional traded: 0.05% (16 fills)
+    maker fill rate (by fill count): 44.0% (7 of 16 flagged fills)
+  ```
+
+  A reader checking "did the round trip fall from 9 bps to 6?" reads `0.05%`,
+  cannot connect it to 9, and scrolls past the line that answers the question.
+  **Amend step 2.7**: the 9→6 measure is
+  `feesBps + entrySpreadBps + entrySlippageBps`; `feeShareOfGross` measures how
+  much maker execution you are getting, per side.
+
+- **The four numbers are averaged two different ways.** `netBpsPerTrade` is a
+  plain average across trades
+  ([sessionReport.ts:130-134](../../apps/server/src/cli/sessionReport.ts:130));
+  `feeShareOfGross` is weighted by fill size. Sitting one under the other in the
+  same block, they invite subtraction, and subtracting them is wrong. Either
+  weight both by notional, or print one line under the block saying they do not
+  add up.
+- **Step 2.2 ("extend `MomentumOrderPreference` with `post_only`") was overtaken
+  by step 2.3** before it landed. The model never names an order type now;
+  `OrderPreference`
+  ([strategy.ts:211](../../packages/trading-contracts/src/strategy.ts:211)) is
+  server-internal and the tools take `urgency`. Right outcome, stale step text.
+- **Step 9.1 says the mode "selects a system prompt and a tool subset". Neither
+  happens.** See A18.
+
+---
+
+## A12 — Comments in the code that describe a world plan 29 removed
+
+- [strategy.ts:6-7](../../packages/trading-contracts/src/strategy.ts:6) — still
+  says "every execution is still gated against the version row that carries it."
+  Not true since 4.2/5.1. Replace with the revise-in-place wording the same file
+  already uses at
+  [strategy.ts:412-419](../../packages/trading-contracts/src/strategy.ts:412).
+- [TradingPreviewService.ts:442](../../apps/server/src/trading/TradingPreviewService.ts:442) —
+  the entry list is `CHECKS` and the exit list `EXIT_CHECKS`. Since 3.3 gave the
+  entry list its own reasoning
+  ([:475-480](../../apps/server/src/trading/TradingPreviewService.ts:475)), the
+  lopsided names read as though one is the default. Rename `CHECKS` to
+  `ENTRY_CHECKS`. (The "14 items" counts are correct — leave them.)
+- [costs.ts:5-9](../../packages/trading-contracts/src/costs.ts:5) — the header
+  still tells the story of a $1.70 target being refused. Cost stopped being a
+  gate in step 3.1. Say so up front.
+
+---
+
+## A13 — Two things in the working-order loop, neither blocking
+
+- **The exit half returns before the entry half runs**
+  ([TradingWorkingOrderService.ts:777-780](../../apps/server/src/trading/TradingWorkingOrderService.ts:777)).
+  A resting exit still marked `accepted` hides the entry half for that pass. It
+  clears itself within seconds via `settleAcceptedExecutions`
+  ([HyperliquidReconciler.ts:674-724](../../apps/server/src/trading/HyperliquidReconciler.ts:674)),
+  and the two halves barely overlap anyway — an entry needs a flat position, an
+  exit needs one open. **No change needed; written down so nobody re-derives
+  it.**
+- **`readLineage` matches on `AND size = ${resting.size}`**
+  ([TradingWorkingOrderService.ts:621](../../apps/server/src/trading/TradingWorkingOrderService.ts:621)) —
+  exact floating-point equality in SQL. Safe only because every replacement
+  copies `original.size` byte for byte
+  ([:717](../../apps/server/src/trading/TradingWorkingOrderService.ts:717)). The
+  day anything rounds a replacement's size, the lineage breaks silently and the
+  wait clock resets. Add one comment naming the assumption.
+
+---
+
+## A14 — The model gets six new readings and is told nothing about what they mean
+
+**Unchanged, and now the cheapest open item on the list.**
+
+- `trading_look`'s description
+  ([tools.ts:93](../../apps/server/src/mcp/toolkits/trading/tools.ts:93)) lists
+  mark, book, candles, volatility, structure, position, account, openOrders,
+  trades, mission, cost and positionCosts — **and not `microstructure`.** Six
+  readings landed in phase 7 and the tool returning them does not say they
+  exist. About 1,100 characters of the ~4,000 budget are unspent.
+- Neither `playbook.ts` nor `POC_STANDING_INSTRUCTION`
+  ([strategy.ts:106-107](../../packages/trading-contracts/src/strategy.ts:106))
+  mentions book imbalance, aggressor flow, depth change, positioning or the vol
+  ratio. Step 6.3 did exactly this job for watches; the same job for phase 7 was
+  never done.
+
+**Why it matters, concretely.** The standing instruction states the one gate:
+_is the expected move over your intended hold bigger than the round trip is
+worth?_ The reading that answers it is `volatilityRatio` — and the instruction
+never names it. The model gets:
+
+```
+volatilityRatio: { ratio: 0.42, shortPercent: 0.021, longPercent: 0.050 }
+```
+
+with nothing saying that 0.42 means _the last 20 minutes have moved at 40% of
+the two-hour pace, so the 30 bps you need is probably not there — stand down._
+It is one more number in a payload full of numbers.
+
+**Fix:** one clause in `trading_look`'s description naming `microstructure`, and
+a short paragraph in the standing instruction tying `volatilityRatio` to the
+cost gate and `bookImbalance` / `aggressorFlow` to entry timing. Prose only — no
+code, no migration, no test to rewrite.
+
+---
+
+## A15 — Resolved
+
+The seven files that were uncommitted at the first pass are committed, and
+phases 8, 9 and 10 are finished on top of them. The working tree now holds only
+`apps/marketing/src/pages/index.astro`, two `scripts/` files, and this document.
+
+There are screenshots of each phase-8 step under
+[`docs/operations/plan-29-screens/`](../operations/plan-29-screens/) and a
+step-by-step record in
+[`plan-29-phase-8-9-10-log.md`](plan-29-phase-8-9-10-log.md). Neither this plan
+nor that log records what remains, which is what A17–A20 below are for.
+
+---
+
+## A16 — Code that could be shorter, without changing what it does
+
+Ordered by lines saved. None of these changes behaviour.
+
+### A16.1 — The working-order loop's two halves are one function written twice (~450 lines)
+
+[TradingWorkingOrderService.ts](../../apps/server/src/trading/TradingWorkingOrderService.ts)
+is 1,445 lines. `reconcile`/`reconcileExit`, `crossWorkingEntry`/`crossWorkingExit`
+and `repriceWorkingEntry`/`repriceWorkingExit` do the same seven steps in the
+same order. They differ in exactly seven values:
+
+|                           | Entry half                        | Exit half                |
+| ------------------------- | --------------------------------- | ------------------------ |
+| Which records to read     | `readNewestAcceptedEntry`         | `readNewestAcceptedExit` |
+| Position present means    | stop — the stop machinery owns it | keep working             |
+| Position absent means     | keep working                      | it filled, or withdraw   |
+| Mission paused            | withdraw the order                | keep working             |
+| Plan revised              | withdraw the order                | leave it alone           |
+| Cross succeeded when      | a position appears                | the position shrinks     |
+| `reduceOnly` on the order | `false`                           | `true`                   |
+
+One `Lane` record holding those seven, and one `reconcileLane`, `crossLane`,
+`repriceLane`. About 450 lines go, and a fix to the re-price ordering or the
+confirmation window then applies to both halves automatically. The module header
+prose already spells out the differences; it becomes the `Lane` docstring.
+
+### A16.2 — The same "two prices are the same price" constant, now in three files (~15 lines)
+
+Was two at the first pass, now three:
+
+- [TradingWorkingOrderService.ts:304](../../apps/server/src/trading/TradingWorkingOrderService.ts:304) — `PRICE_EPSILON_RELATIVE = 1e-5`
+- [TradingPlanProtectionService.ts:224](../../apps/server/src/trading/TradingPlanProtectionService.ts:224) — `STOP_PRICE_EPSILON_RELATIVE = 1e-5`
+- [TradingProtectionService.ts:737](../../apps/server/src/trading/TradingProtectionService.ts:737) — `TAKE_PROFIT_PRICE_EPSILON_RELATIVE = 1e-5`
+
+Three names, one number, all justified as "wire precision". Move it to
+`@t3tools/trading-contracts/protection` next to `PROTECTION_SIZE_EPSILON`, which
+is already where this kind of constant lives.
+
+### A16.3 — `readMicrostructure` writes the same line six times (~15 lines)
+
+[microstructure.ts:512-529](../../packages/trading-contracts/src/microstructure.ts:512):
+a six-part `if` checking every reading for `null`, then six lines of
+`...(x === null ? {} : { x })`. Replace with one object and a single filter over
+its entries. Adding a seventh reading stops being a three-place edit.
+
+### A16.4 — Four files are past the size where they can be read
+
+`MissionLivePanel.tsx` **1,460** (was ~900 before phase 8), `handlers.ts` 1,305,
+`TradingWakeupComposer.ts` 1,137, `TradingWorkingOrderService.ts` 1,445. Three
+clean splits, all mechanical:
+
+- Move the wakeup **renderer** — `renderFlatRecord`, `renderValue`,
+  `renderWakeupProjection`, `renderWakeup`, `capList`, `boundWakeupProse`,
+  `boundStrategyLists`, `digestStrategy`, `TRIM_LADDER`, `renderBoundedWakeup`
+  ([TradingWakeupComposer.ts:245-531](../../apps/server/src/trading/TradingWakeupComposer.ts:245)) —
+  into `TradingWakeupRender.ts`. Pure, already separately tested, shares nothing
+  with `observe` but the wakeup type. ~290 lines. Do this **after** A8.
+- Move `handlers.ts`'s **read half** — `readObservation`, `readMarketHalf`,
+  `withMicrostructure`, `readMarketStructure`, `describeMarketReadFailure` —
+  into `lookHandler.ts`.
+- Split `MissionLivePanel.tsx` by panel state. `readPanelState` already
+  discriminates `planning | armed | live | complete`, and phase 8.6 gave each
+  state its own header and ordering — so the four headers and their band
+  ordering are four components that happen to live in one file.
+
+### A16.5 — "Is this an exit?" is answered two different ways
+
+[TradingWorkingOrderService.ts:547](../../apps/server/src/trading/TradingWorkingOrderService.ts:547)
+hard-codes `["close", "reduce"]`, while `isPositionIncreasing`
+([protection.ts:50](../../packages/trading-contracts/src/protection.ts:50)) is
+the contracts package's answer to the same question — used eight lines earlier
+at [:538](../../apps/server/src/trading/TradingWorkingOrderService.ts:538). Two
+definitions that must stay in step as action types change. Export
+`POSITION_REDUCING_ACTION_TYPES` from the contracts package and use it in the
+SQL `IN`.
+
+---
+
+## A17 — The mission's mode is guessed from your sentence, and it guesses wrong
+
+Step 9.1 said "Mode on the mission". What landed instead reads the mode out of
+the mandate text with two regular expressions, on every `trading_look`
+([mode.ts:118-132](../../packages/trading-contracts/src/mode.ts:118),
+[handlers.ts:245](../../apps/server/src/mcp/toolkits/trading/handlers.ts:245)).
+
+Deriving rather than storing is a defensible call, and the module says why: one
+source of truth, no migration. The problem is the pattern
+([mode.ts:82](../../packages/trading-contracts/src/mode.ts:82)):
+
+```
+/\b(?:execute|run|follow|trade)\s+(?:the\s+)?([a-z][a-z _-]{2,40})/gi
+```
+
+`trade` is in the verb list. In a trading product, "trade X" is how every
+mandate starts.
+
+**I ran the real function over fourteen realistic mandates.** These are the
+results:
+
+| Mandate you would type                        | Mode it gets                  |
+| --------------------------------------------- | ----------------------------- |
+| `Trade ETH`                                   | discretionary ✓               |
+| `Trade ETH on testnet using 1m candles`       | discretionary ✓               |
+| `Trade BTC, take small profits`               | discretionary ✓               |
+| `Execute the momentum playbook`               | execute momentum ✓            |
+| `run the ema cross strategy`                  | execute ema_cross ✓           |
+| `Follow opening range on the 5m`              | execute opening_range ✓       |
+| `momentum has been working today, trade ETH`  | discretionary ✓               |
+| **`Trade momentum on ETH`**                   | **execute momentum ✗**        |
+| **`Trade momentum when the book is offered`** | **execute momentum ✗**        |
+| **`Do not run momentum today`**               | **execute momentum ✗**        |
+| **`Trade the range reversion setup only`**    | **execute range_reversion ✗** |
+
+The last four are the problem, and the third-to-last is the clearest: **"Do not
+run momentum today" puts the mission into execute-momentum mode.** A negation
+turns into the standing order it forbade.
+
+**What that actually does to a session.** In execute mode the model is told its
+job is "faithful execution and honest reporting, not finding a better trade" and
+that when the playbook's conditions are not met it must stand aside and name the
+failing step
+([mode.ts:58-65](../../packages/trading-contracts/src/mode.ts:58)). So an
+operator who typed "Trade momentum on ETH" — meaning _lean momentum, use your
+judgement_ — gets a mission that will refuse every non-momentum setup all
+session and report which step failed each time. That is the exact stand-down
+churn this whole plan was written to remove.
+
+The module's own docstring
+([mode.ts:70-72](../../packages/trading-contracts/src/mode.ts:70)) claims the
+guard: "A mandate that merely mentions momentum must not silently become a
+standing order to trade it, so the verb has to be there and the name has to
+follow it." With `trade` as one of the verbs, that guard does almost nothing.
+
+**Fix, in order of how much you want to change:**
+
+1. **Drop `trade` from the verb list.** One character class. "Execute", "run"
+   and "follow" are what someone writes when they mean a procedure; "trade" is
+   what everyone writes for everything. This alone fixes three of the four bad
+   rows.
+2. **Refuse a negated match.** If the 20 characters before the verb contain
+   `not`, `don't`, `avoid`, `never` or `except`, skip that match. Fixes the
+   fourth.
+3. **Say the mode back to the operator.** The panel already knows
+   `mission.mode`; a mission in execute mode should say so on the card, so a
+   wrong guess is visible in the first ten seconds rather than after a session
+   of stand-downs.
+
+Add the eleven rows above as test cases — the module has tests
+([mode.test.ts](../../packages/trading-contracts/src/mode.test.ts)) but not
+these.
+
+---
+
+## A18 — Mode selects neither a system prompt nor a tool subset
+
+Step 9.1: _"Mode on the mission. Selects a system prompt and a tool subset."_
+Neither happened.
+
+- **The system prompt is static.**
+  [TradingSessionProfile.ts](../../apps/server/src/provider/TradingSessionProfile.ts)
+  builds one prompt and never branches on mode. Its step 2 tells every mission,
+  in both modes, to read a playbook "for what you are weighing" — reference
+  language, which is the opposite of what execute mode means.
+- **The tool list is identical in both modes.** `TRADING_TOOL_NAMES`
+  ([TradingSessionProfile.ts:45](../../apps/server/src/provider/TradingSessionProfile.ts:45))
+  is the same seven tools either way.
+- **The execute-mode doctrine reaches the model only as a JSON field**:
+  `mission.mode.doctrine` inside `trading_look`'s result
+  ([tools.ts:178](../../packages/trading-contracts/src/tools.ts:178)).
+
+So the paragraph that redefines the model's whole job sits in a payload field,
+while the system prompt — which the model is far more likely to follow — still
+describes discretionary work. The two disagree, and nothing points the model at
+the one that is meant to win.
+
+**Fix:** in `TradingSessionProfile`, when the mission's mode is
+`execute_strategy`, replace step 2 of the contract with the mode's own doctrine
+and name the strategy in the opening line. That is the "selects a system prompt"
+half of 9.1. The tool subset can wait — with seven tools there is not much of a
+subset to select, and step 9.1 should say so instead of promising one.
+
+---
+
+## A19 — Two gaps in the drag path
+
+Step 8.4 landed well: a drag goes through the same `publishPlanWithAftermath`
+the model's `trading_plan` goes through
+([ws.ts:1503+](../../apps/server/src/ws.ts:1503)), the RPC needs operate scope
+([RpcAuthorization.ts:33](../../apps/server/src/auth/RpcAuthorization.ts:33)),
+the optimistic lock is honoured, and the journal note is composed server-side by
+diffing the two plans rather than captioned by the client
+([TradingPlanRevisionNote.ts:34](../../apps/server/src/trading/TradingPlanRevisionNote.ts:34)).
+Two gaps.
+
+### A19a — A dragged target has no failure feedback; a dragged stop does
+
+The RPC returns only the **stop** half of the reconcile
+([ws.ts:1573](../../apps/server/src/ws.ts:1573)), and the panel surfaces only
+`refusedStop`
+([useMissionPlanRevision.ts:124-131](../../apps/web/src/components/trading/useMissionPlanRevision.ts:124)).
+The take-profit half has its own outcome with a `failed` status — "a placement
+could not be confirmed inside the window; nothing was cancelled"
+([TradingProtectionService.ts:157-163](../../apps/server/src/trading/TradingProtectionService.ts:157)) —
+and it is dropped on the floor.
+
+**What you would see.** You drag the target from $3,009 to $3,015 on a 0.13 ETH
+long. The publish is accepted, the chart redraws the target line at $3,015, and
+the resting order on Hyperliquid is still at $3,009. If price runs, you bank
+$0.78 earlier than the chart said you would.
+
+**Severity is low** because it self-heals: the watchdog runs the same
+`reconcileTakeProtection` against the plan every ~5 seconds, so the order
+converges on the next pass. The stop is the one that stays wrong when refused,
+and that one _is_ surfaced. Still — the panel is briefly showing a target the
+exchange does not have, and the fix is to carry the `target` outcome back
+alongside `stop` in the same result.
+
+### A19b — The trigger-drag branch is unreachable, and would be wrong if reached
+
+`applyPlanDrag` has a `case "trigger"`
+([useMissionPlanRevision.ts:59-68](../../apps/web/src/components/trading/useMissionPlanRevision.ts:59))
+that nothing calls: `draggableKinds`
+([MissionLivePanel.tsx:306-312](../../apps/web/src/components/trading/MissionLivePanel.tsx:306))
+only ever contains `stop` and `target`, and `onLevelDragEnd`
+([:294-303](../../apps/web/src/components/trading/MissionLivePanel.tsx:294))
+handles only those two.
+
+That is the right call for now, but step 8.4's own text asks for "drag stop,
+target, trigger price, and trigger expiry", so someone will try to enable it by
+adding `"condition_above"` to that array. **Two things would break, and neither
+is obvious:**
+
+1. **The plan's prose would contradict its own price.** A trigger is
+   `{ description, priceLevel? }`, and the branch replaces `priceLevel` only.
+   Drag a trigger from $3,009 to $3,015 and the plan reads: _"Short if we tag
+   3,009"_ with `priceLevel: 3015`. The schema says the description is the
+   authoritative one
+   ([strategy.ts:131-133](../../packages/trading-contracts/src/strategy.ts:131)),
+   so the model would act on the old number.
+2. **The armed watch would not move.** Step 4.2 removed supersede-on-publish:
+   revising a plan leaves its watches exactly where they are. So you drag the
+   trigger to $3,015, the chart draws it at $3,015, and the mission still wakes
+   at $3,009.
+
+**Fix now:** delete the `trigger` branch and the `PlanDragTarget` variant, so
+the unreachable code cannot be enabled by a one-line change. **Or**, if trigger
+drags are wanted, note here that it needs three things — rewrite the
+description's price, replace the armed watch through `replacesWatchId`, and
+handle a trigger whose description was published as a bare string.
+
+---
+
+## A20 — The learning loop ranks setups by total dollars, so one lucky trade wins
+
+Step 10.3 landed as `bySetup` on `assessEntryGovernance`
+([policy.ts:397-409](../../packages/trading-contracts/src/policy.ts:397)). It
+groups closed trades by the setup recorded at entry and sorts them
+[best net first](../../packages/trading-contracts/src/policy.ts:408). It is the
+inversion the plan wanted — a strategy becomes a row with a number against it.
+
+Two things will mislead you the first time you read one.
+
+**It ranks by total dollars, not per trade.** Sorted by `netUsd`:
+
+```
+setup                trades   net
+momentum_breakout        18   +$41.00     ← ranked first
+rsi_reversion             2   +$38.00     ← $19/trade, three times better
+range_reversion           9    −$12.00
+(unrecorded)              4    −$3.00
+```
+
+`momentum_breakout` wins the table on $2.28 a trade while `rsi_reversion` made
+$19 a trade. The plan's own headline number is _net bps per trade_; this table
+sorts by the one number the plan says not to optimise for.
+
+**The `reason` sentence names a "best setup" with no minimum sample.**
+[policy.ts:411-418](../../packages/trading-contracts/src/policy.ts:411)
+composes: `best setup at entry: <setup> at <net> USD net over <n> trades`. With
+one lucky trade, `n` is 1 and the sentence still calls it the best setup. That
+string rides back to the model, which will reasonably act on it.
+
+**Fix:**
+
+1. Add `netUsdPerTrade` to `SetupAttribution` and sort by it, with total net
+   kept as a column.
+2. Require a minimum sample before the `reason` names a best setup — five
+   trades is a defensible floor and matches nothing else in the codebase, so
+   pick it deliberately and name the constant. Below it, say "not enough closed
+   trades to rank setups yet".
+
+Neither changes behaviour: nothing gates on any of it, which the commit is
+careful to say.
+
+---
+
+## If you only do five things
+
+**All six of these were done — see Appendix B.** Kept here as the audit's own
+ranking, which is what it thought mattered most before any of it was fixed.
+
+In order:
+
+1. **A17** — "Do not run momentum today" starts a momentum-execution mission,
+   and "Trade momentum on ETH" does too. One character class fixes most of it,
+   and it is the finding most likely to make a real session behave strangely
+   from the first turn.
+2. **A3** — book imbalance reports a confident wrong direction on a thin book.
+3. **A2** — every trade is sized 17–70% too big because the sizer still assumes
+   both sides pay the taker fee.
+4. **A14** — tell the model what the six phase-7 readings mean. Prose only, best
+   value per hour on the list.
+5. **A1a** — finish A1: `move_stop` still has the unfixed twin of the query that
+   was just fixed next door.
+
+A6 (the untransacted publish) is the one to add if you want a sixth: the drag
+path made it reachable by an operator, not just by the model.
+
+---
+
+# Appendix B — What the audit changed
+
+Worked through on 2026-08-16, on top of `a15c4dd1e`.
+
+**Verified after the fixes.** `pnpm typecheck` exit 0. `pnpm test` exit 0 —
+**2,652 passed, 10 skipped, 0 failed, across 282 files** (280 passed, 2
+skipped), in 274s. `pnpm lint` exit 1 on two pre-existing errors in
+`apps/marketing/scripts/check-scroll-timelines.mjs`
+(`t3code(namespace-node-imports)`), which are on committed code and untouched
+by any of this.
+
+An earlier draft of this appendix reported "2,263 passed / 14 skipped / 0
+failed" and that was wrong twice over. 2,263 is the `apps/server` sub-total, not
+the monorepo's — the real figure is ~2,650 across 282 files — and the run it was
+read from **had one failing test**, which the sub-total line does not show. The
+failure was caused by the A1b fix itself: `leaves a previous trade's record out
+of the envelope` asserted the old "unstated envelope never refuses" behaviour,
+which A1b deliberately replaced. The test has been rewritten to assert the new
+rule and to prove the out-of-scope record still supplies nothing — it is the
+refusal's own wording that proves it, since the fallback and the approval say
+different sentences. Read the grand total at the foot of a `pnpm test` run, not
+a project's.
+
+| Finding | What was done                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1a     | The `move_stop` envelope query takes the same `ENTRY_RECORD_LEAD_MILLIS` lead. A stop that tightened can move back out inside its approval again.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| A1b     | A missing approval no longer means "anything goes": the RESTING stop stands in as the ceiling, so tightenings and watchdog repairs still go through and only a widening is refused. **Second pass:** a ceiling of zero is now treated as a ceiling. `plannedLossAtStopUsd` floors at zero, so a stop trailed past break-even plans no loss and the first version read that as "no ceiling" and permitted anything — in exactly the state a widening costs the most. Long 0.5 ETH from 3,000 with the stop trailed to 3,010: a republish at 2,900 turned a locked-in gain into $50 of risk, and now refuses. Six unit tests on `planStopRefusal` pin the fallback.                                                           |
+| A2      | `roundTripCostFractionOfNotional` takes `exitIsMaker` and `makerFeeBpsPerSide`; the entry sizer passes both, reading the taker AND maker rate from `getUserFeeRatesBps`. A 30 bps trade sizes at $12,766 rather than $15,000.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| A3      | Both book sides are summed over the same number of levels, and `levels` reports that number.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| A4      | `aggressorFlow.bars` counts only bars that traded.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| A5      | VWAP is anchored at the UTC session open and publishes `anchoredAt`; a window that does not reach back says `anchor: "window_start"`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| A6      | The publish's version bump and plan insert are one `sql.withTransaction`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| A7      | `getCurrentStrategy` degrades an undecodable plan row to `Option.none()` with a warning, matching the history read.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| A8      | The last-resort wake projection names the microstructure readings it drops.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| A9      | **Decided: keep the check.** `expectedPlanUpdatedAt` is now in `trading_exit`'s description, so the model does not find out by being refused. A publish moves the stop, step 8.4 added a second publisher, and a stop move racing one is a real conflict.                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| A10     | Step 3.3, 5.1, 6.5 and 7.6 restated in the plan body against what landed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| A11     | Phase diagram redrawn to the commit order; step 0.1 corrected; step 2.7 says which number the 9→6 target is; step 2.2 marked overtaken; step 9.1 rewritten (see A18).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| A12     | `strategy.ts`'s header, `costs.ts`'s header, and `CHECKS` → `ENTRY_CHECKS`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| A13     | The lineage's exact float equality now names the assumption it rests on.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| A14     | `trading_look`'s description names `microstructure`; `POC_STANDING_INSTRUCTION` ties `volatilityRatio` to the cost gate and `bookImbalance`/`aggressorFlow` to entry timing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| A16.2   | One `PRICE_EPSILON_RELATIVE` and `samePrice` in `@t3tools/trading-contracts/protection`; the three local copies are gone. `ENTRY_RECORD_LEAD_MILLIS` moved there too, since two services now need it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| A16.3   | `readMicrostructure` builds one object and filters it once.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| A17     | `trade` is out of the verb list and a negation within 20 characters before the verb skips the match. Fourteen realistic mandates are now test rows. The panel already showed the mode. **Second pass:** the negation now only cancels its own clause. `no` has to be in the negation list ("no need to run momentum" carries no other negation word) and `no` is common enough that twenty bare characters reach into the sentence before — "There is no edge in chop; run the range_reversion playbook" is an INSTRUCTION and the first version silently dropped it to discretionary. The lookbehind stops at the nearest `.` `;` `,` `:` or newline, so the negation has to be in the same breath as the verb it cancels. |
+| A18     | Step 2 of the decision contract points at `mission.mode`, states that its doctrine wins, and says what execute mode means. The tool subset was dropped deliberately — see step 9.1.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| A19a    | The take-profit half of the reconcile is carried back through `OrchestrationReviseTradingPlanResult.target` and surfaced by the panel, so a `failed` placement is not silently redrawn.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| A19b    | The trigger branch and its `PlanDragTarget` variant are deleted, with the three things a real trigger drag would need written into the type's docstring.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| A20     | `SetupAttribution` carries `netUsdPerTrade` and the table sorts by it; the reason line names no best setup below `SETUP_RANKING_MINIMUM_TRADES` (5).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Flakes  | `apps/web`'s unit project moves to a 45s test / 60s hook timeout, with the reason written next to it. Two consecutive full runs are green.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+
+**Declined, with reasons:**
+
+- **A16.1** (fold the working-order loop's two halves into one `Lane`, ~450
+  lines) and **A16.4** (split four oversized files). Both are large mechanical
+  refactors of the code that places and cancels real orders, and the audit's
+  own framing is that they change nothing. Doing them immediately before a
+  soak trades a real risk for a readability gain that will still be available
+  after it. A16.4's wakeup-renderer split is the one worth doing first — it is
+  pure and separately tested — and A8 is now landed, which was its stated
+  precondition.
+- **A16.5** (share one answer to "is this an exit?"). The two definitions
+  answer different questions: `EXPOSURE_REDUCING_ACTION_TYPES` includes
+  `cancel` and `modify_stop`, which are not exits, so using it in
+  `readNewestAcceptedExit`'s `IN` clause would widen the query to rows that
+  lane must not manage. The existing comment already explains the
+  discrimination.
+
+**Two clean runs.** The timeout raise holds: neither full run after it had a
+single timeout, in `imageCompression`, `MessagesTimeline` or anywhere else. The
+only failure either run produced was the real one described above.
+
+**One thing left in passing, not fixed.**
+[handlers.test.ts:103](../../apps/server/src/mcp/toolkits/trading/handlers.test.ts:103)
+has a debugging leftover on a committed path: when the MCP body fails to
+decode, the test helper appends the raw body and payload to `/tmp/mcp-body.txt`
+and re-throws, behind a bare `// eslint-disable-next-line` that lint now reports
+as unused. It predates all of this work and nothing in plan 29 touches it, so it
+was left alone — but a test that writes request bodies to a fixed path outside
+the repo should either log through the harness or not log at all.
+
+Everything left is the testnet soak (step 10.1), which is the user's to run.
