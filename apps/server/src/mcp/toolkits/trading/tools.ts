@@ -90,7 +90,7 @@ const dependencies = [
 
 export const TradingLookTool = Tool.make("trading_look", {
   description:
-    "The one read: mark, book, candles, volatility, multi-timeframe `structure` with scored `candidates[]`, plus `position` (flat is size 0), `account`, `openOrders`, `trades`, and `mission` (mandate, authority, plan, watches). `cost` is one line — the round trip in USD and bps at a stated notional — context for whether the move pays, never a gate; holding, `positionCosts` prices the exit. `mission.bound: false` with `lastMission` once the mission has ended.",
+    "The one read: mark, book, candles, volatility, multi-timeframe `structure` with scored `candidates[]`, `microstructure` (book imbalance, aggressor flow, `volatilityRatio`; standing_rules reads them), plus `position` (flat is size 0), `account`, `openOrders`, `trades`, `mission` (mandate, authority, plan, watches). `cost` is one line — the round trip in USD and bps — context, never a gate; holding, `positionCosts` prices the exit. `mission.bound: false` with `lastMission` once ended.",
   parameters: TradingLookInput,
   success: TradingObservation,
   failure: TradingToolRejectedError,
@@ -184,7 +184,7 @@ export const TradingStrategyTool = Tool.make("trading_strategy", {
 
 export const TradingExitTool = Tool.make("trading_exit", {
   description:
-    'One `action` on exposure you hold. `close` flattens it, taking no size or side. `reduce` takes part off by `sizeEth` or `fraction`, closing instead if what remains would be dust. `cancel_order` withdraws a resting order by `cloid`. `move_stop` trails the stop in policy — never past the entry\'s approved stop, bounded steps, outside the noise floor, never back below entry once past it, rate-limited. `urgency: "patient"` rests it. A refusal sends nothing.',
+    'One `action` on exposure you hold. `close` flattens it, no size or side. `reduce` takes part off by `sizeEth` or `fraction`, closing if the rest is dust. `cancel_order` cancels a resting order by `cloid`. `move_stop` trails the stop in policy — never past the approved stop, bounded steps, outside the noise floor, never back below entry, rate-limited — and needs `expectedPlanUpdatedAt` (from trading_look), as a publish moves the stop too. `urgency: "patient"` rests. A refusal sends nothing.',
   parameters: TradingExitInput,
   success: TradingExitResult,
   failure: TradingToolRejectedError,

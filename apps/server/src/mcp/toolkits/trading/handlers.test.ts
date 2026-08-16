@@ -408,6 +408,12 @@ const withMcpServer = <A, E>(
       readonly updatedAt: number;
       readonly profitUsd?: number | undefined;
     }) => Effect.Effect<void, never, never>;
+    /** The entry record carrying this position's approved stop and planned loss. */
+    readonly seedEntryRecord: (input: {
+      readonly stopPrice: number;
+      readonly plannedLossUsd: number;
+      readonly createdAt: number;
+    }) => Effect.Effect<void, never, never>;
     /** Open one harness run, as a wake would — the run the funnel records against. */
     readonly seedHarnessRun: () => Effect.Effect<void, never, never>;
     /** What the open run recorded as its first execution refusal, if anything. */
@@ -504,6 +510,32 @@ const withMcpServer = <A, E>(
             ${input.updatedAt}
           )
         `.pipe(Effect.asVoid, Effect.orDie);
+      /**
+       * The entry record that carries this position's approved stop.
+       *
+       * `created_at` deliberately PRECEDES the position's `opened_at`: that is
+       * the real order of the two stamps (the record is written before the
+       * order is signed, the snapshot when a later pass sees the fill), and
+       * the envelope lookup has to reach back past it.
+       */
+      const seedEntryRecord = (input: {
+        readonly stopPrice: number;
+        readonly plannedLossUsd: number;
+        readonly createdAt: number;
+      }) =>
+        sql`
+          INSERT INTO trading_execution_records (
+            execution_id, mission_id, execution_sequence, action_type,
+            cloid, idempotency_key, market, side, size, limit_price, time_in_force,
+            reduce_only, signer_address, status, order_results_json,
+            stop_price, planned_loss_at_stop_usd, created_at, updated_at
+          ) VALUES (
+            'exec_entry_envelope', ${MISSION_ID}, 1, 'open',
+            '0xentrycloid00000000000000000001', 'idem_entry_envelope', 'ETH', 'buy', 0.5, 3000, 'ioc',
+            0, '0x0000000000000000000000000000000000000001', 'filled', '[]',
+            ${input.stopPrice}, ${input.plannedLossUsd}, ${input.createdAt}, ${input.createdAt}
+          )
+        `.pipe(Effect.asVoid, Effect.orDie);
       const seedHarnessRun = () =>
         sql`
           INSERT INTO trading_harness_runs (run_id, mission_id, cause, status, started_at, created_at)
@@ -590,6 +622,7 @@ const withMcpServer = <A, E>(
         seedTradingAccount,
         seedPosition,
         seedPlan,
+        seedEntryRecord,
         seedHarnessRun,
         readFirstRefusal,
       });
@@ -1360,6 +1393,37 @@ it.effect("lets a current plan through the staleness guard — the next check re
         const decision = refused.result.structuredContent;
         assert.equal(decision.status, "refused");
         assert.equal(decision.refusalCode, "no_resting_stop");
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
+it.effect("reads the entry's approved stop, which was written before the position was seen", () => {
+  // Plan 29 A1a. The envelope query scoped itself to `created_at >= opened_at`
+  // and so never found the entry record — the two stamps come from opposite
+  // ends of an entry — and fell back to whatever stop was resting. That made a
+  // tightened stop permanent: giving room back, even well inside the approval,
+  // read as a widening past the envelope.
+  //
+  // Long 0.5 ETH from 3,000 with an approved stop at 2,946 ($27 of risk). The
+  // stop has been trailed in to 2,970; moving it back to 2,955 is $22.50 of
+  // risk, inside the approval. Whatever else answers, it must not be
+  // `risk_envelope`.
+  const fake = makeFakeExchange({ orders: [restingProtectiveStop(2_970)] });
+  return withMcpServer(
+    ({ callTool, seedTradingAccount, seedPosition, seedPlan, seedEntryRecord }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+        yield* seedPosition({ size: 0.5, entryPrice: 3_000 });
+        yield* seedEntryRecord({ stopPrice: 2_946, plannedLossUsd: 27, createdAt: 399_000 });
+        yield* seedPlan({ updatedAt: PLAN_READ_AT });
+
+        const decision = (yield* callTool(BOUND_THREAD, "trading_exit", {
+          ...adjustStopArgs(PLAN_READ_AT),
+          newStopPrice: 2_955,
+        })).result.structuredContent;
+
+        assert.notEqual(decision.refusalCode, "risk_envelope");
       }),
     tradingLayerOverExchange(fake),
   );

@@ -506,7 +506,14 @@ export const renderBoundedWakeup = (
     unarmedEntryConditions: current.unarmedEntryConditions,
     misarmedEntryConditions: current.misarmedEntryConditions,
     pendingEvents: current.pendingEvents.slice(-3),
-    omitted: "call trading_look for the full plan, authority, watches, and pending state",
+    // The microstructure readings are cut here, and saying so is the point: a
+    // model that has read book imbalance every turn for an hour must not get a
+    // wake without it and no statement that it was dropped — that reads as a
+    // reading that could not be taken, which is a different fact.
+    omitted:
+      "call trading_look for the full plan, authority, watches, pending state, and the " +
+      "microstructure readings (book imbalance, aggressor flow, depth change, positioning, " +
+      "the vol ratio and VWAP), which this projection drops",
   });
   if (essential.length <= MAX_WAKEUP_CHARS) {
     return { text: essential, steps, untrimmedChars };
