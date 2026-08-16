@@ -320,7 +320,7 @@ const tradingLayerOverExchange = (fake: FakeExchange) =>
     TradingJournalServiceLive,
     TradingTradeHistoryServiceLive,
     TradingCalibrationServiceLive,
-    // `trading_adjust_stop` runs for real against the fake book.
+    // `trading_exit`'s `move_stop` runs for real against the fake book.
     TradingStopAdjustmentServiceLive.pipe(
       Layer.provide(exchangeGatewayLayer(fake)),
       Layer.provide(TradingMissionServiceLive),
@@ -615,7 +615,7 @@ it.effect("serves trading_look and a versioned publish over the real /mcp endpoi
         assert.equal(initial.result.structuredContent.position.size, 0);
         assert.equal(typeof initial.result.structuredContent.snapshot.markPrice, "number");
 
-        const published = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
+        const published = yield* callTool(BOUND_THREAD, "trading_plan", {
           missionId: MISSION_ID,
           expectedMissionVersion: 1,
           strategy: strategyBody("overnight range break"),
@@ -651,13 +651,13 @@ it.effect("serves trading_look and a versioned publish over the real /mcp endpoi
 it.effect("rejects a stale expectedMissionVersion over MCP and leaves the plan intact", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
-      yield* callTool(BOUND_THREAD, "trading_publish_plan", {
+      yield* callTool(BOUND_THREAD, "trading_plan", {
         missionId: MISSION_ID,
         expectedMissionVersion: 1,
         strategy: strategyBody("v1"),
       });
 
-      const stale = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
+      const stale = yield* callTool(BOUND_THREAD, "trading_plan", {
         missionId: MISSION_ID,
         // The publish above bumped the mission row's version to 2.
         expectedMissionVersion: 1,
@@ -683,7 +683,7 @@ it.effect("rejects a stale expectedMissionVersion over MCP and leaves the plan i
 it.effect("keeps the prior version's active watches working across an accepted publish", () =>
   withMcpServer(({ callTool, seedActiveWatch }) =>
     Effect.gen(function* () {
-      yield* callTool(BOUND_THREAD, "trading_publish_plan", {
+      yield* callTool(BOUND_THREAD, "trading_plan", {
         missionId: MISSION_ID,
         expectedMissionVersion: 1,
         strategy: strategyBody("v1"),
@@ -691,7 +691,7 @@ it.effect("keeps the prior version's active watches working across an accepted p
 
       yield* seedActiveWatch("watch_v1_active");
 
-      const republished = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
+      const republished = yield* callTool(BOUND_THREAD, "trading_plan", {
         missionId: MISSION_ID,
         expectedMissionVersion: 2,
         strategy: strategyBody("v2"),
@@ -742,7 +742,7 @@ it.effect("answers an unbound thread instead of failing every tool on it", () =>
 it.effect("keeps write tools closed on an unbound thread", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
-      const published = yield* callTool(UNBOUND_THREAD, "trading_publish_plan", {
+      const published = yield* callTool(UNBOUND_THREAD, "trading_plan", {
         missionId: MISSION_ID,
         expectedMissionVersion: 1,
         strategy: strategyBody("v1"),
@@ -803,11 +803,10 @@ it.effect("registers a watch before the first plan is published", () =>
       assert.equal(registeredWatch.status, "active");
       assert.equal(registeredWatch.watch.type, "price_cross");
 
-      const listed = yield* callTool(BOUND_THREAD, "trading_list_watches", {
-        missionId: MISSION_ID,
-      });
+      // The registry rides the one read now (plan 29 step 6.5).
+      const listed = yield* callTool(BOUND_THREAD, "trading_look", { missionId: MISSION_ID });
       assert.equal(listed.result.isError, false);
-      const watches = listed.result.structuredContent;
+      const watches = listed.result.structuredContent.mission.watches;
       assert.equal(watches.length, 1);
       assert.equal(watches[0].id, registeredWatch.id);
 
@@ -834,8 +833,8 @@ it.effect("reads a watch back in the vocabulary it can re-arm it with", () =>
         condition: { kind: "giveback", market: "ETH", drawdownUsd: 4 },
       });
 
-      const listed = yield* callTool(BOUND_THREAD, "trading_list_watches", {});
-      const readBack = listed.result.structuredContent[0].condition;
+      const listed = yield* callTool(BOUND_THREAD, "trading_look", {});
+      const readBack = listed.result.structuredContent.mission.watches[0].condition;
       assert.deepStrictEqual(readBack, { kind: "giveback", market: "ETH", drawdownUsd: 4 });
 
       // The proof that matters: what came out of the read goes back into the
@@ -886,8 +885,8 @@ it.effect("refuses a condition it cannot arm, and arms nothing", () =>
       }
 
       // Nothing was armed and nothing was announced, three refusals later.
-      const listed = yield* callTool(BOUND_THREAD, "trading_list_watches", {});
-      assert.equal(listed.result.structuredContent.length, 0);
+      const listed = yield* callTool(BOUND_THREAD, "trading_look", {});
+      assert.equal(listed.result.structuredContent.mission.watches.length, 0);
       assert.deepStrictEqual(dispatchedCommands, []);
     }),
   ),
@@ -917,12 +916,16 @@ it.effect("appends a note and reads it back in the words it was written in", () 
       // newest first.
       const read = yield* callTool(BOUND_THREAD, "trading_journal", {});
       assert.equal(read.result.structuredContent.outcome, "read");
-      assert.deepStrictEqual(
-        read.result.structuredContent.entries.map((entry: { note: string }) => entry.note),
-        ["the 1m read disagrees", "3200 chopped me twice; waiting for a 15m close above it"],
+      // Newest first, and the first note is still exactly what it was. This
+      // file shares one mission across its tests, so assert the two notes'
+      // relative order rather than the whole list.
+      const notes: ReadonlyArray<string> = read.result.structuredContent.entries.map(
+        (entry: { note: string }) => entry.note,
       );
-      // Nothing was replaced: the first note is still exactly what it was.
-      assert.equal(read.result.structuredContent.entries.length, 2);
+      const older = notes.indexOf("3200 chopped me twice; waiting for a 15m close above it");
+      const newer = notes.indexOf("the 1m read disagrees");
+      assert.isAbove(older, -1);
+      assert.isAbove(older, newer);
       assert.equal(read.result.structuredContent.entry, undefined);
     }),
   ),
@@ -944,9 +947,9 @@ it.effect("refuses a note it will not record, and records nothing", () =>
         assert.equal(body.recovery.action, "stand_down");
         assert.equal(body.recovery.retryable, false);
         // The journal rides the refusal.
-        assert.deepStrictEqual(
+        assert.include(
           body.entries.map((entry: { note: string }) => entry.note),
-          ["kept"],
+          "kept",
         );
       }
     }),
@@ -975,8 +978,8 @@ it.effect("moves a level atomically through replacesWatchId", () =>
       assert.equal(moved.result.isError, false);
       assert.equal(moved.result.structuredContent.replaced.id, originalId);
 
-      const listed = yield* callTool(BOUND_THREAD, "trading_list_watches", {});
-      const watches = listed.result.structuredContent;
+      const listed = yield* callTool(BOUND_THREAD, "trading_look", {});
+      const watches = listed.result.structuredContent.mission.watches;
       const byId = new Map(watches.map((w: { id: string; status: string }) => [w.id, w.status]));
       assert.equal(byId.get(originalId), "cancelled");
       assert.equal(byId.get(moved.result.structuredContent.watch.id), "active");
@@ -991,6 +994,53 @@ it.effect("moves a level atomically through replacesWatchId", () =>
           "trading.mission.watch-cancelled",
         ],
       );
+    }),
+  ),
+);
+
+// Plan 29 step 6.5: cancelling is a `trading_watch` shape, so it is the same
+// tool with `cancel` — and the two ways a cancel can miss stay distinguishable.
+it.effect("retires a watch through the same tool that armed it", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      const armed = yield* callTool(BOUND_THREAD, "trading_watch", {
+        condition: { kind: "price", market: "ETH", direction: "above", price: 3200 },
+      });
+      const watchId = armed.result.structuredContent.watch.id;
+
+      const cancelled = yield* callTool(BOUND_THREAD, "trading_watch", { cancel: watchId });
+      assert.equal(cancelled.result.isError, false);
+      assert.equal(cancelled.result.structuredContent.outcome, "cancelled");
+      assert.equal(cancelled.result.structuredContent.watch.status, "cancelled");
+
+      // Already terminal, and never there, stay different facts.
+      const again = yield* callTool(BOUND_THREAD, "trading_watch", { cancel: watchId });
+      assert.equal(again.result.structuredContent.outcome, "rejected");
+      assert.equal(again.result.structuredContent.reason, "watch_not_active");
+      const missing = yield* callTool(BOUND_THREAD, "trading_watch", { cancel: "watch_nope" });
+      assert.equal(missing.result.structuredContent.reason, "watch_not_found");
+    }),
+  ),
+);
+
+// One call does one thing to the armed set.
+it.effect("refuses a watch call that names neither a condition nor a cancel", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      for (const args of [
+        {},
+        {
+          condition: { kind: "price", market: "ETH", direction: "above", price: 3200 },
+          cancel: "watch_1",
+        },
+      ]) {
+        const refused = yield* callTool(BOUND_THREAD, "trading_watch", args);
+        assert.equal(refused.result.isError, false);
+        assert.equal(refused.result.structuredContent.outcome, "refused");
+        assert.equal(refused.result.structuredContent.reason, "needs_condition_or_cancel");
+        assert.equal(refused.result.structuredContent.recovery.action, "stand_down");
+      }
+      assert.deepStrictEqual(dispatchedCommands, []);
     }),
   ),
 );
@@ -1032,7 +1082,7 @@ it.effect("resolves an omitted missionId to the bound mission for a write tool",
     Effect.gen(function* () {
       // A publish with no `missionId` reaches the bound mission and revises
       // its plan, just as a publish that named it would.
-      const published = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
+      const published = yield* callTool(BOUND_THREAD, "trading_plan", {
         expectedMissionVersion: 1,
         strategy: strategyBody("no missionId supplied"),
       });
@@ -1081,7 +1131,7 @@ it.effect("decodes a prose-string entry trigger and round-trips it as the object
           urgency: "now",
         },
       };
-      const published = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
+      const published = yield* callTool(BOUND_THREAD, "trading_plan", {
         missionId: MISSION_ID,
         expectedMissionVersion: 1,
         strategy: strategyBodyWithProseTrigger,
@@ -1170,7 +1220,7 @@ it.effect("closes a position with a call carrying no arguments at all", () =>
       // The whole point of the exit tools: there is nothing to get wrong. This
       // mission has no lease, so the refusal is about the turn — not about a
       // side, a size, a version, or a sequence the caller failed to supply.
-      const closed = yield* callTool(BOUND_THREAD, "trading_close_position", {});
+      const closed = yield* callTool(BOUND_THREAD, "trading_exit", { action: "close" });
 
       assert.equal(closed.result.isError, false);
       assert.equal(closed.result.structuredContent.status, "rejected");
@@ -1184,10 +1234,15 @@ it.effect("closes a position with a call carrying no arguments at all", () =>
 it.effect("refuses a reduce that names neither a size nor a fraction", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
-      const reduced = yield* callTool(BOUND_THREAD, "trading_reduce_position", {});
+      const reduced = yield* callTool(BOUND_THREAD, "trading_exit", { action: "reduce" });
 
-      assert.equal(reduced.result.isError, true);
-      assert.include(reduced.result.content[0]?.text ?? "", "exactly one");
+      // A named refusal now, not a decode error: the rule moved off the schema
+      // and onto `readExitRequest` when the three exit tools merged, so the
+      // model gets a `recovery` instead of a validation message (step 6.5).
+      assert.equal(reduced.result.isError, false);
+      assert.equal(reduced.result.structuredContent.status, "refused_request");
+      assert.equal(reduced.result.structuredContent.reason, "reduce_needs_one_size");
+      assert.equal(reduced.result.structuredContent.recovery.action, "stand_down");
     }),
   ),
 );
@@ -1195,11 +1250,14 @@ it.effect("refuses a reduce that names neither a size nor a fraction", () =>
 it.effect("refuses a cancel that names no resting order", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
-      const cancelled = yield* callTool(BOUND_THREAD, "trading_cancel_order", { cloid: "" });
+      const cancelled = yield* callTool(BOUND_THREAD, "trading_exit", {
+        action: "cancel_order",
+        cloid: "",
+      });
 
       assert.equal(cancelled.result.isError, false);
-      assert.equal(cancelled.result.structuredContent.status, "rejected");
-      assert.include(cancelled.result.structuredContent.detail, "no_target_named");
+      assert.equal(cancelled.result.structuredContent.status, "refused_request");
+      assert.equal(cancelled.result.structuredContent.reason, "cancel_needs_cloid");
     }),
   ),
 );
@@ -1215,6 +1273,7 @@ it.effect("refuses a cancel that names no resting order", () =>
 const PLAN_READ_AT = 900_000;
 
 const adjustStopArgs = (expectedPlanUpdatedAt: number) => ({
+  action: "move_stop",
   market: "ETH",
   newStopPrice: 2_984,
   justification: "trail_peak",
@@ -1225,11 +1284,7 @@ it.effect("refuses a stop adjustment when the mission holds no position", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
       // The first read the service makes is the position; nothing is seeded.
-      const refused = yield* callTool(
-        BOUND_THREAD,
-        "trading_adjust_stop",
-        adjustStopArgs(PLAN_READ_AT),
-      );
+      const refused = yield* callTool(BOUND_THREAD, "trading_exit", adjustStopArgs(PLAN_READ_AT));
 
       assert.equal(refused.result.isError, false);
       assert.equal(refused.result.structuredContent.status, "refused");
@@ -1249,7 +1304,7 @@ it.effect("refuses a stop adjustment asked against a plan the mission has revise
 
         const refused = yield* callTool(
           BOUND_THREAD,
-          "trading_adjust_stop",
+          "trading_exit",
           adjustStopArgs(PLAN_READ_AT - 1),
         );
 
@@ -1277,11 +1332,7 @@ it.effect("lets a current plan through the staleness guard — the next check re
         yield* seedPosition({ size: 0.5, entryPrice: 3_000 });
         yield* seedPlan({ updatedAt: PLAN_READ_AT });
 
-        const refused = yield* callTool(
-          BOUND_THREAD,
-          "trading_adjust_stop",
-          adjustStopArgs(PLAN_READ_AT),
-        );
+        const refused = yield* callTool(BOUND_THREAD, "trading_exit", adjustStopArgs(PLAN_READ_AT));
 
         assert.equal(refused.result.isError, false);
         const decision = refused.result.structuredContent;
@@ -1304,7 +1355,7 @@ it.effect("an accepted publish withdraws the mission's resting working entry", (
       Effect.gen(function* () {
         yield* seedTradingAccount();
 
-        const published = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
+        const published = yield* callTool(BOUND_THREAD, "trading_plan", {
           missionId: MISSION_ID,
           expectedMissionVersion: 1,
           strategy: strategyBody("revised: no longer wants the resting entry"),

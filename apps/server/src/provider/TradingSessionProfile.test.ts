@@ -82,7 +82,7 @@ it("prefixes the same contract onto a trading thread's turn, and leaves other th
   const wakeup = '{"kind":"trading-harness-wakeup"}';
   const prefixed = applyTradingTurnContract(tradingThread, wakeup);
   expect(prefixed.endsWith(wakeup)).toBe(true);
-  expect(prefixed).toContain("trading_publish_plan");
+  expect(prefixed).toContain("trading_plan");
   expect(prefixed).toContain("blocked_by_data");
   expect(applyTradingTurnContract(codingThread, wakeup)).toBe(wakeup);
 

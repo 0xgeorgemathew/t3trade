@@ -410,13 +410,62 @@ is the model talking, not the market moving.
 
 Toolkit is 13 tools at 3,928 description chars.
 
-### Step 6.5 — Retire the rest
+### Step 6.5 — Retire the rest — LANDED except `trading_get_playbook`
 
-`trading_get_playbook` as a per-turn call, `trading_get_target_calibration` as a
-hot-path tool, `trading_list_watches`, `trading_cancel_watch`,
-`trading_adjust_stop`, `trading_publish_plan`.
+Thirteen tools to seven, at 2,797 description chars. Per tool:
 
-**Done when:** the toolkit is 6 tools under ~4,000 description chars.
+- **`trading_publish_plan` → renamed `trading_plan`.** Nothing else moved: the
+  same `tradingPlanAuthoredFields`, the same `expectedMissionVersion` guard,
+  the same publish aftermath (the 4.5 reconcile, the `scope: "entries"`
+  retraction). Plans are still published, so `misarmedEntryConditions` and the
+  `confirmation`-vs-`confirm` distinction are untouched, and the funnel's
+  plan-published signal is the same one-line comparison in
+  `TradingRunTelemetry` — now against `TRADING_PLAN_TOOL`. `deriveDecisionOutcome`
+  reads the identical `publishedPlan` fact.
+- **`trading_close_position`, `trading_reduce_position`, `trading_cancel_order`,
+  `trading_adjust_stop` → folded into `trading_exit`,** one `action` each.
+  The first three are the same `executeExit` call three names used to make;
+  `move_stop` is the retired handler lifted whole, so
+  `TradingStopAdjustmentService.evaluate` and `checkStopAdjustment` still gate
+  every stop move — the approved envelope, the ATR step cap, the noise floor,
+  the breakeven ratchet, the rate limit. No gate loosened. `urgency` is still
+  the only order knob named. The input is a flat struct rather than a union
+  because the tool boundary rejects a root `anyOf`; the combinations that make
+  no sense are refused by name in `readExitRequest`, before anything is read or
+  sent, with a `recovery` from `classifyFailure`.
+- **`trading_list_watches` → removed outright.** The registry rides
+  `trading_look` as `mission.watches`, bounded by 6.3's `listWatchesForRead`.
+- **`trading_cancel_watch` → folded into `trading_watch` as `cancel`.**
+  Cancelling is a watch shape. Exactly one of `condition` and `cancel` per
+  call; neither or both is `needs_condition_or_cancel`. The two ways a cancel
+  can miss — `watch_not_found` and `watch_not_active` — stay distinguishable,
+  because a level that fired and a level that was never there are different
+  facts about the armed set.
+- **`trading_get_target_calibration` → off the hot path, onto
+  `trading_look`** as `mission.targetCalibration`, omitted entirely until the
+  mission has a closed trade to grade. It answers a question the one read was
+  already half-answering: `strategyHistory` says what was targeted, this says
+  whether any of it was reachable.
+- **`trading_get_playbook` — NOT retired.** It is the one that is not a
+  mechanical fold. Retiring it means moving ~25KB of static playbook prose into
+  the prompt, and that is a _worse_ trade for four of the five adapters: only
+  Claude gets a system prompt sent once per session — the other four carry
+  `TRADING_TURN_PREFIX` on every turn, where 25KB per wake costs more than the
+  tool call it replaces. Doing it properly means either splitting the doctrine
+  by adapter or cutting the playbooks down, and either is its own step with its
+  own measurement.
+
+No surviving description grew to absorb a retired one on net: `trading_exit`
+at 452 is shorter than the four it replaces were together (776), and
+`trading_watch` grew 48 chars to carry `cancel`. The rest are unchanged.
+
+`trading_execution_sequences`, `idx_trading_harness_runs_one_active_per_mission`,
+`abandon`'s `all`/`entries` scopes and `trading_enter`'s non-idempotence were
+not touched.
+
+**Done when:** the toolkit is 6 tools under ~4,000 description chars. Seven at
+2,797 — the char budget is met with room to spare and is deliberately not being
+spent.
 
 ---
 

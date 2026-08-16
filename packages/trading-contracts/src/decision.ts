@@ -85,13 +85,13 @@ export interface TradingRunFacts {
   readonly toolErrorCount: number;
   /** `tool: message` for the first error, when there was one. */
   readonly firstToolError?: string | undefined;
-  /** A `trading_publish_plan` call was accepted during the run. */
+  /** A `trading_plan` call was accepted during the run. */
   readonly publishedPlan: boolean;
   /** The published plan declared itself a stand-aside (`intent: "stand_aside"`). */
   readonly publishedStandDown: boolean;
   /** The published plan carries at least one armed entry level. */
   readonly hasArmedEntry: boolean;
-  /** `trading_enter` or `trading_adjust_stop` was called. */
+  /** `trading_enter` or `trading_exit`'s `move_stop` was called. */
   readonly executeAttempted: boolean;
   /** The first preview/guard refusal reason, when the attempt was refused. */
   readonly firstPreviewRefusal?: string | undefined;

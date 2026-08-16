@@ -414,7 +414,7 @@ layer("TradingWakeupComposer", (it) => {
       assert.isArray(wakeup.recentCandles.candles);
       // The decision prompt says the mission has no plan and what to do.
       assert.include(wakeup.strategyReview ?? "", "NO PLAN ACTIVE");
-      assert.include(wakeup.strategyReview ?? "", "trading_publish_plan");
+      assert.include(wakeup.strategyReview ?? "", "trading_plan");
       assert.isBelow(text.length, 5_000);
     }),
   );

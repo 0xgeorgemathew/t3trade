@@ -169,6 +169,11 @@ export const WatchRefusalCode = Schema.Literals([
   "fill_needs_order_or_market",
   /** The thread's mission is gone, ended, or was never there. */
   "mission_not_found",
+  /**
+   * The call named neither a `condition` to arm nor a `cancel` to retire — or
+   * named both (plan 29 step 6.5). One call does one thing to the armed set.
+   */
+  "needs_condition_or_cancel",
 ]);
 export type WatchRefusalCode = typeof WatchRefusalCode.Type;
 

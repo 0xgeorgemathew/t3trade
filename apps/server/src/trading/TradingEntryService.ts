@@ -466,7 +466,7 @@ export const makeTradingEntryService = Effect.gen(function* () {
         ),
       );
 
-      // Plan 27 G2: the same noise floor `trading_adjust_stop` enforces, at
+      // Plan 27 G2: the same noise floor `trading_exit`'s `move_stop` enforces, at
       // the entry. A stop inside max(2x half-spread, 0.35x ATR) is not
       // protection, it is a scheduled exit — refuse it with the floor named
       // rather than let the entry buy a stop-out the doctrine already

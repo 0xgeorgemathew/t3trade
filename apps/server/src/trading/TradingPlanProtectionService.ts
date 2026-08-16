@@ -25,7 +25,7 @@
  * planned-loss-at-stop, else the plan's own `stop.maximumPlannedLossUsd`). A
  * revision that fails either leaves the exchange stop exactly where it is and
  * says so in the outcome, so the publish response can carry it back to the
- * model (which still has `trading_adjust_stop`'s guarded path until phase 6).
+ * model (which still has `trading_exit`'s guarded `move_stop` path).
  *
  * @module TradingPlanProtectionService
  */
@@ -96,7 +96,7 @@ export interface PlanProtectionOutcome {
  * FIRST, the side. A stop on the winning side of the mark triggers the instant
  * it rests, so publishing one would close the position at market — the same
  * violent answer to a bad digit that `checkStopReplacement` exists to prevent,
- * and the reason `trading_adjust_stop` refuses `wrong_side`. Publishing moves
+ * and the reason `trading_exit`'s `move_stop` refuses `wrong_side`. Publishing moves
  * the stop now, so it answers to that gate too.
  *
  * SECOND, the envelope: a move may tighten freely but must not widen the
@@ -139,8 +139,8 @@ export const planStopRefusal = (input: {
   return (
     `the revised plan's stop at ${input.planStopPrice} plans a loss of ` +
     `$${plannedLossUsd.toFixed(2)}, beyond the $${input.envelopeUsd.toFixed(2)} approved for ` +
-    "this position; the exchange stop was left where it is — trading_adjust_stop's guarded " +
-    "path can move it inside the envelope"
+    "this position; the exchange stop was left where it is — trading_exit's move_stop " +
+    "can move it inside the envelope"
   );
 };
 

@@ -152,6 +152,12 @@ export function classifyFailure(failure: ClassifiableFailure): FailureRecovery {
         ? permanent("read_state", "watch_mission_not_found")
         : permanent("stand_down", `watch_${failure.reason ?? "refused"}`);
 
+    // A `trading_exit` call that does not name an exit (plan 29 step 6.5).
+    // All three are rules about the call, so the identical call gets the
+    // identical answer and nothing was sent.
+    case "TradingExitRefusal":
+      return permanent("stand_down", `exit_${failure.reason ?? "refused"}`);
+
     // A note `trading_journal` will not append (plan 29 step 6.4). Two of the
     // three are rules about the note itself, so the fix is to write a
     // different note; the third is the mission ending underneath the call.

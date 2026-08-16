@@ -110,7 +110,7 @@ export const POC_STANDING_INSTRUCTION =
  * Prose the harness may leave out, decoded as an empty string.
  *
  * A required key the harness omits is not a smaller mistake than a wrong value:
- * the Effect toolkit rejects the whole `trading_publish_plan` call with
+ * the Effect toolkit rejects the whole `trading_plan` call with
  * `Missing key`, which costs the turn and tells the user nothing useful. The
  * one field typed this way (`because`) is prose the harness has been observed
  * omitting. A weaker constraint needs no migration — every persisted row still

@@ -161,7 +161,7 @@ const encodeBootstrapText = Schema.encodeSync(Schema.fromJsonString(BootstrapWak
  * armed levels, and nothing for the operator's panel to show.
  */
 const FIRST_TURN_CONTRACT =
-  "End the turn with trading_publish_plan, whatever you decide. The plan is " +
+  "End the turn with trading_plan, whatever you decide. The plan is " +
   "eight fields: market, intent, entry, stop, target, invalidation, reassess, " +
   "because. If the costs or the market do not justify entering, publish intent " +
   '"stand_aside" — the reasoning in because, and entry.triggers carrying the ' +

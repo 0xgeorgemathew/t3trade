@@ -98,7 +98,7 @@ const watchStatus = (watchId: string) =>
     return rows[0]?.status;
   });
 
-layer("trading_publish_plan (§14.3)", (it) => {
+layer("trading_plan (§14.3)", (it) => {
   it.effect("accepts the first publish and appends the first history row", () =>
     Effect.gen(function* () {
       yield* setup;

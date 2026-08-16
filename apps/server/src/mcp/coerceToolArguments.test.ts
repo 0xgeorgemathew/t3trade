@@ -228,12 +228,12 @@ describe("coerceToolArguments", () => {
       return Tool.getJsonSchema(tool);
     };
 
-    // The shapes below cost a `trading_publish_plan` round trip each on
+    // The shapes below cost a `trading_plan` round trip each on
     // 2026-08-14: literals came back as labelled records and lists as `{}`.
     // Ported to the eight-field plan: the labelled literal a trigger can carry
     // is its `timeframe`.
     it("unwraps a labelled timeframe record to the literal it carries", () => {
-      const coerced = coerceToolArguments(schemaFor("trading_publish_plan"), {
+      const coerced = coerceToolArguments(schemaFor("trading_plan"), {
         expectedVersion: 0,
         strategy: {
           entry: {
@@ -258,7 +258,7 @@ describe("coerceToolArguments", () => {
     });
 
     it("leaves a wrapper whose value is not a declared literal alone", () => {
-      const coerced = coerceToolArguments(schemaFor("trading_publish_plan"), {
+      const coerced = coerceToolArguments(schemaFor("trading_plan"), {
         expectedVersion: 0,
         strategy: { entry: { triggers: [{ description: "x", timeframe: { name: "4h" } }] } },
       }) as {
@@ -270,9 +270,9 @@ describe("coerceToolArguments", () => {
       ]);
     });
 
-    it('coerces newStopPrice: "100" on trading_adjust_stop', () => {
+    it('coerces newStopPrice: "100" on trading_exit move_stop', () => {
       expect(
-        coerceToolArguments(schemaFor("trading_adjust_stop"), {
+        coerceToolArguments(schemaFor("trading_exit"), {
           market: "ETH",
           newStopPrice: "100",
         }),
@@ -307,7 +307,7 @@ describe("coerceToolArguments", () => {
     });
 
     it("coerces through a $ref'd trigger and leaves a prose trigger a string", () => {
-      const coerced = coerceToolArguments(schemaFor("trading_publish_plan"), {
+      const coerced = coerceToolArguments(schemaFor("trading_plan"), {
         expectedMissionVersion: "1",
         strategy: {
           stop: { method: "fixed", price: "1800" },
@@ -341,7 +341,7 @@ describe("coerceToolArguments", () => {
       // The number branch is emitted alongside a string enum of
       // `Infinity`/`-Infinity`/`NaN`. Those are the string branch's business.
       expect(
-        coerceToolArguments(schemaFor("trading_adjust_stop"), {
+        coerceToolArguments(schemaFor("trading_exit"), {
           market: "ETH",
           newStopPrice: "Infinity",
         }),

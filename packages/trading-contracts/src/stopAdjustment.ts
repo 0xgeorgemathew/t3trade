@@ -5,7 +5,7 @@
  * losing side of the mark. That is the right primitive and the wrong tool for
  * routine trailing: an unconfirmed replacement escalates to the §17.5 emergency
  * close, so a stop that moves on a whim moves the whole position's safety with
- * it. This module is the bounded version — the rules `trading_adjust_stop`
+ * it. This module is the bounded version — the rules `trading_exit`'s `move_stop`
  * checks before it reaches the same `replaceProtection` path.
  *
  * Every rule here is server-enforced and none is negotiable by prompt. The

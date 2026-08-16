@@ -76,7 +76,7 @@ export {
 export {
   PublishTradingPlanBody,
   PublishTradingPlanRejection,
-  TRADING_PUBLISH_PLAN_TOOL,
+  TRADING_PLAN_TOOL,
   TradingBoundMissionResult,
   TradingGetMissionInput,
   TradingGetMissionResult,
@@ -109,13 +109,8 @@ export {
 } from "@t3tools/trading-contracts/wakeup";
 
 export {
-  TRADING_CANCEL_WATCH_TOOL,
-  TRADING_LIST_WATCHES_TOOL,
   TRADING_WATCH_TOOL,
-  TradingCancelWatchInput,
-  TradingCancelWatchResult,
-  TradingListWatchesInput,
-  TradingListWatchesResult,
+  TradingCancelWatchRejection,
   TradingWatchInput,
   TradingWatchResult,
 } from "@t3tools/trading-contracts/tools";

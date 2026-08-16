@@ -12,32 +12,20 @@
  * @module TradingToolkitTools
  */
 import {
-  TradingCancelWatchInput,
-  TradingCancelWatchResult,
   TradingGetPlaybookInput,
-  TradingGetTargetCalibrationInput,
-  TradingListWatchesInput,
-  TradingListWatchesResult,
   TradingPublishPlanInput,
   TradingPublishPlanResult,
   TradingWatchInput,
   TradingWatchResult,
-  TradingAdjustStopInput,
-  TradingAdjustStopResult,
+  TradingExitResult,
   TradingEnterResult,
-  TradingRequestEntryResult,
   TradingToolRejectedError,
 } from "@t3tools/trading-contracts/tools";
 import { TradingLookInput, TradingObservation } from "@t3tools/trading-contracts/observation";
 import { TradingEnterInput } from "@t3tools/trading-contracts/entry";
-import {
-  TradingCancelOrderInput,
-  TradingClosePositionInput,
-  TradingReducePositionInput,
-} from "@t3tools/trading-contracts/exit";
+import { TradingExitInput } from "@t3tools/trading-contracts/exit";
 import { Playbook } from "@t3tools/trading-contracts/playbook";
 import { TradingJournalInput, TradingJournalResult } from "@t3tools/trading-contracts/journal";
-import { TargetCalibration } from "@t3tools/trading-contracts/calibration";
 import * as Crypto from "effect/Crypto";
 import { Tool, Toolkit } from "effect/unstable/ai";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -64,7 +52,7 @@ const dependencies = [
   McpInvocationContext.McpInvocationContext,
   TradingMissionService,
   TradingStrategyService,
-  // Watch tools (register/cancel/list) write through the watch service.
+  // `trading_watch` arms and retires through the watch service.
   TradingWatchService,
   // An accepted publish or watch change is announced on the orchestration event
   // stream so the workspace sees it over the ordered WS push path.
@@ -76,16 +64,17 @@ const dependencies = [
   TradingCostEstimator,
   // `trading_look` reads the mission's own completed orders.
   TradingTradeHistoryService,
-  // `trading_get_target_calibration` grades the targets against those trades.
+  // `trading_look` grades the mission's published targets against those
+  // trades — the retired calibration tool's read, off the hot path.
   TradingCalibrationService,
   // `trading_enter` reports what the reactor actually did with the request,
   // not that the request was raised.
   TradingExecutionOutcome,
-  // `trading_adjust_stop` measures the mission before it moves the stop.
+  // `trading_exit`'s `move_stop` measures the mission before it moves the stop.
   TradingStopAdjustmentService,
   // `trading_enter` prices, sizes and pre-checks the entry it then submits.
   TradingEntryService,
-  // The three exit tools size themselves from the canonical position.
+  // `trading_exit` sizes itself from the canonical position.
   TradingExitService,
   // An accepted publish reconciles the exchange's stop and target to the plan
   // (plan 29 step 4.5) and retracts the mission's resting working entries.
@@ -113,7 +102,7 @@ export const TradingLookTool = Tool.make("trading_look", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, true);
 
-export const TradingPublishPlanTool = Tool.make("trading_publish_plan", {
+export const TradingPlanTool = Tool.make("trading_plan", {
   description:
     'Publish the eight-field plan: market, intent, entry, stop, target, invalidation, reassess, because. Declining to trade is intent "stand_aside". Derive the target off measured volatility over the intended hold. `expectedMissionVersion` (from trading_look); a stale publish is rejected. Revising replaces the plan in place — watches survive, so cancel or replace any trigger you no longer want.',
   parameters: TradingPublishPlanInput,
@@ -121,7 +110,7 @@ export const TradingPublishPlanTool = Tool.make("trading_publish_plan", {
   failure: TradingToolRejectedError,
   dependencies,
 })
-  .annotate(Tool.Title, "Publish trading plan")
+  .annotate(Tool.Title, "Plan")
   .annotate(Tool.Readonly, false)
   // Publishing revises the mission's state (and the plan the exchange is
   // reconciled to), so it is not a repeatable no-op.
@@ -129,59 +118,17 @@ export const TradingPublishPlanTool = Tool.make("trading_publish_plan", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
-export const TradingGetTargetCalibrationTool = Tool.make("trading_get_target_calibration", {
-  description:
-    "Score published profit targets against what trades actually reached: a target is reached when unrealised PnL ever touched it, not when it was banked. One entry per plan revision: `claimedHitRatePercent`, `observedHitRatePercent`, `verdict`, `recommendation`.",
-  parameters: TradingGetTargetCalibrationInput,
-  success: TargetCalibration,
-  failure: TradingToolRejectedError,
-  dependencies,
-})
-  .annotate(Tool.Title, "Get target calibration")
-  .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, true)
-  .annotate(Tool.OpenWorld, false);
-
 // -- §14.4 watch tools (Phase 3) ---------------------------------------------
 
 export const TradingWatchTool = Tool.make("trading_watch", {
   description:
-    'Arm one `condition` — `price` (a level; `confirm: "close"` needs an `interval`, otherwise it fires on touch), `pnl`, `giveback`, `fill`, `time`. Fires exactly once, then terminal — re-arm to keep a level standing. `replacesWatchId` moves a level: cancel and arm in one transaction; if that watch already fired, what was armed is an ADDITION, not a swap. A refused condition arms nothing and says in `recovery` whether to restate it or read state first.',
+    'Arm one `condition` — `price` (a level; `confirm: "close"` needs an `interval`, otherwise it fires on touch), `pnl`, `giveback`, `fill`, `time` — or retire one by id with `cancel`; exactly one of the two per call. The armed set is on `trading_look`. Fires exactly once, then terminal — re-arm to keep a level standing. `replacesWatchId` moves a level in one transaction; if that watch already fired, what was armed is an ADDITION, not a swap. A refusal changes nothing and `recovery` says what to do.',
   parameters: TradingWatchInput,
   success: TradingWatchResult,
   failure: TradingToolRejectedError,
   dependencies,
 })
   .annotate(Tool.Title, "Watch")
-  .annotate(Tool.Readonly, false)
-  .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, false)
-  .annotate(Tool.OpenWorld, false);
-
-export const TradingListWatchesTool = Tool.make("trading_list_watches", {
-  description:
-    "List every watch registered for this mission, newest first, including status (active, triggered, consumed, cancelled, expired).",
-  parameters: TradingListWatchesInput,
-  success: TradingListWatchesResult,
-  failure: TradingToolRejectedError,
-  dependencies,
-})
-  .annotate(Tool.Title, "List watches")
-  .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, true)
-  .annotate(Tool.OpenWorld, false);
-
-export const TradingCancelWatchTool = Tool.make("trading_cancel_watch", {
-  description:
-    "Cancel an active watch by id; only an active watch can be cancelled — one that already fired or was cancelled is terminal.",
-  parameters: TradingCancelWatchInput,
-  success: TradingCancelWatchResult,
-  failure: TradingToolRejectedError,
-  dependencies,
-})
-  .annotate(Tool.Title, "Cancel watch")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
@@ -235,74 +182,28 @@ export const TradingGetPlaybookTool = Tool.make("trading_get_playbook", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
-export const TradingAdjustStopTool = Tool.make("trading_adjust_stop", {
+export const TradingExitTool = Tool.make("trading_exit", {
   description:
-    "Move the stop on an open position, inside policy: never past the entry's approved stop, in bounded steps, outside the noise floor, never back below entry once past it, and rate-limited. A refusal leaves the resting stop untouched.",
-  parameters: TradingAdjustStopInput,
-  success: TradingAdjustStopResult,
+    'One `action` on exposure you hold. `close` flattens it, taking no size or side. `reduce` takes part off by `sizeEth` or `fraction`, closing instead if what remains would be dust. `cancel_order` withdraws a resting order by `cloid`. `move_stop` trails the stop in policy — never past the entry\'s approved stop, bounded steps, outside the noise floor, never back below entry once past it, rate-limited. `urgency: "patient"` rests it. A refusal sends nothing.',
+  parameters: TradingExitInput,
+  success: TradingExitResult,
   failure: TradingToolRejectedError,
   dependencies,
 })
-  .annotate(Tool.Title, "Adjust stop")
+  .annotate(Tool.Title, "Exit")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.Idempotent, true)
-  .annotate(Tool.OpenWorld, true);
-
-export const TradingClosePositionTool = Tool.make("trading_close_position", {
-  description:
-    "Flatten the mission's whole position now; takes no size or side. The server derives side and size from the canonical position and sends a reduce-only order that crosses immediately, or rests at the near side when `urgency` is `patient`. Works in states an entry does not (entries switched off, loss budget exhausted, mission blocked). Reports `remainingSize` from the reconciled position.",
-  parameters: TradingClosePositionInput,
-  success: TradingRequestEntryResult,
-  failure: TradingToolRejectedError,
-  dependencies,
-})
-  .annotate(Tool.Title, "Close position")
-  .annotate(Tool.Readonly, false)
-  .annotate(Tool.Destructive, true)
+  // `cancel_order` and `move_stop` are repeatable no-ops; `close` and `reduce`
+  // are not. The annotation describes the tool, so it takes the stricter half.
   .annotate(Tool.Idempotent, false)
-  .annotate(Tool.OpenWorld, true);
-
-export const TradingReducePositionTool = Tool.make("trading_reduce_position", {
-  description:
-    'Take part of the position off by size or fraction. The server derives the closing side, clamps to what is held, and sends a reduce-only order that crosses (`urgency: "patient"` rests it at the near side) — it cannot reverse or increase exposure. If what would remain is under the exchange minimum, the whole position closes instead.',
-  parameters: TradingReducePositionInput,
-  success: TradingRequestEntryResult,
-  failure: TradingToolRejectedError,
-  dependencies,
-})
-  .annotate(Tool.Title, "Reduce position")
-  .annotate(Tool.Readonly, false)
-  .annotate(Tool.Destructive, true)
-  .annotate(Tool.Idempotent, false)
-  .annotate(Tool.OpenWorld, true);
-
-export const TradingCancelOrderTool = Tool.make("trading_cancel_order", {
-  description:
-    "Withdraw one resting order by its `cloid`. A plan revision withdraws its own resting working entries, but any other resting order stays until this is called. Touches no position.",
-  parameters: TradingCancelOrderInput,
-  success: TradingRequestEntryResult,
-  failure: TradingToolRejectedError,
-  dependencies,
-})
-  .annotate(Tool.Title, "Cancel resting order")
-  .annotate(Tool.Readonly, false)
-  .annotate(Tool.Destructive, true)
-  .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, true);
 
 export const TradingToolkit = Toolkit.make(
   TradingLookTool,
-  TradingPublishPlanTool,
-  TradingGetTargetCalibrationTool,
+  TradingPlanTool,
   TradingGetPlaybookTool,
   TradingWatchTool,
   TradingJournalTool,
-  TradingListWatchesTool,
-  TradingCancelWatchTool,
   TradingEnterTool,
-  TradingClosePositionTool,
-  TradingReducePositionTool,
-  TradingCancelOrderTool,
-  TradingAdjustStopTool,
+  TradingExitTool,
 );

@@ -192,10 +192,10 @@ export const TradingLayerLive = Layer.mergeAll(
   // `trading_look` is a pure read-join over the mission's own
   // fills and strategy versions.
   TradingTradeHistoryServiceLive,
-  // `trading_get_target_calibration` scores those targets against the closed
+  // `trading_look` scores the published targets against the closed
   // trades the reconciler recorded.
   TradingCalibrationServiceLive,
-  // `trading_adjust_stop` measures the position, the resting stop and the
+  // `trading_exit`'s `move_stop` measures the position, the resting stop and the
   // server's own ATR before it allows a move, so it needs the read gateway and
   // both mission services at build.
   TradingStopAdjustmentServiceLive.pipe(

@@ -43,7 +43,7 @@ export type TradingDomainEventSummary = typeof TradingDomainEventSummary.Type;
  * One armed watch, with how far the market is from firing it.
  *
  * A resumed run used to see only the watch that fired and had to call
- * `trading_list_watches` — and then do the arithmetic itself — to learn what
+ * a second registry read — and then do the arithmetic itself — to learn what
  * else was armed and whether any of it was close. Both numbers are signed
  * against the direction the watch fires in: positive means the market still has
  * that far to travel, negative means the level is already behind the mark.

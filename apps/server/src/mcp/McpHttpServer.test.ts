@@ -278,7 +278,7 @@ it.effect("registers annotated tools and preserves authenticated request context
  * The publish that took ten round trips on 2026-08-14.
  *
  * Several fields wrong at once in the eight-field shape, each of which would
- * cost its own rejected `trading_publish_plan` call. One report naming all of
+ * cost its own rejected `trading_plan` call. One report naming all of
  * them is one retry, not ten.
  */
 const publishWithManyIssues = {
@@ -299,9 +299,9 @@ const publishWithManyIssues = {
 };
 
 it("reports every invalid publish parameter in one message", () => {
-  const message = McpHttpServer.makeParameterIssueReporter(
-    TradingToolkit.tools.trading_publish_plan,
-  )(publishWithManyIssues);
+  const message = McpHttpServer.makeParameterIssueReporter(TradingToolkit.tools.trading_plan)(
+    publishWithManyIssues,
+  );
   expect(message).toBeDefined();
   // The fields that each used to cost a separate call, all in one answer.
   for (const key of ["market", "intent", "urgency", "priceLevel", "afterMinutes"]) {

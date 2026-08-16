@@ -151,7 +151,7 @@ layer("TradingRunTelemetry", (it) => {
       const sql = yield* SqlClient.SqlClient;
       yield* recordToolCall(sql, {
         threadId: THREAD,
-        tool: "trading_publish_plan",
+        tool: "trading_plan",
         ok: true,
         accepted: false,
       });
@@ -166,7 +166,7 @@ layer("TradingRunTelemetry", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* seed({ plan: standAsidePlan });
-      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_plan", ok: true });
 
       yield* settleRunDecision(sql, { runId: "run_1", completedAt: 4_000 });
 
@@ -191,7 +191,7 @@ layer("TradingRunTelemetry", (it) => {
       yield* seed({
         plan: { ...waitingPlan, entry: { triggers: [], urgency: "now" }, intent: "long" },
       });
-      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_plan", ok: true });
 
       yield* settleRunDecision(sql, { runId: "run_1", completedAt: 4_000 });
       const run = yield* readRun;
@@ -205,7 +205,7 @@ layer("TradingRunTelemetry", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* seed({ plan: waitingPlan });
-      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_plan", ok: true });
 
       yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
 
@@ -284,7 +284,7 @@ layer("TradingRunTelemetry", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* seed({ plan: standAsidePlan });
-      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_plan", ok: true });
       yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
 
       // A second release must not rewrite the decision the first one recorded.
@@ -301,7 +301,7 @@ layer("TradingRunTelemetry", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* seed({ plan: standAsidePlan });
-      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_plan", ok: true });
       yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
 
       const funnel = yield* readDecisionFunnel(sql, { missionId: MISSION });
@@ -321,7 +321,7 @@ layer("TradingRunTelemetry", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* seed({ plan: standAsidePlan });
-      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_publish_plan", ok: true });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_plan", ok: true });
       yield* settleRunDecision(sql, { runId: "run_1", completedAt: 2_000 });
 
       const evidence = yield* readEnrichmentEvidence(sql, { missionId: MISSION });

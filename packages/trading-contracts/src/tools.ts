@@ -2,7 +2,7 @@
  * Mission and strategy tool contracts - spec §14.3.
  *
  * Tools accept intent-level inputs. Publishing is a versioned, side-effecting
- * operation: `trading_publish_plan` requires an expected current
+ * operation: `trading_plan` requires an expected current
  * version, and a stale expected-version publish is rejected rather than
  * silently overwriting current state.
  *
@@ -30,26 +30,35 @@ import {
 import type { TradingCostEstimate } from "./costs.ts";
 import type { MarketStructure } from "./marketStructure.ts";
 import type { TradingTradeHistory } from "./history.ts";
-import type { TargetCalibration } from "./calibration.ts";
+import { TargetCalibration } from "./calibration.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./mission.ts";
 import { Price, TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
 import { StopAdjustmentJustification, StopAdjustmentRefusalCode } from "./stopAdjustment.ts";
 import { TradingOrderTimeInForce } from "./execution.ts";
 import { EntrySizeConstraint } from "./entry.ts";
+import { TradingExitRefusalCode } from "./exit.ts";
 import { FailureRecovery } from "./recovery.ts";
 import { tradingPlanAuthoredFields, TradingPlanState } from "./strategy.ts";
 import { PersistedWatch, WatchCondition, WatchRefusalCode } from "./watch.ts";
 import { Playbook, TradingPlaybookName } from "./playbook.ts";
 
-export const TRADING_PUBLISH_PLAN_TOOL = "trading_publish_plan";
+// Renamed from `trading_plan` — plan 29 step 6.5. The behaviour is
+// unchanged: the same eight authored fields, the same mission-version guard,
+// the same publish aftermath. What went is the verb the model had to spell out
+// to reach the plan at all.
+export const TRADING_PLAN_TOOL = "trading_plan";
 
 // The twelve read-tool names that used to live here retired into
 // `TRADING_LOOK_TOOL` (./observation.ts) — plan 29 step 6.1.
 
-export const TRADING_GET_TARGET_CALIBRATION_TOOL = "trading_get_target_calibration";
+// `trading_get_target_calibration` retired off the hot path — plan 29 step
+// 6.5. The grading is a read of the mission's own closed trades, so it rides
+// `trading_look` as `mission.targetCalibration` instead of costing a turn a
+// tool call to ask a question the one read was already answering.
 export const TRADING_GET_PLAYBOOK_TOOL = "trading_get_playbook";
-export const TRADING_ADJUST_STOP_TOOL = "trading_adjust_stop";
+// `trading_adjust_stop` retired into `trading_exit`'s `move_stop` action —
+// plan 29 step 6.5. The policy it answered to did not move; only the name did.
 
 // `trading_execute` and its `trading_request_entry` alias retired into
 // `TRADING_ENTER_TOOL` (./entry.ts) — plan 29 step 6.2. Both existed to spend
@@ -61,7 +70,7 @@ export const TRADING_ADJUST_STOP_TOOL = "trading_adjust_stop";
 /**
  * Why a trading tool refused to act at all.
  *
- * These are distinct from `trading_publish_plan`'s in-band
+ * These are distinct from `trading_plan`'s in-band
  * `outcome: "rejected"`, which reports a *published* result the harness can
  * retry against. A `TradingToolRejectedError` means the call never reached the
  * mission: the credential did not carry the capability, the calling thread is
@@ -181,6 +190,18 @@ export const TradingBoundMissionResult = Schema.Struct({
    * rung?" unanswerable from inside the loop.
    */
   strategyHistory: Schema.Array(PublishedStrategySummary),
+  /**
+   * Those targets, graded against what the mission's trades actually reached —
+   * plan 29 step 6.5, where `trading_get_target_calibration` came off the hot
+   * path.
+   *
+   * Here rather than in a tool of its own because it answers a question the
+   * one read was already half-answering: `strategyHistory` says what was
+   * targeted, and this says whether any of it was reachable. Absent until the
+   * mission has a closed trade to grade, so a mission that has not traded
+   * carries nothing extra.
+   */
+  targetCalibration: Schema.optional(TargetCalibration),
 });
 export type TradingBoundMissionResult = typeof TradingBoundMissionResult.Type;
 
@@ -208,7 +229,7 @@ export const TradingGetMissionResult = Schema.Union([
 ]);
 export type TradingGetMissionResult = typeof TradingGetMissionResult.Type;
 
-// -- trading_publish_plan ----------------------------------------------------
+// -- trading_plan ----------------------------------------------------
 
 /**
  * The plan body the harness publishes — the eight authored fields of the
@@ -417,7 +438,7 @@ export const TradingEnterResult = Schema.Struct({
 });
 export type TradingEnterResult = typeof TradingEnterResult.Type;
 
-// -- trading_adjust_stop (plan 24 §5.2) --------------------------------------
+// -- trading_exit's move_stop (plan 24 §5.2) --------------------------------
 
 /**
  * The refusals that are about the mission rather than the policy.
@@ -488,6 +509,26 @@ export const TradingAdjustStopResult = Schema.Union([
   }),
 ]);
 export type TradingAdjustStopResult = typeof TradingAdjustStopResult.Type;
+
+/**
+ * What one `trading_exit` call answers with.
+ *
+ * A union rather than a widened struct, because the two halves report
+ * genuinely different things: three actions send an order and report the
+ * execution record, and `move_stop` reports where the stop now rests. The
+ * `status` literals do not overlap, so the discriminator is unambiguous.
+ */
+export const TradingExitResult = Schema.Union([
+  TradingRequestEntryResult,
+  ...TradingAdjustStopResult.members,
+  Schema.Struct({
+    status: Schema.Literal("refused_request"),
+    reason: TradingExitRefusalCode,
+    detail: Schema.String,
+    recovery: FailureRecovery,
+  }),
+]);
+export type TradingExitResult = typeof TradingExitResult.Type;
 
 export const TradingResolveMarketInput = Schema.Struct({
   ...missionBound,
@@ -651,13 +692,29 @@ export type TradingGetOpenOrdersResult = ReadonlyArray<AgentOpenOrder>;
 // the same `resolveBoundCall` path as the §14.2/§14.3 tools.
 
 export const TRADING_WATCH_TOOL = "trading_watch";
-export const TRADING_LIST_WATCHES_TOOL = "trading_list_watches";
-export const TRADING_CANCEL_WATCH_TOOL = "trading_cancel_watch";
 
+/**
+ * Arm one condition, or retire one armed watch.
+ *
+ * Both, because they are one operation on one set: cancelling is a `watch`
+ * shape, and having a second tool for the retirement half meant the model had
+ * to learn two names for the registry it can already read off `trading_look`
+ * (plan 29 step 6.5). Exactly one of `condition` and `cancel` per call —
+ * neither, or both, is refused rather than guessed at.
+ */
 export const TradingWatchInput = Schema.Struct({
   ...missionBound,
   /** What has to become true. One union, five kinds (plan 29 step 6.3). */
-  condition: WatchCondition,
+  condition: Schema.optional(WatchCondition),
+  /**
+   * An active watch to retire outright. Only an active watch can be
+   * cancelled: one that already fired, or was already cancelled, is terminal.
+   *
+   * Distinct from `replacesWatchId`, which retires a watch *as* another is
+   * armed. This one leaves the side unwatched, which is sometimes exactly
+   * what is meant.
+   */
+  cancel: Schema.optional(TradingId),
   /**
    * An active watch to retire as this one is armed, in a single transaction.
    *
@@ -668,6 +725,16 @@ export const TradingWatchInput = Schema.Struct({
   replacesWatchId: Schema.optional(TradingId),
 });
 export type TradingWatchInput = typeof TradingWatchInput.Type;
+
+/**
+ * Why a `cancel` did not retire a watch.
+ *
+ * Kept apart from `WatchRefusalCode` because it is not a rule about a
+ * condition: nothing was malformed, the watch named is simply not one that can
+ * be cancelled.
+ */
+export const TradingCancelWatchRejection = Schema.Literals(["watch_not_found", "watch_not_active"]);
+export type TradingCancelWatchRejection = typeof TradingCancelWatchRejection.Type;
 
 /**
  * What arming a condition did.
@@ -692,6 +759,15 @@ export const TradingWatchResult = Schema.Union([
      */
     replaced: Schema.optional(PersistedWatch),
   }),
+  /** What `cancel` retired. The watch is returned in its cancelled state. */
+  Schema.Struct({
+    outcome: Schema.Literal("cancelled"),
+    watch: PersistedWatch,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("rejected"),
+    reason: TradingCancelWatchRejection,
+  }),
   Schema.Struct({
     outcome: Schema.Literal("refused"),
     reason: WatchRefusalCode,
@@ -701,29 +777,7 @@ export const TradingWatchResult = Schema.Union([
 ]);
 export type TradingWatchResult = typeof TradingWatchResult.Type;
 
-export const TradingListWatchesInput = Schema.Struct({ ...missionBound });
-export type TradingListWatchesInput = typeof TradingListWatchesInput.Type;
-
-export const TradingListWatchesResult = Schema.Array(PersistedWatch);
-export type TradingListWatchesResult = ReadonlyArray<PersistedWatch>;
-
-export const TradingCancelWatchInput = Schema.Struct({
-  ...missionBound,
-  watchId: TradingId,
-});
-export type TradingCancelWatchInput = typeof TradingCancelWatchInput.Type;
-
-export const TradingCancelWatchRejection = Schema.Literals(["watch_not_found", "watch_not_active"]);
-export type TradingCancelWatchRejection = typeof TradingCancelWatchRejection.Type;
-
-export const TradingCancelWatchResult = Schema.Union([
-  Schema.Struct({
-    outcome: Schema.Literal("cancelled"),
-    watch: PersistedWatch,
-  }),
-  Schema.Struct({
-    outcome: Schema.Literal("rejected"),
-    reason: TradingCancelWatchRejection,
-  }),
-]);
-export type TradingCancelWatchResult = typeof TradingCancelWatchResult.Type;
+// `trading_list_watches` retired into `trading_look` — plan 29 step 6.5. The
+// registry rides `mission.watches` on the one read, bounded by
+// `listWatchesForRead`, so a separate list call was a second name for a thing
+// the model already had in front of it.

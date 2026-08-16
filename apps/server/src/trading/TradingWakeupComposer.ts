@@ -977,7 +977,7 @@ const make = Effect.gen(function* () {
       // (plan 29 step 4.3).
       const flatReview =
         activeStrategy === undefined
-          ? "FLAT, NO PLAN ACTIVE — nothing is armed for this mission and no thesis is on file. Decide this turn: weigh the market against one question — is the expected move over the intended hold bigger than the round trip is worth? (`costContext` prices it) — and either publish a plan (`trading_publish_plan`; standing aside is a plan too) or arm what you are waiting for."
+          ? "FLAT, NO PLAN ACTIVE — nothing is armed for this mission and no thesis is on file. Decide this turn: weigh the market against one question — is the expected move over the intended hold bigger than the round trip is worth? (`costContext` prices it) — and either publish a plan (`trading_plan`; standing aside is a plan too) or arm what you are waiting for."
           : "FLAT — the field is open: momentum, range_reversion, opening_range, ema_cross, and rsi_reversion are all candidates again, and `candidates[]` carries each setup with its own cost arithmetic. Weigh each against one question — is the expected move over the intended hold bigger than the round trip is worth? (`costContext` prices it) — and take the one that answers it best, or none of them if none do.";
       const strategyReview = position.size === 0 ? `${staleNote}${flatReview}` : undefined;
 

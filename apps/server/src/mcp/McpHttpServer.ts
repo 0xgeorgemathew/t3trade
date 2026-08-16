@@ -243,7 +243,7 @@ const toolErrorResult = (message: string) =>
  *
  * Effect's toolkit decodes with the default `errors: "first"`, so a call with
  * eight missing keys comes back naming one of them. The agent fixes that one,
- * calls again, and is told the next — `trading_publish_plan` took ten round
+ * calls again, and is told the next — `trading_plan` took ten round
  * trips and ninety seconds to land a single plan that way, and every retry
  * re-sent the whole strategy. This decodes the same coerced payload against the
  * same schema first, with `errors: "all"`, purely to build the message: the

@@ -23,22 +23,14 @@
  * @module TradingSessionProfile
  */
 import {
-  TRADING_ADJUST_STOP_TOOL,
-  TRADING_CANCEL_WATCH_TOOL,
   TRADING_GET_PLAYBOOK_TOOL,
-  TRADING_GET_TARGET_CALIBRATION_TOOL,
-  TRADING_LIST_WATCHES_TOOL,
-  TRADING_PUBLISH_PLAN_TOOL,
+  TRADING_PLAN_TOOL,
   TRADING_WATCH_TOOL,
 } from "@t3tools/trading-contracts/tools";
 import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
 import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
-import {
-  TRADING_CANCEL_ORDER_TOOL,
-  TRADING_CLOSE_POSITION_TOOL,
-  TRADING_REDUCE_POSITION_TOOL,
-} from "@t3tools/trading-contracts/exit";
+import { TRADING_EXIT_TOOL } from "@t3tools/trading-contracts/exit";
 import type { ThreadId } from "@t3tools/contracts";
 
 import { isTradingThread } from "./SessionProfile.ts";
@@ -52,18 +44,12 @@ export const TRADING_MCP_SERVER_NAME = "t3-trade";
  */
 export const TRADING_TOOL_NAMES: ReadonlyArray<string> = [
   TRADING_LOOK_TOOL,
-  TRADING_PUBLISH_PLAN_TOOL,
-  TRADING_GET_TARGET_CALIBRATION_TOOL,
+  TRADING_PLAN_TOOL,
   TRADING_GET_PLAYBOOK_TOOL,
   TRADING_WATCH_TOOL,
   TRADING_JOURNAL_TOOL,
-  TRADING_LIST_WATCHES_TOOL,
-  TRADING_CANCEL_WATCH_TOOL,
   TRADING_ENTER_TOOL,
-  TRADING_CLOSE_POSITION_TOOL,
-  TRADING_REDUCE_POSITION_TOOL,
-  TRADING_CANCEL_ORDER_TOOL,
-  TRADING_ADJUST_STOP_TOOL,
+  TRADING_EXIT_TOOL,
 ];
 
 /**
@@ -82,7 +68,7 @@ export const TRADING_ALLOWED_TOOL_NAMES: ReadonlyArray<string> = TRADING_TOOL_NA
  *
  * What changed from the Claude-only prompt it replaces: it no longer names
  * `trading_stand_down` or a "trading inbox" (neither exists — a stand-down is a
- * `trading_publish_plan` shape, and pending events arrive inside the wakeup),
+ * `trading_plan` shape, and pending events arrive inside the wakeup),
  * it names the playbook reads a turn has available instead of saying "read the
  * playbook", and it names the terminal outcomes a turn may end on so that
  * declining to trade is a structured result rather than a silence.
@@ -97,13 +83,13 @@ COSTS ARE CONTEXT BEFORE THE ENTRY AND AN INSTRUMENT AFTER IT. To enter, ask one
 
 2. READ THE PLAYBOOK FOR WHAT YOU ARE WEIGHING. ${TRADING_GET_PLAYBOOK_TOOL} takes a name: call it with "classify" when you want the regime read, the name of the play you are weighing when you already know it, and "standing_rules" for what holds in every mode. The same market-structure read's \`candidates[]\` table joins each scored setup with what it costs to take, so what is on offer and what it costs is already in front of you. Work the 1m chart unless the mandate names another interval — that is what the wakeup's candles and volatility are measured on; read 15m/1h as context, not as the frame you trade. Follow the procedure, gates, and stand-down conditions the playbooks return.
 
-3. GATHER THE EVIDENCE the playbook asks for. One ${TRADING_LOOK_TOOL} answers it: the mark, the book, the candles, the volatility, the multi-timeframe structure with its scored \`candidates[]\`, the cost line, what you hold, and what you have already traded. ${TRADING_GET_TARGET_CALIBRATION_TOOL} grades the targets you published against what your trades actually reached.
+3. GATHER THE EVIDENCE the playbook asks for. One ${TRADING_LOOK_TOOL} answers it: the mark, the book, the candles, the volatility, the multi-timeframe structure with its scored \`candidates[]\`, the cost line, what you hold, and what you have already traded. \`mission.targetCalibration\` on the same read grades the targets you published against what your trades actually reached.
 
-4. PUBLISH ON THE FIRST TURN AND WHEN THE PLAN CHANGES, with ${TRADING_PUBLISH_PLAN_TOOL}. The plan is eight fields: market, intent, entry, stop, target, invalidation, reassess, because. \`because\` is the narrative — the setup, its indicators, the regime, and 2-4 plain sentences a non-trader can follow; strategies and timeframes live there as prose, not as fields. Declining to trade publishes as \`intent: "stand_aside"\` with the reasoning in \`because\` and the levels that would change the read in \`entry.triggers\`. \`entry.urgency\` is now/patient and is the only order knob you ever name — the server decides the order type. A mission that publishes nothing has no thesis to come back to and no levels to be woken on; a stand-aside publishes once and does not re-publish unchanged.
+4. PUBLISH ON THE FIRST TURN AND WHEN THE PLAN CHANGES, with ${TRADING_PLAN_TOOL}. The plan is eight fields: market, intent, entry, stop, target, invalidation, reassess, because. \`because\` is the narrative — the setup, its indicators, the regime, and 2-4 plain sentences a non-trader can follow; strategies and timeframes live there as prose, not as fields. Declining to trade publishes as \`intent: "stand_aside"\` with the reasoning in \`because\` and the levels that would change the read in \`entry.triggers\`. \`entry.urgency\` is now/patient and is the only order knob you ever name — the server decides the order type. A mission that publishes nothing has no thesis to come back to and no levels to be woken on; a stand-aside publishes once and does not re-publish unchanged.
 
-5. ARM WHAT SHOULD WAKE YOU NEXT, after the publish, with ${TRADING_WATCH_TOOL} — one \`condition\`, which is one of five kinds: a price level (\`confirm: "close"\` needs the \`interval\` whose bar has to close; otherwise it fires on touch), a \`pnl\` line, a \`giveback\` from the peak, a \`fill\`, or a \`time\` (${TRADING_LIST_WATCHES_TOOL} and ${TRADING_CANCEL_WATCH_TOOL} inspect and retire them; pass replacesWatchId to move a level in one transaction). Prose wakes nothing — every condition you are waiting on needs an armed watch.
+5. ARM WHAT SHOULD WAKE YOU NEXT, after the publish, with ${TRADING_WATCH_TOOL} — one \`condition\`, which is one of five kinds: a price level (\`confirm: "close"\` needs the \`interval\` whose bar has to close; otherwise it fires on touch), a \`pnl\` line, a \`giveback\` from the peak, a \`fill\`, or a \`time\` (the armed set is on ${TRADING_LOOK_TOOL}; \`cancel\` retires one by id, and replacesWatchId moves a level in one transaction). Prose wakes nothing — every condition you are waiting on needs an armed watch.
 
-6. ACT ON THE EXCHANGE with the tool named for the action, never a hand-built intent. To ENTER: ${TRADING_ENTER_TOOL} with the market, the side, and your stop — one call; the server derives the versions, the lease, the sequence, the crossing limit price, the precision, and the largest size every ceiling allows, pre-checks the whole thing, and submits it. It reports the size it sent and which ceiling bound it. To GET OUT: ${TRADING_CLOSE_POSITION_TOOL} (takes nothing; flattens the position), ${TRADING_REDUCE_POSITION_TOOL} (sizeEth or fraction), ${TRADING_CANCEL_ORDER_TOOL} (a resting order by cloid). Those three size themselves from the canonical position and work in every state an entry does not — entries off, budget exhausted, mission blocked, dust position — so a position you want out of is never stuck. ${TRADING_ADJUST_STOP_TOOL} moves protection, bounded. Enter only from a setup whose evidence you have actually verified: there is no second call to reconsider at, and a repeated enter is a second trade, not a retry.
+6. ACT ON THE EXCHANGE with the tool named for the action, never a hand-built intent. To ENTER: ${TRADING_ENTER_TOOL} with the market, the side, and your stop — one call; the server derives the versions, the lease, the sequence, the crossing limit price, the precision, and the largest size every ceiling allows, pre-checks the whole thing, and submits it. It reports the size it sent and which ceiling bound it. To GET OUT, or to defend what you hold: ${TRADING_EXIT_TOOL} with one \`action\` — \`close\` (takes nothing; flattens the position), \`reduce\` (sizeEth or fraction), \`cancel_order\` (a resting order by cloid), or \`move_stop\` (bounded protection). It sizes itself from the canonical position and works in every state an entry does not — entries off, budget exhausted, mission blocked, dust position — so a position you want out of is never stuck. Enter only from a setup whose evidence you have actually verified: there is no second call to reconsider at, and a repeated enter is a second trade, not a retry.
 
 SAY WHICH OUTCOME THE TURN REACHED, in the last thing you write, as one of:
 - entered — a position-increasing order was accepted or filled by the exchange.

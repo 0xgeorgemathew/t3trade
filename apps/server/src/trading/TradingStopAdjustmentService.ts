@@ -1,5 +1,5 @@
 /**
- * TradingStopAdjustmentService - the evidence behind `trading_adjust_stop`.
+ * TradingStopAdjustmentService - the evidence behind `trading_exit`'s `move_stop`.
  *
  * The policy itself is pure and lives in
  * `@t3tools/trading-contracts/stop-adjustment`. This gathers the seven numbers

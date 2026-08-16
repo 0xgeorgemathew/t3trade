@@ -1,5 +1,5 @@
 /**
- * Getting out — the three actions that remove exposure, as their own contracts.
+ * Getting out — the one tool for everything that removes or protects exposure.
  *
  * Exiting used to be a shape of `trading_execute`: the harness hand-built an
  * intent with an action type of `reduce` or `close`, a side, a size, a limit
@@ -10,21 +10,39 @@
  * position can answer: the side of an exit is the opposite of what is held, and
  * the size of a close is all of it.
  *
- * So the tools here take almost nothing. `trading_close_position` takes a
- * market. `trading_reduce_position` takes a market and how much. And getting
- * out is the one thing that must never fail for a reason belonging to getting
- * in, which is why these do not share `trading_execute`'s input at all.
+ * So `trading_exit` takes almost nothing: an `action`, and only the fields
+ * that action cannot derive. And getting out is the one thing that must never
+ * fail for a reason belonging to getting in, which is why it does not share
+ * the entry path's input at all.
  *
  * @module TradingExit
  */
 import { Effect, Schema } from "effect";
 
-import { TradingId, TradingMarket } from "./primitives.ts";
+import { Price, TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
+import { StopAdjustmentJustification } from "./stopAdjustment.ts";
 import { TradingUrgency } from "./strategy.ts";
 
-export const TRADING_CLOSE_POSITION_TOOL = "trading_close_position";
-export const TRADING_REDUCE_POSITION_TOOL = "trading_reduce_position";
-export const TRADING_CANCEL_ORDER_TOOL = "trading_cancel_order";
+export const TRADING_EXIT_TOOL = "trading_exit";
+
+/**
+ * The four things a mission does to exposure it already has — plan 29 step 6.5.
+ *
+ * `trading_close_position`, `trading_reduce_position`, `trading_cancel_order`
+ * and `trading_exit`'s `move_stop` were four names for one decision class: this
+ * position, or the orders standing behind it, should be smaller or safer than
+ * it is. They are one tool with an `action` because the model was choosing
+ * between four descriptions of the same situation before it could act on it.
+ *
+ * `move_stop` is here rather than with the plan for the reason that matters:
+ * a stop is a resting reduce-only order, and it answers to the exit path's
+ * gates, not the plan's. Its policy — the approved envelope, the ATR step cap,
+ * the noise floor, the breakeven ratchet, the rate limit — is unchanged and
+ * still runs in `TradingStopAdjustmentService` before anything reaches the
+ * exchange.
+ */
+export const TradingExitAction = Schema.Literals(["close", "reduce", "cancel_order", "move_stop"]);
+export type TradingExitAction = typeof TradingExitAction.Type;
 
 /**
  * Shared mission binding. Optional everywhere, as on every other tool: the
@@ -42,45 +60,110 @@ const missionBound = {
  */
 const UrgencyWithDefault = TradingUrgency.pipe(Schema.withDecodingDefault(Effect.succeed("now")));
 
-export const TradingClosePositionInput = Schema.Struct({
-  ...missionBound,
-  /** Defaults to the market the mission is mandated to. */
-  market: Schema.optional(TradingMarket),
-  urgency: UrgencyWithDefault,
-});
-export type TradingClosePositionInput = typeof TradingClosePositionInput.Type;
-
 /**
- * Take part of a position off.
+ * One call, one `action`, and only the fields that action needs.
  *
- * `sizeEth` and `fraction` are two ways to say the same thing; give one. Giving
- * neither reduces nothing and is refused rather than silently read as a close —
- * "close" is a different tool because it is a different decision.
+ * Deliberately a flat struct rather than a discriminated union of four: the
+ * tool boundary rejects a root `anyOf`, and a harness filling in a flat object
+ * has one schema to read instead of four. The combinations that do not make
+ * sense — a `reduce` naming no size, a `cancel_order` naming no `cloid` — are
+ * refused by name at the handler with a `recovery`, not guessed at.
  */
-export const TradingReducePositionInput = Schema.Struct({
+export const TradingExitInput = Schema.Struct({
   ...missionBound,
+  action: TradingExitAction,
+  /** Defaults to the market the mission is mandated to. Ignored by `cancel_order`. */
   market: Schema.optional(TradingMarket),
-  /** Base units to remove, clamped to what is actually held. */
+  /** `reduce` only: base units to remove, clamped to what is actually held. */
   sizeEth: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
-  /** Share of the position to remove, 0–1. `0.5` takes half off. */
+  /** `reduce` only: share of the position to remove, 0–1. `0.5` takes half off. */
   fraction: Schema.optional(
     Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(1)),
   ),
+  /** `cancel_order` only: the client order id of the resting order to withdraw. */
+  cloid: Schema.optional(Schema.String),
+  /** `move_stop` only: where the stop should rest. */
+  newStopPrice: Schema.optional(Price),
+  /** `move_stop` only: which of the named reasons this move is. */
+  justification: Schema.optional(StopAdjustmentJustification),
+  /**
+   * `move_stop` only: the `updatedAt` of the plan the harness last read. A move
+   * asked against a plan the server has since revised is refused.
+   */
+  expectedPlanUpdatedAt: Schema.optional(UnixMillis),
+  /** `close` and `reduce` only. `patient` rests at the near side. */
   urgency: UrgencyWithDefault,
-}).check(
-  Schema.makeFilter((input) => {
-    const named = Number(input.sizeEth !== undefined) + Number(input.fraction !== undefined);
-    return named === 1 || "Give exactly one of sizeEth or fraction.";
-  }),
-);
-export type TradingReducePositionInput = typeof TradingReducePositionInput.Type;
-
-export const TradingCancelOrderInput = Schema.Struct({
-  ...missionBound,
-  /** The client order id of the resting order to withdraw. */
-  cloid: Schema.String,
 });
-export type TradingCancelOrderInput = typeof TradingCancelOrderInput.Type;
+export type TradingExitInput = typeof TradingExitInput.Type;
+
+/**
+ * Why an exit call did not name an exit.
+ *
+ * These are rules about the call, so the identical call gets the identical
+ * answer and the recovery is always a stand-down. Nothing was sent.
+ */
+export const TradingExitRefusalCode = Schema.Literals([
+  /** `reduce` naming neither `sizeEth` nor `fraction`, or naming both. */
+  "reduce_needs_one_size",
+  /** `cancel_order` with no `cloid` to withdraw. */
+  "cancel_needs_cloid",
+  /** `move_stop` missing `newStopPrice`, `justification` or `expectedPlanUpdatedAt`. */
+  "move_stop_needs_stop_and_plan",
+]);
+export type TradingExitRefusalCode = typeof TradingExitRefusalCode.Type;
+
+/** A call the exit path will not act on, and why. Pure; costs no transaction. */
+export interface TradingExitRefusal {
+  readonly code: TradingExitRefusalCode;
+  readonly detail: string;
+}
+
+/**
+ * Check one exit call names an exit, before anything is measured or sent.
+ *
+ * `null` means the call is well formed for its action. `close` names nothing
+ * beyond the market, so it can never fail here.
+ */
+export function readExitRequest(input: {
+  readonly action: TradingExitAction;
+  readonly sizeEth?: number | undefined;
+  readonly fraction?: number | undefined;
+  readonly cloid?: string | undefined;
+  readonly newStopPrice?: number | undefined;
+  readonly justification?: string | undefined;
+  readonly expectedPlanUpdatedAt?: number | undefined;
+}): TradingExitRefusal | null {
+  switch (input.action) {
+    case "close":
+      return null;
+    case "reduce": {
+      const named = Number(input.sizeEth !== undefined) + Number(input.fraction !== undefined);
+      return named === 1
+        ? null
+        : {
+            code: "reduce_needs_one_size",
+            detail:
+              "a reduce names exactly one of sizeEth or fraction; to remove the whole " +
+              'position use action "close"',
+          };
+    }
+    case "cancel_order":
+      return input.cloid !== undefined && input.cloid.length > 0
+        ? null
+        : { code: "cancel_needs_cloid", detail: "name the cloid of the resting order to withdraw" };
+    case "move_stop":
+      return input.newStopPrice !== undefined &&
+        input.justification !== undefined &&
+        input.expectedPlanUpdatedAt !== undefined
+        ? null
+        : {
+            code: "move_stop_needs_stop_and_plan",
+            detail:
+              "a stop move names newStopPrice, justification, and the expectedPlanUpdatedAt " +
+              "of the plan you read it against",
+          };
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Canonical sizing — the arithmetic, without a database or an exchange

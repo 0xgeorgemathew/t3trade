@@ -8,9 +8,9 @@ import { assert, describe, it } from "@effect/vitest";
 import { Schema } from "effect";
 
 import {
+  readExitRequest,
   resolveExitSize,
-  TradingClosePositionInput,
-  TradingReducePositionInput,
+  TradingExitInput,
   type ExitSizingInput,
 } from "./exit.ts";
 
@@ -107,26 +107,50 @@ describe("resolveExitSize", () => {
   });
 });
 
-describe("TradingReducePositionInput", () => {
-  it("requires exactly one reduction size", () => {
-    const decode = Schema.decodeUnknownSync(TradingReducePositionInput);
-    assert.throws(() => decode({}));
-    assert.throws(() => decode({ sizeEth: 0.1, fraction: 0.5 }));
-    assert.doesNotThrow(() => decode({ fraction: 0.5 }));
+describe("readExitRequest", () => {
+  // The `reduce` rule the retired tool enforced at its schema boundary. It is
+  // a handler-side check now, so that a bad combination comes back as a named
+  // refusal with a recovery rather than as a decode error.
+  it("requires exactly one reduction size on a reduce", () => {
+    assert.strictEqual(readExitRequest({ action: "reduce", fraction: 0.5 }), null);
+    assert.strictEqual(readExitRequest({ action: "reduce" })?.code, "reduce_needs_one_size");
+    assert.strictEqual(
+      readExitRequest({ action: "reduce", sizeEth: 0.1, fraction: 0.5 })?.code,
+      "reduce_needs_one_size",
+    );
   });
 
-  it("defaults urgency to now, and accepts an explicit patient", () => {
-    const decode = Schema.decodeUnknownSync(TradingReducePositionInput);
-    assert.strictEqual(decode({ fraction: 0.5 }).urgency, "now");
-    assert.strictEqual(decode({ fraction: 0.5, urgency: "patient" }).urgency, "patient");
+  it("requires a cloid to cancel and a whole stop move to move a stop", () => {
+    assert.strictEqual(readExitRequest({ action: "cancel_order" })?.code, "cancel_needs_cloid");
+    assert.strictEqual(readExitRequest({ action: "cancel_order", cloid: "0xab" }), null);
+    assert.strictEqual(
+      readExitRequest({ action: "move_stop", newStopPrice: 3_000 })?.code,
+      "move_stop_needs_stop_and_plan",
+    );
+    assert.strictEqual(
+      readExitRequest({
+        action: "move_stop",
+        newStopPrice: 3_000,
+        justification: "trail_peak",
+        expectedPlanUpdatedAt: 1_753_000_000_000,
+      }),
+      null,
+    );
+  });
+
+  // A close names nothing beyond the market, so there is nothing it can get
+  // wrong — the one action that never refuses here.
+  it("never refuses a close", () => {
+    assert.strictEqual(readExitRequest({ action: "close" }), null);
   });
 });
 
-describe("TradingClosePositionInput", () => {
-  it("takes nothing but the mission and an optional urgency, defaulting to now", () => {
-    const decode = Schema.decodeUnknownSync(TradingClosePositionInput);
-    assert.strictEqual(decode({}).urgency, "now");
-    assert.strictEqual(decode({ urgency: "patient" }).urgency, "patient");
-    assert.throws(() => decode({ urgency: "whenever" }));
+describe("TradingExitInput", () => {
+  it("defaults urgency to now, and accepts an explicit patient", () => {
+    const decode = Schema.decodeUnknownSync(TradingExitInput);
+    assert.strictEqual(decode({ action: "close" }).urgency, "now");
+    assert.strictEqual(decode({ action: "close", urgency: "patient" }).urgency, "patient");
+    assert.throws(() => decode({ action: "close", urgency: "whenever" }));
+    assert.throws(() => decode({ action: "flatten" }));
   });
 });

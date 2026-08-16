@@ -1,27 +1,23 @@
 import { expect, it } from "@effect/vitest";
 import {
-  TRADING_CANCEL_WATCH_TOOL,
-  TRADING_ADJUST_STOP_TOOL,
   TRADING_GET_PLAYBOOK_TOOL,
-  TRADING_GET_TARGET_CALIBRATION_TOOL,
-  TRADING_LIST_WATCHES_TOOL,
-  TRADING_PUBLISH_PLAN_TOOL,
+  TRADING_PLAN_TOOL,
   TRADING_WATCH_TOOL,
 } from "@t3tools/trading-contracts/tools";
 import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
 import { TRADING_JOURNAL_TOOL } from "@t3tools/trading-contracts/journal";
-import {
-  TRADING_CANCEL_ORDER_TOOL,
-  TRADING_CLOSE_POSITION_TOOL,
-  TRADING_REDUCE_POSITION_TOOL,
-} from "@t3tools/trading-contracts/exit";
+import { TRADING_EXIT_TOOL } from "@t3tools/trading-contracts/exit";
 import * as Context from "effect/Context";
 import { Tool } from "effect/unstable/ai";
 
+import {
+  TRADING_SYSTEM_PROMPT,
+  TRADING_TOOL_NAMES,
+} from "../../../provider/TradingSessionProfile.ts";
 import { TradingToolkit } from "./tools.ts";
 
-it("exposes one read, the mission tools, and the watch tools", () => {
+it("exposes the read, the plan, the watch, the journal, and the two writes", () => {
   expect(
     Object.values(TradingToolkit.tools)
       .map((tool) => tool.name)
@@ -29,18 +25,12 @@ it("exposes one read, the mission tools, and the watch tools", () => {
   ).toEqual(
     [
       TRADING_LOOK_TOOL,
-      TRADING_PUBLISH_PLAN_TOOL,
-      TRADING_GET_TARGET_CALIBRATION_TOOL,
+      TRADING_PLAN_TOOL,
       TRADING_GET_PLAYBOOK_TOOL,
       TRADING_WATCH_TOOL,
       TRADING_JOURNAL_TOOL,
       TRADING_ENTER_TOOL,
-      TRADING_CLOSE_POSITION_TOOL,
-      TRADING_REDUCE_POSITION_TOOL,
-      TRADING_CANCEL_ORDER_TOOL,
-      TRADING_LIST_WATCHES_TOOL,
-      TRADING_CANCEL_WATCH_TOOL,
-      TRADING_ADJUST_STOP_TOOL,
+      TRADING_EXIT_TOOL,
     ].sort(),
   );
 });
@@ -102,7 +92,7 @@ it("advertises only what the harness can see, and asks for the stop", () => {
 // concurrency, what a publish touches and does not, where the target comes
 // from), not the doctrine — those live in the playbook.
 it("publish description states the publish contract, not the methodology", () => {
-  const publish = TradingToolkit.tools[TRADING_PUBLISH_PLAN_TOOL].description ?? "";
+  const publish = TradingToolkit.tools[TRADING_PLAN_TOOL].description ?? "";
 
   // Optimistic concurrency on the mission row's version.
   expect(publish).toContain("expectedMissionVersion");
@@ -139,13 +129,12 @@ it("points the one read at the fields that carry the answers", () => {
 // The two learning reads: what the mission believed before, and whether any of
 // it worked. Both are useless unless the description names the field that
 // carries the answer.
-it("points the calibration read at the verdict it exists to produce", () => {
-  const calibration = TradingToolkit.tools[TRADING_GET_TARGET_CALIBRATION_TOOL].description ?? "";
-  // The distinction the whole read turns on: touched, not banked.
-  expect(calibration).toContain("touched");
-  expect(calibration).toContain("observedHitRatePercent");
-  expect(calibration).toContain("claimedHitRatePercent");
-  expect(calibration).toContain("recommendation");
+// Plan 29 step 6.5: the calibration read came off the hot path and onto the
+// one read, so the doctrine has to point the model at the field rather than at
+// a tool that no longer exists.
+it("points at the calibration the one read now carries", () => {
+  expect(TRADING_TOOL_NAMES).not.toContain("trading_get_target_calibration");
+  expect(TRADING_SYSTEM_PROMPT).toContain("mission.targetCalibration");
 });
 
 // Re-levelling used to be cancel-then-register, with the side being re-levelled
@@ -180,16 +169,16 @@ it("names the five conditions and the interval it refuses to guess", () => {
 // harness can read which bound it hit. The numbers behind each bound live in
 // the server, not the description — what must survive is the bounds
 // themselves and the free retry.
-it("names the bounds trading_adjust_stop actually enforces", () => {
-  const adjust = TradingToolkit.tools[TRADING_ADJUST_STOP_TOOL].description ?? "";
+it("names the bounds trading_exit's move_stop actually enforces", () => {
+  const exit = TradingToolkit.tools[TRADING_EXIT_TOOL].description ?? "";
   // The risk line: no move past what entry approval signed off on.
-  expect(adjust).toContain("approved stop");
+  expect(exit).toContain("approved stop");
   // And the other named bounds.
-  expect(adjust).toContain("noise floor");
-  expect(adjust).toContain("never back below entry");
-  expect(adjust).toContain("rate-limited");
+  expect(exit).toContain("noise floor");
+  expect(exit).toContain("never back below entry");
+  expect(exit).toContain("rate-limited");
   // A refusal costs nothing, which is what makes trying one safe.
-  expect(adjust).toContain("A refusal leaves the resting stop untouched");
+  expect(exit).toContain("A refusal sends nothing");
 });
 
 it("marks reading as safe and publishing as non-idempotent", () => {
@@ -206,7 +195,7 @@ it("marks reading as safe and publishing as non-idempotent", () => {
     destructive: false,
     openWorld: true,
   });
-  expect(annotations(TradingToolkit.tools[TRADING_PUBLISH_PLAN_TOOL])).toEqual({
+  expect(annotations(TradingToolkit.tools[TRADING_PLAN_TOOL])).toEqual({
     readonly: false,
     idempotent: false,
     destructive: false,
@@ -227,7 +216,7 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 
-  expect(tools.length, "expected exactly 13 trading tools").toBe(13);
+  expect(tools.length, "expected exactly 7 trading tools").toBe(7);
 
   const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
   expect(total, "total description chars must stay under 4,000").toBeLessThan(4_000);
@@ -255,8 +244,7 @@ it("teaches urgency and keeps time-in-force vocabulary out of the descriptions",
   const enter = TradingToolkit.tools[TRADING_ENTER_TOOL].description ?? "";
   expect(enter).toContain("urgency");
   expect(enter).toContain("patient");
-  const close = TradingToolkit.tools[TRADING_CLOSE_POSITION_TOOL].description ?? "";
-  expect(close).toContain("urgency");
-  const reduce = TradingToolkit.tools[TRADING_REDUCE_POSITION_TOOL].description ?? "";
-  expect(reduce).toContain("urgency");
+  const exit = TradingToolkit.tools[TRADING_EXIT_TOOL].description ?? "";
+  expect(exit).toContain("urgency");
+  expect(exit).toContain("patient");
 });

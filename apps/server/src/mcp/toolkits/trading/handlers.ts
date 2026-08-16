@@ -13,8 +13,14 @@ import {
 } from "@t3tools/trading-contracts/tools";
 import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
 import type { TradingUrgency } from "@t3tools/trading-contracts/strategy";
+import { readExitRequest } from "@t3tools/trading-contracts/exit";
+import type { StopAdjustmentJustification } from "@t3tools/trading-contracts/stop-adjustment";
 import { classifyFailure } from "@t3tools/trading-contracts/recovery";
-import { isWatchRefusal, toMarketWatch } from "@t3tools/trading-contracts/watch";
+import {
+  isWatchRefusal,
+  toMarketWatch,
+  type WatchCondition,
+} from "@t3tools/trading-contracts/watch";
 import {
   isJournalRefusal,
   readJournalNote,
@@ -215,6 +221,13 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (mission: 
   // — the mission contract itself no longer carries a version number.
   const missionVersion = yield* missions.getMissionVersion(mission.id).pipe(Effect.orDie);
 
+  // The retired calibration tool's read, off the hot path (plan 29 step 6.5).
+  // Omitted entirely until there is a closed trade to grade — a mission that
+  // has not traded should not be handed an empty verdict every turn.
+  const calibration = yield* (yield* TradingCalibrationService)
+    .read({ missionId: mission.id })
+    .pipe(Effect.orDie);
+
   return {
     bound: true,
     mission,
@@ -227,6 +240,7 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (mission: 
     harness: mission.harness,
     pendingExecutions,
     strategyHistory,
+    ...(calibration.tradeCount === 0 ? {} : { targetCalibration: calibration }),
   } satisfies TradingGetMissionResult;
 });
 
@@ -839,10 +853,171 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
   };
 });
 
+/**
+ * Move the stop on an open position, inside policy — plan 24 §5, now
+ * `trading_exit`'s `move_stop` action (plan 29 step 6.5).
+ *
+ * Lifted out of the retired `trading_exit`'s `move_stop` handler unchanged. Two steps
+ * and no third: the policy decides, and an approved decision goes out as an
+ * ordinary `modify_stop` intent. Nothing here re-implements the replacement —
+ * the confirm-before-cancel sequence, the §17.5 escalation and the execution
+ * record are the same ones `trading_enter` produces.
+ */
+/**
+ * Retire one active watch — `trading_watch`'s `cancel` (plan 29 step 6.5).
+ *
+ * Lifted out of the retired `trading_cancel_watch` handler unchanged, including
+ * the distinction the model needs: a watch that is not there and a watch that
+ * is there but already terminal are different facts about the armed set, and
+ * collapsing them would tell a harness its level is gone when it fired.
+ */
+const cancelWatch = Effect.fn("TradingToolkit.cancelWatch")(function* (
+  threadId: string,
+  missionId: string,
+  watchId: string,
+) {
+  const watches = yield* TradingWatchService;
+  const cancelled = yield* watches.cancelWatch({ missionId, watchId }).pipe(
+    Effect.catchTags({
+      TradingMissionNotFoundError: () =>
+        new TradingToolRejectedError({ reason: "mission_not_found", threadId, missionId }),
+      PersistenceSqlError: (error) => Effect.die(error),
+    }),
+  );
+  if (cancelled === null) {
+    // Distinguish "no such watch" from "watch exists but is terminal".
+    const existing = yield* watches.getWatch(watchId).pipe(Effect.orDie);
+    return {
+      outcome: "rejected" as const,
+      reason: existing === null ? ("watch_not_found" as const) : ("watch_not_active" as const),
+    };
+  }
+  yield* announceWatchCancelled({ threadId, missionId, watchId });
+  return { outcome: "cancelled" as const, watch: cancelled };
+});
+
+const moveStop = Effect.fn("TradingToolkit.moveStop")(function* (input: {
+  readonly missionId?: string | undefined;
+  readonly market?: TradingMarket | undefined;
+  readonly newStopPrice?: number | undefined;
+  readonly justification?: StopAdjustmentJustification | undefined;
+  readonly expectedPlanUpdatedAt?: number | undefined;
+}) {
+  // `readExitRequest` has already refused a call missing any of these, so the
+  // narrowing here is the type system catching up with a check that ran.
+  const market = input.market ?? DEFAULT_TRADING_MARKET;
+  const newStopPrice = input.newStopPrice as number;
+  const justification = input.justification as StopAdjustmentJustification;
+  const expectedPlanUpdatedAt = input.expectedPlanUpdatedAt as number;
+  const { threadId, mission } = yield* resolveBoundCall(input.missionId);
+  const adjustments = yield* TradingStopAdjustmentService;
+  const decision = yield* adjustments
+    .evaluate({
+      missionId: mission.id,
+      market: market,
+      newStopPrice: newStopPrice,
+      expectedPlanUpdatedAt: expectedPlanUpdatedAt,
+    })
+    .pipe(Effect.orDie);
+
+  if (decision.outcome === "refused") {
+    yield* Effect.logInfo("trading stop adjustment refused", {
+      missionId: mission.id,
+      refusalCode: decision.refusalCode,
+      detail: decision.detail,
+    });
+    return {
+      status: "refused" as const,
+      refusalCode: decision.refusalCode,
+      previousStop: decision.previousStop,
+      newStop: decision.newStop,
+      detail: decision.detail,
+    };
+  }
+
+  const sql = yield* SqlClient.SqlClient;
+  const activeRuns = yield* sql<{ readonly run_id: string }>`
+          SELECT run_id FROM trading_harness_runs
+          WHERE mission_id = ${mission.id} AND status NOT IN ('completed', 'failed')
+          ORDER BY started_at DESC
+          LIMIT 1
+        `.pipe(Effect.orDie);
+  const activeHarnessRunId = activeRuns[0]?.run_id;
+  if (activeHarnessRunId === undefined) {
+    return {
+      status: "refused" as const,
+      refusalCode: "replacement_failed" as const,
+      previousStop: decision.previousStop,
+      newStop: decision.newStop,
+      detail: "no harness run currently owns the decision lease",
+    };
+  }
+  const executionSequence = yield* allocateExecutionSequence(sql, mission.id).pipe(Effect.orDie);
+
+  const executed = yield* executeIntent({
+    missionId: mission.id,
+    intent: {
+      missionId: mission.id,
+      executionSequence,
+      actionType: "modify_stop",
+      market: market,
+      // A stop reduces, so it rests on the side that closes the position.
+      side: decision.positionSize > 0 ? "sell" : "buy",
+      size: Math.abs(decision.positionSize),
+      orderPreference: "resting_limit",
+      limitPrice: newStopPrice,
+      stop: {
+        stopPrice: newStopPrice,
+        plannedLossAtStopUsd: decision.plannedLossAtStopUsd,
+      },
+      reduceOnly: true,
+    },
+    expectedAuthorityVersion: mission.authorityVersion,
+    activeHarnessRunId,
+  });
+
+  if (executed.status !== "succeeded") {
+    return {
+      status: "refused" as const,
+      refusalCode: "replacement_failed" as const,
+      previousStop: decision.previousStop,
+      newStop: decision.newStop,
+      detail: executed.detail ?? `the replacement ended ${executed.status}`,
+    };
+  }
+
+  yield* adjustments
+    .record({
+      missionId: mission.id,
+      market: market,
+      previousStopPrice: decision.previousStop,
+      newStopPrice: decision.newStop,
+      justification: justification,
+    })
+    .pipe(Effect.orDie);
+  yield* announceStopAdjusted({
+    threadId,
+    missionId: mission.id,
+    market: market,
+    previousStopPrice: decision.previousStop,
+    newStopPrice: decision.newStop,
+    justification: justification,
+  });
+
+  return {
+    status: "adjusted" as const,
+    previousStop: decision.previousStop,
+    newStop: decision.newStop,
+    stopDistanceUsd: decision.stopDistanceUsd,
+    plannedLossAtStopUsd: decision.plannedLossAtStopUsd,
+    remainingAdjustments: decision.remainingAdjustments,
+  };
+});
+
 const handlers = {
   trading_look: (input) => readObservation(input),
 
-  trading_publish_plan: (input) =>
+  trading_plan: (input) =>
     Effect.gen(function* () {
       const { threadId, mission } = yield* resolveBoundCall(input.missionId);
       // The strategy service keys off `input.missionId`; resolve it to the bound
@@ -1014,147 +1189,40 @@ const handlers = {
     }),
 
   /**
-   * Flatten the whole position. Takes a market and nothing else.
+   * One `action` on exposure the mission already has.
    *
-   * See `executeExit` for why the three exit tools go through their own path
-   * rather than through the entry path's intent.
-   */
-  trading_close_position: (input) =>
-    executeExit({
-      missionId: input.missionId,
-      kind: "close",
-      market: input.market,
-      urgency: input.urgency,
-    }),
-
-  trading_reduce_position: (input) =>
-    executeExit({
-      missionId: input.missionId,
-      kind: "reduce",
-      market: input.market,
-      sizeEth: input.sizeEth,
-      fraction: input.fraction,
-      urgency: input.urgency,
-    }),
-
-  trading_cancel_order: (input) =>
-    executeExit({ missionId: input.missionId, kind: "cancel", cloid: input.cloid }),
-
-  /**
-   * The bounded stop move (plan 24 §5).
+   * The dispatch is the whole of the merge: `close`, `reduce` and
+   * `cancel_order` are the same `executeExit` call three retired tools made,
+   * and `move_stop` is the retired `trading_exit`'s `move_stop` handler unchanged —
+   * the same policy evaluation, the same `modify_stop` intent, the same record
+   * and announce. Nothing about any gate moved; only the name did.
    *
-   * Two steps and no third: the policy decides, and an approved decision goes
-   * out as an ordinary `modify_stop` intent. Nothing here re-implements the
-   * replacement — the confirm-before-cancel sequence, the §17.5 escalation and
-   * the execution record are the same ones `trading_enter` produces.
+   * The call is checked before anything is measured or sent, so a call that
+   * does not name an exit costs no read and no transaction.
    */
-  trading_adjust_stop: (input) =>
+  trading_exit: (input) =>
     Effect.gen(function* () {
-      const { threadId, mission } = yield* resolveBoundCall(input.missionId);
-      const adjustments = yield* TradingStopAdjustmentService;
-      const decision = yield* adjustments
-        .evaluate({
-          missionId: mission.id,
-          market: input.market,
-          newStopPrice: input.newStopPrice,
-          expectedPlanUpdatedAt: input.expectedPlanUpdatedAt,
-        })
-        .pipe(Effect.orDie);
-
-      if (decision.outcome === "refused") {
-        yield* Effect.logInfo("trading stop adjustment refused", {
-          missionId: mission.id,
-          refusalCode: decision.refusalCode,
-          detail: decision.detail,
-        });
+      const refusal = readExitRequest(input);
+      if (refusal !== null) {
         return {
-          status: "refused" as const,
-          refusalCode: decision.refusalCode,
-          previousStop: decision.previousStop,
-          newStop: decision.newStop,
-          detail: decision.detail,
+          status: "refused_request" as const,
+          reason: refusal.code,
+          detail: refusal.detail,
+          recovery: classifyFailure({ tag: "TradingExitRefusal", reason: refusal.code }),
         };
       }
 
-      const sql = yield* SqlClient.SqlClient;
-      const activeRuns = yield* sql<{ readonly run_id: string }>`
-          SELECT run_id FROM trading_harness_runs
-          WHERE mission_id = ${mission.id} AND status NOT IN ('completed', 'failed')
-          ORDER BY started_at DESC
-          LIMIT 1
-        `.pipe(Effect.orDie);
-      const activeHarnessRunId = activeRuns[0]?.run_id;
-      if (activeHarnessRunId === undefined) {
-        return {
-          status: "refused" as const,
-          refusalCode: "replacement_failed" as const,
-          previousStop: decision.previousStop,
-          newStop: decision.newStop,
-          detail: "no harness run currently owns the decision lease",
-        };
-      }
-      const executionSequence = yield* allocateExecutionSequence(sql, mission.id).pipe(
-        Effect.orDie,
-      );
+      if (input.action === "move_stop") return yield* moveStop(input);
 
-      const executed = yield* executeIntent({
-        missionId: mission.id,
-        intent: {
-          missionId: mission.id,
-          executionSequence,
-          actionType: "modify_stop",
-          market: input.market,
-          // A stop reduces, so it rests on the side that closes the position.
-          side: decision.positionSize > 0 ? "sell" : "buy",
-          size: Math.abs(decision.positionSize),
-          orderPreference: "resting_limit",
-          limitPrice: input.newStopPrice,
-          stop: {
-            stopPrice: input.newStopPrice,
-            plannedLossAtStopUsd: decision.plannedLossAtStopUsd,
-          },
-          reduceOnly: true,
-        },
-        expectedAuthorityVersion: mission.authorityVersion,
-        activeHarnessRunId,
-      });
-
-      if (executed.status !== "succeeded") {
-        return {
-          status: "refused" as const,
-          refusalCode: "replacement_failed" as const,
-          previousStop: decision.previousStop,
-          newStop: decision.newStop,
-          detail: executed.detail ?? `the replacement ended ${executed.status}`,
-        };
-      }
-
-      yield* adjustments
-        .record({
-          missionId: mission.id,
-          market: input.market,
-          previousStopPrice: decision.previousStop,
-          newStopPrice: decision.newStop,
-          justification: input.justification,
-        })
-        .pipe(Effect.orDie);
-      yield* announceStopAdjusted({
-        threadId,
-        missionId: mission.id,
+      return yield* executeExit({
+        missionId: input.missionId,
+        kind: input.action === "cancel_order" ? "cancel" : input.action,
         market: input.market,
-        previousStopPrice: decision.previousStop,
-        newStopPrice: decision.newStop,
-        justification: input.justification,
+        sizeEth: input.sizeEth,
+        fraction: input.fraction,
+        cloid: input.cloid,
+        urgency: input.urgency,
       });
-
-      return {
-        status: "adjusted" as const,
-        previousStop: decision.previousStop,
-        newStop: decision.newStop,
-        stopDistanceUsd: decision.stopDistanceUsd,
-        plannedLossAtStopUsd: decision.plannedLossAtStopUsd,
-        remainingAdjustments: decision.remainingAdjustments,
-      };
     }),
 
   // -- §14.2 read-only market-data tools -------------------------------------
@@ -1169,14 +1237,6 @@ const handlers = {
   // (an authz refusal), and a transport failure is an internal error the MCP
   // boundary surfaces generically. `Effect.orDie` collapses the gateway's typed
   // errors into a defect so they never widen the handler's error channel.
-
-  trading_get_target_calibration: (input) =>
-    Effect.gen(function* () {
-      // A mission grading its own targets is mission state.
-      const { mission } = yield* resolveBoundCall(input.missionId);
-      const calibration = yield* TradingCalibrationService;
-      return yield* calibration.read({ missionId: mission.id }).pipe(Effect.orDie);
-    }),
 
   trading_get_playbook: (input) =>
     Effect.gen(function* () {
@@ -1207,11 +1267,31 @@ const handlers = {
     Effect.gen(function* () {
       const { threadId, mission } = yield* resolveBoundCall(input.missionId);
 
+      // One call does one thing to the armed set. Neither named, or both, is a
+      // rule about the call, so it stands down like every other one.
+      const named = Number(input.condition !== undefined) + Number(input.cancel !== undefined);
+      if (named !== 1) {
+        return {
+          outcome: "refused" as const,
+          reason: "needs_condition_or_cancel" as const,
+          detail:
+            named === 0
+              ? "name a condition to arm, or a watch id in `cancel` to retire"
+              : "a call arms a condition or cancels a watch, not both",
+          recovery: classifyFailure({
+            tag: "TradingWatchRefusal",
+            reason: "needs_condition_or_cancel",
+          }),
+        };
+      }
+
+      if (input.cancel !== undefined) return yield* cancelWatch(threadId, mission.id, input.cancel);
+
       // The condition is derived into the persisted predicate before anything
       // is written, so a condition that cannot be armed arms nothing and costs
       // no transaction. What to do about it is the classifier's answer, not
       // this handler's — one place decides what a refusal means (step 6.2).
-      const derived = toMarketWatch(input.condition);
+      const derived = toMarketWatch(input.condition as WatchCondition);
       if (isWatchRefusal(derived)) {
         return {
           outcome: "refused" as const,
@@ -1330,52 +1410,6 @@ const handlers = {
         entry: appended,
         entries: [appended, ...entries].slice(0, TRADING_JOURNAL_READ_LIMIT),
       };
-    }),
-
-  trading_list_watches: (input) =>
-    Effect.gen(function* () {
-      const { mission } = yield* resolveBoundCall(input.missionId);
-      // listWatches lives on TradingStrategyService (the mission read model
-      // reads watches through it).
-      const strategies = yield* TradingStrategyService;
-      return yield* strategies.listWatches(mission.id).pipe(
-        Effect.catchTags({
-          PersistenceSqlError: (error) => Effect.die(error),
-        }),
-      );
-    }),
-
-  trading_cancel_watch: (input) =>
-    Effect.gen(function* () {
-      const { threadId, mission } = yield* resolveBoundCall(input.missionId);
-      const watches = yield* TradingWatchService;
-      const cancelled = yield* watches
-        .cancelWatch({ missionId: mission.id, watchId: input.watchId })
-        .pipe(
-          Effect.catchTags({
-            TradingMissionNotFoundError: () =>
-              new TradingToolRejectedError({
-                reason: "mission_not_found",
-                threadId,
-                missionId: mission.id,
-              }),
-            PersistenceSqlError: (error) => Effect.die(error),
-          }),
-        );
-      if (cancelled === null) {
-        // Distinguish "no such watch" from "watch exists but is terminal".
-        const existing = yield* watches.getWatch(input.watchId).pipe(Effect.orDie);
-        return {
-          outcome: "rejected" as const,
-          reason: existing === null ? ("watch_not_found" as const) : ("watch_not_active" as const),
-        };
-      }
-      yield* announceWatchCancelled({
-        threadId,
-        missionId: mission.id,
-        watchId: input.watchId,
-      });
-      return { outcome: "cancelled" as const, watch: cancelled };
     }),
 } satisfies Parameters<typeof TradingToolkit.toLayer>[0];
 

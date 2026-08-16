@@ -378,7 +378,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       yield* Effect.ignore(adapter.sendTurn({ threadId, input: "wakeup", attachments: [] }));
 
       const sent = runtime.sendTurnImpl.mock.calls[0]?.[0]?.input ?? "";
-      NodeAssert.ok(sent.includes("trading_publish_plan"));
+      NodeAssert.ok(sent.includes("trading_plan"));
       NodeAssert.ok(sent.includes("blocked_by_data"));
       NodeAssert.ok(sent.endsWith("wakeup"));
       clearSessionProfile(threadId);

@@ -32,27 +32,17 @@ import {
   assessEnrichment,
   assessEntryGovernance,
 } from "@t3tools/trading-contracts/policy";
-import {
-  TRADING_ADJUST_STOP_TOOL,
-  TRADING_PUBLISH_PLAN_TOOL,
-} from "@t3tools/trading-contracts/tools";
+import { TRADING_PLAN_TOOL } from "@t3tools/trading-contracts/tools";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
-import {
-  TRADING_CANCEL_ORDER_TOOL,
-  TRADING_CLOSE_POSITION_TOOL,
-  TRADING_REDUCE_POSITION_TOOL,
-} from "@t3tools/trading-contracts/exit";
+import { TRADING_EXIT_TOOL } from "@t3tools/trading-contracts/exit";
 import * as Effect from "effect/Effect";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
 
 /** Tool names that mean the turn tried to change exchange state. */
-const EXECUTION_TOOLS: ReadonlySet<string> = new Set([
-  TRADING_ENTER_TOOL,
-  TRADING_ADJUST_STOP_TOOL,
-  TRADING_CLOSE_POSITION_TOOL,
-  TRADING_REDUCE_POSITION_TOOL,
-  TRADING_CANCEL_ORDER_TOOL,
-]);
+// Two, since the four exit tools and the stop move became `trading_exit`'s
+// four actions (plan 29 step 6.5). The funnel counts the attempt, not which
+// shape of exchange change it was.
+const EXECUTION_TOOLS: ReadonlySet<string> = new Set([TRADING_ENTER_TOOL, TRADING_EXIT_TOOL]);
 
 /** How much of a message is worth keeping: one line, bounded. */
 const summarize = (text: string, limit = 300): string =>
@@ -112,7 +102,7 @@ export const recordToolCall = (
     const failed = input.ok ? 0 : 1;
     const firstError = input.ok ? null : `${input.tool}: ${summarize(input.errorMessage ?? "")}`;
     const published =
-      input.ok && input.accepted !== false && input.tool === TRADING_PUBLISH_PLAN_TOOL ? 1 : 0;
+      input.ok && input.accepted !== false && input.tool === TRADING_PLAN_TOOL ? 1 : 0;
     const executed = EXECUTION_TOOLS.has(input.tool) ? 1 : 0;
 
     yield* sql`
