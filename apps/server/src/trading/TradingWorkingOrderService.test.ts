@@ -791,6 +791,30 @@ it.effect("the direct withdrawal also retires resting reduce-only limits", () =>
   }),
 );
 
+// A plan revision changed the way IN, and says nothing about the exit the
+// model asked for or the take-profit the same publish just reconciled — both
+// are reduce-only, and `scope: "entries"` is what keeps them resting.
+it.effect("a scoped withdrawal takes the entry and leaves the reduce-only orders", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({
+      orders: [restingEntry(CLOID, 2_990), restingExit(EXIT_CLOID, 3_010)],
+    });
+    const outcome = yield* runWithClock(fake, (service) =>
+      service.abandon({
+        missionId: MISSION,
+        masterAddress: MASTER,
+        market: "ETH",
+        nowMs: NOW,
+        scope: "entries",
+      }),
+    );
+
+    assert.equal(outcome.found, true);
+    assert.deepEqual(outcome.cancelledCloids, [CLOID]);
+    assert.deepEqual(fake.cancels, [CLOID]);
+  }),
+);
+
 // --- the exit lane: resting patient exits get the same ownership ---------------
 //
 // The audited gap: a model-initiated close/reduce at urgency "patient" rested

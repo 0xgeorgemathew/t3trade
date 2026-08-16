@@ -212,17 +212,31 @@ export interface WorkingOrderOutcome {
   readonly repriceCount?: number | undefined;
 }
 
-/** What the direct-withdraw path (mission ended) needs. */
+/**
+ * How much of the mission's resting book a direct withdrawal takes.
+ *
+ * `all` is a mission ending: nothing it owns may outlive it, so entries,
+ * patient exits and the plan's resting take-profit all go. `entries` is a
+ * plan revision: the model changed its mind about getting IN, which says
+ * nothing about the exit it asked for or the target the plan is still
+ * declaring — cancelling those would undo a decision nobody revised and would
+ * fight the take-profit reconcile that runs on the same publish.
+ */
+export type AbandonScope = "all" | "entries";
+
+/** What the direct-withdraw path needs. */
 export interface AbandonInput {
   readonly missionId: string;
   readonly masterAddress: string;
   readonly market: string;
   readonly nowMs: number;
+  /** Defaults to `all` — the mission-ended case this path was written for. */
+  readonly scope?: AbandonScope | undefined;
 }
 
 /** The result of a direct withdrawal. */
 export interface AbandonOutcome {
-  /** True when a resting entry was found. */
+  /** True when a resting order in scope was found. */
   readonly found: boolean;
   readonly cancelledCloids: ReadonlyArray<string>;
   readonly cloid?: string | undefined;
@@ -332,6 +346,24 @@ const envelopeDefect = (approved: Envelope, candidate: Envelope): string | null 
   }
   return null;
 };
+
+/**
+ * The three facts every outcome carries: which order, how long it has been
+ * working, and how many times it has been re-priced. The wait is measured
+ * from the ORIGINAL record, so a re-price does not reset the cross horizon.
+ */
+const outcomeFacts = (
+  nowMs: number,
+  lineage: WorkingLineage,
+): {
+  readonly cloid: string;
+  readonly waitMillis: number;
+  readonly repriceCount: number;
+} => ({
+  cloid: lineage.resting.cloid,
+  waitMillis: nowMs - lineage.original.created_at,
+  repriceCount: lineage.repriceCount,
+});
 
 /** The envelope half of the hard constraint every placement asserts. */
 const envelopeOf = (record: WorkingRecordRow): Envelope => ({
@@ -756,11 +788,7 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
         return { status: "no_working_order", cancelledCloids: [] } satisfies WorkingOrderOutcome;
       }
       const lineage = yield* readLineage(input, restingRecord);
-      const facts = {
-        cloid: lineage.resting.cloid,
-        waitMillis: input.nowMs - lineage.original.created_at,
-        repriceCount: lineage.repriceCount,
-      } satisfies Pick<WorkingOrderOutcome, "cloid" | "waitMillis" | "repriceCount">;
+      const facts = outcomeFacts(input.nowMs, lineage);
 
       // --- a filled entry is no longer this loop's ---------------------------
       const reread = () => readCanonical(input);
@@ -881,11 +909,7 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
     reread: () => Effect.Effect<CanonicalView, TradingWorkingOrderError>,
   ): Effect.Effect<WorkingOrderOutcome, WorkingOrderFailure> =>
     Effect.gen(function* () {
-      const facts = {
-        cloid: lineage.resting.cloid,
-        waitMillis: input.nowMs - lineage.original.created_at,
-        repriceCount: lineage.repriceCount,
-      } satisfies Pick<WorkingOrderOutcome, "cloid" | "waitMillis" | "repriceCount">;
+      const facts = outcomeFacts(input.nowMs, lineage);
 
       const gone = yield* cancelAndConfirmGone(
         { market: input.market, cloid: lineage.resting.cloid },
@@ -968,11 +992,7 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
     reread: () => Effect.Effect<CanonicalView, TradingWorkingOrderError>,
   ): Effect.Effect<WorkingOrderOutcome, WorkingOrderFailure> =>
     Effect.gen(function* () {
-      const facts = {
-        cloid: lineage.resting.cloid,
-        waitMillis: input.nowMs - lineage.original.created_at,
-        repriceCount: lineage.repriceCount,
-      } satisfies Pick<WorkingOrderOutcome, "cloid" | "waitMillis" | "repriceCount">;
+      const facts = outcomeFacts(input.nowMs, lineage);
 
       const book = yield* gateway.getOrderBook(input.market).pipe(
         Effect.mapError(
@@ -1077,11 +1097,7 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
   ): Effect.Effect<WorkingOrderOutcome, WorkingOrderFailure> =>
     Effect.gen(function* () {
       const lineage = yield* readLineage(input, restingRecord);
-      const facts = {
-        cloid: lineage.resting.cloid,
-        waitMillis: input.nowMs - lineage.original.created_at,
-        repriceCount: lineage.repriceCount,
-      } satisfies Pick<WorkingOrderOutcome, "cloid" | "waitMillis" | "repriceCount">;
+      const facts = outcomeFacts(input.nowMs, lineage);
 
       const reread = () => readCanonical(input);
       const view = yield* reread();
@@ -1213,11 +1229,7 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
     positionSizeBefore: number,
   ): Effect.Effect<WorkingOrderOutcome, WorkingOrderFailure> =>
     Effect.gen(function* () {
-      const facts = {
-        cloid: lineage.resting.cloid,
-        waitMillis: input.nowMs - lineage.original.created_at,
-        repriceCount: lineage.repriceCount,
-      } satisfies Pick<WorkingOrderOutcome, "cloid" | "waitMillis" | "repriceCount">;
+      const facts = outcomeFacts(input.nowMs, lineage);
 
       const gone = yield* cancelAndConfirmGone(
         { market: input.market, cloid: lineage.resting.cloid },
@@ -1294,11 +1306,7 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
     reread: () => Effect.Effect<CanonicalView, TradingWorkingOrderError>,
   ): Effect.Effect<WorkingOrderOutcome, WorkingOrderFailure> =>
     Effect.gen(function* () {
-      const facts = {
-        cloid: lineage.resting.cloid,
-        waitMillis: input.nowMs - lineage.original.created_at,
-        repriceCount: lineage.repriceCount,
-      } satisfies Pick<WorkingOrderOutcome, "cloid" | "waitMillis" | "repriceCount">;
+      const facts = outcomeFacts(input.nowMs, lineage);
 
       const book = yield* gateway.getOrderBook(input.market).pipe(
         Effect.mapError(
@@ -1395,20 +1403,24 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
    * ours and nobody is working it — an entry, a patient exit, or the plan's
    * take-profit (all three are mission-owned; none may outlive the mission,
    * and the exchange retiring reduce-only orders with the position is
-   * relied upon, not assumed). Stops are triggers and stay: they are the
-   * flat-protection the emergency close coordinates with, and the exchange
-   * retires them with the position. An order placed in the exchange UI
-   * carries no cloid and is not ours to cancel.
+   * relied upon, not assumed). `scope: "entries"` narrows that to the
+   * position-increasing half for the caller that only revised its way IN.
+   * Stops are triggers and stay: they are the flat-protection the emergency
+   * close coordinates with, and the exchange retires them with the position.
+   * An order placed in the exchange UI carries no cloid and is not ours to
+   * cancel.
    */
   const abandon = (input: AbandonInput): Effect.Effect<AbandonOutcome, WorkingOrderFailure> =>
     Effect.gen(function* () {
       const view = yield* readCanonical(input);
+      const entriesOnly = input.scope === "entries";
       const resting = view.openOrders.filter(
         (order) =>
           order.market === input.market &&
           order.cloid !== undefined &&
           !order.isTrigger &&
-          order.remainingSize > SIZE_EPSILON,
+          order.remainingSize > SIZE_EPSILON &&
+          !(entriesOnly && order.reduceOnly),
       );
       if (resting.length === 0) {
         return { found: false, cancelledCloids: [] } satisfies AbandonOutcome;

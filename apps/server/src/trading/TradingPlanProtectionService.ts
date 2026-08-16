@@ -17,13 +17,15 @@
  *   backstop — it re-places a stop that vanished, at the last price anyone
  *   set, and never widens anything.
  *
- * HARD CONSTRAINT (a risk gate, not a preference): a plan-driven stop move may
- * tighten freely but must not widen the position's planned loss beyond the
- * approved per-position envelope — the entry record's planned-loss-at-stop,
- * else the plan's own `stop.maximumPlannedLossUsd`. A revision that asks for
- * more leaves the exchange stop exactly where it is and says so in the
- * outcome, so the publish response can carry it back to the model (which still
- * has `trading_adjust_stop`'s guarded path until phase 6).
+ * HARD CONSTRAINTS (risk gates, not preferences), both in `planStopRefusal`:
+ * a plan-driven stop must be on the losing side of the mark — one on the
+ * winning side triggers the instant it rests and closes the position at market
+ * — and it may tighten freely but must not widen the position's planned loss
+ * beyond the approved per-position envelope (the entry record's
+ * planned-loss-at-stop, else the plan's own `stop.maximumPlannedLossUsd`). A
+ * revision that fails either leaves the exchange stop exactly where it is and
+ * says so in the outcome, so the publish response can carry it back to the
+ * model (which still has `trading_adjust_stop`'s guarded path until phase 6).
  *
  * @module TradingPlanProtectionService
  */
@@ -34,6 +36,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
 import type { AgentOpenOrder } from "@t3tools/trading-contracts/account-snapshot";
 import {
+  checkStopReplacement,
   confirmedProtectedSize,
   isProtectiveOrder,
   PROTECTION_SIZE_EPSILON,
@@ -87,19 +90,45 @@ export interface PlanProtectionOutcome {
 }
 
 /**
- * The envelope check, pure so the refusal wording is one thing.
+ * The two checks a plan-driven stop move must pass, pure so the refusal
+ * wording is one thing.
  *
- * `null` means the move is allowed: either it does not widen the planned loss
- * beyond the envelope, or no envelope was ever stated (nothing to exceed). A
- * stated envelope is the authority — an unstated one never refuses, because
- * the watchdog's repair path faces the same situation and must not wedge.
+ * FIRST, the side. A stop on the winning side of the mark triggers the instant
+ * it rests, so publishing one would close the position at market — the same
+ * violent answer to a bad digit that `checkStopReplacement` exists to prevent,
+ * and the reason `trading_adjust_stop` refuses `wrong_side`. Publishing moves
+ * the stop now, so it answers to that gate too.
+ *
+ * SECOND, the envelope: a move may tighten freely but must not widen the
+ * planned loss past what was approved. An unstated envelope never refuses,
+ * because the watchdog's repair path faces the same situation and must not
+ * wedge.
+ *
+ * `null` means the move is allowed.
  */
 export const planStopRefusal = (input: {
   readonly positionSize: number;
   readonly entryPrice: number;
+  /** Current mark — what the exchange would measure the trigger against. */
+  readonly referencePrice: number;
   readonly planStopPrice: number;
   readonly envelopeUsd: number | null;
 }): string | null => {
+  if (
+    checkStopReplacement({
+      positionSize: input.positionSize,
+      referencePrice: input.referencePrice,
+      stopPrice: input.planStopPrice,
+    }) !== null
+  ) {
+    return (
+      `the revised plan's stop at ${input.planStopPrice} is not on the losing side of the ` +
+      `${input.referencePrice} mark for this ${input.positionSize > 0 ? "long" : "short"}; ` +
+      "it would trigger the moment it rested and close the position at market, so the " +
+      "exchange stop was left where it is"
+    );
+  }
+
   if (input.envelopeUsd === null || !(input.envelopeUsd > 0)) return null;
   const plannedLossUsd = plannedLossAtStopUsd({
     positionSize: input.positionSize,
@@ -307,6 +336,7 @@ export const makeTradingPlanProtectionService = Effect.gen(function* () {
       const refusal = planStopRefusal({
         positionSize: position.size,
         entryPrice: position.entryPrice,
+        referencePrice: markPx,
         planStopPrice,
         envelopeUsd,
       });

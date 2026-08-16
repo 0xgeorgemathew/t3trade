@@ -238,6 +238,20 @@ describe("TradingPlanProtectionService (plan 29 step 4.5)", () => {
     }),
   );
 
+  it.effect("refuses a stop on the winning side of the mark", () =>
+    Effect.gen(function* () {
+      const fake = makeFake();
+      // 3,050 above the 3,000 mark for a long is not a stop at all: it would
+      // trigger the moment it rested and close the position at market. It
+      // also plans no loss, so the envelope check alone would wave it through.
+      const outcome = yield* reconcile(fake, plan(3_050));
+
+      assert.equal(outcome.stopStatus, "refused");
+      assert.deepEqual(fake.replacements, []);
+      assert.include(outcome.refusal ?? "", "not on the losing side");
+    }),
+  );
+
   it.effect("moves the stop within the envelope even when that widens the loss", () =>
     Effect.gen(function* () {
       const fake = makeFake();

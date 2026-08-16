@@ -680,6 +680,11 @@ const handlers = {
       // the mind changing — retract the mission's resting working entries now,
       // through the same abandon() the reactor's retirement path uses, and say
       // so in the response so the model can re-place under the new plan.
+      //
+      // `scope: "entries"` is load-bearing: a revision changed the way IN. The
+      // patient exit the model asked for and the take-profit the reconcile
+      // above just placed are not this publish's to cancel — the mission-end
+      // path is the one that takes everything.
       const workingOrders = yield* TradingWorkingOrderService;
       const retracted = yield* workingOrders
         .abandon({
@@ -687,6 +692,7 @@ const handlers = {
           masterAddress,
           market: published.strategy.market,
           nowMs: yield* Effect.clockWith((clock) => clock.currentTimeMillis),
+          scope: "entries",
         })
         .pipe(
           Effect.catch((error) =>
