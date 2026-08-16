@@ -398,11 +398,11 @@ export const readDecisionFunnel = (sql: Sql, input?: { readonly missionId?: stri
  * Wins and losses split by whether a scored setup was behind the entry, and
  * losses attributed to the regime read in force at entry — plan 27 C2/C3.
  *
- * Each closed trade is joined to the newest consumed `open` quote at or
- * before the moment the position opened; the quote row carries the C1
- * snapshot (`setup_kind_at_entry`, `regime_at_entry`). A trade with no
- * joinable quote counts as unscored with an unrecorded regime — an entry the
- * governance record cannot explain is exactly what the split exists to count.
+ * Each closed trade is joined to the newest `open` entry the server committed
+ * to at or before the moment the position opened; that record carries the C1
+ * snapshot (`setup_kind`, `regime`). A trade with no joinable entry counts as
+ * unscored with an unrecorded regime — an entry the governance record cannot
+ * explain is exactly what the split exists to count.
  */
 export const readEntryGovernance = (sql: Sql, input?: { readonly missionId?: string }) =>
   Effect.gen(function* () {
@@ -413,18 +413,19 @@ export const readEntryGovernance = (sql: Sql, input?: { readonly missionId?: str
       readonly regime_at_entry: string | null;
     }>`
       SELECT t.net_pnl,
-             q.setup_kind_at_entry,
-             q.regime_at_entry
+             e.setup_kind AS setup_kind_at_entry,
+             e.regime AS regime_at_entry
       FROM trading_closed_trades t
-      LEFT JOIN trading_entry_quotes q ON q.quote_id = (
-        SELECT q2.quote_id FROM trading_entry_quotes q2
-        WHERE q2.mission_id = t.mission_id
-          AND q2.action_type = 'open'
-          AND q2.consumed_at IS NOT NULL
-          AND q2.consumed_at <= t.opened_at + 60000
-        ORDER BY q2.consumed_at DESC
-        LIMIT 1
-      )
+      LEFT JOIN trading_entry_context e
+        ON e.mission_id = t.mission_id
+       AND e.execution_sequence = (
+         SELECT e2.execution_sequence FROM trading_entry_context e2
+         WHERE e2.mission_id = t.mission_id
+           AND e2.action_type = 'open'
+           AND e2.recorded_at <= t.opened_at + 60000
+         ORDER BY e2.recorded_at DESC
+         LIMIT 1
+       )
       WHERE (${missionId} IS NULL OR t.mission_id = ${missionId})
     `;
     return assessEntryGovernance(
@@ -494,11 +495,11 @@ export const readEnrichmentEvidence = (sql: Sql, input?: { readonly missionId?: 
   );
 
 /**
- * One closed trade with the entry quote it joins to — the raw material for a
- * session's economics (plan 29 step 0.2). Same quote join `readEntryGovernance`
- * uses: the newest consumed `open` quote at or shortly before the position
- * opened. A trade with no joinable quote still counts, it just cannot
- * contribute to the entry-side spread and slippage splits.
+ * One closed trade with the entry it joins to — the raw material for a
+ * session's economics (plan 29 step 0.2). Same join `readEntryGovernance`
+ * uses: the newest `open` entry at or shortly before the position opened. A
+ * trade with no joinable entry still counts, it just cannot contribute to the
+ * entry-side spread and slippage splits.
  */
 export interface SessionTrade {
   readonly netPnlUsd: number;
@@ -506,10 +507,10 @@ export interface SessionTrade {
   readonly size: number;
   readonly entryPrice: number | null;
   readonly direction: string;
-  readonly entryQuote: { readonly bestBid: number; readonly bestAsk: number } | null;
+  readonly entryBook: { readonly bestBid: number; readonly bestAsk: number } | null;
 }
 
-/** The mission's closed trades, newest close first, with their entry quotes. */
+/** The mission's closed trades, newest close first, with their entry books. */
 export const readSessionTrades = (sql: Sql, input: { readonly missionId: string }) =>
   Effect.gen(function* () {
     const rows = yield* sql<{
@@ -522,17 +523,18 @@ export const readSessionTrades = (sql: Sql, input: { readonly missionId: string 
       readonly best_ask: number | null;
     }>`
       SELECT t.net_pnl, t.fees_paid, t.size, t.entry_price, t.direction,
-             q.best_bid, q.best_ask
+             e.best_bid, e.best_ask
       FROM trading_closed_trades t
-      LEFT JOIN trading_entry_quotes q ON q.quote_id = (
-        SELECT q2.quote_id FROM trading_entry_quotes q2
-        WHERE q2.mission_id = t.mission_id
-          AND q2.action_type = 'open'
-          AND q2.consumed_at IS NOT NULL
-          AND q2.consumed_at <= t.opened_at + 60000
-        ORDER BY q2.consumed_at DESC
-        LIMIT 1
-      )
+      LEFT JOIN trading_entry_context e
+        ON e.mission_id = t.mission_id
+       AND e.execution_sequence = (
+         SELECT e2.execution_sequence FROM trading_entry_context e2
+         WHERE e2.mission_id = t.mission_id
+           AND e2.action_type = 'open'
+           AND e2.recorded_at <= t.opened_at + 60000
+         ORDER BY e2.recorded_at DESC
+         LIMIT 1
+       )
       WHERE t.mission_id = ${input.missionId}
       ORDER BY t.closed_at DESC
     `;
@@ -543,7 +545,7 @@ export const readSessionTrades = (sql: Sql, input: { readonly missionId: string 
         size: row.size,
         entryPrice: row.entry_price,
         direction: row.direction,
-        entryQuote:
+        entryBook:
           row.best_bid !== null && row.best_ask !== null
             ? { bestBid: row.best_bid, bestAsk: row.best_ask }
             : null,

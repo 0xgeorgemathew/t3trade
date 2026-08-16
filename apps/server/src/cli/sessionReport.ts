@@ -75,18 +75,18 @@ export interface SessionEconomics {
   readonly netBpsPerTrade: number | null;
   /** fees_paid summed, in bps of entry notional; null when nothing is priced. */
   readonly feesBps: number | null;
-  /** Half-spread paid on entry, in bps of entry notional; null with no quotes. */
+  /** Half-spread paid on entry, in bps of entry notional; null with no entry book. */
   readonly entrySpreadBps: number | null;
   /**
-   * What entry fills gave up beyond touching the near side of the quoted book,
+   * What entry fills gave up beyond touching the near side of the entry book,
    * in bps of entry notional; negative is price improvement. Null with no
-   * quotes.
+   * entry book.
    */
   readonly entrySlippageBps: number | null;
   /** Trades with a positive entry notional — the bps denominators' sample. */
   readonly pricedTrades: number;
-  /** Trades that joined to a consumed open quote — the spread sample. */
-  readonly quotedTrades: number;
+  /** Trades that joined to a recorded open entry — the spread sample. */
+  readonly bookedTrades: number;
 }
 
 /**
@@ -100,27 +100,27 @@ export const deriveSessionEconomics = (trades: ReadonlyArray<SessionTrade>): Ses
     trade.entryPrice !== null && trade.entryPrice > 0 ? Math.abs(trade.size) * trade.entryPrice : 0;
 
   const priced = trades.filter((trade) => entryNotional(trade) > 0);
-  const quoted = priced.filter((trade) => trade.entryQuote !== null);
+  const booked = priced.filter((trade) => trade.entryBook !== null);
 
   const pricedNotional = priced.reduce((sum, trade) => sum + entryNotional(trade), 0);
-  const quotedNotional = quoted.reduce((sum, trade) => sum + entryNotional(trade), 0);
+  const bookedNotional = booked.reduce((sum, trade) => sum + entryNotional(trade), 0);
 
   const bps = (usd: number, notional: number): number | null =>
     notional > 0 ? (usd / notional) * 10_000 : null;
 
-  // Entry-side split, per trade: what the fill gave up versus the quote mid is
+  // Entry-side split, per trade: what the fill gave up versus the book mid is
   // the half-spread plus whatever the price did beyond the near side. A long
   // pays the ask side of that, a short the bid side.
-  const spreadUsd = quoted.reduce((sum, trade) => {
-    const quote = trade.entryQuote!;
-    return sum + ((quote.bestAsk - quote.bestBid) / 2) * Math.abs(trade.size);
+  const spreadUsd = booked.reduce((sum, trade) => {
+    const book = trade.entryBook!;
+    return sum + ((book.bestAsk - book.bestBid) / 2) * Math.abs(trade.size);
   }, 0);
-  const slippageUsd = quoted.reduce((sum, trade) => {
-    const quote = trade.entryQuote!;
+  const slippageUsd = booked.reduce((sum, trade) => {
+    const book = trade.entryBook!;
     const beyondNearSide =
       trade.direction === "long"
-        ? trade.entryPrice! - quote.bestAsk
-        : quote.bestBid - trade.entryPrice!;
+        ? trade.entryPrice! - book.bestAsk
+        : book.bestBid - trade.entryPrice!;
     return sum + beyondNearSide * Math.abs(trade.size);
   }, 0);
 
@@ -136,10 +136,10 @@ export const deriveSessionEconomics = (trades: ReadonlyArray<SessionTrade>): Ses
       priced.reduce((sum, trade) => sum + trade.feesPaidUsd, 0),
       pricedNotional,
     ),
-    entrySpreadBps: bps(spreadUsd, quotedNotional),
-    entrySlippageBps: bps(slippageUsd, quotedNotional),
+    entrySpreadBps: bps(spreadUsd, bookedNotional),
+    entrySlippageBps: bps(slippageUsd, bookedNotional),
     pricedTrades: priced.length,
-    quotedTrades: quoted.length,
+    bookedTrades: booked.length,
   };
 };
 
@@ -271,7 +271,7 @@ export const formatSessionReport = (report: SessionReport): string => {
   // over rides along, so a partial record cannot read as a complete one.
   const noTrades = economics.trades === 0;
   const pricedNote = `${economics.pricedTrades} of ${economics.trades} trades priced`;
-  const quotedNote = `${economics.quotedTrades} of ${economics.trades} trades with entry quotes`;
+  const bookedNote = `${economics.bookedTrades} of ${economics.trades} trades with an entry book`;
 
   const lines = [
     `mission: ${report.missionId} (${report.market}, created ${DateTime.formatIso(DateTime.makeUnsafe(report.createdAt))})`,
@@ -287,10 +287,10 @@ export const formatSessionReport = (report: SessionReport): string => {
       : bpsLine("cost fees", economics.feesBps, `round trip; ${pricedNote}`),
     noTrades
       ? `cost spread, entry side: n/a (no closed trades)`
-      : bpsLine("cost spread, entry side", economics.entrySpreadBps, quotedNote),
+      : bpsLine("cost spread, entry side", economics.entrySpreadBps, bookedNote),
     noTrades
       ? `cost slippage, entry side: n/a (no closed trades)`
-      : bpsLine("cost slippage, entry side", economics.entrySlippageBps, quotedNote),
+      : bpsLine("cost slippage, entry side", economics.entrySlippageBps, bookedNote),
     "cost spread/slippage, exit side: n/a (no exit quotes recorded)",
     fillCosts.makerFillRate === null
       ? `maker fill rate (by fill count): n/a (${fillCosts.fills === 0 ? "no fills recorded" : "no maker flag recorded"})`

@@ -33,15 +33,15 @@ const insertMission = (missionId: string, updatedAt: number) =>
 /**
  * A small but complete session: a published plan, four wakes (one silent, one
  * still open), two closed trades — a long that paid the half-spread and got
- * price improvement, a short that slipped past the bid — the open quotes both
- * entries joined to, and the four fills both trades were made of: two taker
+ * price improvement, a short that slipped past the bid — the entry records
+ * both entries joined to, and the four fills both trades were made of: two taker
  * entries, one maker exit, and one exit recorded before the maker flag existed.
  */
 const seedSession = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* runMigrations();
   yield* sql`DELETE FROM trading_fills`;
-  yield* sql`DELETE FROM trading_entry_quotes`;
+  yield* sql`DELETE FROM trading_entry_context`;
   yield* sql`DELETE FROM trading_closed_trades`;
   yield* sql`DELETE FROM trading_harness_runs`;
   yield* sql`DELETE FROM trading_plan_history`;
@@ -71,17 +71,15 @@ const seedSession = Effect.gen(function* () {
   `;
 
   yield* sql`
-    INSERT INTO trading_entry_quotes (
-      quote_id, mission_id, harness_run_id, authority_version,
-      execution_sequence, market, side, action_type, order_preference, size,
-      requested_size, constrained_by, limit_price, stop_price, planned_loss_usd,
-      reserved_risk_usd, notional_usd, best_bid, best_ask, round_trip_cost_usd,
-      quoted_at, expires_at, consumed_at
+    INSERT INTO trading_entry_context (
+      mission_id, execution_sequence, market, side, action_type,
+      entry_price, best_bid, best_ask, stop_price, size, notional_usd,
+      constrained_by, recorded_at
     ) VALUES
-      ('quote_a', ${MISSION}, 'run_3', 3, 1, 'ETH', 'buy', 'open', 'taker',
-        2, 2, 'none', 3001, 2990, 20, 20, 6000, 2999, 3001, 5, 500, 60000, 1000),
-      ('quote_b', ${MISSION}, 'run_3', 3, 2, 'ETH', 'sell', 'open', 'taker',
-        3, 3, 'none', 100, 95, 15, 15, 300, 100.4, 100.6, 2, 2399000, 2500000, 2400000)
+      (${MISSION}, 1, 'ETH', 'buy', 'open', 3001, 2999, 3001, 2990, 2, 6000,
+        'requested', 1000),
+      (${MISSION}, 2, 'ETH', 'sell', 'open', 100.4, 100.4, 100.6, 105, 3, 300,
+        'requested', 2400000)
   `;
 
   yield* sql`
@@ -116,7 +114,7 @@ const seedEmptySession = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* runMigrations();
   yield* sql`DELETE FROM trading_fills`;
-  yield* sql`DELETE FROM trading_entry_quotes`;
+  yield* sql`DELETE FROM trading_entry_context`;
   yield* sql`DELETE FROM trading_closed_trades`;
   yield* sql`DELETE FROM trading_harness_runs`;
   yield* sql`DELETE FROM trading_plan_history`;
@@ -130,7 +128,7 @@ const seedOldFillSession = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* runMigrations();
   yield* sql`DELETE FROM trading_fills`;
-  yield* sql`DELETE FROM trading_entry_quotes`;
+  yield* sql`DELETE FROM trading_entry_context`;
   yield* sql`DELETE FROM trading_closed_trades`;
   yield* sql`DELETE FROM trading_harness_runs`;
   yield* sql`DELETE FROM trading_plan_history`;
@@ -169,8 +167,8 @@ layer("session-report", (it) => {
         "win rate: 50% (1 of 2)",
         "net bps per trade: -51.7",
         "cost fees: 4.8 bps of entry notional (round trip; 2 of 2 trades priced)",
-        "cost spread, entry side: 3.7 bps of entry notional (2 of 2 trades with entry quotes)",
-        "cost slippage, entry side: -1.3 bps of entry notional (2 of 2 trades with entry quotes)",
+        "cost spread, entry side: 3.7 bps of entry notional (2 of 2 trades with an entry book)",
+        "cost slippage, entry side: -1.3 bps of entry notional (2 of 2 trades with an entry book)",
         "cost spread/slippage, exit side: n/a (no exit quotes recorded)",
         "maker fill rate (by fill count): 33.3% (1 of 3 flagged fills)",
         "cost fees, share of gross notional traded: 0.04% (4 fills)",

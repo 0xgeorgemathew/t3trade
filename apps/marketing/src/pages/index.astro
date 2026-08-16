@@ -450,23 +450,40 @@ const harnesses = [
       </div>
     </div>
 
+    <!-- The three rules the run above never broke, so each one carries the
+         same mark the console used to confirm them. -->
     <div class="container mission-notes">
-      <div class="note">
-        <h3>The exchange is the source of truth</h3>
+      <div class="note" style={`${span(12, 40)}`}>
+        <h3>
+          <svg class="tick" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
+          </svg>
+          The exchange is the source of truth
+        </h3>
         <p>
           Positions, orders, and fills are re-read from Hyperliquid after every submission,
           fill, reconnect, and restart. Local records never override it.
         </p>
       </div>
-      <div class="note">
-        <h3>Risk is counted before entry</h3>
+      <div class="note" style={`${span(20, 48)}`}>
+        <h3>
+          <svg class="tick" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
+          </svg>
+          Risk is counted before entry
+        </h3>
         <p>
           Realised loss, paid fees, protected open risk, and pending-entry risk all draw down
           the same budget. Exhaust it and new exposure is blocked while stops stay in place.
         </p>
       </div>
-      <div class="note">
-        <h3>The stop is not advisory</h3>
+      <div class="note" style={`${span(28, 56)}`}>
+        <h3>
+          <svg class="tick" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
+          </svg>
+          The stop is not advisory
+        </h3>
         <p>
           It rests on Hyperliquid as a reduce-only order, and its size is reconciled against
           the position the exchange reports. It survives the app closing.
@@ -1612,7 +1629,7 @@ const harnesses = [
     grid-template-columns: repeat(3, 1fr);
     gap: 0;
     padding-top: 0;
-    padding-bottom: 92px;
+    padding-bottom: 76px;
     margin-top: 0;
     border-top: 1px solid var(--border);
   }
@@ -1627,10 +1644,19 @@ const harnesses = [
   }
 
   .note h3 {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
     font-size: 15.5px;
     font-weight: 500;
     letter-spacing: -0.015em;
     margin-bottom: 7px;
+  }
+
+  .note h3 .tick {
+    width: 13px;
+    height: 13px;
+    align-self: center;
   }
 
   .note p {
@@ -1653,7 +1679,7 @@ const harnesses = [
   }
 
   .checks-sticky {
-    padding: 104px 0;
+    padding: 92px 0 104px;
   }
 
   .checks-inner {
@@ -2360,6 +2386,21 @@ const harnesses = [
         }
       }
 
+      /* The three rules confirm themselves as the group comes into view. */
+      .mission-notes {
+        view-timeline-name: --notes;
+        view-timeline-axis: block;
+      }
+
+      .note h3 .tick path {
+        stroke-dashoffset: 1;
+        animation-name: scrub-draw;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-timeline: --notes;
+        animation-range: cover var(--from) cover var(--to);
+      }
+
       /* ── The seventeen checks ───────────────────────────────
          Not pinned. The checks tick, the reel counts to seventeen, and the
          controls arrive last, all across the card's own pass up the screen. */
@@ -2483,8 +2524,23 @@ const harnesses = [
       border-top: 1px solid var(--border);
     }
 
-    .console-success { flex-wrap: wrap; gap: 10px 12px; }
+    .console-success { flex-wrap: wrap; gap: 10px 14px; }
     .success-facts { margin-left: 0; width: 100%; }
+
+    /* The bar wants the full width once the column is one card wide. */
+    .rr {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
+    }
+
+    .rr-bar { flex: none; }
+    .rr-note { max-width: none; }
+
+    /* The viewBox scales down hard on a phone, so the chart labels are sized
+       in user units to stay readable at that scale. */
+    .level text { font-size: 21px; stroke-width: 6; }
+    .level line { stroke-dasharray: 7 7; }
 
     .harness-grid {
       grid-template-columns: 1fr 1fr;
@@ -2521,6 +2577,12 @@ const harnesses = [
     .checks-sticky {
       padding: 76px 0;
     }
+
+    /* The band fades in partway through the scroll, so at phone widths it
+       stays one line. A wrapped one reserves a tall gap that reads as a hole
+       until it arrives, and the readout above already carries these numbers. */
+    .console-success { flex-wrap: nowrap; }
+    .success-facts { display: none; }
 
     .sec-cta {
       padding: 96px 0;
