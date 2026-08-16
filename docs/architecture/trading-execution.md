@@ -30,8 +30,9 @@ protection reconciliation, and deterministic user controls on top of these.
   `blockForExhaustion` (block + cancel increasing orders), `reduceOnlyClose`,
   `guardResume`. PROMPT-05's `trading_control_*` tools add deterministic
   pause/resume/revoke on top of these primitives.
-- **`TradingPreviewService.previewOrder`** — the 17-item checklist + Eq-4
-  reservation. PROMPT-05 adds protection-placement validation.
+- **`TradingPreviewService.previewOrder`** — the 14-item entry checklist (the
+  exit checklist is unchanged) + Eq-4 reservation. PROMPT-05 adds
+  protection-placement validation.
 - **`TradingBudgetReader.read`** — assembles the §16.2 budget snapshot. Takes
   `takerFeeRateBps` (loaded once by the reactor) so the open-position exit-fee
   estimate is live.
@@ -76,8 +77,8 @@ the exchange — there is no bypass.
 
 ### Cloid collision reasoning
 
-The deterministic cloid is `trunc(SHA-256(missionId ‖ strategyVersion ‖
-executionSequence ‖ actionType), 16 bytes)`, hex-encoded to 32 chars. A retry
+The deterministic cloid is `trunc(SHA-256(missionId ‖ executionSequence ‖
+actionType), 16 bytes)`, hex-encoded to 32 chars. A retry
 reuses the same inputs, so the same cloid — and the exchange deduplicates on
 cloid. Collisions across missions are astronomically unlikely (16 bytes of
 SHA-256); within a mission the `(executionSequence, actionType)` tuple is
@@ -127,7 +128,7 @@ unique per execution. The local write deduplicates on `idempotency_key`
    config):
    - Marketable-IOC allowed slippage: **50 bps** (0.5%).
    - Bounded reconciliation window: **30 s**.
-   - cloid: `SHA-256(missionId ‖ strategyVersion ‖ executionSequence ‖ actionType)`
+   - cloid: `SHA-256(missionId ‖ executionSequence ‖ actionType)`
      truncated to the first 16 bytes.
 
 ## Signing algorithm (verified against nktkas/hyperliquid `src/signing/_l1.ts`)
@@ -274,7 +275,7 @@ substitutes for canonical confirmation.
 | 0    | Execution/order/position/reservation/loss contracts in `trading-contracts`; interim signer loaded from `ServerSecretStore` |
 | 1    | `HyperliquidNonceCoordinator` — serialized lane, monotonic nonces, fast-forward, persisted recovery hint                   |
 | 2    | Deterministic 16-byte cloid                                                                                                |
-| 3    | `trading_preview_order` — 17-item checklist, precision, BBO freshness, stop requirement, reserve-before-sign               |
+| 3    | `trading_preview_order` — 14-item entry checklist, precision, BBO freshness, stop requirement, reserve-before-sign         |
 | 4    | `HyperliquidOrderMapper` — IOC/GTC/cancel, BBO-slippage pricing                                                            |
 | 5    | Submit sequence: persist record → sign in nonce lane → submit → inspect per-order status → query canonical → reconcile     |
 | 6    | `HyperliquidReconciler` — fills, position, open orders; eight triggers                                                     |
