@@ -31,7 +31,7 @@ const MISSION = "mission_history";
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 63 });
+  yield* runMigrations({ toMigrationInclusive: 64 });
   yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM trading_plan_history`;
 });

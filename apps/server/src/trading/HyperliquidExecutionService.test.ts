@@ -215,7 +215,7 @@ const armedSignerConfig = Layer.succeed(InterimSignerConfig, {
 /** Migrate the shared in-memory db to 040, then truncate the execution tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 63 });
+  yield* runMigrations({ toMigrationInclusive: 64 });
   yield* sql`DELETE FROM trading_execution_records`;
   yield* sql`DELETE FROM trading_risk_reservations`;
   yield* sql`DELETE FROM trading_fills`;

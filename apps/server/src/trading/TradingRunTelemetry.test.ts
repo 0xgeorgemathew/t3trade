@@ -37,7 +37,7 @@ const harnessJson = JSON.stringify({
 const seed = (input?: { readonly plan?: Record<string, unknown> }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 63 });
+    yield* runMigrations({ toMigrationInclusive: 64 });
     yield* sql`DELETE FROM trading_missions`;
     yield* sql`DELETE FROM trading_harness_runs`;
     yield* sql`DELETE FROM trading_plan_history`;

@@ -44,7 +44,7 @@ const layer = it.layer(
  */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 63 });
+  yield* runMigrations({ toMigrationInclusive: 64 });
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM trading_risk_reservations`;

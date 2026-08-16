@@ -168,7 +168,7 @@ layer("TradingFillReconciler", (it) => {
 it.effect("leaves a flat mission with nothing outstanding alone", () =>
   Effect.gen(function* () {
     reconcileCount = 0;
-    yield* runMigrations({ toMigrationInclusive: 63 });
+    yield* runMigrations({ toMigrationInclusive: 64 });
     const reconcilers = yield* TradingFillReconciler;
 
     const scope = yield* Scope.make("sequential");
@@ -185,7 +185,7 @@ it.effect("leaves a flat mission with nothing outstanding alone", () =>
 it.effect("settles a stranded execution record on a flat mission", () =>
   Effect.gen(function* () {
     reconcileCount = 0;
-    yield* runMigrations({ toMigrationInclusive: 63 });
+    yield* runMigrations({ toMigrationInclusive: 64 });
     yield* insertStrandedExecution;
     const reconcilers = yield* TradingFillReconciler;
 
@@ -211,7 +211,7 @@ it.effect("wakes the mission when a reconcile reports an external change", () =>
     reconcileCount = 0;
     requestedCauses.length = 0;
     nextExternalChanges = [{ kind: "external_close", summary: "external_close: 2 → 0" }];
-    yield* runMigrations({ toMigrationInclusive: 63 });
+    yield* runMigrations({ toMigrationInclusive: 64 });
     const reconcilers = yield* TradingFillReconciler;
 
     const scope = yield* Scope.make("sequential");
@@ -232,7 +232,7 @@ it.effect("wakes nobody when the pass found nothing external", () =>
   Effect.gen(function* () {
     reconcileCount = 0;
     requestedCauses.length = 0;
-    yield* runMigrations({ toMigrationInclusive: 63 });
+    yield* runMigrations({ toMigrationInclusive: 64 });
     const reconcilers = yield* TradingFillReconciler;
 
     const scope = yield* Scope.make("sequential");
@@ -256,7 +256,7 @@ it.effect("wakes nobody when the pass found nothing external", () =>
 it.effect("still reconciles a flat exchange while T3's tables believe it holds a position", () =>
   Effect.gen(function* () {
     reconcileCount = 0;
-    yield* runMigrations({ toMigrationInclusive: 63 });
+    yield* runMigrations({ toMigrationInclusive: 64 });
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
       INSERT INTO trading_position_snapshots (
