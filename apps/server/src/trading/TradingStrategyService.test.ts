@@ -104,7 +104,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       yield* setup;
       const strategies = yield* TradingStrategyService;
 
-      const result = yield* strategies.publishMomentumStrategy({
+      const result = yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 1,
         strategy: body("first thesis: breakout"),
@@ -132,7 +132,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       const strategies = yield* TradingStrategyService;
 
       assert.equal(yield* missionVersion, 1);
-      yield* strategies.publishMomentumStrategy({
+      yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 1,
         strategy: body("v1 thesis"),
@@ -140,7 +140,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       assert.equal(yield* missionVersion, 2);
 
       // The revision goes through on the fresh version, and bumps it again.
-      const second = yield* strategies.publishMomentumStrategy({
+      const second = yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 2,
         strategy: body("v2 thesis"),
@@ -162,7 +162,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       yield* setup;
       const strategies = yield* TradingStrategyService;
 
-      yield* strategies.publishMomentumStrategy({
+      yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 1,
         strategy: body("v1"),
@@ -172,7 +172,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       yield* insertWatch({ watchId: "watch_triggered", status: "triggered" });
       yield* insertWatch({ watchId: "watch_cancelled", status: "cancelled" });
 
-      const result = yield* strategies.publishMomentumStrategy({
+      const result = yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 2,
         strategy: body("v2"),
@@ -190,13 +190,13 @@ layer("trading_publish_plan (§14.3)", (it) => {
       yield* setup;
       const strategies = yield* TradingStrategyService;
 
-      yield* strategies.publishMomentumStrategy({
+      yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 1,
         strategy: body("v1 thesis"),
       });
 
-      const stale = yield* strategies.publishMomentumStrategy({
+      const stale = yield* strategies.publishPlan({
         missionId: "mission_1",
         // The publish above bumped the row to 2; quoting the version read
         // before it is the stale case.
@@ -221,7 +221,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       yield* setup;
       const strategies = yield* TradingStrategyService;
 
-      const ahead = yield* strategies.publishMomentumStrategy({
+      const ahead = yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 7,
         strategy: body("from the future"),
@@ -243,7 +243,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
 
       yield* missions.transition({ missionId: "mission_1", to: "revoked", expectedVersion: 1 });
 
-      const result = yield* strategies.publishMomentumStrategy({
+      const result = yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 2,
         strategy: body("after revoke"),
@@ -262,7 +262,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       const strategies = yield* TradingStrategyService;
 
       const result = yield* Effect.result(
-        strategies.publishMomentumStrategy({
+        strategies.publishPlan({
           missionId: "nope",
           expectedMissionVersion: 1,
           strategy: body("orphan"),
@@ -299,7 +299,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
         expectedVersion: yield* missionVersion,
       });
 
-      yield* strategies.publishMomentumStrategy({
+      yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: yield* missionVersion,
         strategy: body("done analysing"),
@@ -332,7 +332,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       yield* setup;
       const strategies = yield* TradingStrategyService;
 
-      const short = yield* strategies.publishMomentumStrategy({
+      const short = yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 1,
         strategy: {
@@ -342,7 +342,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       });
       assert.equal(short.outcome, "accepted");
 
-      const aside = yield* strategies.publishMomentumStrategy({
+      const aside = yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: yield* missionVersion,
         strategy: {
@@ -371,7 +371,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       yield* setup;
       const strategies = yield* TradingStrategyService;
 
-      const result = yield* strategies.publishMomentumStrategy({
+      const result = yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 1,
         strategy: withTarget("no derivation beside the rung", { profitUsd: 90 }),
@@ -393,7 +393,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       yield* setup;
       const strategies = yield* TradingStrategyService;
 
-      const result = yield* strategies.publishMomentumStrategy({
+      const result = yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 1,
         strategy: withTarget("too small for the round trip", { profitUsd: 1.7 }),
@@ -411,7 +411,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       yield* setup;
       const strategies = yield* TradingStrategyService;
 
-      const result = yield* strategies.publishMomentumStrategy({
+      const result = yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 1,
         strategy: body("justified"),
@@ -433,7 +433,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       const strategies = yield* TradingStrategyService;
 
       const verbose = body("verbose");
-      const result = yield* strategies.publishMomentumStrategy({
+      const result = yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 1,
         strategy: {
@@ -468,7 +468,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       yield* setup;
       const strategies = yield* TradingStrategyService;
 
-      const result = yield* strategies.publishMomentumStrategy({
+      const result = yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 1,
         strategy: bodyWithoutBecause("lenient"),
@@ -489,12 +489,12 @@ layer("trading_publish_plan (§14.3)", (it) => {
       yield* setup;
       const strategies = yield* TradingStrategyService;
 
-      yield* strategies.publishMomentumStrategy({
+      yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 1,
         strategy: body("first thesis"),
       });
-      yield* strategies.publishMomentumStrategy({
+      yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: yield* missionVersion,
         strategy: body("second thesis"),
@@ -516,7 +516,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
     Effect.gen(function* () {
       yield* setup;
       const strategies = yield* TradingStrategyService;
-      yield* strategies.publishMomentumStrategy({
+      yield* strategies.publishPlan({
         missionId: "mission_1",
         expectedMissionVersion: 1,
         strategy: body("readable"),

@@ -66,7 +66,7 @@ const seedMission = Effect.gen(function* () {
     harness,
   });
   const strategies = yield* TradingStrategyService;
-  const published = yield* strategies.publishMomentumStrategy({
+  const published = yield* strategies.publishPlan({
     missionId: "mission_1",
     expectedMissionVersion: 1,
     strategy: {

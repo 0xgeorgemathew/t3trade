@@ -197,7 +197,7 @@ const runOneTurn = Effect.gen(function* () {
 /** Publish a strategy, so the mission has a live thesis to come back to. */
 const publishStrategy = Effect.gen(function* () {
   const strategies = yield* TradingStrategyService;
-  const published = yield* strategies.publishMomentumStrategy({
+  const published = yield* strategies.publishPlan({
     missionId: MISSION,
     expectedMissionVersion: 1,
     strategy: {
@@ -222,7 +222,7 @@ const publishStrategy = Effect.gen(function* () {
 const publishShortWindowStrategy = Effect.gen(function* () {
   const strategies = yield* TradingStrategyService;
   const missions = yield* TradingMissionService;
-  const published = yield* strategies.publishMomentumStrategy({
+  const published = yield* strategies.publishPlan({
     missionId: MISSION,
     expectedMissionVersion: yield* missions.getMissionVersion(MISSION),
     strategy: {

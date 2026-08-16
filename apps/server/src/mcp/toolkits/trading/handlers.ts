@@ -270,7 +270,7 @@ const announceStrategyPublished = Effect.fn("TradingToolkit.announceStrategyPubl
 /**
  * Put the mission's post-publish status on the WS push path.
  *
- * `publishMomentumStrategy` moves a mission out of `analysing` as part of the
+ * `publishPlan` moves a mission out of `analysing` as part of the
  * publish itself (§11.1 `analysing → waiting`). That write is durable but
  * invisible to the workspace, which learns about mission status from
  * `trading.mission.status-set` events; announcing the status the publish
@@ -611,7 +611,7 @@ const handlers = {
       // mission so an omitted `missionId` reaches the publish path.
       const resolvedInput = { ...input, missionId: mission.id };
       const strategies = yield* TradingStrategyService;
-      const published = yield* strategies.publishMomentumStrategy(resolvedInput).pipe(
+      const published = yield* strategies.publishPlan(resolvedInput).pipe(
         Effect.catchTags({
           // The mission was resolved a moment ago, so a miss here means it was
           // deleted mid-call. Report it as a rejection rather than a defect.

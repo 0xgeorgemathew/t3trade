@@ -684,7 +684,7 @@ it.live(
                   // Publish a plan so the mission is working one. The body is
                   // the canonical ETH test vector from contracts.test.ts.
                   const strategies = yield* TradingStrategyService;
-                  const published = yield* strategies.publishMomentumStrategy({
+                  const published = yield* strategies.publishPlan({
                     missionId: MISSION_ID,
                     expectedMissionVersion: yield* missions.getMissionVersion(MISSION_ID),
                     strategy: {

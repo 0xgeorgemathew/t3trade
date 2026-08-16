@@ -42,7 +42,7 @@ export interface TradingStrategyServiceShape {
    * overwriting current state; the rejection carries the version the server
    * actually holds. Watches survive the revision — nothing is superseded.
    */
-  readonly publishMomentumStrategy: (
+  readonly publishPlan: (
     input: TradingPublishPlanInput,
   ) => Effect.Effect<TradingPublishPlanResult, PersistenceSqlError | TradingMissionNotFoundError>;
 
@@ -179,7 +179,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
       Effect.map((rows) => rows.flatMap((row) => toStrategySummary(row))),
     );
 
-  const publishMomentumStrategy: TradingStrategyServiceShape["publishMomentumStrategy"] = (input) =>
+  const publishPlan: TradingStrategyServiceShape["publishPlan"] = (input) =>
     Effect.gen(function* () {
       // `missionId` is optional on the wire input but the handler always
       // resolves it to the bound mission's id before calling, so by the time
@@ -291,7 +291,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
     });
 
   return {
-    publishMomentumStrategy,
+    publishPlan,
     getCurrentStrategy,
     listWatches,
     listStrategyVersions,
