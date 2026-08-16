@@ -29,6 +29,7 @@ import type { TradingPlanState } from "../../../trading/Schemas.ts";
 import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
 import { TradingExitService } from "../../../trading/TradingExitService.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
+import { TradingPlanProtectionService } from "../../../trading/TradingPlanProtectionService.ts";
 import { TradingQuoteService } from "../../../trading/TradingQuoteService.ts";
 import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
@@ -622,19 +623,57 @@ const handlers = {
           PersistenceSqlError: (error) => Effect.die(error),
         }),
       );
+      if (published.outcome !== "accepted") return published;
 
       // An accepted publish is mission state the workspace has to see. Raising
       // it as an orchestration command is what puts it on the ordered WS push
       // path instead of leaving the UI to poll.
-      if (published.outcome === "accepted") {
-        yield* announceStrategyPublished({
-          threadId,
-          missionId: mission.id,
-        });
-        yield* announceMissionStatus({ threadId, missionId: mission.id });
-      }
+      yield* announceStrategyPublished({
+        threadId,
+        missionId: mission.id,
+      });
+      yield* announceMissionStatus({ threadId, missionId: mission.id });
 
-      return published;
+      // Plan 29 step 4.5: the plan is the position's declared state, so an
+      // accepted publish reconciles the exchange to it NOW — the stop and the
+      // resting target move at publish time, not on the watchdog's next pass.
+      // A stop the envelope refuses to widen stays where it is, and the
+      // refusal rides the publish response back to the model. A failed
+      // reconcile never fails the publish: the plan is already durable and the
+      // watchdog keeps converging.
+      const missions = yield* TradingMissionService;
+      // The mission was resolved a moment ago and its account row is immutable
+      // for its life, so a miss here is an environment gap, not a refusal —
+      // skip the reconcile and let the watchdog own convergence.
+      const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId).pipe(
+        Effect.catchTags({
+          TradingMissionNotFoundError: () => Effect.succeed(null),
+          // The plan is already durable; a read failure costs the immediate
+          // reconcile, not the publish.
+          PersistenceSqlError: () => Effect.succeed(null),
+        }),
+      );
+      if (masterAddress === null) return published;
+      const planProtection = yield* TradingPlanProtectionService;
+      const reconciled = yield* planProtection
+        .reconcilePlan({
+          missionId: mission.id,
+          masterAddress,
+          plan: published.strategy,
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning(
+              "trading publish: the plan's exchange reconcile could not run; the watchdog pass retries it",
+              { missionId: mission.id, error: error.message },
+            ).pipe(Effect.as(null)),
+          ),
+        );
+      if (reconciled === null || reconciled.refusal === undefined) return published;
+      return {
+        ...published,
+        warnings: [...published.warnings, reconciled.refusal],
+      };
     }),
 
   /**

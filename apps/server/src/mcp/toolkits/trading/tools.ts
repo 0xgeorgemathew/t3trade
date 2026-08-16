@@ -77,6 +77,7 @@ import { TradingTradeHistoryService } from "../../../trading/TradingTradeHistory
 import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import { TradingExitService } from "../../../trading/TradingExitService.ts";
+import { TradingPlanProtectionService } from "../../../trading/TradingPlanProtectionService.ts";
 import { TradingQuoteService } from "../../../trading/TradingQuoteService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
 import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
@@ -111,6 +112,9 @@ const dependencies = [
   TradingQuoteService,
   // The three exit tools size themselves from the canonical position.
   TradingExitService,
+  // An accepted publish reconciles the exchange's stop and target to the plan
+  // (plan 29 step 4.5).
+  TradingPlanProtectionService,
   SqlClient.SqlClient,
 ];
 

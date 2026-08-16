@@ -43,6 +43,7 @@ import { TradingWatchServiceLive } from "./TradingWatchService.ts";
 import { TradingBudgetReaderLive } from "./TradingBudgetReader.ts";
 import { TradingFillReconcilerLive } from "./TradingFillReconciler.ts";
 import { TradingProtectionServiceLive } from "./TradingProtectionService.ts";
+import { TradingPlanProtectionServiceLive } from "./TradingPlanProtectionService.ts";
 import { TradingWorkingOrderServiceLive } from "./TradingWorkingOrderService.ts";
 import { TradingEmergencyCloseServiceLive } from "./TradingEmergencyCloseService.ts";
 import { TradingControlServiceLive } from "./TradingControlService.ts";
@@ -216,6 +217,14 @@ export const TradingLayerLive = Layer.mergeAll(
     Layer.provide(TradingMissionServiceLive),
     Layer.provide(IocSlippageConfigLive),
     Layer.provide(HyperliquidReadLayerLive),
+  ),
+  // Plan 29 step 4.5: an accepted publish reconciles the exchange's stop and
+  // resting target to the plan immediately. Built on the protection layer (it
+  // routes its legs through the same reconciles the watchdog uses) and the
+  // read gateway for the canonical position.
+  TradingPlanProtectionServiceLive.pipe(
+    Layer.provide(HyperliquidReadLayerLive),
+    Layer.provide(TradingProtectionLayerLive),
   ),
   coordinatorWithDeps,
   // A thread's first message is what creates its mission, so the decision sits
