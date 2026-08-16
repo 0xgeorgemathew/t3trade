@@ -925,8 +925,20 @@ it.effect("appends a note and reads it back in the words it was written in", () 
       const older = notes.indexOf("3200 chopped me twice; waiting for a 15m close above it");
       const newer = notes.indexOf("the 1m read disagrees");
       assert.isAbove(older, -1);
+      // Both notes land in the same millisecond, so this is only stable
+      // because the read breaks the tie on insertion order rather than on the
+      // random uuid the note is keyed by.
       assert.isAbove(older, newer);
       assert.equal(read.result.structuredContent.entry, undefined);
+
+      // And the turn sees it without asking: the journal exists to survive a
+      // plan revision, which it cannot do if the model has to spend a call to
+      // remember it wrote something.
+      const look = yield* callTool(BOUND_THREAD, "trading_look", {});
+      const onTheTurn: ReadonlyArray<string> = look.result.structuredContent.mission.journal.map(
+        (entry: { note: string }) => entry.note,
+      );
+      assert.include(onTheTurn, "the 1m read disagrees");
     }),
   ),
 );

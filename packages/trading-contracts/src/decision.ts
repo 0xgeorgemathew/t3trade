@@ -91,7 +91,7 @@ export interface TradingRunFacts {
   readonly publishedStandDown: boolean;
   /** The published plan carries at least one armed entry level. */
   readonly hasArmedEntry: boolean;
-  /** `trading_enter` or `trading_exit`'s `move_stop` was called. */
+  /** `trading_enter` or `trading_exit` was called — any action of it. */
   readonly executeAttempted: boolean;
   /** The first preview/guard refusal reason, when the attempt was refused. */
   readonly firstPreviewRefusal?: string | undefined;

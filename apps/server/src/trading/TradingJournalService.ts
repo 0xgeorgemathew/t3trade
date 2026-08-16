@@ -86,7 +86,11 @@ const makeTradingJournalService = Effect.gen(function* () {
       const rows = yield* sql<JournalRow>`
         SELECT id, note, created_at FROM trading_journal
         WHERE mission_id = ${missionId}
-        ORDER BY created_at DESC, id DESC
+        -- Two notes in one turn land in the same millisecond, and the id is a
+        -- random UUID, so it cannot break that tie: ordering on it hands the
+        -- model its own reasoning back in an arbitrary order. The rowid is the
+        -- order the rows were actually written in.
+        ORDER BY created_at DESC, rowid DESC
         LIMIT ${limit ?? TRADING_JOURNAL_READ_LIMIT}
       `.pipe(Effect.mapError(sqlFail("list")));
       return rows.map(toEntry);

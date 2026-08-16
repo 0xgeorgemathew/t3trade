@@ -667,7 +667,9 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       const journal = yield* sql<JournalNoteRow>`
         SELECT note, created_at
         FROM trading_journal WHERE mission_id = ${missionId}
-        ORDER BY created_at DESC LIMIT ${MISSION_TIMELINE_LIMIT}
+        -- rowid, because two notes in one turn share a millisecond and the
+        -- timeline has to draw them in the order they were written.
+        ORDER BY created_at DESC, rowid DESC LIMIT ${MISSION_TIMELINE_LIMIT}
       `.pipe(Effect.mapError(sqlFail("timeline:journal")));
 
       return buildMissionTimeline({ wakes, stopAdjustments, publishes, journal });

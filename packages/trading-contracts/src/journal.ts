@@ -35,8 +35,22 @@ export const TRADING_JOURNAL_TOOL = "trading_journal";
  */
 export const TRADING_JOURNAL_NOTE_MAX_CHARS = 1_000;
 
-/** How many notes a read hands back, newest first. */
+/** How many notes an explicit `trading_journal` read hands back, newest first. */
 export const TRADING_JOURNAL_READ_LIMIT = 20;
+
+/**
+ * How many notes ride the mission read on every turn.
+ *
+ * Fewer than a deliberate read, because this one is paid for on every wake
+ * whether or not the model asks: twenty notes at the cap would be 20KB of turn
+ * input. Five is the working set — what the mission has been telling itself
+ * lately — and the full twenty is one call away.
+ *
+ * It has to be present at all, though. The journal exists because memory was
+ * being lost between plan revisions, and a memory the model only sees when it
+ * remembers to ask for it is a memory it will operate without.
+ */
+export const TRADING_JOURNAL_TURN_READ_LIMIT = 5;
 
 /**
  * One note, as written.

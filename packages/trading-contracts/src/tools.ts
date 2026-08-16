@@ -31,6 +31,7 @@ import type { TradingCostEstimate } from "./costs.ts";
 import type { MarketStructure } from "./marketStructure.ts";
 import type { TradingTradeHistory } from "./history.ts";
 import { TargetCalibration } from "./calibration.ts";
+import { TradingJournalEntry } from "./journal.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./mission.ts";
 import { Price, TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
@@ -202,6 +203,16 @@ export const TradingBoundMissionResult = Schema.Struct({
    * carries nothing extra.
    */
   targetCalibration: Schema.optional(TargetCalibration),
+  /**
+   * The mission's most recent journal notes, newest first, capped at
+   * `TRADING_JOURNAL_TURN_READ_LIMIT`.
+   *
+   * Here for the reason the journal exists (plan 29 step 6.4): it is what the
+   * model told itself across plan revisions, and a memory that has to be asked
+   * for is a memory a turn will run without. `trading_journal` with no note
+   * reads the longer tail.
+   */
+  journal: Schema.Array(TradingJournalEntry),
 });
 export type TradingBoundMissionResult = typeof TradingBoundMissionResult.Type;
 

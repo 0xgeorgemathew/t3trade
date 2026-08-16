@@ -16,15 +16,12 @@ import type { TradingUrgency } from "@t3tools/trading-contracts/strategy";
 import { readExitRequest } from "@t3tools/trading-contracts/exit";
 import type { StopAdjustmentJustification } from "@t3tools/trading-contracts/stop-adjustment";
 import { classifyFailure } from "@t3tools/trading-contracts/recovery";
-import {
-  isWatchRefusal,
-  toMarketWatch,
-  type WatchCondition,
-} from "@t3tools/trading-contracts/watch";
+import { isWatchRefusal, toMarketWatch } from "@t3tools/trading-contracts/watch";
 import {
   isJournalRefusal,
   readJournalNote,
   TRADING_JOURNAL_READ_LIMIT,
+  TRADING_JOURNAL_TURN_READ_LIMIT,
   type TradingJournalEntry,
 } from "@t3tools/trading-contracts/journal";
 import type { TradingLookInput, TradingObservation } from "@t3tools/trading-contracts/observation";
@@ -58,7 +55,6 @@ import { recordExecutionRefusal } from "../../../trading/TradingRunTelemetry.ts"
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
-import type { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 import {
   analyseMarketStructure,
@@ -217,6 +213,14 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (mission: 
   // before this one.
   const strategyHistory = yield* strategies.listStrategyVersions(mission.id).pipe(Effect.orDie);
 
+  // What the mission has told itself, across the revisions that replaced the
+  // plan it was written beside (plan 29 step 6.4). Short — the working set, not
+  // the session; `trading_journal` reads the longer tail deliberately.
+  const journals = yield* TradingJournalService;
+  const journal = yield* journals
+    .list({ missionId: mission.id, limit: TRADING_JOURNAL_TURN_READ_LIMIT })
+    .pipe(Effect.orDie);
+
   // The optimistic-lock version a publish must quote (`expectedMissionVersion`)
   // — the mission contract itself no longer carries a version number.
   const missionVersion = yield* missions.getMissionVersion(mission.id).pipe(Effect.orDie);
@@ -240,33 +244,16 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (mission: 
     harness: mission.harness,
     pendingExecutions,
     strategyHistory,
+    journal,
     ...(calibration.tradeCount === 0 ? {} : { targetCalibration: calibration }),
   } satisfies TradingGetMissionResult;
 });
 
-/**
- * Add the position's high-water mark and how far it has come off it.
- *
- * The gateway reads the exchange, and the exchange has no memory of what a
- * position was worth at its best — so a harness woken after a winner faded
- * could not tell it from a trade that never worked. The peak is T3's own,
- * maintained by the reconciler; a position with no recorded peak is returned
- * untouched rather than reported as having given back nothing.
- */
-const withPeakPnl = Effect.fn("TradingToolkit.withPeakPnl")(function* (
-  position: AgentNetPosition,
-  missionId: string,
-  market: string,
-) {
-  const missions = yield* TradingMissionService;
-  const peak = yield* missions.readPeakUnrealisedPnl({ missionId, market }).pipe(Effect.orDie);
-  if (peak === null) return position;
-  return {
-    ...position,
-    peakUnrealisedPnl: peak,
-    drawdownFromPeakUsd: Math.max(0, peak - position.unrealisedPnl),
-  };
-});
+// The position's high-water mark used to be attached here. Since step 6.1 the
+// look reads the market half through `TradingWakeupComposer.observe`, which
+// attaches `peakUnrealisedPnl` and `drawdownFromPeakUsd` itself — so a look and
+// a wake report the same peak by construction rather than by two copies of the
+// same arithmetic agreeing.
 
 const announceStrategyPublished = Effect.fn("TradingToolkit.announceStrategyPublished")(
   function* (input: { readonly threadId: string; readonly missionId: string }) {
@@ -899,16 +886,12 @@ const cancelWatch = Effect.fn("TradingToolkit.cancelWatch")(function* (
 const moveStop = Effect.fn("TradingToolkit.moveStop")(function* (input: {
   readonly missionId?: string | undefined;
   readonly market?: TradingMarket | undefined;
-  readonly newStopPrice?: number | undefined;
-  readonly justification?: StopAdjustmentJustification | undefined;
-  readonly expectedPlanUpdatedAt?: number | undefined;
+  readonly newStopPrice: number;
+  readonly justification: StopAdjustmentJustification;
+  readonly expectedPlanUpdatedAt: number;
 }) {
-  // `readExitRequest` has already refused a call missing any of these, so the
-  // narrowing here is the type system catching up with a check that ran.
   const market = input.market ?? DEFAULT_TRADING_MARKET;
-  const newStopPrice = input.newStopPrice as number;
-  const justification = input.justification as StopAdjustmentJustification;
-  const expectedPlanUpdatedAt = input.expectedPlanUpdatedAt as number;
+  const { newStopPrice, justification, expectedPlanUpdatedAt } = input;
   const { threadId, mission } = yield* resolveBoundCall(input.missionId);
   const adjustments = yield* TradingStopAdjustmentService;
   const decision = yield* adjustments
@@ -1212,7 +1195,28 @@ const handlers = {
         };
       }
 
-      if (input.action === "move_stop") return yield* moveStop(input);
+      if (input.action === "move_stop") {
+        const { newStopPrice, justification, expectedPlanUpdatedAt } = input;
+        if (
+          newStopPrice === undefined ||
+          justification === undefined ||
+          expectedPlanUpdatedAt === undefined
+        ) {
+          // `readExitRequest` refused exactly this a moment ago. If the two
+          // ever disagree, a stop must not reach the envelope check with an
+          // undefined price or an undefined plan version to lock against.
+          return yield* Effect.die(
+            new Error("trading_exit: a move_stop passed readExitRequest without its fields"),
+          );
+        }
+        return yield* moveStop({
+          missionId: input.missionId,
+          market: input.market,
+          newStopPrice,
+          justification,
+          expectedPlanUpdatedAt,
+        });
+      }
 
       return yield* executeExit({
         missionId: input.missionId,
@@ -1269,29 +1273,28 @@ const handlers = {
 
       // One call does one thing to the armed set. Neither named, or both, is a
       // rule about the call, so it stands down like every other one.
-      const named = Number(input.condition !== undefined) + Number(input.cancel !== undefined);
-      if (named !== 1) {
-        return {
-          outcome: "refused" as const,
-          reason: "needs_condition_or_cancel" as const,
-          detail:
-            named === 0
-              ? "name a condition to arm, or a watch id in `cancel` to retire"
-              : "a call arms a condition or cancels a watch, not both",
-          recovery: classifyFailure({
-            tag: "TradingWatchRefusal",
-            reason: "needs_condition_or_cancel",
-          }),
-        };
+      const refuseAmbiguous = (detail: string) => ({
+        outcome: "refused" as const,
+        reason: "needs_condition_or_cancel" as const,
+        detail,
+        recovery: classifyFailure({
+          tag: "TradingWatchRefusal",
+          reason: "needs_condition_or_cancel",
+        }),
+      });
+      if (input.condition !== undefined && input.cancel !== undefined) {
+        return refuseAmbiguous("a call arms a condition or cancels a watch, not both");
       }
-
       if (input.cancel !== undefined) return yield* cancelWatch(threadId, mission.id, input.cancel);
+      if (input.condition === undefined) {
+        return refuseAmbiguous("name a condition to arm, or a watch id in `cancel` to retire");
+      }
 
       // The condition is derived into the persisted predicate before anything
       // is written, so a condition that cannot be armed arms nothing and costs
       // no transaction. What to do about it is the classifier's answer, not
       // this handler's — one place decides what a refusal means (step 6.2).
-      const derived = toMarketWatch(input.condition as WatchCondition);
+      const derived = toMarketWatch(input.condition);
       if (isWatchRefusal(derived)) {
         return {
           outcome: "refused" as const,

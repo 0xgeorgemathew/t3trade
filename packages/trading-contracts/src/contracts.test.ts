@@ -352,8 +352,11 @@ describe("§14.3 mission tool contracts", () => {
           because: "higher lows on the 1m",
         },
       ],
+      // What the mission has told itself, carried by the same read (step 6.4).
+      journal: [{ id: "jr_1", note: "3200 chopped me twice", at: 1_200 }],
     });
     assert(decoded.bound);
+    expect(decoded.journal[0]?.note).toBe("3200 chopped me twice");
     expect(decoded.watches).toEqual([]);
     // The lock a `no_conflicting_execution_pending` rejection names.
     expect(decoded.pendingExecutions[0]?.cloid).toBe("0xblocking");
