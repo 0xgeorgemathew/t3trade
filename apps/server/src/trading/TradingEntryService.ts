@@ -247,10 +247,16 @@ export const makeTradingEntryService = Effect.gen(function* () {
 
       const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
       const fallbackFeeBps = mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide;
-      const takerFeeRateBps = yield* gateway.getTakerFeeRateBps(masterAddress).pipe(
-        Effect.map((rate) => rate.feeBps),
-        Effect.orElseSucceed(() => fallbackFeeBps),
+      // Both rates in one read: the sizer needs the maker rate too, because the
+      // take-profit rests. A read that fails prices both at the authority's
+      // fallback — the pessimistic maker, same convention the cost estimate uses.
+      const feeRate = yield* gateway.getUserFeeRatesBps(masterAddress).pipe(
+        Effect.orElseSucceed(() => ({
+          takerFeeBps: fallbackFeeBps,
+          makerFeeBps: fallbackFeeBps,
+        })),
       );
+      const takerFeeRateBps = feeRate.takerFeeBps;
       // The two reads an entry cannot be made without. A dropped socket or a
       // rate limit here used to end the turn; now it costs one backoff.
       const orderBook = yield* retryTransientRead(
@@ -321,6 +327,12 @@ export const makeTradingEntryService = Effect.gen(function* () {
               referencePrice: entryPrice,
               takerFeeBpsPerSide: takerFeeRateBps,
               halfSpreadUsd: Math.max(0, (bestAsk - bestBid) / 2),
+              // The take-profit rests, so the exit pays the maker fee and
+              // crosses no spread. Costing it as a second taker fill would
+              // shrink the divisor and demand a bigger position for a target
+              // the trade would have reached anyway.
+              exitIsMaker: true,
+              makerFeeBpsPerSide: feeRate.makerFeeBps,
             });
 
       const sizing = deriveFeasibleSize({

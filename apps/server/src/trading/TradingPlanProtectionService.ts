@@ -38,8 +38,10 @@ import type { AgentOpenOrder } from "@t3tools/trading-contracts/account-snapshot
 import {
   checkStopReplacement,
   confirmedProtectedSize,
+  ENTRY_RECORD_LEAD_MILLIS,
   isProtectiveOrder,
   PROTECTION_SIZE_EPSILON,
+  samePrice,
 } from "@t3tools/trading-contracts/protection";
 import { plannedLossAtStopUsd } from "@t3tools/trading-contracts/stop-adjustment";
 import type { TakeProfitOutcome } from "./TradingProtectionService.ts";
@@ -109,9 +111,15 @@ export interface PlanProtectionOutcome {
  * the stop now, so it answers to that gate too.
  *
  * SECOND, the envelope: a move may tighten freely but must not widen the
- * planned loss past what was approved. An unstated envelope never refuses,
- * because the watchdog's repair path faces the same situation and must not
- * wedge.
+ * planned loss past what was approved.
+ *
+ * When no approval can be read, the stop currently resting stands in for one.
+ * "We could not read what you approved" must not mean "so anything goes" on a
+ * live position — but it must not wedge either, because the watchdog's repair
+ * path runs through here and a position with no readable approval still needs
+ * its protection restored. Falling back to the resting stop does both: every
+ * tightening and every repair goes through, and only a widening is refused,
+ * against the only ceiling still knowable.
  *
  * `null` means the move is allowed.
  */
@@ -122,6 +130,8 @@ export const planStopRefusal = (input: {
   readonly referencePrice: number;
   readonly planStopPrice: number;
   readonly envelopeUsd: number | null;
+  /** The stop resting now, when one is — the fallback ceiling. */
+  readonly restingStopPrice?: number | undefined;
 }): string | null => {
   if (
     checkStopReplacement({
@@ -138,19 +148,38 @@ export const planStopRefusal = (input: {
     );
   }
 
-  if (input.envelopeUsd === null || !(input.envelopeUsd > 0)) return null;
-  const plannedLossUsd = plannedLossAtStopUsd({
-    positionSize: input.positionSize,
-    entryPrice: input.entryPrice,
-    stopPrice: input.planStopPrice,
-  });
-  if (plannedLossUsd <= input.envelopeUsd + PROTECTION_SIZE_EPSILON) return null;
-  return (
-    `the revised plan's stop at ${input.planStopPrice} plans a loss of ` +
-    `$${plannedLossUsd.toFixed(2)}, beyond the $${input.envelopeUsd.toFixed(2)} approved for ` +
-    "this position; the exchange stop was left where it is — trading_exit's move_stop " +
-    "can move it inside the envelope"
-  );
+  const plannedLossAt = (stopPrice: number): number =>
+    plannedLossAtStopUsd({
+      positionSize: input.positionSize,
+      entryPrice: input.entryPrice,
+      stopPrice,
+    });
+
+  const approved = input.envelopeUsd !== null && input.envelopeUsd > 0;
+  const ceilingUsd = approved
+    ? (input.envelopeUsd ?? 0)
+    : input.restingStopPrice === undefined
+      ? null
+      : plannedLossAt(input.restingStopPrice);
+  // A ceiling of zero is a ceiling. `plannedLossAtStopUsd` floors at zero, so a
+  // resting stop that has trailed past break-even plans no loss at all — and
+  // that is the state the fallback matters most in, not the one to skip: a
+  // widening from a stop that had locked in a profit turns a certain gain into
+  // an $88 risk. Only an unreadable approval with nothing resting has no
+  // ceiling to measure against.
+  if (ceilingUsd === null) return null;
+
+  const plannedLossUsd = plannedLossAt(input.planStopPrice);
+  if (plannedLossUsd <= ceilingUsd + PROTECTION_SIZE_EPSILON) return null;
+  return approved
+    ? `the revised plan's stop at ${input.planStopPrice} plans a loss of ` +
+        `$${plannedLossUsd.toFixed(2)}, beyond the $${ceilingUsd.toFixed(2)} approved for ` +
+        "this position; the exchange stop was left where it is — trading_exit's move_stop " +
+        "can move it inside the envelope"
+    : `the approved risk for this position could not be read, so the resting stop stands ` +
+        `in for it: the revised plan's stop at ${input.planStopPrice} plans a loss of ` +
+        `$${plannedLossUsd.toFixed(2)}, beyond the $${ceilingUsd.toFixed(2)} the resting stop ` +
+        "already holds; the exchange stop was left where it is — a tightening would go through";
 };
 
 /** What a plan reconcile needs to know. */
@@ -199,32 +228,8 @@ const readHarnessRestingExitCloids =
       return rows.map((row) => row.cloid);
     }).pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<string>));
 
-/**
- * How far BEFORE the position was first observed open the record that opened it
- * may have been written.
- *
- * The two timestamps come from opposite ends of an entry. An execution record's
- * `created_at` is stamped before the order is signed (§17.2 step 2); the
- * snapshot's `opened_at` is stamped when a later reconcile pass first observes
- * the position non-flat. So the row that carries this position's approved risk
- * is always a little OLDER than the position itself, and a scope of
- * `created_at >= opened_at` excludes precisely the row it exists to find — which
- * left the envelope null and, for a plan that states no
- * `maximumPlannedLossUsd`, the widening gate open.
- *
- * A minute of lead covers signing, the fill and the pass that saw it. It is the
- * same slack `buildClosedTradeReview` gives the same gap. A previous trade that
- * closed inside that minute could still put its own record first; that is a
- * neighbouring approved envelope rather than no envelope at all, which is the
- * right way round to be wrong.
- */
-const ENTRY_RECORD_LEAD_MILLIS = 60_000;
-
-/** Two stop prices closer than this are the same stop (wire precision). */
-const STOP_PRICE_EPSILON_RELATIVE = 1e-5;
-
-const sameStopPrice = (a: number, b: number): boolean =>
-  Math.abs(a - b) <= Math.max(Math.abs(a), Math.abs(b)) * STOP_PRICE_EPSILON_RELATIVE;
+/** Two stop prices the same at wire precision are the same stop. */
+const sameStopPrice = samePrice;
 
 export const makeTradingPlanProtectionService = Effect.gen(function* () {
   const gateway = yield* HyperliquidGateway;
@@ -371,6 +376,7 @@ export const makeTradingPlanProtectionService = Effect.gen(function* () {
         referencePrice: markPx,
         planStopPrice,
         envelopeUsd,
+        ...(resting === null ? {} : { restingStopPrice: resting }),
       });
       if (refusal !== null) {
         yield* Effect.logWarning(

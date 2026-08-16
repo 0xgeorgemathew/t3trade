@@ -52,6 +52,7 @@ import {
   isProtectiveOrder,
   PROTECTION_RECONCILIATION,
   PROTECTION_SIZE_EPSILON,
+  samePrice,
 } from "@t3tools/trading-contracts/protection";
 import { takeProfitLimitPrice } from "@t3tools/trading-contracts/strategy";
 
@@ -729,15 +730,8 @@ export const makeTradingProtectionService = Effect.gen(function* () {
     order.remainingSize > PROTECTION_SIZE_EPSILON &&
     !(order.cloid !== undefined && preserved.has(order.cloid));
 
-  /**
-   * Two targets closer than this are the same target. The wire carries five
-   * significant figures, so a read-back can differ from the derived double by
-   * roughly this much without anything having moved.
-   */
-  const TAKE_PROFIT_PRICE_EPSILON_RELATIVE = 1e-5;
-
-  const sameTargetPrice = (a: number, b: number): boolean =>
-    Math.abs(a - b) <= Math.max(Math.abs(a), Math.abs(b)) * TAKE_PROFIT_PRICE_EPSILON_RELATIVE;
+  /** Two targets the same at wire precision are the same target. */
+  const sameTargetPrice = samePrice;
 
   /**
    * The cloid a take-profit placement uses. The target price is part of the

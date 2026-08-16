@@ -88,6 +88,7 @@ import type { TradingMarket } from "@t3tools/trading-contracts/primitives";
 import {
   isPositionIncreasing,
   PROTECTION_RECONCILIATION,
+  samePrice,
 } from "@t3tools/trading-contracts/protection";
 import { ENTRY_PRICING_VALIDITY_MILLIS } from "@t3tools/trading-contracts/entry";
 import type { TradingMissionStatus } from "@t3tools/trading-contracts";
@@ -299,12 +300,6 @@ interface WorkingLineage {
   /** Re-prices the lineage had before this pass. */
   readonly repriceCount: number;
 }
-
-/** Two prices closer than this are the same price (5 significant wire figures). */
-const PRICE_EPSILON_RELATIVE = 1e-5;
-
-const samePrice = (a: number, b: number): boolean =>
-  Math.abs(a - b) <= Math.max(Math.abs(a), Math.abs(b)) * PRICE_EPSILON_RELATIVE;
 
 /** Sizes below this are rounding, not exposure (see PROTECTION_SIZE_EPSILON). */
 const SIZE_EPSILON = 1e-9;
@@ -571,6 +566,12 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
     readonly market: string;
   }): Effect.Effect<WorkingRecordRow | null> =>
     Effect.gen(function* () {
+      // `size` is matched with exact floating-point equality, which is safe
+      // only because every replacement copies `original.size` byte for byte
+      // (see the reprice path below). The day anything rounds a replacement's
+      // size the lineage breaks silently: the walk finds no ancestor, the wait
+      // clock resets, and an order that has been working for a minute reads as
+      // new.
       const rows = yield* sql<WorkingRecordRow>`
         SELECT execution_id, mission_id, execution_sequence,
                action_type, cloid, market, side, size, stop_price,
@@ -608,6 +609,12 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
     resting: WorkingRecordRow,
   ): Effect.Effect<WorkingLineage> =>
     Effect.gen(function* () {
+      // `size` is matched with exact floating-point equality, which is safe
+      // only because every replacement copies `original.size` byte for byte
+      // (see the reprice path below). The day anything rounds a replacement's
+      // size the lineage breaks silently: the walk finds no ancestor, the wait
+      // clock resets, and an order that has been working for a minute reads as
+      // new.
       const rows = yield* sql<WorkingRecordRow>`
         SELECT execution_id, mission_id, execution_sequence,
                action_type, cloid, market, side, size, stop_price,

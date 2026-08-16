@@ -439,7 +439,7 @@ const validStopDefined: Check = (intent, _ctx) => {
 };
 
 // The ordered list — §16.3 listed order is load-bearing.
-const CHECKS: ReadonlyArray<{ item: PreviewChecklistItem; run: Check }> = [
+const ENTRY_CHECKS: ReadonlyArray<{ item: PreviewChecklistItem; run: Check }> = [
   { item: "mission_active", run: isActive },
   { item: "entries_allowed", run: entriesAllowed },
   { item: "harness_run_owns_lease", run: harnessRunOwnsLease },
@@ -578,7 +578,7 @@ export const previewOrder = (
 ): Effect.Effect<TradingPreview, TradingPreviewRejection> =>
   Effect.gen(function* () {
     const increasing = isPositionIncreasing(intent.actionType);
-    for (const { run } of increasing ? CHECKS : EXIT_CHECKS) {
+    for (const { run } of increasing ? ENTRY_CHECKS : EXIT_CHECKS) {
       yield* run(intent, ctx);
     }
     // Eq 4: reservedRisk = plannedLossAtStop + entryFee + exitFee + slippageReserve.

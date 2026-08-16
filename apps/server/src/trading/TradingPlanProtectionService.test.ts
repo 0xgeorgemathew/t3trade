@@ -20,6 +20,7 @@ import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import type { TradingPlanState } from "./Schemas.ts";
 import {
+  planStopRefusal,
   TradingPlanProtectionService,
   TradingPlanProtectionServiceLive,
 } from "./TradingPlanProtectionService.ts";
@@ -278,18 +279,41 @@ describe("TradingPlanProtectionService (plan 29 step 4.5)", () => {
     Effect.gen(function* () {
       const fake = makeFake();
       // An hour before this position opened is another trade, and its approved
-      // risk says nothing about this one. Out of scope, no envelope, and the
-      // plan states no maximum — so the side check is all that is left and the
-      // move goes through. That is the documented behaviour of an unstated
-      // envelope, not an accident.
+      // risk says nothing about this one. Out of scope, so no envelope is read
+      // and the plan states no maximum either — which used to mean the side
+      // check was all that was left and a widening to 2,800 went through.
+      //
+      // It no longer does: the RESTING stop at 2,950 stands in as the ceiling.
+      // The refusal is the proof that the out-of-scope record supplied nothing
+      // — it names the resting stop rather than an approval, and the $25.00 it
+      // quotes is the resting stop's own planned loss, not the record's
+      // envelope (which happens to be $25 too, and would have been reported in
+      // the other sentence).
       const outcome = yield* reconcile(fake, plan(2_800), {
+        entryCreatedAt: POSITION_OPENED_AT - 3_600_000,
+      });
+
+      assert.equal(outcome.stopStatus, "refused");
+      assert.deepEqual(fake.replacements, []);
+      assert.include(outcome.refusal ?? "", "could not be read");
+      assert.include(outcome.refusal ?? "", "the resting stop stands in for it");
+    }),
+  );
+
+  it.effect("still tightens freely when no envelope can be read at all", () =>
+    Effect.gen(function* () {
+      const fake = makeFake();
+      // The same out-of-scope record, and a stop that TIGHTENS to 2,970. The
+      // fallback ceiling is a ceiling, not a freeze: this is the watchdog's
+      // repair path too, and it must not wedge.
+      const outcome = yield* reconcile(fake, plan(2_970), {
         entryCreatedAt: POSITION_OPENED_AT - 3_600_000,
       });
 
       assert.equal(outcome.stopStatus, "moved");
       assert.deepEqual(
         fake.replacements.map((r) => r.stopPrice),
-        [2_800],
+        [2_970],
       );
     }),
   );
@@ -354,4 +378,87 @@ describe("TradingPlanProtectionService (plan 29 step 4.5)", () => {
       assert.deepEqual(fake.replacements, []);
     }),
   );
+});
+
+/**
+ * The envelope rule on its own, without the database.
+ *
+ * `planStopRefusal` is where "a revision may tighten but not widen" is actually
+ * decided, and the case worth pinning is the one where nothing approved can be
+ * read: the fallback has to hold even when the resting stop plans NO loss,
+ * because a stop trailed past break-even is exactly the one a widening costs
+ * the most.
+ */
+describe("planStopRefusal — the fallback ceiling", () => {
+  // Long 0.5 ETH from 3,000. A stop at 2,950 plans $25 of loss.
+  const long = { positionSize: 0.5, entryPrice: 3_000, referencePrice: 3_000 };
+
+  it("refuses a widening against the resting stop when no approval can be read", () => {
+    const refusal = planStopRefusal({
+      ...long,
+      planStopPrice: 2_900,
+      envelopeUsd: null,
+      restingStopPrice: 2_950,
+    });
+
+    assert.isNotNull(refusal);
+    assert.include(refusal ?? "", "could not be read");
+    assert.include(refusal ?? "", "$25.00");
+  });
+
+  it("still allows a tightening when no approval can be read", () => {
+    assert.isNull(
+      planStopRefusal({
+        ...long,
+        planStopPrice: 2_970,
+        envelopeUsd: null,
+        restingStopPrice: 2_950,
+      }),
+    );
+  });
+
+  it("treats a resting stop past break-even as a ceiling of zero, not as no ceiling", () => {
+    // The stop has trailed to 3,010 — above entry, so it plans no loss at all
+    // and locks in a gain. A plan that drops it back to 2,900 is asking to turn
+    // a certain profit into $50 of risk, and there is no approval to say it may.
+    const refusal = planStopRefusal({
+      ...long,
+      referencePrice: 3_050,
+      planStopPrice: 2_900,
+      envelopeUsd: null,
+      restingStopPrice: 3_010,
+    });
+
+    assert.isNotNull(refusal);
+    assert.include(refusal ?? "", "$0.00");
+  });
+
+  it("permits a move between two stops that both plan no loss", () => {
+    assert.isNull(
+      planStopRefusal({
+        ...long,
+        referencePrice: 3_050,
+        planStopPrice: 3_005,
+        envelopeUsd: null,
+        restingStopPrice: 3_010,
+      }),
+    );
+  });
+
+  it("has no ceiling to measure against when nothing is resting either", () => {
+    assert.isNull(planStopRefusal({ ...long, planStopPrice: 2_900, envelopeUsd: null }));
+  });
+
+  it("prefers the approved envelope over the resting stop when both are known", () => {
+    // Approved at $40, resting at 2,950 ($25). A move to 2,930 plans $35 —
+    // outside the resting stop, inside the approval, and the approval wins.
+    assert.isNull(
+      planStopRefusal({
+        ...long,
+        planStopPrice: 2_930,
+        envelopeUsd: 40,
+        restingStopPrice: 2_950,
+      }),
+    );
+  });
 });

@@ -23,7 +23,7 @@ import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
-import { isProtectiveOrder } from "@t3tools/trading-contracts/protection";
+import { ENTRY_RECORD_LEAD_MILLIS, isProtectiveOrder } from "@t3tools/trading-contracts/protection";
 import {
   checkStopAdjustment,
   plannedLossAtStopUsd,
@@ -248,10 +248,16 @@ const make = Effect.gen(function* () {
       // mission's life belongs to whatever trade opened first, and after a
       // direction flip it can sit on the wrong side entirely — an envelope that
       // would refuse every loosening or approve any widening.
+      //
+      // With a minute of lead, because the record that opened the position was
+      // written before the pass that noticed it: without the lead this scope
+      // excludes precisely the row it exists to find, falls back to whatever
+      // stop is resting, and a stop that once tightened can never move back
+      // out — not even inside the approval. See ENTRY_RECORD_LEAD_MILLIS.
       const originalStopPrice = yield* sql<{ readonly stop_price: number | null }>`
         SELECT stop_price FROM trading_execution_records
         WHERE mission_id = ${input.missionId} AND market = ${input.market}
-          AND stop_price IS NOT NULL AND created_at >= ${openedAt}
+          AND stop_price IS NOT NULL AND created_at >= ${openedAt - ENTRY_RECORD_LEAD_MILLIS}
         ORDER BY created_at ASC LIMIT 1
       `.pipe(
         Effect.mapError(toPersistenceSqlError("TradingStopAdjustmentService.envelope")),

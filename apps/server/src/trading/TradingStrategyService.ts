@@ -202,7 +202,26 @@ const makeTradingStrategyService = Effect.gen(function* () {
       `.pipe(Effect.mapError(sqlFail("getCurrentStrategy")));
 
       const row = rows[0];
-      return row === undefined ? Option.none() : Option.some(decodeStrategyJson(row.strategy_json));
+      if (row === undefined) return Option.none();
+
+      // A row the current schema cannot read behaves like no plan at all, not
+      // like a crashed turn. This read is on the wake path, the `trading_look`
+      // path, `move_stop`'s staleness check and the drag path — and a throw on
+      // the wake path fails the run, consumes the watch that woke it, and
+      // leaves nothing to wake the mission again. The history read next door
+      // has skipped bad rows since it was written; this one throwing was the
+      // asymmetry. Migration 062 rewrote every stored plan; the next one like
+      // it is where this earns its keep.
+      return yield* Effect.try(() => Option.some(decodeStrategyJson(row.strategy_json))).pipe(
+        Effect.tapError((cause) =>
+          Effect.logWarning(
+            "TradingStrategyService: the mission's current plan could not be decoded; " +
+              "reading it as no plan",
+            { missionId, cause },
+          ),
+        ),
+        Effect.orElseSucceed(() => Option.none<TradingPlanState>()),
+      );
     });
 
   const listWatches: TradingStrategyServiceShape["listWatches"] = (missionId) =>
@@ -322,39 +341,59 @@ const makeTradingStrategyService = Effect.gen(function* () {
       // plan existing with triggers armed is the other, see
       // `TradingWatchService.registerWatch`); pinning the source status in the
       // CASE is the whole legality check, and no other status is touched.
-      const bumped = yield* sql<{ readonly mission_id: string }>`
-        UPDATE trading_missions
-        SET status = CASE WHEN status = 'analysing' THEN 'waiting' ELSE status END,
-            version = version + 1,
-            updated_at = ${now}
-        WHERE mission_id = ${missionId} AND version = ${input.expectedMissionVersion}
-        RETURNING mission_id
-      `.pipe(Effect.mapError(sqlFail("publish:bumpMission")));
+      //
+      // One transaction, because the bump and the plan row are one fact. A
+      // failure between them — a full disk, a busy database, a process killed
+      // — used to leave the mission saying `waiting` at a version with no plan
+      // under it: `getCurrentStrategy` returns nothing, the panel shows a
+      // waiting mission with nothing beneath it, and `move_stop` skips its
+      // staleness check because there is no plan to be stale against. Step 8.4
+      // gave this path a second caller, so an operator dragging a stop can
+      // reach it too.
+      const staleVersion = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const bumped = yield* sql<{ readonly mission_id: string }>`
+              UPDATE trading_missions
+              SET status = CASE WHEN status = 'analysing' THEN 'waiting' ELSE status END,
+                  version = version + 1,
+                  updated_at = ${now}
+              WHERE mission_id = ${missionId} AND version = ${input.expectedMissionVersion}
+              RETURNING mission_id
+            `;
 
-      if (bumped.length === 0) {
-        const fresh = yield* sql<{ readonly version: number }>`
-          SELECT version FROM trading_missions WHERE mission_id = ${missionId}
-        `.pipe(Effect.mapError(sqlFail("publish:rereadMission")));
+            if (bumped.length === 0) {
+              const fresh = yield* sql<{ readonly version: number }>`
+                SELECT version FROM trading_missions WHERE mission_id = ${missionId}
+              `;
+              return fresh[0]?.version ?? input.expectedMissionVersion;
+            }
+
+            // The history append: rows keep their own per-mission counter and
+            // PK, so the journal stays ordered. Nothing gates on this table —
+            // reads of the current plan are latest-by-version, and the mission
+            // row points at nothing here.
+            const latest = yield* sql<{ readonly version: number }>`
+              SELECT MAX(version) AS version FROM trading_plan_history
+              WHERE mission_id = ${missionId}
+            `;
+
+            yield* sql`
+              INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
+              VALUES (${missionId}, ${(latest[0]?.version ?? 0) + 1}, ${encodeStrategyJson(strategy)}, ${now})
+            `;
+            return null;
+          }),
+        )
+        .pipe(Effect.mapError(sqlFail("publish:write")));
+
+      if (staleVersion !== null) {
         return {
           outcome: "rejected",
           reason: "stale_mission_state",
-          currentVersion: fresh[0]?.version ?? input.expectedMissionVersion,
+          currentVersion: staleVersion,
         } as const;
       }
-
-      // The history append: rows keep their own per-mission counter and PK,
-      // so the journal stays ordered. Nothing gates on this table — reads of
-      // the current plan are latest-by-version, and the mission row points at
-      // nothing here.
-      const latest = yield* sql<{ readonly version: number }>`
-        SELECT MAX(version) AS version FROM trading_plan_history
-        WHERE mission_id = ${missionId}
-      `.pipe(Effect.mapError(sqlFail("publish:readLatestVersion")));
-
-      yield* sql`
-        INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
-        VALUES (${missionId}, ${(latest[0]?.version ?? 0) + 1}, ${encodeStrategyJson(strategy)}, ${now})
-      `.pipe(Effect.mapError(sqlFail("publish:insertStrategy")));
 
       // Watches survive the revision (plan 29 step 4.2): a plan that changes
       // its mind about a level cancels or replaces the watch itself, and a
