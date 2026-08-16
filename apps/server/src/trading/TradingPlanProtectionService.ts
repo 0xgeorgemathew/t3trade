@@ -190,6 +190,27 @@ const readHarnessRestingExitCloids =
       return rows.map((row) => row.cloid);
     }).pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<string>));
 
+/**
+ * How far BEFORE the position was first observed open the record that opened it
+ * may have been written.
+ *
+ * The two timestamps come from opposite ends of an entry. An execution record's
+ * `created_at` is stamped before the order is signed (§17.2 step 2); the
+ * snapshot's `opened_at` is stamped when a later reconcile pass first observes
+ * the position non-flat. So the row that carries this position's approved risk
+ * is always a little OLDER than the position itself, and a scope of
+ * `created_at >= opened_at` excludes precisely the row it exists to find — which
+ * left the envelope null and, for a plan that states no
+ * `maximumPlannedLossUsd`, the widening gate open.
+ *
+ * A minute of lead covers signing, the fill and the pass that saw it. It is the
+ * same slack `buildClosedTradeReview` gives the same gap. A previous trade that
+ * closed inside that minute could still put its own record first; that is a
+ * neighbouring approved envelope rather than no envelope at all, which is the
+ * right way round to be wrong.
+ */
+const ENTRY_RECORD_LEAD_MILLIS = 60_000;
+
 /** Two stop prices closer than this are the same stop (wire precision). */
 const STOP_PRICE_EPSILON_RELATIVE = 1e-5;
 
@@ -314,9 +335,10 @@ export const makeTradingPlanProtectionService = Effect.gen(function* () {
       }
 
       // The envelope: the entry record's approved planned loss for THIS
-      // position, else the plan's own maximum. Scoped like the stop-adjustment
-      // service's — since the position opened, so a prior trade's record
-      // cannot veto this one's move.
+      // position, else the plan's own maximum. Scoped to the position — a prior
+      // trade's record must not veto this one's move — but with a minute of
+      // lead, because the record that opened the position predates the
+      // observation that noticed it. See ENTRY_RECORD_LEAD_MILLIS.
       const opened = yield* sql<{ readonly opened_at: number | null }>`
         SELECT opened_at FROM trading_position_snapshots
         WHERE mission_id = ${input.missionId} AND market = ${plan.market} AND size != 0
@@ -326,7 +348,7 @@ export const makeTradingPlanProtectionService = Effect.gen(function* () {
         SELECT planned_loss_at_stop_usd FROM trading_execution_records
         WHERE mission_id = ${input.missionId} AND market = ${plan.market}
           AND stop_price IS NOT NULL AND planned_loss_at_stop_usd IS NOT NULL
-          AND created_at >= ${openedAt}
+          AND created_at >= ${openedAt - ENTRY_RECORD_LEAD_MILLIS}
         ORDER BY created_at ASC
         LIMIT 1
       `.pipe(Effect.orElseSucceed(() => [] as Array<{ readonly planned_loss_at_stop_usd: null }>));

@@ -44,18 +44,34 @@ Read this section first; everything below it is the record.
   own working tree back to me, not a discovery. **Do not let it convince you
   step 8.1 was already landed at `add220b1a`.** It was not; it is `cb546eef8`.
   I have left the appendix untouched and uncommitted, as I found it.
-- **That appendix's §A1 alleges a live risk-gate hole, and I have not acted on
-  it.** It claims `TradingPlanProtectionService`'s widening guard never fires,
-  because the query that finds the entry's execution record filters
-  `created_at >= openedAt` while `created_at` is stamped before signing and
-  `opened_at` after the fill — so the filter excludes the one row it exists to
-  find, and a plan omitting `maximumPlannedLossUsd` gets a null envelope and
-  skips the check. If that is right it is the most important thing in this
-  repository right now and it is worth more than all of phase 8. It is also
-  server-side, outside phases 8–10, written by an agent whose §A15 I have just
-  shown to be mistaken, and unverified by me. Tightening a gate on someone
-  else's unchecked reading, unsupervised, is not a call I should make. Read A1
-  yourself first.
+- **The envelope hole was real, and it is closed.** The reading flagged above
+  was checked against the code and reproduced: `TradingPlanProtectionService`
+  scoped the entry's approved risk to `created_at >= opened_at`, and those two
+  timestamps come from opposite ends of an entry — the execution record is
+  persisted before the order is signed, `opened_at` is stamped by the reconcile
+  pass that later saw the fill. The record is therefore always the older of the
+  two and the filter excluded exactly the row it existed to find. With no row
+  the envelope fell back to `plan.stop.maximumPlannedLossUsd`, which is
+  optional, and a plan that omitted it could widen its stop without limit at
+  publish time.
+
+  What hid it was the test fixture, which seeded `opened_at 500` against a
+  record `created_at 600` — the production order inverted, so the gate passed
+  its tests by being handed a world it never sees. The fixture now stamps them
+  in the real order, and two of the suite's tests fail without the fix.
+
+  Fixed in `ENTRY_RECORD_LEAD_MILLIS`: a minute of lead on the lower bound,
+  the same slack `buildClosedTradeReview` already gives the same gap. See the
+  entry below.
+
+- **The same query shape is in `TradingStopAdjustmentService` and I left it
+  alone.** Line 254 scopes the original stop the same wrong way, but its
+  fallback is `currentStopPrice` rather than null — so the effective envelope
+  becomes the stop currently resting, and every widening is refused. That is
+  _stricter_ than designed, not a hole: `move_stop` cannot widen at all today,
+  where the plan says it may widen inside the approved envelope. Correcting it
+  would loosen a live gate, which is your call and not one to make
+  unsupervised. Flagging it, not touching it.
 - **I briefly committed two of your uncommitted files and then took them back
   out.** `git commit -a` swept `apps/marketing/src/pages/index.astro`,
   `docs/architecture/agent-tool-architecture-research.md`,
@@ -358,3 +374,54 @@ because the note has to be a fact about what happened and not a caption. That
 is what puts it in front of the model on its next wake.
 
 **Not yet started.** The extraction commit is the next thing.
+
+---
+
+## Out of band — the plan-driven stop's envelope was never found
+
+Not a plan-29 step. A risk gate that was not firing, verified and closed before
+the run continues.
+
+**What was wrong.** `reconcilePlan` refuses a revision that would widen the
+position's planned loss past the approved envelope. The envelope is the entry
+execution record's `planned_loss_at_stop_usd`, scoped to this position so a
+previous trade cannot veto this one's move. That scope was `created_at >=
+opened_at`, and the two timestamps are stamped by opposite halves of an entry:
+the execution record is persisted _before_ the order is signed (§17.2 step 2),
+and `opened_at` comes from the reconcile pass that _later_ observed the position
+non-flat. The entry record is therefore always some seconds older than the
+position it opened, and the filter excluded it every time.
+
+With no row the envelope fell through to `plan.stop.maximumPlannedLossUsd`,
+which is optional. A plan that stated no maximum published a stop anywhere on
+the losing side and it was applied — the side check was the only gate left.
+
+**Why the tests were green.** The fixture seeded the position at `opened_at 500`
+and the entry record at `created_at 600` — the production order inverted. The
+gate was being asked a question it is never asked in production. The fixture now
+stamps the record before the open, in named constants that say why, and the
+existing widening test fails without the fix.
+
+**The fix.** `ENTRY_RECORD_LEAD_MILLIS = 60_000` on the lower bound. It is not
+an arbitrary cushion: `buildClosedTradeReview` already gives the same gap the
+same minute of slack when it looks for the entry context behind a closed trade,
+so this is the codebase's own answer to the same question, applied where it was
+missing. A previous trade that closed inside that minute could still put its
+record first — a neighbouring approved envelope rather than no envelope, which
+is the right way round to be wrong, and it is said in the constant's comment.
+
+**Tests.** Two added: one asserts the envelope is found with the record
+predating the open (the regression, and it fails without the fix), one asserts a
+record an hour older — a previous trade's — stays out of scope and leaves the
+unstated-envelope behaviour exactly as documented.
+
+**Numbers.** Typecheck 0 errors. `apps/server/src/trading` 533 passed / 3
+skipped across 45 files. `TradingPlanProtectionService.test.ts` 9 passed, and 2
+failed when the bound was temporarily reverted, which is how the reproduction
+was confirmed rather than assumed.
+
+**Bearing on 8.4.** The drag's second on-screen failure — "accepted publish,
+refused reconcile" — is a real state the panel has to render. Before this fix it
+was a state that could not occur for a plan without a stated maximum, which
+would have made that half of 8.4 untestable and, worse, would have let a drag
+widen a stop past the approved risk.

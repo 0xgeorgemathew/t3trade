@@ -152,8 +152,23 @@ const protectionLayer = (fake: FakeExchange) =>
       }),
   } as unknown as TradingProtectionService["Service"]);
 
+/**
+ * When the entry record was written, and when the position was first observed.
+ *
+ * In that order, because that is the order the system stamps them in: the
+ * execution record is persisted before the order is signed, and `opened_at`
+ * comes from the reconcile pass that later saw the fill. A fixture with these
+ * the other way round hides the scope bug they caused.
+ */
+const ENTRY_CREATED_AT = 3_000_000;
+const POSITION_OPENED_AT = 3_005_000;
+
 /** Migrate and seed the position row plus the entry's approved envelope. */
-const seed = (input?: { readonly envelopeUsd?: number | null }) =>
+const seed = (input?: {
+  readonly envelopeUsd?: number | null;
+  /** Override the entry record's timestamp — see ENTRY_CREATED_AT. */
+  readonly entryCreatedAt?: number;
+}) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({ toMigrationInclusive: 65 });
@@ -164,7 +179,8 @@ const seed = (input?: { readonly envelopeUsd?: number | null }) =>
         mission_id, market, size, unrealised_pnl, margin_used, protected_size,
         entry_price, opened_at, observed_at
       ) VALUES (
-        ${MISSION}, 'ETH', ${LONG_SIZE}, 0, 100, ${LONG_SIZE}, ${ENTRY}, 500, 1000
+        ${MISSION}, 'ETH', ${LONG_SIZE}, 0, 100, ${LONG_SIZE}, ${ENTRY},
+        ${POSITION_OPENED_AT}, ${POSITION_OPENED_AT + 5_000}
       )
     `;
     if (input?.envelopeUsd !== null) {
@@ -177,7 +193,8 @@ const seed = (input?: { readonly envelopeUsd?: number | null }) =>
         ) VALUES (
           'exec_entry', ${MISSION}, 0, 'open', '0xentry', 'idem_entry',
           'ETH', 'buy', ${LONG_SIZE}, ${ENTRY}, 'ioc', 0, '0xsigner', 'filled', '[]',
-          600, 600, 2950, ${input?.envelopeUsd ?? 25}
+          ${input?.entryCreatedAt ?? ENTRY_CREATED_AT},
+          ${input?.entryCreatedAt ?? ENTRY_CREATED_AT}, 2950, ${input?.envelopeUsd ?? 25}
         )
       `;
     }
@@ -235,6 +252,45 @@ describe("TradingPlanProtectionService (plan 29 step 4.5)", () => {
       assert.deepEqual(fake.replacements, []);
       assert.include(outcome.refusal ?? "", "beyond the $25.00 approved");
       assert.include(outcome.refusal ?? "", "left where it is");
+    }),
+  );
+
+  it.effect("finds the entry's envelope even though the record predates the position", () =>
+    Effect.gen(function* () {
+      const fake = makeFake();
+      // The whole point, stated on its own because it is a risk gate. The entry
+      // record is written before signing and `opened_at` is stamped by the pass
+      // that later saw the fill, so the record is always the older of the two —
+      // and the plan below states no `maximumPlannedLossUsd`, so if the scope
+      // misses the record there is no envelope at all and this $100 loss goes
+      // straight through.
+      const outcome = yield* reconcile(fake, plan(2_800), {
+        entryCreatedAt: POSITION_OPENED_AT - 30_000,
+      });
+
+      assert.equal(outcome.stopStatus, "refused");
+      assert.deepEqual(fake.replacements, []);
+      assert.include(outcome.refusal ?? "", "beyond the $25.00 approved");
+    }),
+  );
+
+  it.effect("leaves a previous trade's record out of the envelope", () =>
+    Effect.gen(function* () {
+      const fake = makeFake();
+      // An hour before this position opened is another trade, and its approved
+      // risk says nothing about this one. Out of scope, no envelope, and the
+      // plan states no maximum — so the side check is all that is left and the
+      // move goes through. That is the documented behaviour of an unstated
+      // envelope, not an accident.
+      const outcome = yield* reconcile(fake, plan(2_800), {
+        entryCreatedAt: POSITION_OPENED_AT - 3_600_000,
+      });
+
+      assert.equal(outcome.stopStatus, "moved");
+      assert.deepEqual(
+        fake.replacements.map((r) => r.stopPrice),
+        [2_800],
+      );
     }),
   );
 
