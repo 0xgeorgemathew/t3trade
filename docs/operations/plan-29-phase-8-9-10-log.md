@@ -622,3 +622,48 @@ Protected Full` and the footer `Funding 0.0013%/8h · 24h +1.84%` under the
 holding panel, `24h +1.84%` alone under the armed one.
 
 **Found broken, not mine.** Nothing new.
+
+---
+
+## Step 8.6 — State-driven layout — `9c10e357f`
+
+The step's own note said what remained: the four states already differ in
+_which_ bands they draw and drew them in the same order regardless, so a
+state's own subject could end up third down the card.
+
+**What changed.** Order, per state, and nothing else — no band gained or lost
+content, and the visual system is untouched. `armed` puts the schedule strip
+and the armed checklist above the chart: an armed mission is a question about
+what it is waiting for, and the chart is the picture that explains the answer
+rather than the answer. `live` keeps the chart at the top — it is the shape of
+the trade — and moves the held strip directly under it; before this the
+checklist stood between a position's chart and its own size and protection.
+`planning` has neither band. `complete` draws no chart at all.
+
+The drag's refusal/lock-lost line rides with the chart wherever the chart goes,
+because it is a sentence about a level that was just moved.
+
+**Decisions you might have made differently.** I did not give `planning` its
+own order. It has a header, a chart and a footer, and there is nothing to
+reorder — but you could argue the planning state should lead with the mark and
+the countdown as text and demote the candles, since a mission that has
+published nothing is not yet about a level. I left it because the chart is the
+only thing on that card carrying any information at all, and burying it would
+leave a panel that says "thinking".
+
+I also did not split `live` by whether the position is protected. An unprotected
+position is arguably a different question from a protected one — but protection
+is already the one figure on the held strip that takes a colour, and a fifth
+layout keyed on it would be a state the rest of the panel does not model.
+
+**Numbers.** `pnpm typecheck` 0 errors. `apps/web` trading suites 262 passed (5
+files) — no new tests: the reorder is JSX order, `readPanelState` is unchanged,
+and its existing suite passing is the signal that the states themselves did not
+move. `pnpm lint` 35 warnings, same 2 pre-existing errors.
+
+**Verified in the browser.** `8-6-state-driven-layout-desktop.png` (1280) and
+`-phone.png` (375). The holding panel reads header → chart → `HELD` → `NEXT`;
+the armed panel reads header → `NEXT` → chart. That is the change, and it is
+the whole change.
+
+**Found broken, not mine.** Nothing new.
