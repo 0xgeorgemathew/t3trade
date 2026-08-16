@@ -355,6 +355,7 @@ const EMPTY_SURFACES: ExecutionSurfaces = {
 
 const toMission = (
   row: ProjectionRow,
+  missionVersion: number,
   exec: ExecutionSurfaces,
   strategy: TradingPlanState | null,
   missionTimeline: ReadonlyArray<TradingMissionTimelineEntry>,
@@ -370,6 +371,12 @@ const toMission = (
     blockedReason: row.blocked_reason === null ? null : decodeBlockedReason(row.blocked_reason),
     authority: decodeAuthorityJson(row.authority_json),
     authorityVersion: row.authority_version,
+    // Read live from `trading_missions` rather than projected, because it is an
+    // optimistic lock: plan 29 step 8.4's drag sends it back as
+    // `expectedMissionVersion`, and a projected copy that lagged one publish
+    // would refuse every drag with "the model republished underneath you" when
+    // nothing had.
+    missionVersion,
     strategy,
     watches: decodeWatchesJson(row.watches_json),
     control: decodeControlJson(row.control_json),
@@ -679,6 +686,15 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       return buildMissionTimeline({ wakes, stopAdjustments, publishes, journal });
     });
 
+  /** The mission row's own optimistic-lock version, live. */
+  const readMissionVersion = (missionId: string) =>
+    sql<{ readonly version: number }>`
+      SELECT version FROM trading_missions WHERE mission_id = ${missionId}
+    `.pipe(
+      Effect.map((rows) => rows[0]?.version ?? 0),
+      Effect.mapError(sqlFail("readMissionVersion")),
+    );
+
   const getByThreadId: TradingMissionProjectionShape["getByThreadId"] = (threadId) =>
     Effect.gen(function* () {
       const rows = yield* sql<ProjectionRow>`
@@ -689,7 +705,8 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       const exec = yield* readExecutionSurfaces(row.mission_id);
       const strategy = yield* readStrategy(row);
       const timeline = yield* readMissionTimeline(row.mission_id);
-      return Option.some(toMission(row, exec, strategy, timeline));
+      const missionVersion = yield* readMissionVersion(row.mission_id);
+      return Option.some(toMission(row, missionVersion, exec, strategy, timeline));
     });
 
   const list: TradingMissionProjectionShape["list"] = () =>
@@ -704,8 +721,10 @@ const makeTradingMissionProjection = Effect.gen(function* () {
               readExecutionSurfaces(row.mission_id),
               readStrategy(row),
               readMissionTimeline(row.mission_id),
+              readMissionVersion(row.mission_id),
             ]),
-            ([exec, strategy, timeline]) => toMission(row, exec, strategy, timeline),
+            ([exec, strategy, timeline, missionVersion]) =>
+              toMission(row, missionVersion, exec, strategy, timeline),
           ),
         ),
         { concurrency: "unbounded" },

@@ -58,7 +58,7 @@ import type {
   TradingMarketChartView,
 } from "@t3tools/contracts";
 import { ChevronDown, ChevronUp, ExternalLinkIcon } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 
 import { runtimeTimeframe } from "@t3tools/trading-contracts/strategy";
 
@@ -68,6 +68,7 @@ import { cn } from "~/lib/utils";
 import { Skeleton } from "../ui/skeleton";
 
 import { MissionPriceChart } from "./MissionPriceChart";
+import { useMissionPlanRevision } from "./useMissionPlanRevision";
 import {
   dedupeConditions,
   deriveEntryFillAtMillis,
@@ -75,6 +76,7 @@ import {
   deriveTargetPrice,
   selectVisibleCandles,
   MAX_DRAWN_CONDITIONS,
+  type ChartLevelKind,
 } from "./missionChartGeometry";
 import {
   deriveChartConditions,
@@ -277,6 +279,32 @@ export function MissionLivePanel({
       : formatDuration(nowMillis - resolvedEntryMillis);
 
   const exchangeUrl = hyperliquidTradeUrl(mission.market, mission.tradingAccountId);
+
+  // --- The operator's own hand on the plan (step 8.4). ----------------------
+  //
+  // A drag is a `plan()` revision, so it needs the plan the model published and
+  // the mission version the panel last read. Both come off the projection; the
+  // eight authored fields go out unchanged but for the one leaf that moved.
+  const revision = useMissionPlanRevision(mission.id, environmentId);
+  const onLevelDragEnd = useCallback(
+    (kind: ChartLevelKind, price: number) => {
+      if (strategy === null) return;
+      if (kind === "stop")
+        revision.revise(strategy, { kind: "stop", price }, mission.missionVersion);
+      if (kind === "target")
+        revision.revise(strategy, { kind: "target", price }, mission.missionVersion);
+    },
+    [mission.missionVersion, revision, strategy],
+  );
+  // Only what the plan actually states. A stop rule drawn from a plan with no
+  // stop price would be draggable into publishing a price the plan never had.
+  const draggableKinds: ReadonlyArray<ChartLevelKind> =
+    strategy === null
+      ? []
+      : [
+          ...(stopPrice === null ? [] : (["stop"] as const)),
+          ...(strategy.target.price === undefined ? [] : (["target"] as const)),
+        ];
 
   // --- Chart feed. ----------------------------------------------------------
   // Planning draws candles too. The chart needs a market and an interval, both
@@ -551,8 +579,30 @@ export function MissionLivePanel({
           triggerExpiryAt={triggerExpiryAt}
           timeMarkers={timeMarkers}
           pastMarkers={pastMarkers}
+          draggableKinds={draggableKinds}
+          onLevelDragEnd={onLevelDragEnd}
+          refusedStop={revision.refusedStop}
+          positionSize={position?.size ?? null}
         />
       </div>
+
+      {/* What the last drag came back saying. Two sentences and no third: the
+          model republished underneath it, or the exchange refused to move the
+          stop. Both stay until the operator drags again — a message that
+          disappears on a timer is one they will miss while looking at the
+          chart. */}
+      {revision.lockLost || revision.refusedStop !== null || revision.error !== null ? (
+        <button
+          type="button"
+          onClick={revision.dismiss}
+          data-testid="mission-revision-note"
+          className="w-full px-3 py-1.5 text-left text-[11px] leading-snug text-muted-foreground"
+        >
+          {revision.lockLost
+            ? "The model republished the plan while you were dragging, so the level snapped back. Drag again against what is there now."
+            : (revision.refusedStop?.detail ?? revision.error)}
+        </button>
+      ) : null}
 
       {/* The schedule, as one row of pills: what happens next, in the order it
           is likely to arrive. The checklist below says what is armed; this says
@@ -826,6 +876,10 @@ function ChartSlot(props: {
   readonly triggerExpiryAt: number | null;
   readonly timeMarkers: ReadonlyArray<ChartTimeMarkerInput>;
   readonly pastMarkers: ReadonlyArray<ChartPastMarkerInput>;
+  readonly draggableKinds: ReadonlyArray<ChartLevelKind>;
+  readonly onLevelDragEnd: (kind: ChartLevelKind, price: number) => void;
+  readonly refusedStop: { readonly planPrice: number; readonly detail: string } | null;
+  readonly positionSize: number | null;
 }): ReactNode {
   const { data, isLoading, error } = props;
 
@@ -877,6 +931,18 @@ function ChartSlot(props: {
         {...(props.triggerExpiryAt === null ? {} : { triggerExpiryAt: props.triggerExpiryAt })}
         timeMarkers={props.timeMarkers}
         pastMarkers={props.pastMarkers}
+        draggableKinds={props.draggableKinds}
+        onLevelDragEnd={props.onLevelDragEnd}
+        refusedLevel={
+          props.refusedStop === null
+            ? null
+            : {
+                kind: "stop",
+                planPrice: props.refusedStop.planPrice,
+                detail: props.refusedStop.detail,
+              }
+        }
+        positionSize={props.positionSize}
         className={CHART_HEIGHT_CLASS}
       />
     );

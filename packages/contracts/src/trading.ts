@@ -235,6 +235,12 @@ export const OrchestrationTradingMission = Schema.Struct({
 
   authority: TradingAuthority,
   authorityVersion: NonNegativeInt,
+  /**
+   * The mission row's optimistic-lock version — what `trading_look` hands the
+   * model as `missionVersion`, and what plan 29 step 8.4's drag sends back as
+   * `expectedMissionVersion`. Read live, never projected.
+   */
+  missionVersion: NonNegativeInt,
 
   strategy: Schema.NullOr(TradingPlanState),
 

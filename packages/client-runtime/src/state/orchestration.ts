@@ -3,7 +3,11 @@ import { Atom } from "effect/unstable/reactivity";
 
 import * as Crypto from "effect/Crypto";
 
-import { createEnvironmentCommand, createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
+import {
+  createEnvironmentCommand,
+  createEnvironmentRpcCommand,
+  createEnvironmentRpcQueryAtomFamily,
+} from "./runtime.ts";
 import {
   type TradingMissionControlInput,
   type TradingMissionCreateInput,
@@ -64,6 +68,15 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
     riskControl: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:trading:risk-control",
       execute: (input: TradingRiskControlInput) => tradingRiskControl(input),
+    }),
+    // Plan 29 step 8.4: dragging a level on the chart. An RPC command rather
+    // than a dispatched orchestration command because the operator needs the
+    // answer, not an acknowledgement — a lost optimistic lock and a reconcile
+    // that refused to widen a stop both have to be on screen before they let
+    // go of the level.
+    reviseTradingPlan: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:trading:revise-plan",
+      tag: ORCHESTRATION_WS_METHODS.reviseTradingPlan,
     }),
     missionCreate: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:trading:mission-create",

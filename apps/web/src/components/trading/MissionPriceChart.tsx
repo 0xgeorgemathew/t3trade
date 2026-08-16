@@ -28,6 +28,8 @@
 // rather than `<text>` inside it: undistorted at any width, and it gets
 // ellipsis and wrapping for free.
 
+import { useRef, useState } from "react";
+
 import type { TradingChartCandle } from "@t3tools/contracts";
 
 import { cn } from "~/lib/utils";
@@ -119,6 +121,37 @@ interface MissionPriceChartProps {
     readonly cause?: string | undefined;
     readonly failed?: boolean | undefined;
   }>;
+  /**
+   * Which levels the operator may drag, and what to do when they let go.
+   *
+   * A drag is a `plan()` revision — the same eight authored fields the model
+   * publishes, with one leaf replaced — so the chart's job here is narrow: turn
+   * a pointer into a price and hand it over. It holds no plan of its own and
+   * decides nothing about whether the revision is allowed.
+   */
+  readonly draggableKinds?: ReadonlyArray<ChartLevelKind>;
+  readonly onLevelDragEnd?: (kind: ChartLevelKind, price: number) => void;
+  /**
+   * A level the exchange refused to move, drawn twice.
+   *
+   * The rule stays where the stop actually rests, and the price the plan now
+   * states is drawn in the hypothetical register the future gutter uses — which
+   * is exactly what that register is for: a claim about a level, not a record
+   * of one. Without this the panel would draw the dragged price as fact while
+   * the position sat behind a different stop.
+   */
+  readonly refusedLevel?: {
+    readonly kind: ChartLevelKind;
+    readonly planPrice: number;
+    readonly detail: string;
+  } | null;
+  /**
+   * Signed position size, used only for the live risk readout under the
+   * pointer while a stop is being dragged. Null while flat — there is no
+   * planned loss without a position, and inventing one would be a number the
+   * operator could act on.
+   */
+  readonly positionSize?: number | null;
   readonly className?: string;
 }
 
@@ -354,8 +387,17 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     triggerExpiryAt,
     timeMarkers,
     pastMarkers,
+    draggableKinds,
+    onLevelDragEnd,
+    refusedLevel,
+    positionSize,
     className,
   } = props;
+  const [drag, setDrag] = useState<{
+    readonly kind: ChartLevelKind;
+    readonly price: number;
+  } | null>(null);
+  const frameRef = useRef<HTMLDivElement | null>(null);
 
   const geometry = computeChartGeometry({
     candles,
@@ -389,11 +431,71 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
   const flashedLevel =
     flash === undefined || flash === null ? null : findLevelAtPrice(geometry.levels, flash.price);
 
+  // Pointer y → price, through the same padded domain the geometry drew with,
+  // so the level lands where the pointer is rather than near it. Clamped to the
+  // domain: a drag that leaves the frame states a price the chart cannot show,
+  // and the operator would be publishing a level they cannot see.
+  const priceAtClientY = (clientY: number): number | null => {
+    const frame = frameRef.current;
+    if (frame === null) return null;
+    const box = frame.getBoundingClientRect();
+    if (box.height <= 0) return null;
+    const ratio = Math.min(1, Math.max(0, (clientY - box.top) / box.height));
+    const price = geometry.domainMax - ratio * (geometry.domainMax - geometry.domainMin);
+    // Rounded, because this price is published: it goes into the plan document,
+    // into the journal note the model reads, and onto the exchange. A pointer
+    // gives fifteen significant figures and a stop at 1863.5774749999998 is a
+    // number no one chose. Two decimals at ETH scale, four below a dollar, so a
+    // cheap market keeps the resolution its ticks actually have.
+    const decimals = Math.abs(price) >= 1 ? 2 : 4;
+    return Number(price.toFixed(decimals));
+  };
+
+  const draggable = draggableKinds ?? [];
+  const isDraggable = (kind: ChartLevelKind) =>
+    onLevelDragEnd !== undefined && draggable.includes(kind);
+
+  const startDrag = (kind: ChartLevelKind, event: React.PointerEvent<HTMLElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const price = priceAtClientY(event.clientY);
+    if (price !== null) setDrag({ kind, price });
+  };
+  const moveDrag = (event: React.PointerEvent<HTMLElement>) => {
+    if (drag === null) return;
+    const price = priceAtClientY(event.clientY);
+    if (price !== null) setDrag({ kind: drag.kind, price });
+  };
+  const endDrag = (event: React.PointerEvent<HTMLElement>) => {
+    if (drag === null) return;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    setDrag(null);
+    onLevelDragEnd?.(drag.kind, drag.price);
+  };
+
+  // What the dragged stop would plan to lose, live under the pointer. Only for
+  // a stop, and only with a position and an entry to measure from: every other
+  // combination has no dollar answer and a zero would read as one.
+  const dragRiskUsd =
+    drag !== null && drag.kind === "stop" && entryPrice !== null && (positionSize ?? 0) !== 0
+      ? Math.abs(entryPrice - drag.price) * Math.abs(positionSize ?? 0)
+      : null;
+
+  // A refused stop is very often outside the drawn domain — the whole reason it
+  // was refused is that it is further from the entry than the approved
+  // envelope allows. Drawn at its true y it would be off the frame entirely
+  // and the operator would see no second level at all, which reads as "the
+  // drag did nothing". So it is pinned to the edge it went off, the same
+  // treatment `ChartLevel.offScale` gives a stop the domain excluded.
+  const refusedY =
+    refusedLevel === undefined || refusedLevel === null
+      ? null
+      : Math.min(CHART_VIEWBOX_HEIGHT - 3, Math.max(3, geometry.yForPrice(refusedLevel.planPrice)));
+
   return (
     // `overflow-hidden`: the gutter tags and the mark dot are HTML positioned
     // in percentages of the viewBox, so anything the geometry places near an
     // edge would otherwise be drawn over the bands above and below the chart.
-    <div className={cn("relative h-full w-full overflow-hidden", className)}>
+    <div ref={frameRef} className={cn("relative h-full w-full overflow-hidden", className)}>
       {/* The mark's ring animation, declared once for the whole chart. */}
       <style>{`@keyframes mission-mark-pulse { 0%, 100% { opacity: 0.9; transform: translate(-50%, -50%) scale(1); } 50% { opacity: 0.15; transform: translate(-50%, -50%) scale(1.35); } }
 @keyframes mission-level-flash { 0% { opacity: 0; } 15% { opacity: 1; } 100% { opacity: 0; } }
@@ -654,6 +756,39 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           />
         )}
 
+        {/* The refused level's plan price, in the hypothetical register. The
+            rule above stays where the stop actually rests; this is what the
+            plan now says, drawn as the claim it is. */}
+        {refusedY === null || refusedLevel === null || refusedLevel === undefined ? null : (
+          <line
+            data-testid="mission-chart-refused-plan"
+            x1={0}
+            y1={refusedY}
+            x2={PLOT_WIDTH}
+            y2={refusedY}
+            stroke={levelRuleColor(refusedLevel.kind)}
+            strokeWidth={HYPOTHETICAL_STROKE_WIDTH}
+            strokeDasharray={HYPOTHETICAL_DASH_ARRAY}
+            opacity={HYPOTHETICAL_OPACITY}
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
+
+        {/* The level under the pointer, while it is being dragged. Full ink,
+            because this one IS a statement the operator is making right now. */}
+        {drag === null ? null : (
+          <line
+            data-testid="mission-chart-drag-rule"
+            x1={0}
+            y1={geometry.yForPrice(drag.price)}
+            x2={PLOT_WIDTH}
+            y2={geometry.yForPrice(drag.price)}
+            stroke={levelInkColor(drag.kind)}
+            strokeWidth={1.5}
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
+
         {/* Leader lines: a tag nudged off its own level still points at it. */}
         {geometry.gutterTags
           .filter((tag) => Math.abs(tag.labelY - tag.y) > 0.5)
@@ -671,6 +806,54 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             />
           ))}
       </svg>
+
+      {/* The grab strips. HTML rather than SVG because a stretched plot makes
+          a thin SVG hit area unusably narrow at some widths and enormous at
+          others; a percentage-positioned strip is the same eight pixels tall
+          whatever the panel does. They sit over the plot only — the gutter is
+          text and must stay selectable. */}
+      {geometry.levels
+        .filter((level) => isDraggable(level.kind) && level.inFrame)
+        .map((level) => (
+          <div
+            key={`grab-${level.kind}-${level.price}`}
+            data-testid={`mission-chart-grab-${level.kind}`}
+            role="slider"
+            tabIndex={-1}
+            aria-label={`${level.kind} price`}
+            aria-valuenow={level.price}
+            className="absolute h-[9px] -translate-y-1/2 cursor-ns-resize touch-none"
+            style={{
+              left: 0,
+              width: `${(PLOT_WIDTH / CHART_VIEWBOX_WIDTH) * 100}%`,
+              top: `${(level.y / CHART_VIEWBOX_HEIGHT) * 100}%`,
+            }}
+            onPointerDown={(event) => startDrag(level.kind, event)}
+            onPointerMove={moveDrag}
+            onPointerUp={endDrag}
+            onPointerCancel={endDrag}
+          />
+        ))}
+
+      {/* The dragged price, and what it would plan to lose. Follows the
+          pointer, because a readout the operator has to look away to read is a
+          readout they will not read while dragging. */}
+      {drag === null ? null : (
+        <span
+          data-testid="mission-chart-drag-readout"
+          // Left, not right: the gutter on the right is where the level tags
+          // live, and a readout over them covers the very prices the operator
+          // is dragging relative to.
+          className="pointer-events-none absolute left-1 -translate-y-1/2 rounded-sm bg-background/90 px-1 py-0.5 font-mono text-[10.5px] tabular-nums"
+          style={{
+            top: `${(geometry.yForPrice(drag.price) / CHART_VIEWBOX_HEIGHT) * 100}%`,
+            color: levelInkColor(drag.kind),
+          }}
+        >
+          {formatPrice(drag.price)}
+          {dragRiskUsd === null ? "" : ` · risk $${dragRiskUsd.toFixed(2)}`}
+        </span>
+      )}
 
       {/* Fill markers and the mark dot are HTML, not SVG, for the same reason
           the gutter is: the plot stretches (`preserveAspectRatio="none"`), so an
