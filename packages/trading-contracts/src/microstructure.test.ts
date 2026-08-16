@@ -7,6 +7,7 @@ import {
   readAggressorFlow,
   readBookImbalance,
   readLiquidity,
+  readPositioning,
   readMicrostructure,
   sampleFromObservation,
   type MarketSample,
@@ -218,6 +219,8 @@ describe("sampleFromObservation", () => {
       orderBook: book({ bids: [level(99.9, 10)], asks: [level(100.1, 10)] }),
       candles: [],
       observedAt: 10_000,
+      markPrice: 100,
+      openInterest: 50,
       previousSample: null,
     });
     const sample = sampleFromObservation({
@@ -243,10 +246,71 @@ describe("sampleFromObservation", () => {
   });
 });
 
+describe("readPositioning", () => {
+  const previous: MarketSample = { markPrice: 100, openInterest: 1_000, observedAt: 40_000 };
+
+  it("reports new money coming in with price", () => {
+    const reading = readPositioning({
+      markPrice: 102,
+      openInterest: 1_100,
+      observedAt: 100_000,
+      previous,
+    });
+    // Both up: positions opened into the move rather than closed out of it.
+    assert.closeTo(reading?.openInterestChangePercent ?? 0, 10, 1e-9);
+    assert.closeTo(reading?.priceChangePercent ?? 0, 2, 1e-9);
+    assert.strictEqual(reading?.sinceSeconds, 60);
+  });
+
+  it("reports a squeeze as price up against open interest down", () => {
+    const reading = readPositioning({
+      markPrice: 102,
+      openInterest: 900,
+      observedAt: 100_000,
+      previous,
+    });
+    assert.isBelow(reading?.openInterestChangePercent ?? 0, 0);
+    assert.isAbove(reading?.priceChangePercent ?? 0, 0);
+  });
+
+  it("reports nothing without a predecessor carrying open interest", () => {
+    assert.isNull(
+      readPositioning({ markPrice: 102, openInterest: 1_100, observedAt: 100_000, previous: null }),
+    );
+    assert.isNull(
+      readPositioning({
+        markPrice: 102,
+        openInterest: 1_100,
+        observedAt: 100_000,
+        previous: { markPrice: 100, observedAt: 40_000 },
+      }),
+    );
+  });
+
+  it("reports nothing when this observation has no open interest to compare", () => {
+    assert.isNull(
+      readPositioning({ markPrice: 102, openInterest: undefined, observedAt: 100_000, previous }),
+    );
+  });
+
+  it("refuses a predecessor that is not older than this observation", () => {
+    assert.isNull(
+      readPositioning({ markPrice: 102, openInterest: 1_100, observedAt: 40_000, previous }),
+    );
+  });
+});
+
 describe("readMicrostructure", () => {
   it("costs only the fields the missing read would have filled", () => {
     assert.isNull(
-      readMicrostructure({ orderBook: null, candles: [], observedAt: 0, previousSample: null }),
+      readMicrostructure({
+        orderBook: null,
+        candles: [],
+        observedAt: 0,
+        markPrice: 100,
+        openInterest: 50,
+        previousSample: null,
+      }),
     );
   });
 
@@ -255,6 +319,8 @@ describe("readMicrostructure", () => {
       orderBook: book({ bids: [level(100, 30)], asks: [level(100, 10)] }),
       candles: [],
       observedAt: 10_000,
+      markPrice: 100,
+      openInterest: 50,
       previousSample: null,
     });
     assert.strictEqual(reading?.bookImbalance?.imbalance, 0.5);

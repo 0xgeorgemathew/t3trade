@@ -62,7 +62,11 @@ import {
   MARKET_STRUCTURE_LOOKBACK_BARS,
   MARKET_STRUCTURE_TIMEFRAMES,
 } from "@t3tools/trading-contracts/market-structure";
-import type { MarketCandle, OrderBook } from "@t3tools/trading-contracts/market";
+import type {
+  AgentMarketSnapshot,
+  MarketCandle,
+  OrderBook,
+} from "@t3tools/trading-contracts/market";
 import { readMicrostructure } from "@t3tools/trading-contracts/microstructure";
 import { PLAYBOOKS } from "@t3tools/trading-contracts/playbook";
 import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
@@ -783,12 +787,14 @@ const describeMarketReadFailure = (market: string, cause: Cause.Cause<unknown>):
 const withMicrostructure = (
   orderBook: OrderBook,
   candles: ReadonlyArray<MarketCandle>,
-  observedAt: number,
+  snapshot: AgentMarketSnapshot,
 ) => {
   const microstructure = readMicrostructure({
     orderBook,
     candles,
-    observedAt,
+    observedAt: snapshot.freshness.observedAt,
+    markPrice: snapshot.markPrice,
+    openInterest: snapshot.openInterest,
     previousSample: null,
   });
   return microstructure === null ? {} : { microstructure };
@@ -823,7 +829,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
         candles: candles.candles,
         measuredAt: candles.freshness.observedAt,
       }),
-      ...withMicrostructure(orderBook, candles.candles, snapshot.freshness.observedAt),
+      ...withMicrostructure(orderBook, candles.candles, snapshot),
       structure,
     };
   }

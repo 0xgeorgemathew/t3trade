@@ -883,6 +883,8 @@ const make = Effect.gen(function* () {
         orderBook,
         candles: history.candles,
         observedAt: occurredAt,
+        markPrice: marketSnapshot.markPrice,
+        openInterest: marketSnapshot.openInterest,
         previousSample,
       });
 

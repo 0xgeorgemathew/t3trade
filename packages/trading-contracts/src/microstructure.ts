@@ -147,6 +147,32 @@ export const LiquidityReading = Schema.Struct({
 export type LiquidityReading = typeof LiquidityReading.Type;
 
 /**
+ * How open interest has moved against price.
+ *
+ * The two together say what the move is made of, and neither says it alone.
+ * Open interest rising with price is new money taking the side price is going;
+ * open interest falling while price rises is the other side covering, which is
+ * a squeeze and ends when the shorts run out. The same pair inverted reads the
+ * same way down. The model reads the two numbers and draws the conclusion —
+ * nothing here classifies the move, because a classifier would be a verdict
+ * and would be wrong at exactly the edges that matter.
+ *
+ * Both are percent changes since the previous observation over the same span,
+ * so they are comparable to each other. The whole reading is absent when there
+ * is no predecessor to measure against; open interest as a level is already on
+ * the market snapshot and is not repeated here.
+ */
+export const PositioningReading = Schema.Struct({
+  /** Percent change in open interest since the previous observation. */
+  openInterestChangePercent: Schema.Number,
+  /** Percent change in the mark over the same span. */
+  priceChangePercent: Schema.Number,
+  /** Seconds the two changes span. */
+  sinceSeconds: Schema.Number,
+});
+export type PositioningReading = typeof PositioningReading.Type;
+
+/**
  * Everything the book and the tape say, as readings.
  *
  * Every field is optional and independently derived: one unreadable input never
@@ -156,6 +182,7 @@ export const MarketMicrostructure = Schema.Struct({
   bookImbalance: Schema.optional(BookImbalance),
   aggressorFlow: Schema.optional(AggressorFlow),
   liquidity: Schema.optional(LiquidityReading),
+  positioning: Schema.optional(PositioningReading),
 });
 export type MarketMicrostructure = typeof MarketMicrostructure.Type;
 
@@ -280,6 +307,39 @@ export const readLiquidity = (input: {
 };
 
 /**
+ * Measure open interest and price over the same span.
+ *
+ * Returns `null` unless the predecessor carried a usable open interest and a
+ * usable mark and was taken earlier — a change needs two readings of the same
+ * two things, and there is no partial answer worth reporting.
+ */
+export const readPositioning = (input: {
+  readonly markPrice: number;
+  readonly openInterest: number | undefined;
+  readonly observedAt: number;
+  readonly previous: MarketSample | null;
+}): PositioningReading | null => {
+  const previous = input.previous;
+  const openInterest = input.openInterest;
+  if (
+    previous === null ||
+    openInterest === undefined ||
+    previous.openInterest === undefined ||
+    previous.openInterest <= 0 ||
+    previous.markPrice <= 0 ||
+    previous.observedAt >= input.observedAt
+  ) {
+    return null;
+  }
+  return {
+    openInterestChangePercent:
+      ((openInterest - previous.openInterest) / previous.openInterest) * 100,
+    priceChangePercent: ((input.markPrice - previous.markPrice) / previous.markPrice) * 100,
+    sinceSeconds: Math.round((input.observedAt - previous.observedAt) / 1_000),
+  };
+};
+
+/**
  * Every reading, from the inputs one observation already holds.
  *
  * Kept as one entry point so the `trading_look` path and the wake path build
@@ -291,6 +351,9 @@ export const readMicrostructure = (input: {
   /** The primary-timeframe lookback window the other readings measure over. */
   readonly candles: ReadonlyArray<MarketCandle>;
   readonly observedAt: number;
+  /** The mark and open interest this observation read, for the delta readings. */
+  readonly markPrice: number;
+  readonly openInterest: number | undefined;
   /** The previous observation's sample, when one was kept. Deltas need it. */
   readonly previousSample: MarketSample | null;
 }): MarketMicrostructure | null => {
@@ -305,11 +368,25 @@ export const readMicrostructure = (input: {
           observedAt: input.observedAt,
           previous: input.previousSample,
         });
-  if (bookImbalance === null && aggressorFlow === null && liquidity === null) return null;
+  const positioning = readPositioning({
+    markPrice: input.markPrice,
+    openInterest: input.openInterest,
+    observedAt: input.observedAt,
+    previous: input.previousSample,
+  });
+  if (
+    bookImbalance === null &&
+    aggressorFlow === null &&
+    liquidity === null &&
+    positioning === null
+  ) {
+    return null;
+  }
   return {
     ...(bookImbalance === null ? {} : { bookImbalance }),
     ...(aggressorFlow === null ? {} : { aggressorFlow }),
     ...(liquidity === null ? {} : { liquidity }),
+    ...(positioning === null ? {} : { positioning }),
   };
 };
 
