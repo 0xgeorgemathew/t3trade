@@ -323,6 +323,25 @@ export interface RegimeLossAttribution {
   readonly netUsd: number;
 }
 
+/**
+ * One setup kind, and what the trades taken behind it actually did — plan 29
+ * step 10.3.
+ *
+ * This is the inversion the plan is after. `scored` vs `unscored` asks whether
+ * having *a* reason paid; this asks whether THIS reason paid. A strategy stops
+ * being an a priori rule with a veto and becomes a row in a table with a net
+ * number against it, and "do EMA-cross entries actually pay?" is read off the
+ * record rather than argued from doctrine.
+ */
+export interface SetupAttribution {
+  /** The setup kind snapshotted at entry, or null when none was recorded. */
+  readonly setup: string | null;
+  readonly trades: number;
+  readonly wins: number;
+  readonly losses: number;
+  readonly netUsd: number;
+}
+
 export interface EntryGovernanceEvidence {
   /** Trades whose entry had a scored setup behind it. */
   readonly scored: EntryGovernanceSplit;
@@ -330,6 +349,12 @@ export interface EntryGovernanceEvidence {
   readonly unscored: EntryGovernanceSplit;
   /** Losses attributed to the regime read in force at entry — plan 27 C3. */
   readonly lossesByRegime: ReadonlyArray<RegimeLossAttribution>;
+  /**
+   * What each setup kind paid, best net first — plan 29 step 10.3. Trades with
+   * no recorded setup are their own row rather than being dropped: the entries
+   * nothing explains are the ones worth seeing beside the ones something does.
+   */
+  readonly bySetup: ReadonlyArray<SetupAttribution>;
   readonly reason: string;
 }
 
@@ -369,14 +394,29 @@ export function assessEntryGovernance(
     })
     .sort((left, right) => left.netUsd - right.netUsd);
 
+  const setups = new Map<string | null, Array<EntryGovernanceTrade>>();
+  for (const trade of trades) {
+    const key = trade.setupKindAtEntry;
+    const bucket = setups.get(key);
+    if (bucket === undefined) setups.set(key, [trade]);
+    else bucket.push(trade);
+  }
+  const bySetup = [...setups.entries()]
+    .map(([setup, bucket]): SetupAttribution => ({ setup, ...splitOf(bucket) }))
+    // Best net first: the question this table answers is which setup pays, and
+    // the answer should be the first row rather than the one you scan for.
+    .sort((left, right) => right.netUsd - left.netUsd);
+
+  const best = bySetup[0];
   const reason =
     trades.length === 0
       ? "no closed trades joined to an entry record yet — the split has nothing to say"
       : `${scored.trades} entries had a scored setup behind them (net ${scored.netUsd} USD), ` +
         `${unscored.trades} did not (net ${unscored.netUsd} USD); ` +
-        `worst regime at entry: ${lossesByRegime[0]?.regime ?? "unrecorded"} at ${lossesByRegime[0]?.netUsd ?? 0} USD net`;
+        `worst regime at entry: ${lossesByRegime[0]?.regime ?? "unrecorded"} at ${lossesByRegime[0]?.netUsd ?? 0} USD net; ` +
+        `best setup at entry: ${best?.setup ?? "unrecorded"} at ${best?.netUsd ?? 0} USD net over ${best?.trades ?? 0} trades`;
 
-  return { scored, unscored, lossesByRegime, reason };
+  return { scored, unscored, lossesByRegime, bySetup, reason };
 }
 
 /** One mission's worth of activity, as the funnel reads it — plan 27 I3. */

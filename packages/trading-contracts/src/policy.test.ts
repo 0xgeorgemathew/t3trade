@@ -233,11 +233,48 @@ describe("assessEntryGovernance", () => {
     expect(evidence.reason).toContain("ranging");
   });
 
+  it("answers which setup actually paid, best net first", () => {
+    // Plan 29 step 10.3: the inversion. Not "did having a reason pay" but "did
+    // THIS reason pay" — which is the only form of the question a doctrine
+    // change can be argued from.
+    const named = (setup: string | null, net: number) => ({
+      scoredSetupBehindIt: setup !== null,
+      setupKindAtEntry: setup,
+      regimeAtEntry: "trending",
+      netPnlUsd: net,
+    });
+    const evidence = assessEntryGovernance([
+      named("ema_cross", -4),
+      named("ema_cross", -3),
+      named("momentum", 9),
+      named(null, -1),
+    ]);
+
+    expect(evidence.bySetup[0]).toEqual({
+      setup: "momentum",
+      trades: 1,
+      wins: 1,
+      losses: 0,
+      netUsd: 9,
+    });
+    expect(evidence.bySetup).toContainEqual({
+      setup: "ema_cross",
+      trades: 2,
+      wins: 0,
+      losses: 2,
+      netUsd: -7,
+    });
+    // The unexplained entries are a row, not a silence.
+    expect(evidence.bySetup.map((row) => row.setup)).toContain(null);
+    expect(evidence.reason).toContain("best setup at entry: momentum");
+  });
+
   it("admits an empty record instead of inventing a split", () => {
     const evidence = assessEntryGovernance([]);
     expect(evidence.scored.trades).toBe(0);
     expect(evidence.unscored.trades).toBe(0);
     expect(evidence.lossesByRegime).toEqual([]);
+    expect(evidence.bySetup).toEqual([]);
     expect(evidence.reason).toContain("nothing to say");
   });
 });
