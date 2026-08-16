@@ -125,11 +125,56 @@ const PLAN: [number, number][] = [
   [1.0, MISSION.target],
 ];
 const planX = (t: number) => CANDLE_W + (PLOT_W - CANDLE_W) * t;
-const planPath = PLAN.map(([t, price], index) =>
-  `${index === 0 ? "M" : "L"}${planX(t).toFixed(1)} ${yOf(price).toFixed(1)}`,
-).join(" ");
-const DIP_X = planX(0.4);
+
+/* The plan is drawn in three coloured runs rather than one line, because the
+   direction it is heading is the whole story: up out of the mark, down through
+   the drawdown, then up to the target. A single accent stroke hid the middle
+   one. */
+const planSeg = (fromIndex: number, toIndex: number) =>
+  PLAN.slice(fromIndex, toIndex + 1)
+    .map(([t, price], index) =>
+      `${index === 0 ? "M" : "L"}${planX(t).toFixed(1)} ${yOf(price).toFixed(1)}`,
+    )
+    .join(" ");
+
+const PLAN_RUNS = [
+  { d: planSeg(0, 1), up: true },
+  { d: planSeg(1, 3), up: false },
+  { d: planSeg(3, 8), up: true },
+];
+
+const DIP_X = planX(0.5);
 const TARGET_X = planX(1);
+
+/* The record stops at the mark, but the chart should not. The plan prints as
+   candles too, so the right half reads the same way the left half does and
+   each one takes the colour of the direction it closed. They are hollow
+   because none of them has happened yet. */
+const PROJ_COUNT = 26;
+const PROJ_SLOT = (PLOT_W - CANDLE_W) / PROJ_COUNT;
+
+const planPriceAt = (t: number) => {
+  for (let index = 0; index < PLAN.length - 1; index += 1) {
+    const [t0, p0] = PLAN[index];
+    const [t1, p1] = PLAN[index + 1];
+    if (t <= t1) return p0 + ((p1 - p0) * (t - t0)) / (t1 - t0);
+  }
+  return PLAN[PLAN.length - 1][1];
+};
+
+const projected = Array.from({ length: PROJ_COUNT }, (_, index) => {
+  const openPrice = planPriceAt(index / PROJ_COUNT);
+  const closePrice = planPriceAt((index + 1) / PROJ_COUNT);
+  const wick = 0.26 + (index % 3) * 0.13;
+  return {
+    x: CANDLE_W + index * PROJ_SLOT + PROJ_SLOT / 2,
+    high: Math.max(openPrice, closePrice) + wick,
+    low: Math.min(openPrice, closePrice) - wick,
+    top: yOf(Math.max(openPrice, closePrice)),
+    bottom: yOf(Math.min(openPrice, closePrice)),
+    up: closePrice >= openPrice,
+  };
+});
 
 /* Seven beats share one timeline. Each owns a slice of the pinned scroll, and
    the chart annotation, the console row, and the rail step that belong to a
@@ -422,8 +467,26 @@ const harnesses = [
                      It is dashed for that reason, and it is revealed rather
                      than drawn so the dashes survive. -->
                 <g class="plan" style={`${span(68, 92)}`}>
-                  <path class="plan-path" d={planPath} />
+                  {PLAN_RUNS.map((run) => (
+                    <path class={`plan-path ${run.up ? "plan-path--up" : "plan-path--down"}`} d={run.d} />
+                  ))}
                 </g>
+
+                <!-- The plan as candles. Each one prints in step with the wipe
+                     above it and carries the colour of its own direction, so
+                     the drawdown turns the chart red as it happens. -->
+                {projected.map((candle, index) => {
+                  const from = 68 + (index * 24) / PROJ_COUNT;
+                  return (
+                    <g class={`proj-candle ${candle.up ? "candle--up" : "candle--down"}`}
+                      style={`${span(from, from + 2.6)}; transform-origin: ${candle.x.toFixed(1)}px ${candle.bottom.toFixed(1)}px`}>
+                      <line class="proj-wick" x1={candle.x} x2={candle.x}
+                        y1={yOf(candle.high)} y2={yOf(candle.low)} />
+                      <rect class="proj-body" x={candle.x - PROJ_SLOT * 0.3} width={PROJ_SLOT * 0.6}
+                        y={candle.top} height={Math.max(1.6, candle.bottom - candle.top)} />
+                    </g>
+                  );
+                })}
 
                 <!-- The drawdown. The position goes under water, comes within
                      six dollars of the stop, and the stop is never touched. -->
@@ -445,13 +508,18 @@ const harnesses = [
 
                 <!-- The target prints. -->
                 <g class="target-hit" style={`${span(91, 96)}`}>
-                  <circle class="target-ping" cx={TARGET_X} cy={yOf(MISSION.target)} r="13" />
-                  <circle class="target-dot" cx={TARGET_X} cy={yOf(MISSION.target)} r="11" />
+                  <circle class="target-ping" cx={TARGET_X} cy={yOf(MISSION.target)} r="20" />
+                  <circle class="target-dot" cx={TARGET_X} cy={yOf(MISSION.target)} r="18" />
                   <g class="target-check" style={`${span(92, 96)}`}
-                    transform={`translate(${(TARGET_X - 11).toFixed(1)} ${(yOf(MISSION.target) - 11).toFixed(1)}) scale(1.375)`}>
+                    transform={`translate(${(TARGET_X - 18).toFixed(1)} ${(yOf(MISSION.target) - 18).toFixed(1)}) scale(2.25)`}>
                     <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
                   </g>
                 </g>
+
+                <!-- What the whole run was for, at the size the page has been
+                     quoting all along. It lands after the tick draws. -->
+                <text class="payoff" x="256" y="196" text-anchor="middle"
+                  style={`${span(92, 98)}`}>{usd(reward)}</text>
               </svg>
 
               <!-- What the two levels are actually worth, to scale. Both bars
@@ -1380,12 +1448,28 @@ const harnesses = [
 
   .plan-path {
     fill: none;
-    stroke: var(--accent);
-    stroke-width: 2;
-    stroke-dasharray: 7 6;
+    stroke-width: 1.8;
+    stroke-dasharray: 6 5;
     stroke-linecap: round;
     stroke-linejoin: round;
-    opacity: 0.85;
+    opacity: 0.62;
+  }
+
+  .plan-path--up { stroke: var(--accent); }
+  .plan-path--down { stroke: var(--loss); }
+
+  /* The projection prints hollow. The record is filled, so the two are never
+     mistaken for each other even though they share the colour scale. */
+  .proj-body {
+    fill: color-mix(in srgb, currentColor 16%, transparent);
+    stroke: currentColor;
+    stroke-width: 1.4;
+  }
+
+  .proj-wick {
+    stroke: currentColor;
+    stroke-width: 1.1;
+    opacity: 0.75;
   }
 
   .dip-dot { fill: var(--loss); }
@@ -1441,11 +1525,25 @@ const harnesses = [
   .target-check path {
     fill: none;
     stroke: #06120c;
-    stroke-width: 2.4;
+    stroke-width: 2;
     stroke-linecap: round;
     stroke-linejoin: round;
     stroke-dasharray: 1;
     stroke-dashoffset: 0;
+  }
+
+  /* The payoff. Big, because it is the answer to the whole scroll. */
+  .payoff {
+    font-family: var(--font-mono);
+    font-size: 68px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    fill: var(--ok);
+    stroke: #0a0a0c;
+    stroke-width: 9;
+    paint-order: stroke fill;
+    transform-box: fill-box;
+    transform-origin: center;
   }
 
   /* ── Risk and reward, to scale ────────────────────────────── */
@@ -2481,6 +2579,8 @@ const harnesses = [
       }
 
       .candle,
+      .proj-candle,
+      .payoff,
       .zone,
       .grid,
       .level,
@@ -2515,7 +2615,8 @@ const harnesses = [
         animation-range: contain var(--from) contain var(--to);
       }
 
-      .candle {
+      .candle,
+      .proj-candle {
         animation-name: candle-print;
         animation-timing-function: linear;
         animation-fill-mode: both;
@@ -2524,6 +2625,32 @@ const harnesses = [
       @keyframes candle-print {
         from { opacity: 0; transform: scaleY(0.04); }
         to { opacity: 1; transform: scaleY(1); }
+      }
+
+      /* The number lands, overshoots, and settles into the glow it keeps. */
+      .payoff {
+        animation-name: payoff-land;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      @keyframes payoff-land {
+        0% {
+          opacity: 0;
+          transform: scale(0.68);
+          filter: none;
+        }
+        40% {
+          opacity: 1;
+          transform: scale(1.14);
+          filter: drop-shadow(0 0 26px color-mix(in srgb, var(--ok) 80%, transparent));
+        }
+        70% { transform: scale(0.97); }
+        100% {
+          opacity: 1;
+          transform: scale(1);
+          filter: drop-shadow(0 0 14px color-mix(in srgb, var(--ok) 42%, transparent));
+        }
       }
 
       .zone {
@@ -2875,6 +3002,8 @@ const harnesses = [
     }
 
     .candle,
+    .proj-candle,
+    .payoff,
     .zone,
     .grid,
     .level,
@@ -2905,7 +3034,18 @@ const harnesses = [
     .console-success,
     .beat,
     .mission-sticky .tick path {
-      animation-range: cover var(--from) cover var(--to);
+      /* The console is taller than the viewport it is no longer pinned to, so
+         a full `cover` pass finishes the story long after the chart has left
+         the top of the screen. Compressing the slices into the first part of
+         the pass keeps the target, the tick, and the payoff on screen at the
+         moment they land. */
+      animation-range:
+        cover calc(var(--from) * var(--pass))
+        cover calc(var(--to) * var(--pass));
+    }
+
+    .mission-scroller {
+      --pass: 0.38;
     }
   }
 
