@@ -41,11 +41,10 @@ import type { TradingPlanState } from "../../../trading/Schemas.ts";
 import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
 import { TradingExitService } from "../../../trading/TradingExitService.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
-import { TradingPlanProtectionService } from "../../../trading/TradingPlanProtectionService.ts";
-import { TradingWorkingOrderService } from "../../../trading/TradingWorkingOrderService.ts";
 import { TradingEntryService } from "../../../trading/TradingEntryService.ts";
 import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
+import { publishPlanWithAftermath } from "../../../trading/TradingPlanPublication.ts";
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
 import { TradingJournalService } from "../../../trading/TradingJournalService.ts";
 import { TradingWakeupComposer } from "../../../trading/TradingWakeupComposer.ts";
@@ -260,75 +259,6 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (mission: 
 // attaches `peakUnrealisedPnl` and `drawdownFromPeakUsd` itself — so a look and
 // a wake report the same peak by construction rather than by two copies of the
 // same arithmetic agreeing.
-
-const announceStrategyPublished = Effect.fn("TradingToolkit.announceStrategyPublished")(
-  function* (input: { readonly threadId: string; readonly missionId: string }) {
-    const engine = yield* OrchestrationEngineService;
-    const crypto = yield* Crypto.Crypto;
-    const commandId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
-    const createdAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
-
-    yield* engine
-      .dispatch({
-        type: "trading.mission.strategy-published",
-        commandId: CommandId.make(commandId),
-        threadId: ThreadId.make(input.threadId),
-        missionId: TradingMissionId.make(input.missionId),
-        createdAt,
-      })
-      // The strategy is already durable; failing to announce it costs the UI a
-      // refresh, not the publish.
-      .pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("could not announce a published strategy to the orchestration engine", {
-            missionId: input.missionId,
-            cause,
-          }),
-        ),
-      );
-  },
-);
-
-/**
- * Put the mission's post-publish status on the WS push path.
- *
- * `publishPlan` moves a mission out of `analysing` as part of the
- * publish itself (§11.1 `analysing → waiting`). That write is durable but
- * invisible to the workspace, which learns about mission status from
- * `trading.mission.status-set` events; announcing the status the publish
- * settled on is what closes that gap.
- */
-const announceMissionStatus = Effect.fn("TradingToolkit.announceMissionStatus")(function* (input: {
-  readonly threadId: string;
-  readonly missionId: string;
-}) {
-  const missions = yield* TradingMissionService;
-  const engine = yield* OrchestrationEngineService;
-  const crypto = yield* Crypto.Crypto;
-
-  yield* Effect.gen(function* () {
-    const mission = yield* missions.getMission(input.missionId);
-    const commandId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
-    const createdAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
-    yield* engine.dispatch({
-      type: "trading.mission.status-set",
-      commandId: CommandId.make(commandId),
-      threadId: ThreadId.make(input.threadId),
-      missionId: TradingMissionId.make(input.missionId),
-      status: mission.status,
-      createdAt,
-    });
-  }).pipe(
-    // The publish and its status are already durable; failing to announce them
-    // costs the UI a refresh, not the publish.
-    Effect.catchCause((cause) =>
-      Effect.logWarning("could not announce a mission status after a strategy publish", {
-        missionId: input.missionId,
-        cause,
-      }),
-    ),
-  );
-});
 
 const announceWatchRegistered = Effect.fn("TradingToolkit.announceWatchRegistered")(
   function* (input: {
@@ -1043,107 +973,20 @@ const handlers = {
       // The strategy service keys off `input.missionId`; resolve it to the bound
       // mission so an omitted `missionId` reaches the publish path.
       const resolvedInput = { ...input, missionId: mission.id };
-      const strategies = yield* TradingStrategyService;
-      const published = yield* strategies.publishPlan(resolvedInput).pipe(
-        Effect.catchTags({
-          // The mission was resolved a moment ago, so a miss here means it was
-          // deleted mid-call. Report it as a rejection rather than a defect.
-          TradingMissionNotFoundError: () =>
-            new TradingToolRejectedError({
-              reason: "mission_not_found",
-              threadId,
-              missionId: mission.id,
-            }),
-          PersistenceSqlError: (error) => Effect.die(error),
-        }),
-      );
-      if (published.outcome !== "accepted") return published;
-
-      // An accepted publish is mission state the workspace has to see. Raising
-      // it as an orchestration command is what puts it on the ordered WS push
-      // path instead of leaving the UI to poll.
-      yield* announceStrategyPublished({
+      // Publish plus everything an accepted publish drags behind it — the
+      // announcements, the exchange reconcile, the withdrawn resting entry.
+      // It lives in `TradingPlanPublication` because step 8.4's chart drag is a
+      // plan revision too, and a revision that only wrote the row would move
+      // the stop on screen and not on Hyperliquid.
+      const outcome = yield* publishPlanWithAftermath({
         threadId,
-        missionId: mission.id,
+        mission,
+        publish: resolvedInput,
       });
-      yield* announceMissionStatus({ threadId, missionId: mission.id });
-
-      // Plan 29 step 4.5: the plan is the position's declared state, so an
-      // accepted publish reconciles the exchange to it NOW — the stop and the
-      // resting target move at publish time, not on the watchdog's next pass.
-      // A stop the envelope refuses to widen stays where it is, and the
-      // refusal rides the publish response back to the model. A failed
-      // reconcile never fails the publish: the plan is already durable and the
-      // watchdog keeps converging.
-      const missions = yield* TradingMissionService;
-      // The mission was resolved a moment ago and its account row is immutable
-      // for its life, so a miss here is an environment gap, not a refusal —
-      // skip the reconcile and let the watchdog own convergence.
-      const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId).pipe(
-        Effect.catchTags({
-          TradingMissionNotFoundError: () => Effect.succeed(null),
-          // The plan is already durable; a read failure costs the immediate
-          // reconcile, not the publish.
-          PersistenceSqlError: () => Effect.succeed(null),
-        }),
-      );
-      if (masterAddress === null) return published;
-      const planProtection = yield* TradingPlanProtectionService;
-      const reconciled = yield* planProtection
-        .reconcilePlan({
-          missionId: mission.id,
-          masterAddress,
-          plan: published.strategy,
-        })
-        .pipe(
-          Effect.catch((error) =>
-            Effect.logWarning(
-              "trading publish: the plan's exchange reconcile could not run; the watchdog pass retries it",
-              { missionId: mission.id, error: error.message },
-            ).pipe(Effect.as(null)),
-          ),
-        );
-      const warnings = [...published.warnings];
-      if (reconciled !== null && reconciled.refusal !== undefined) {
-        warnings.push(reconciled.refusal);
-      }
-
-      // The audited risk fix: a resting patient entry kept working up to the
-      // ~90s cross horizon even after the model changed its mind. A publish IS
-      // the mind changing — retract the mission's resting working entries now,
-      // through the same abandon() the reactor's retirement path uses, and say
-      // so in the response so the model can re-place under the new plan.
-      //
-      // `scope: "entries"` is load-bearing: a revision changed the way IN. The
-      // patient exit the model asked for and the take-profit the reconcile
-      // above just placed are not this publish's to cancel — the mission-end
-      // path is the one that takes everything.
-      const workingOrders = yield* TradingWorkingOrderService;
-      const retracted = yield* workingOrders
-        .abandon({
-          missionId: mission.id,
-          masterAddress,
-          market: published.strategy.market,
-          nowMs: yield* Effect.clockWith((clock) => clock.currentTimeMillis),
-          scope: "entries",
-        })
-        .pipe(
-          Effect.catch((error) =>
-            Effect.logWarning(
-              "trading publish: a resting entry could not be withdrawn; the working-order backstop will",
-              { missionId: mission.id, reason: error.message },
-            ).pipe(Effect.as(null)),
-          ),
-        );
-      if (retracted !== null && retracted.found) {
-        warnings.push(
-          "the plan was revised, so its resting patient entry was withdrawn — re-place it under " +
-            "the new plan if you still want in",
-        );
-      }
-
-      if (warnings.length === published.warnings.length) return published;
-      return { ...published, warnings };
+      const published = outcome.published;
+      if (published.outcome !== "accepted") return published;
+      if (outcome.warnings.length === published.warnings.length) return published;
+      return { ...published, warnings: outcome.warnings };
     }),
 
   /**
