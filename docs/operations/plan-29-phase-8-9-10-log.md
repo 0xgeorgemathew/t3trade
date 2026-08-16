@@ -109,3 +109,50 @@ pre-raise shot), and the ground rect is `x=748 w=102`.
 
 **Found broken, not mine.** Nothing new. The phone-width gutter truncation
 noted in the open questions above is pre-existing.
+
+---
+
+## Step 8.2 — Motion — already landed, `f81574392`
+
+**This step was already done, by Step 0.1.** It asks to "advance `nowX` smoothly
+rather than jumping per projection update". `nowX` does not advance at all — it
+is a constant, `PLOT_WIDTH * (1 - FUTURE_GUTTER_RATIO)`. And nothing on the
+chart moves per projection update: the axis is anchored at the wall clock, not
+at the newest candle, so the 3s mission poll and the 15s candle poll do not
+displace the series by so much as a unit. That was the whole point of the
+constant-scale mapping in Step 0.1. What moves is the series, leftward, at a
+fixed rate, driven by the panel's own 1Hz ticker.
+
+So the question left is whether 1Hz is coarse enough to read as stepping. It is
+not, and the arithmetic is the reason I did not add an animation loop: sixty
+one-minute bars is an hour of clock across `nowX` ≈ 748 viewBox units, so one
+second is 748/3600 ≈ 0.21 units. At the widths this panel renders at that is
+about a quarter of one device pixel. The step is already an order of magnitude
+below the threshold where it could be distinguished from a slide, and a
+`requestAnimationFrame` loop would spend a frame budget per mission panel to
+move a quarter of a pixel — against the explicit no-peg-the-GPU rule the 1Hz
+ticker was written under.
+
+**What I did instead.** Pinned the two properties that make the motion
+continuous, so a future change cannot quietly reintroduce the lurch without a
+red test: the displacement per second is identical wherever in the bar the
+clock sits (this was false before Step 0.1 — the window was fitted to
+`timeStart..now`, so the series crept and squashed between closes and snapped
+back when a bar landed), it is identical across a bar close (a new candle
+arriving is not an event the geometry can see), and it is under half a viewBox
+unit per second on a 1m window. Three tests, no production change.
+
+**Decisions you might have made differently.** I did not build the rAF
+interpolation. If you want the conveyor to be legible as _motion_ — something
+the eye catches rather than something that is merely not-stepped — the lever is
+not the frame rate, it is the window: 60 bars of 1m is an hour on screen, and an
+hour does not visibly move. A 20-bar window would slide three times as fast.
+That is a Step 8.5/8.7 question about how much history the default view owes
+you, not a motion question, so I left it.
+
+**Numbers.** `pnpm typecheck` 0 errors. `missionChartGeometry.test.ts` 100
+passed (3 new). `pnpm lint` 35 warnings, same 2 pre-existing errors.
+
+**Verified in the browser.** No screenshot: nothing rendered changed. A still
+image cannot carry a claim about motion, and the claim this step rests on is a
+number — 0.21 viewBox units per second — which the test asserts directly.

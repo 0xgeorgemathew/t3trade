@@ -1508,3 +1508,81 @@ describe("computeChartGeometry — level projections into the future gutter", ()
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// the conveyor's rate — plan 29 step 8.2
+// ---------------------------------------------------------------------------
+//
+// Step 8.2 asks for `nowX` to advance smoothly rather than jumping per
+// projection update. It does not jump per projection update at all: `nowX` is a
+// constant, the axis is anchored at the wall clock rather than at the newest
+// candle, and the scale is held constant at one bar interval per bar. What
+// moves is the series, at a fixed rate, driven by the panel's 1Hz ticker.
+//
+// These pin the two properties that make that motion continuous rather than
+// stepped. If either breaks, the chart starts lurching and the conveyor stops
+// reading as one.
+
+describe("computeChartGeometry — the series slides at a constant rate", () => {
+  const candles = fiveWalkingCandles();
+  const lastOpenTime = candles[candles.length - 1]!.openTime;
+
+  const base = {
+    candles,
+    entryPrice: null,
+    stopPrice: null,
+    targetPrice: null,
+    liquidationPrice: null,
+    entryTime: null,
+    markPrice: 104,
+  } as const;
+
+  /** How far a fixed moment moves between two clocks. */
+  function displacement(fromMillis: number, toMillis: number): number {
+    const before = computeChartGeometry({ ...base, nowMillis: fromMillis })!;
+    const after = computeChartGeometry({ ...base, nowMillis: toMillis })!;
+    return before.xForTime(lastOpenTime) - after.xForTime(lastOpenTime);
+  }
+
+  it("moves the same distance for the same elapsed time, wherever the clock is", () => {
+    // The rate must not depend on where in the bar the clock sits. It did
+    // before the scale was held constant: the window was fitted to
+    // `timeStart..now`, so the whole series crept and squashed between closes
+    // and snapped back when a bar landed.
+    const early = displacement(lastOpenTime + 1_000, lastOpenTime + 2_000);
+    const late = displacement(lastOpenTime + 58_000, lastOpenTime + 59_000);
+    expect(early).toBeCloseTo(late, 9);
+  });
+
+  it("crosses a bar close without a step", () => {
+    // The one second that spans a new candle arriving moves the series exactly
+    // as far as any other second. A new bar is not an event the geometry sees.
+    const acrossTheClose = displacement(lastOpenTime + 59_500, lastOpenTime + 60_500);
+    const inside = displacement(lastOpenTime + 10_000, lastOpenTime + 11_000);
+    expect(acrossTheClose).toBeCloseTo(inside, 9);
+  });
+
+  it("advances by less than half a viewBox unit per second on a 1m window", () => {
+    // Why no animation loop: at 60 one-minute bars the whole window is an hour
+    // wide, so one tick of the panel's 1Hz clock is `nowX / 3600` units — about
+    // a fifth of a unit, which at the widths this panel renders at is a
+    // fraction of one device pixel. The motion is already below the threshold
+    // where a step is distinguishable from a slide, and a requestAnimationFrame
+    // loop would spend a frame budget moving a quarter of a pixel.
+    const hourWindow = Array.from({ length: 60 }, (_, i) => ({
+      openTime: 1_700_000_000_000 + i * 60_000,
+      open: 100,
+      high: 101,
+      low: 99,
+      close: 100,
+    }));
+    const now = hourWindow[hourWindow.length - 1]!.openTime + 30_000;
+    const before = computeChartGeometry({ ...base, candles: hourWindow, nowMillis: now })!;
+    const after = computeChartGeometry({ ...base, candles: hourWindow, nowMillis: now + 1_000 })!;
+    const perSecond =
+      before.xForTime(hourWindow[0]!.openTime) - after.xForTime(hourWindow[0]!.openTime);
+
+    expect(perSecond).toBeGreaterThan(0);
+    expect(perSecond).toBeLessThan(0.5);
+  });
+});
