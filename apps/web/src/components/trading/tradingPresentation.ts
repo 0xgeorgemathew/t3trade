@@ -108,8 +108,6 @@ export interface WakeupCard {
   readonly bootstrap: boolean;
   /** "ETH · 3,142.50" while a snapshot is present; null on the bootstrap. */
   readonly marketLabel: string | null;
-  /** Reserved for a future plan label; null until then (no version numbers — plan 29 step 4.2). */
-  readonly strategyLabel: string | null;
   /** How many coalesced inbox events the run was started with. */
   readonly pendingEventCount: number;
   /** The raw payload, pretty-printed for the expander. */
@@ -167,7 +165,6 @@ function deriveFlatWakeupCard(text: string): WakeupCard | null {
         : markPrice === null
           ? marketName
           : `${marketName} · ${formatPrice(markPrice)}`,
-    strategyLabel: null,
     pendingEventCount,
     rawJson: text,
   };
@@ -215,7 +212,6 @@ export function deriveWakeupCard(text: string): WakeupCard | null {
         : markPrice === null
           ? marketName
           : `${marketName} · ${formatPrice(markPrice)}`,
-    strategyLabel: null,
     pendingEventCount: Array.isArray(pendingEvents) ? pendingEvents.length : 0,
     rawJson: JSON.stringify(parsed, null, 2),
   };
@@ -937,7 +933,7 @@ export function deriveMissionHistoryRow(mission: {
     missionId: mission.id,
     threadId: mission.threadId,
     market: mission.market,
-    direction: mission.strategy === null ? null : humanizeLiteral(mission.strategy.intent),
+    direction: mission.strategy === null ? null : planIntentLabel(mission.strategy.intent),
     statusLabel: MISSION_STATUS_LABELS[mission.status],
     netUsd: net,
     netLabel: formatSignedUsd(net),
@@ -1039,6 +1035,11 @@ export interface StrategyPlan {
    * one field. Null when the harness published none (decodes as "").
    */
   readonly because: string | null;
+  /**
+   * The plan's intent as a label — "Long", "Short", "Stand aside" — so every
+   * surface that shows a plan names its direction the same way.
+   */
+  readonly intentLabel: string;
   /** Each entry trigger's prose description; empty when none were published. */
   readonly entryTriggers: ReadonlyArray<string>;
   /** How urgently the plan wants its entry to land, humanized ("now"/"patient"). */
@@ -1057,7 +1058,7 @@ export interface StrategyPlan {
    * conclusion rather than inventing a target. Nothing is armed at
    * `targetUsd` on such a plan — there is no position and no `pnl_above`.
    */
-  readonly isStandDown: boolean;
+  readonly isStandAside: boolean;
   readonly maxLossUsd: number | null;
   /** Each invalidation condition's prose; empty when none. */
   readonly invalidation: ReadonlyArray<string>;
@@ -1068,6 +1069,18 @@ export interface StrategyPlan {
    * a trigger, a position is holding (plan 29 step 4.4's two-state model).
    */
   readonly planPhase: "waiting" | "holding";
+}
+
+/**
+ * The plan's intent as a display label: "Long", "Short", "Stand aside".
+ *
+ * The old document carried this as a stand-down code the surfaces had to
+ * interpret; the intent is the whole statement now, and this is the one place
+ * that turns it into prose.
+ */
+function planIntentLabel(intent: string): string {
+  const humanized = humanizeLiteral(intent);
+  return humanized.charAt(0).toUpperCase() + humanized.slice(1);
 }
 
 /**
@@ -1135,13 +1148,14 @@ export function deriveStrategyPlan(mission: {
 
   return {
     because: because === "" ? null : because,
+    intentLabel: planIntentLabel(strategy.intent),
     entryTriggers,
     orderType:
       strategy.entry?.urgency === undefined ? null : humanizeLiteral(strategy.entry.urgency),
     initialSizeUsd: strategy.entry?.initialNotionalUsd ?? null,
     stopSummary,
     targetUsd: strategy.target?.profitUsd ?? null,
-    isStandDown: strategy.intent === "stand_aside",
+    isStandAside: strategy.intent === "stand_aside",
     maxLossUsd: strategy.stop?.maximumPlannedLossUsd ?? null,
     invalidation: (strategy.invalidation ?? []).filter(
       (line): line is string => typeof line === "string",

@@ -17,6 +17,7 @@ import {
   deriveMissionHistoryRow,
   deriveMissionPhases,
   derivePausedExposure,
+  deriveStrategyPlan,
   describeWatch,
   formatSignedUsd,
   formatUsd as usd,
@@ -87,7 +88,7 @@ function Mandate({ mission }: { mission: OrchestrationTradingMission }) {
   const riskPolicy = pocRiskPolicyDefaults;
 
   return (
-    <SettingsSection title={`Mandate · authority v${mission.authorityVersion}`}>
+    <SettingsSection title="Mandate">
       <Field label="Allocated capital" value={usd(authority.allocatedCapitalUsd)} />
       <Field label="Maximum gross notional" value={usd(authority.maximumGrossNotionalUsd)} />
       <Field label="Maximum leverage" value={`${authority.maximumLeverage}x`} />
@@ -133,12 +134,20 @@ function Mandate({ mission }: { mission: OrchestrationTradingMission }) {
   );
 }
 
+/**
+ * The published plan, as the workspace reads it.
+ *
+ * The narrative is the headline — setup, indicators and regime are prose in
+ * `because` now — and the facts underneath are the entry, stop, target and
+ * invalidation legs. A stand-aside plan says so in its first line rather than
+ * presenting an intent it declined to take.
+ */
 function Strategy({ mission }: { mission: OrchestrationTradingMission }) {
-  const { strategy } = mission;
+  const plan = deriveStrategyPlan(mission);
 
-  if (strategy === null) {
+  if (plan === null) {
     return (
-      <SettingsSection title="Strategy">
+      <SettingsSection title="Plan">
         <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">
           The harness has not published a plan yet. It appears here once it does.
         </p>
@@ -146,17 +155,32 @@ function Strategy({ mission }: { mission: OrchestrationTradingMission }) {
     );
   }
 
+  const lead = plan.isStandAside
+    ? plan.because === null
+      ? "Standing aside."
+      : `Standing aside — ${plan.because}`
+    : plan.because === null
+      ? null
+      : `Because: ${plan.because}`;
+
   return (
     <SettingsSection title="Plan">
-      <Field label="Market" value={strategy.market} />
-      <Field label="Intent" value={strategy.intent} />
-      <Field label="Entry urgency" value={strategy.entry.urgency} />
-      <Field label="Stop method" value={strategy.stop.method} />
-      {strategy.target.profitUsd === undefined ? null : (
-        <Field label="Target" value={`+$${strategy.target.profitUsd}`} />
+      {lead === null ? null : <p className="px-3 py-2 text-sm text-foreground sm:px-4">{lead}</p>}
+      {plan.isStandAside ? null : <Field label="Intent" value={plan.intentLabel} />}
+      {plan.entryTriggers.length === 0 ? null : (
+        <Field label="Entry trigger" value={plan.entryTriggers.join("; ")} />
       )}
-      <Field label="Reassess after" value={`${strategy.reassess.afterMinutes} min`} />
-      <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">{strategy.because}</p>
+      {plan.orderType === null ? null : <Field label="Order type" value={plan.orderType} />}
+      {plan.initialSizeUsd === null ? null : (
+        <Field label="Initial size" value={usd(plan.initialSizeUsd)} />
+      )}
+      {plan.stopSummary === null ? null : <Field label="Stop" value={plan.stopSummary} />}
+      {plan.targetUsd === null ? null : <Field label="Target" value={usd(plan.targetUsd)} />}
+      {plan.maxLossUsd === null ? null : <Field label="Max loss" value={usd(plan.maxLossUsd)} />}
+      {plan.invalidation.length === 0 ? null : (
+        <Field label="Invalidation" value={plan.invalidation.join("; ")} />
+      )}
+      <Field label="Reassess after" value={`${plan.reassessMinutes} min untriggered`} />
     </SettingsSection>
   );
 }

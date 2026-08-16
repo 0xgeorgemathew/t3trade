@@ -812,7 +812,7 @@ describe("mission history (plan 27 H3)", () => {
   it("compresses a settled mission to one ledger line", () => {
     const row = deriveMissionHistoryRow(settledMission);
     expect(row.market).toBe("ETH");
-    expect(row.direction).toBe("long");
+    expect(row.direction).toBe("Long");
     expect(row.statusLabel).toBe(MISSION_STATUS_LABELS.completed);
     // §16.2: fees netted exactly once.
     expect(row.netUsd).toBe(23);
@@ -827,7 +827,7 @@ describe("mission history (plan 27 H3)", () => {
     // never entered reads as the side it never took.
     expect(
       deriveMissionHistoryRow({ ...settledMission, strategy: { intent: "stand_aside" } }).direction,
-    ).toBe("stand aside");
+    ).toBe("Stand aside");
   });
 
   it("omits direction and duration a mission never had", () => {
@@ -894,7 +894,7 @@ describe("deriveWakeupCard", () => {
     cause: "market_watch_triggered",
     occurredAt: 1_700_000,
     marketSnapshot: { market: "ETH", markPrice: 3_142.5 },
-    activeStrategy: { version: 3 },
+    activeStrategy: { market: "ETH", intent: "long" },
     pendingEvents: [{ summary: "external_close" }, { summary: "fill" }],
   };
 
@@ -904,11 +904,18 @@ describe("deriveWakeupCard", () => {
     expect(card).not.toBeNull();
     expect(card?.causeLabel).toBe("market watch triggered");
     expect(card?.marketLabel).toBe("ETH · 3,142.5");
-    // No version numbers ride the wakeup any more (plan 29 step 4.2).
-    expect(card?.strategyLabel).toBeNull();
     expect(card?.pendingEventCount).toBe(2);
     expect(card?.bootstrap).toBe(false);
     expect(card?.rawJson).toContain('"missionId": "mission_1"');
+  });
+
+  // No version numbers ride the wakeup any more (plan 29 step 4.2): neither
+  // the payload nor the card carries one, and a regression on either side
+  // would have to invent the word to fail this.
+  it("carries no version field anywhere in the card", () => {
+    const card = deriveWakeupCard(JSON.stringify(wakeup))!;
+    expect(JSON.stringify(card)).not.toContain("version");
+    expect(JSON.stringify(card)).not.toContain("Version");
   });
 
   // The first run carries no snapshot at all — the harness has not authored a
@@ -929,7 +936,6 @@ describe("deriveWakeupCard", () => {
     expect(card?.bootstrap).toBe(true);
     expect(card?.causeLabel).toBe("mission created");
     expect(card?.marketLabel).toBeNull();
-    expect(card?.strategyLabel).toBeNull();
     expect(card?.pendingEventCount).toBe(0);
   });
 
@@ -960,8 +966,8 @@ describe("deriveWakeupCard", () => {
       "  [0] category=market summary=candle closed",
       "  [1] category=timer summary=reassessment due",
       "activeStrategy:",
-      "  version=4",
-      "  name=BTC 1m momentum",
+      "  market=BTC",
+      "  intent=long",
       "mandate-and-authority: call trading_get_mission",
     ].join("\n");
 
@@ -970,7 +976,6 @@ describe("deriveWakeupCard", () => {
     expect(card).not.toBeNull();
     expect(card?.causeLabel).toBe("scheduled reassessment");
     expect(card?.marketLabel).toBe("BTC · 64,517");
-    expect(card?.strategyLabel).toBeNull();
     expect(card?.pendingEventCount).toBe(2);
     expect(card?.bootstrap).toBe(false);
     expect(card?.rawJson).toBe(flat);
@@ -1092,11 +1097,34 @@ describe("deriveStrategyPlan", () => {
       position: null,
       strategy: { ...strategy, intent: "stand_aside" },
     })!;
-    expect(plan.isStandDown).toBe(true);
+    expect(plan.isStandAside).toBe(true);
   });
 
   it("does not flag an ordinary plan as a stand-aside", () => {
-    expect(deriveStrategyPlan(mission)?.isStandDown).toBe(false);
+    expect(deriveStrategyPlan(mission)?.isStandAside).toBe(false);
+  });
+
+  // The intent is the direction every surface labels the plan with now — the
+  // stand-down code it used to be is gone, and the label is its replacement.
+  it("labels the intent as prose a surface can print directly", () => {
+    expect(deriveStrategyPlan(mission)?.intentLabel).toBe("Long");
+    expect(
+      deriveStrategyPlan({ position: null, strategy: { ...strategy, intent: "short" } })
+        ?.intentLabel,
+    ).toBe("Short");
+    expect(
+      deriveStrategyPlan({ position: null, strategy: { ...strategy, intent: "stand_aside" } })
+        ?.intentLabel,
+    ).toBe("Stand aside");
+  });
+
+  // Plan 29 step 4.7: no version field may appear in anything the surfaces
+  // derive. The document has no version, so the derivation cannot invent one —
+  // and a regression would have to add the word to fail this.
+  it("carries no version field anywhere in the derived plan", () => {
+    const plan = deriveStrategyPlan(mission)!;
+    expect(JSON.stringify(plan)).not.toContain("version");
+    expect(JSON.stringify(plan)).not.toContain("Version");
   });
 
   it("derives the phase from what the mission holds, not from a named action", () => {

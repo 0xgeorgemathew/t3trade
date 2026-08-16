@@ -986,7 +986,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
 function TradingWakeupTimelineRow({ card }: { card: WakeupCard }) {
   const [expanded, setExpanded] = useState(false);
 
-  const details = [card.marketLabel, card.strategyLabel, card.bootstrap ? "Bootstrap" : null]
+  const details = [card.marketLabel, card.bootstrap ? "Bootstrap" : null]
     .concat(card.pendingEventCount > 0 ? [`${card.pendingEventCount} pending`] : [])
     .filter((part): part is string => part !== null);
 

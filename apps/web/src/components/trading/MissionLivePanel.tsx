@@ -231,7 +231,7 @@ export function MissionLivePanel({
   // A stand-aside plan names no target, and drawing a target line from any
   // other figure on it would put a level on the chart for a trade that was
   // explicitly declined.
-  const targetProfitUsd = plan?.isStandDown === true ? null : (strategy?.target.profitUsd ?? null);
+  const targetProfitUsd = plan?.isStandAside === true ? null : (strategy?.target.profitUsd ?? null);
   const targetPrice =
     entryPrice !== null && targetProfitUsd !== null && position !== null
       ? deriveTargetPrice(entryPrice, targetProfitUsd, position.size)
@@ -724,11 +724,14 @@ function ArmedHeader({
   // The narrative is the headline: setup, regime, and the plan in plain terms
   // are one field now.
   const headline = plan?.because ?? null;
+  // A stand-aside plan is not waiting on anything — saying "Waiting" would be
+  // the one wrong word on the row. The chip states the intent instead.
+  const state = plan?.isStandAside === true ? "Standing aside" : "Waiting";
   return (
     <>
       <span className="inline-flex flex-none items-center gap-1.5 rounded-full border border-armed/40 bg-armed/10 px-2 py-px text-[11px] font-medium text-armed">
         <span>{market}</span>
-        <span>Waiting</span>
+        <span>{state}</span>
       </span>
       {headline === null ? null : (
         <span className="min-w-0 max-w-[36ch] truncate text-foreground" title={headline}>
@@ -923,10 +926,22 @@ function PlanDisclosure({ plan }: { readonly plan: StrategyPlan }): ReactNode {
   return (
     <details className="border-t border-border/40 px-3 py-2 text-xs sm:px-4">
       <summary className="cursor-pointer select-none text-muted-foreground">
-        View full plan · {plan.isStandDown ? "standing aside" : plan.planPhase}
+        View full plan · {plan.isStandAside ? "standing aside" : plan.planPhase}
       </summary>
       <div className="mt-2 space-y-1">
-        {plan.because === null ? null : <PlanField label="Why" value={plan.because} />}
+        {plan.isStandAside ? (
+          // A stand-aside says so in its first line: the plan declined the
+          // trade, and reading an intent row before learning that would put
+          // the conclusion last.
+          <p className="whitespace-pre-wrap text-foreground">
+            {plan.because === null ? "Standing aside." : `Standing aside — ${plan.because}`}
+          </p>
+        ) : (
+          <>
+            {plan.because === null ? null : <PlanField label="Why" value={plan.because} />}
+            <PlanField label="Intent" value={plan.intentLabel} />
+          </>
+        )}
         {plan.entryTriggers.length === 0 ? null : (
           <PlanField label="Entry trigger" value={plan.entryTriggers.join("; ")} />
         )}
