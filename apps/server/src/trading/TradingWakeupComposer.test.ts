@@ -59,9 +59,7 @@ const mission = {
   tradingAccountId: "acct_1",
   instruction: "trade the 1m",
   market: "ETH",
-  strategyFamily: "momentum",
   status: "position_open",
-  strategyVersion: 3,
   authorityVersion: 1,
   authority: pocAuthorityDefaults(1_000),
   control: {},
@@ -74,7 +72,6 @@ const watch = (id: string, body: PersistedWatch["watch"], overrides?: Partial<Pe
   ({
     id,
     missionId: "mission_1",
-    strategyVersion: 3,
     watch: body,
     status: "active",
     createdAt: 0,

@@ -227,7 +227,6 @@ const migrated = Effect.gen(function* () {
 const openIntent = (executionSequence: number) =>
   ({
     missionId: MISSION,
-    strategyVersion: 1,
     executionSequence,
     actionType: "open",
     market: "ETH",

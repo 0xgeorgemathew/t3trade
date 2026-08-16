@@ -286,7 +286,6 @@ const migrated = Effect.gen(function* () {
 const openIntent = (executionSequence: number): ExecutionInput["intent"] =>
   ({
     missionId: MISSION,
-    strategyVersion: 1,
     executionSequence,
     actionType: "open",
     market: "ETH",
@@ -301,7 +300,6 @@ const openIntent = (executionSequence: number): ExecutionInput["intent"] =>
 const closeIntent = (executionSequence: number): ExecutionInput["intent"] =>
   ({
     missionId: MISSION,
-    strategyVersion: 1,
     executionSequence,
     actionType: "close",
     market: "ETH",
@@ -322,7 +320,6 @@ const closeIntent = (executionSequence: number): ExecutionInput["intent"] =>
 const reduceIntent = (executionSequence: number, size: number): ExecutionInput["intent"] =>
   ({
     missionId: MISSION,
-    strategyVersion: 1,
     executionSequence,
     actionType: "reduce",
     market: "ETH",

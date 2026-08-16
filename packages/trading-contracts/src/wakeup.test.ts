@@ -9,7 +9,6 @@ const persist = (watch: PersistedWatch["watch"], armedReason?: "staleness_floor"
   ({
     id: "watch_1",
     missionId: "mission_1",
-    strategyVersion: 1,
     watch,
     status: "active",
     ...(armedReason === undefined ? {} : { armedReason }),

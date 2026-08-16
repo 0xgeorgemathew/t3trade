@@ -269,7 +269,6 @@ describe("trading contracts decode published shapes", () => {
       const decoded = decodePersistedWatch({
         id: `watch_${status}`,
         missionId: "mission_1",
-        strategyVersion: 3,
         watch: { type: "position_update", market: "ETH" },
         status,
         createdAt: 1_753_000_000_000,
@@ -425,7 +424,6 @@ describe("§14.3 mission tool contracts", () => {
       decodeExecute({
         intent: {
           missionId: "mission_1",
-          strategyVersion: 1,
           executionSequence: 1,
           actionType: "open",
           market: "ETH",
@@ -643,7 +641,6 @@ describe("TradingOrderIntent", () => {
   const stop = { stopPrice: 3_700, plannedLossAtStopUsd: 18 };
   const intent = {
     missionId: "mission_1",
-    strategyVersion: 1,
     executionSequence: 0,
     actionType: "open",
     market: "ETH",
@@ -702,7 +699,6 @@ describe("TradingExecutionRecord", () => {
   const record = {
     executionId: "exec_1",
     missionId: "mission_1",
-    strategyVersion: 1,
     executionSequence: 0,
     actionType: "open",
     cloid: "0x0123456789abcdef0123456789abcdef",
