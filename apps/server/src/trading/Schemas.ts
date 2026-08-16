@@ -111,14 +111,11 @@ export {
 export {
   TRADING_CANCEL_WATCH_TOOL,
   TRADING_LIST_WATCHES_TOOL,
-  TRADING_REGISTER_WATCH_TOOL,
-  TRADING_SCHEDULE_REASSESSMENT_TOOL,
+  TRADING_WATCH_TOOL,
   TradingCancelWatchInput,
   TradingCancelWatchResult,
   TradingListWatchesInput,
   TradingListWatchesResult,
-  TradingRegisterWatchInput,
-  TradingRegisterWatchResult,
-  TradingScheduleReassessmentInput,
-  TradingScheduleReassessmentResult,
+  TradingWatchInput,
+  TradingWatchResult,
 } from "@t3tools/trading-contracts/tools";

@@ -20,8 +20,8 @@ import {
   TradingListWatchesResult,
   TradingPublishPlanInput,
   TradingPublishPlanResult,
-  TradingRegisterWatchInput,
-  TradingRegisterWatchResult,
+  TradingWatchInput,
+  TradingWatchResult,
   TradingAdjustStopInput,
   TradingAdjustStopResult,
   TradingEnterResult,
@@ -141,15 +141,15 @@ export const TradingGetTargetCalibrationTool = Tool.make("trading_get_target_cal
 
 // -- §14.4 watch tools (Phase 3) ---------------------------------------------
 
-export const TradingRegisterWatchTool = Tool.make("trading_register_watch", {
+export const TradingWatchTool = Tool.make("trading_watch", {
   description:
-    "Register a typed market watch. Active on creation, fires exactly once when its predicate matches, then terminal — re-register to keep a level standing. `replacesWatchId` moves a level: cancel and arm in one transaction; if that watch already fired, what was armed is an ADDITION, not a swap.",
-  parameters: TradingRegisterWatchInput,
-  success: TradingRegisterWatchResult,
+    'Arm one `condition` — `price` (a level; `confirm: "close"` needs an `interval`, otherwise it fires on touch), `pnl`, `giveback`, `fill`, `time`. Fires exactly once, then terminal — re-arm to keep a level standing. `replacesWatchId` moves a level: cancel and arm in one transaction; if that watch already fired, what was armed is an ADDITION, not a swap. A refused condition arms nothing and says in `recovery` whether to fix it, read state, or retry.',
+  parameters: TradingWatchInput,
+  success: TradingWatchResult,
   failure: TradingToolRejectedError,
   dependencies,
 })
-  .annotate(Tool.Title, "Register watch")
+  .annotate(Tool.Title, "Watch")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
@@ -276,7 +276,7 @@ export const TradingToolkit = Toolkit.make(
   TradingPublishPlanTool,
   TradingGetTargetCalibrationTool,
   TradingGetPlaybookTool,
-  TradingRegisterWatchTool,
+  TradingWatchTool,
   TradingListWatchesTool,
   TradingCancelWatchTool,
   TradingEnterTool,

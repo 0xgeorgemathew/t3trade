@@ -279,7 +279,7 @@ export const TradingHarnessWakeup = Schema.Struct({
    * nothing there is waiting blind between backstop wakes. The runtime never
    * arms these itself — predicates come from `MarketWatch`, not from prose — so
    * this is the gap, handed back to the run that can close it with one
-   * `trading_register_watch`. Absent while a position is open, and empty when
+   * `trading_watch`. Absent while a position is open, and empty when
    * every named level is armed.
    */
   unarmedEntryConditions: Schema.optional(Schema.Array(UnarmedEntryCondition)),
@@ -292,7 +292,7 @@ export const TradingHarnessWakeup = Schema.Struct({
    * crossed, the candle closed back inside, and the turn spent on it could only
    * conclude nothing happened. The runtime does not re-arm these itself; it
    * reports the mismatch so the next turn can move the watch with one
-   * `trading_register_watch` carrying `replacesWatchId`. Empty when every
+   * `trading_watch` carrying `replacesWatchId`. Empty when every
    * declared confirmation matches what is armed.
    */
   misarmedEntryConditions: Schema.optional(Schema.Array(MisarmedEntryCondition)),

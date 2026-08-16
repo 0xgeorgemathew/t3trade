@@ -14,6 +14,7 @@ import {
 import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
 import type { TradingUrgency } from "@t3tools/trading-contracts/strategy";
 import { classifyFailure } from "@t3tools/trading-contracts/recovery";
+import { isWatchRefusal, toMarketWatch } from "@t3tools/trading-contracts/watch";
 import type { TradingLookInput, TradingObservation } from "@t3tools/trading-contracts/observation";
 import { DEFAULT_TRADING_MARKET, type TradingMarket } from "@t3tools/trading-contracts/primitives";
 import { CommandId, ThreadId, TradingMissionId } from "@t3tools/contracts";
@@ -1192,21 +1193,59 @@ const handlers = {
   // orchestration event stream so the workspace sees it over the ordered WS push
   // path; list is a plain read.
 
-  trading_register_watch: (input) =>
+  trading_watch: (input) =>
     Effect.gen(function* () {
       const { threadId, mission } = yield* resolveBoundCall(input.missionId);
+
+      // The condition is derived into the persisted predicate before anything
+      // is written, so a condition that cannot be armed arms nothing and costs
+      // no transaction. `stand_down` on all three: each is a rule about the
+      // condition itself, and the identical call fails identically.
+      const derived = toMarketWatch(input.condition);
+      if (isWatchRefusal(derived)) {
+        return {
+          outcome: "refused" as const,
+          reason: derived.code,
+          detail: derived.detail,
+          recovery: {
+            retryable: false,
+            action: "stand_down" as const,
+            retryAfterMillis: 0,
+            reason: `watch_${derived.code}`,
+          },
+        };
+      }
+
       const watches = yield* TradingWatchService;
-      const registered = yield* watches.registerWatch({ ...input, missionId: mission.id }).pipe(
-        Effect.catchTags({
-          TradingMissionNotFoundError: () =>
-            new TradingToolRejectedError({
-              reason: "mission_not_found",
-              threadId,
-              missionId: mission.id,
-            }),
-          PersistenceSqlError: (error) => Effect.die(error),
-        }),
-      );
+      const registered = yield* watches
+        .registerWatch({
+          missionId: mission.id,
+          watch: derived,
+          ...(input.replacesWatchId === undefined
+            ? {}
+            : { replacesWatchId: input.replacesWatchId }),
+        })
+        .pipe(
+          Effect.catchTags({
+            // The mission ended, or the thread's binding is stale. Nothing
+            // about the condition is wrong, so the answer is to look.
+            TradingMissionNotFoundError: () => Effect.succeed(null as null),
+            PersistenceSqlError: (error) => Effect.die(error),
+          }),
+        );
+      if (registered === null) {
+        return {
+          outcome: "refused" as const,
+          reason: "mission_not_found" as const,
+          detail: "this thread's mission is no longer active; nothing was armed",
+          recovery: {
+            retryable: false,
+            action: "read_state" as const,
+            retryAfterMillis: 0,
+            reason: "watch_mission_not_found",
+          },
+        };
+      }
       yield* announceWatchRegistered({
         threadId,
         missionId: mission.id,
@@ -1221,7 +1260,11 @@ const handlers = {
           watchId: registered.replaced.id,
         });
       }
-      return registered;
+      return {
+        outcome: "armed" as const,
+        watch: registered.watch,
+        ...(registered.replaced === undefined ? {} : { replaced: registered.replaced }),
+      };
     }),
 
   trading_list_watches: (input) =>

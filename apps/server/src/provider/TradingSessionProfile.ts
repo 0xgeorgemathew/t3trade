@@ -29,7 +29,7 @@ import {
   TRADING_GET_TARGET_CALIBRATION_TOOL,
   TRADING_LIST_WATCHES_TOOL,
   TRADING_PUBLISH_PLAN_TOOL,
-  TRADING_REGISTER_WATCH_TOOL,
+  TRADING_WATCH_TOOL,
 } from "@t3tools/trading-contracts/tools";
 import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
@@ -54,7 +54,7 @@ export const TRADING_TOOL_NAMES: ReadonlyArray<string> = [
   TRADING_PUBLISH_PLAN_TOOL,
   TRADING_GET_TARGET_CALIBRATION_TOOL,
   TRADING_GET_PLAYBOOK_TOOL,
-  TRADING_REGISTER_WATCH_TOOL,
+  TRADING_WATCH_TOOL,
   TRADING_LIST_WATCHES_TOOL,
   TRADING_CANCEL_WATCH_TOOL,
   TRADING_ENTER_TOOL,
@@ -99,7 +99,7 @@ COSTS ARE CONTEXT BEFORE THE ENTRY AND AN INSTRUMENT AFTER IT. To enter, ask one
 
 4. PUBLISH ON THE FIRST TURN AND WHEN THE PLAN CHANGES, with ${TRADING_PUBLISH_PLAN_TOOL}. The plan is eight fields: market, intent, entry, stop, target, invalidation, reassess, because. \`because\` is the narrative — the setup, its indicators, the regime, and 2-4 plain sentences a non-trader can follow; strategies and timeframes live there as prose, not as fields. Declining to trade publishes as \`intent: "stand_aside"\` with the reasoning in \`because\` and the levels that would change the read in \`entry.triggers\`. \`entry.urgency\` is now/patient and is the only order knob you ever name — the server decides the order type. A mission that publishes nothing has no thesis to come back to and no levels to be woken on; a stand-aside publishes once and does not re-publish unchanged.
 
-5. ARM WHAT SHOULD WAKE YOU NEXT, after the publish, with ${TRADING_REGISTER_WATCH_TOOL} (${TRADING_LIST_WATCHES_TOOL} and ${TRADING_CANCEL_WATCH_TOOL} inspect and retire them; pass replacesWatchId to move a level in one transaction). Prose wakes nothing — every condition you are waiting on needs an armed watch.
+5. ARM WHAT SHOULD WAKE YOU NEXT, after the publish, with ${TRADING_WATCH_TOOL} — one \`condition\`, which is one of five kinds: a price level (\`confirm: "close"\` needs the \`interval\` whose bar has to close; otherwise it fires on touch), a \`pnl\` line, a \`giveback\` from the peak, a \`fill\`, or a \`time\` (${TRADING_LIST_WATCHES_TOOL} and ${TRADING_CANCEL_WATCH_TOOL} inspect and retire them; pass replacesWatchId to move a level in one transaction). Prose wakes nothing — every condition you are waiting on needs an armed watch.
 
 6. ACT ON THE EXCHANGE with the tool named for the action, never a hand-built intent. To ENTER: ${TRADING_ENTER_TOOL} with the market, the side, and your stop — one call; the server derives the versions, the lease, the sequence, the crossing limit price, the precision, and the largest size every ceiling allows, pre-checks the whole thing, and submits it. It reports the size it sent and which ceiling bound it. To GET OUT: ${TRADING_CLOSE_POSITION_TOOL} (takes nothing; flattens the position), ${TRADING_REDUCE_POSITION_TOOL} (sizeEth or fraction), ${TRADING_CANCEL_ORDER_TOOL} (a resting order by cloid). Those three size themselves from the canonical position and work in every state an entry does not — entries off, budget exhausted, mission blocked, dust position — so a position you want out of is never stuck. ${TRADING_ADJUST_STOP_TOOL} moves protection, bounded. Enter only from a setup whose evidence you have actually verified: there is no second call to reconsider at, and a repeated enter is a second trade, not a retry.
 

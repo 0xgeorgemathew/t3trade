@@ -787,17 +787,14 @@ it.effect("registers a watch before the first plan is published", () =>
       // The mission was seeded with no published plan. A watch registered now
       // must persist, result-encode, and announce — watches bind the mission,
       // not a plan (plan 29 step 4.2), so there is nothing to be below.
-      const registered = yield* callTool(BOUND_THREAD, "trading_register_watch", {
+      const registered = yield* callTool(BOUND_THREAD, "trading_watch", {
         missionId: MISSION_ID,
-        watch: {
-          type: "price_cross",
-          market: "ETH",
-          priceSource: "mark",
-          direction: "above",
-          price: 3200,
-        },
+        // A bare level: no `confirm`, no `priceSource`. Both default, and the
+        // persisted predicate below is the proof of what they defaulted to.
+        condition: { kind: "price", market: "ETH", direction: "above", price: 3200 },
       });
       assert.equal(registered.result.isError, false);
+      assert.equal(registered.result.structuredContent.outcome, "armed");
       const registeredWatch = registered.result.structuredContent.watch;
       // Nothing was named to replace, so nothing was.
       assert.equal(registered.result.structuredContent.replaced, undefined);
@@ -823,24 +820,69 @@ it.effect("registers a watch before the first plan is published", () =>
   ),
 );
 
+// Plan 29 step 6.3: a condition the server will not arm comes back as an
+// outcome carrying what to do about it, not as a thrown error. All three of
+// these are rules about the condition, so all three stand down — retrying the
+// identical call gets the identical answer.
+it.effect("refuses a condition it cannot arm, and arms nothing", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      const cases = [
+        {
+          condition: {
+            kind: "price",
+            market: "ETH",
+            direction: "above",
+            price: 3200,
+            confirm: "close",
+          },
+          reason: "close_needs_interval",
+        },
+        {
+          condition: { kind: "pnl", market: "ETH", direction: "above", valueUsd: -4 },
+          reason: "pnl_target_not_a_gain",
+        },
+        { condition: { kind: "fill" }, reason: "fill_needs_order_or_market" },
+      ];
+
+      for (const expected of cases) {
+        const refused = yield* callTool(BOUND_THREAD, "trading_watch", {
+          condition: expected.condition,
+        });
+        // A refusal is a successful call with a refusing answer.
+        assert.equal(refused.result.isError, false);
+        const body = refused.result.structuredContent;
+        assert.equal(body.outcome, "refused");
+        assert.equal(body.reason, expected.reason);
+        assert.equal(body.recovery.action, "stand_down");
+        assert.equal(body.recovery.retryable, false);
+      }
+
+      // Nothing was armed and nothing was announced, three refusals later.
+      const listed = yield* callTool(BOUND_THREAD, "trading_list_watches", {});
+      assert.equal(listed.result.structuredContent.length, 0);
+      assert.deepStrictEqual(dispatchedCommands, []);
+    }),
+  ),
+);
+
 it.effect("moves a level atomically through replacesWatchId", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
       const level = (price: number) => ({
-        type: "price_cross",
-        market: "ETH",
-        priceSource: "mark",
-        direction: "above",
+        kind: "price" as const,
+        market: "ETH" as const,
+        direction: "above" as const,
         price,
       });
 
-      const first = yield* callTool(BOUND_THREAD, "trading_register_watch", {
-        watch: level(3200),
+      const first = yield* callTool(BOUND_THREAD, "trading_watch", {
+        condition: level(3200),
       });
       const originalId = first.result.structuredContent.watch.id;
 
-      const moved = yield* callTool(BOUND_THREAD, "trading_register_watch", {
-        watch: level(3250),
+      const moved = yield* callTool(BOUND_THREAD, "trading_watch", {
+        condition: level(3250),
         replacesWatchId: originalId,
       });
       assert.equal(moved.result.isError, false);

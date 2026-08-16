@@ -6,7 +6,7 @@ import {
   TRADING_GET_TARGET_CALIBRATION_TOOL,
   TRADING_LIST_WATCHES_TOOL,
   TRADING_PUBLISH_PLAN_TOOL,
-  TRADING_REGISTER_WATCH_TOOL,
+  TRADING_WATCH_TOOL,
 } from "@t3tools/trading-contracts/tools";
 import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
@@ -31,7 +31,7 @@ it("exposes one read, the mission tools, and the watch tools", () => {
       TRADING_PUBLISH_PLAN_TOOL,
       TRADING_GET_TARGET_CALIBRATION_TOOL,
       TRADING_GET_PLAYBOOK_TOOL,
-      TRADING_REGISTER_WATCH_TOOL,
+      TRADING_WATCH_TOOL,
       TRADING_ENTER_TOOL,
       TRADING_CLOSE_POSITION_TOOL,
       TRADING_REDUCE_POSITION_TOOL,
@@ -150,11 +150,28 @@ it("points the calibration read at the verdict it exists to produce", () => {
 // unwatched in between. The description has to name the parameter that closes
 // that, and the case where it silently does not.
 it("tells the harness how to move a level rather than add one", () => {
-  const register = TradingToolkit.tools[TRADING_REGISTER_WATCH_TOOL].description ?? "";
-  expect(register).toContain("replacesWatchId");
-  expect(register).toContain("one transaction");
+  const watch = TradingToolkit.tools[TRADING_WATCH_TOOL].description ?? "";
+  expect(watch).toContain("replacesWatchId");
+  expect(watch).toContain("one transaction");
   // The failure mode: a stale id means an addition, not a swap.
-  expect(register).toContain("ADDITION");
+  expect(watch).toContain("ADDITION");
+});
+
+// Plan 29 step 6.3: one condition union replaced the eight sibling predicates,
+// so the description has to name the five kinds and the one thing the server
+// will not guess on the model's behalf.
+it("names the five conditions and the interval it refuses to guess", () => {
+  const watch = TradingToolkit.tools[TRADING_WATCH_TOOL].description ?? "";
+  for (const kind of ["`price`", "`pnl`", "`giveback`", "`fill`", "`time`"]) {
+    expect(watch, kind).toContain(kind);
+  }
+  expect(watch).toContain("interval");
+  // A refusal is an outcome the harness can act on, not a dead end.
+  expect(watch).toContain("recovery");
+  // The eight-way type choice is gone from the vocabulary the model reads.
+  for (const retired of ["price_cross", "candle_close", "pnl_above", "position_update"]) {
+    expect(watch, retired).not.toContain(retired);
+  }
 });
 
 // The bounded stop tool is only safe because a refusal costs nothing and the

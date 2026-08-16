@@ -39,7 +39,7 @@ import { TradingOrderTimeInForce } from "./execution.ts";
 import { EntrySizeConstraint } from "./entry.ts";
 import { FailureRecovery } from "./recovery.ts";
 import { tradingPlanAuthoredFields, TradingPlanState } from "./strategy.ts";
-import { MarketWatch, PersistedWatch } from "./watch.ts";
+import { PersistedWatch, WatchCondition, WatchRefusalCode } from "./watch.ts";
 import { Playbook, TradingPlaybookName } from "./playbook.ts";
 
 export const TRADING_PUBLISH_PLAN_TOOL = "trading_publish_plan";
@@ -650,48 +650,56 @@ export type TradingGetOpenOrdersResult = ReadonlyArray<AgentOpenOrder>;
 // keep their terminal status. The handler resolves the bound mission through
 // the same `resolveBoundCall` path as the §14.2/§14.3 tools.
 
-export const TRADING_REGISTER_WATCH_TOOL = "trading_register_watch";
-export const TRADING_SCHEDULE_REASSESSMENT_TOOL = "trading_schedule_reassessment";
+export const TRADING_WATCH_TOOL = "trading_watch";
 export const TRADING_LIST_WATCHES_TOOL = "trading_list_watches";
 export const TRADING_CANCEL_WATCH_TOOL = "trading_cancel_watch";
 
-export const TradingRegisterWatchInput = Schema.Struct({
+export const TradingWatchInput = Schema.Struct({
   ...missionBound,
-  watch: MarketWatch,
+  /** What has to become true. One union, five kinds (plan 29 step 6.3). */
+  condition: WatchCondition,
   /**
    * An active watch to retire as this one is armed, in a single transaction.
    *
    * A watch fires once and is terminal, so keeping a level standing means
-   * re-registering it — and doing that as cancel-then-register leaves the side
-   * being re-levelled unwatched in between. This closes that window.
+   * re-arming it — and doing that as cancel-then-arm leaves the side being
+   * re-levelled unwatched in between. This closes that window.
    */
   replacesWatchId: Schema.optional(TradingId),
 });
-export type TradingRegisterWatchInput = typeof TradingRegisterWatchInput.Type;
+export type TradingWatchInput = typeof TradingWatchInput.Type;
 
-export const TradingRegisterWatchResult = Schema.Struct({
-  watch: PersistedWatch,
-  /**
-   * The watch `replacesWatchId` actually cancelled.
-   *
-   * Absent when none was named — and, importantly, also absent when the one
-   * named was already terminal. That case is the harness's cue that the level
-   * it meant to retire had already fired or been cancelled, so what it just
-   * armed is an addition, not a swap.
-   */
-  replaced: Schema.optional(PersistedWatch),
-});
-export type TradingRegisterWatchResult = typeof TradingRegisterWatchResult.Type;
-
-export const TradingScheduleReassessmentInput = Schema.Struct({
-  ...missionBound,
-  /** Epoch millis at which the mission should be reassessed. */
-  runAt: Schema.Number.check(Schema.isGreaterThan(0)),
-});
-export type TradingScheduleReassessmentInput = typeof TradingScheduleReassessmentInput.Type;
-
-export const TradingScheduleReassessmentResult = PersistedWatch;
-export type TradingScheduleReassessmentResult = PersistedWatch;
+/**
+ * What arming a condition did.
+ *
+ * A refusal is an outcome rather than a thrown error for the same reason
+ * `trading_enter`'s is (plan 29 step 6.2): the harness's next move depends on
+ * which kind of refusal it was, and that answer has to survive as data. The
+ * `recovery` it carries is the same three-way answer as everywhere else —
+ * a rule refuses this, read what is actually true, or try again.
+ */
+export const TradingWatchResult = Schema.Union([
+  Schema.Struct({
+    outcome: Schema.Literal("armed"),
+    watch: PersistedWatch,
+    /**
+     * The watch `replacesWatchId` actually cancelled.
+     *
+     * Absent when none was named — and, importantly, also absent when the one
+     * named was already terminal. That case is the harness's cue that the
+     * level it meant to retire had already fired or been cancelled, so what it
+     * just armed is an addition, not a swap.
+     */
+    replaced: Schema.optional(PersistedWatch),
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("refused"),
+    reason: WatchRefusalCode,
+    detail: Schema.String,
+    recovery: FailureRecovery,
+  }),
+]);
+export type TradingWatchResult = typeof TradingWatchResult.Type;
 
 export const TradingListWatchesInput = Schema.Struct({ ...missionBound });
 export type TradingListWatchesInput = typeof TradingListWatchesInput.Type;
