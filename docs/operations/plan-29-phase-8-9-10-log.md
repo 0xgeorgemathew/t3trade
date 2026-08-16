@@ -305,3 +305,56 @@ note. One existing fixture updated —
 
 **Verified in the browser.** Nothing rendered changed; the column has no UI
 until 8.4 writes to it.
+
+---
+
+## Step 8.4 — Direct manipulation — design recorded, not yet implemented
+
+Writing the shape down before building it, because this is the step that sends
+orders and the design is most of the risk.
+
+**Where a drag has to go.** `trading_plan`'s handler does three things in
+order: `TradingStrategyService.publishPlan`, then `announceStrategyPublished` +
+`announceMissionStatus`, then the step-4.5 reconcile. Only the first is a
+service call; the other two live in the handler
+([handlers.ts:1040](../../apps/server/src/mcp/toolkits/trading/handlers.ts:1040)).
+A drag that called `publishPlan` alone would write a durable plan that never
+reconciled the exchange and never reached the workspace — the stop would move
+on screen and not on Hyperliquid. So the first commit of this step is a pure
+extraction: publish-plus-aftermath into one function, with the MCP handler and
+the new command both calling it. No behaviour change, and it is what makes
+"the UI writes the same object the model writes" true of the _whole_ path
+rather than only of the row.
+
+**The eight fields.** A drag reads the current plan, replaces exactly one leaf
+(`stop.price`, `target.price`, a trigger's `priceLevel`, or `reassess.
+afterMinutes`), and republishes all eight from `tradingPlanAuthoredFields`.
+There is deliberately no UI-local plan type: the panel already receives
+`mission.strategy` as `TradingPlanState`, which is those eight fields plus
+`updatedAt`, so the drag's payload is that object minus `updatedAt`. This is
+the constraint that keeps `misarmedEntryConditions` honest — it compares the
+plan's `confirmation` against the watch's `confirm` assuming the shape has not
+drifted.
+
+**The two failures that need an answer on screen.**
+
+1. _Lock lost._ `expectedMissionVersion` is read when the drag starts and the
+   model may publish before the drag ends. The answer is not a retry — a
+   silent retry would apply the operator's stop to a plan they never saw. The
+   drag rejects, the level snaps back to where the new plan puts it, and the
+   panel says the model republished underneath. The operator drags again
+   against what is now there.
+2. _Reconcile refused._ An accepted publish can still leave the stop where it
+   was, because the envelope refuses to widen it. This is the dangerous case:
+   the plan says one thing and the exchange another, and the panel would show
+   the dragged level as fact. So the level renders in its refused position with
+   the refusal's `recovery` text beside it, and the plan's own value is drawn
+   as the hypothetical register 8.1 just built — which is exactly what that
+   register is for.
+
+**Journal.** Every accepted drag appends one note with `author: "user"`, in the
+operator's absence of words: the server composes it (`"stop moved to 1,858.10"`),
+because the note has to be a fact about what happened and not a caption. That
+is what puts it in front of the model on its next wake.
+
+**Not yet started.** The extraction commit is the next thing.
