@@ -398,7 +398,8 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
       <style>{`@keyframes mission-mark-pulse { 0%, 100% { opacity: 0.9; transform: translate(-50%, -50%) scale(1); } 50% { opacity: 0.15; transform: translate(-50%, -50%) scale(1.35); } }
 @keyframes mission-level-flash { 0% { opacity: 0; } 15% { opacity: 1; } 100% { opacity: 0; } }
 .mission-level-flash { animation: mission-level-flash 1.4s ease-out 2 forwards; opacity: 0; }
-@media (prefers-reduced-motion: reduce) { .mission-level-flash { animation: none; opacity: 1; } }`}</style>
+.mission-marker-slide { transition: transform 500ms cubic-bezier(0.22, 1, 0.36, 1), right 500ms cubic-bezier(0.22, 1, 0.36, 1); }
+@media (prefers-reduced-motion: reduce) { .mission-level-flash { animation: none; opacity: 1; } .mission-marker-slide { transition: none; } }`}</style>
       <svg
         viewBox={`0 0 ${CHART_VIEWBOX_WIDTH} ${CHART_VIEWBOX_HEIGHT}`}
         preserveAspectRatio="none"
@@ -552,13 +553,23 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         ) : null}
 
         {/* Scheduled future events, standing in the gutter to the right of
-            now — where the plan says something will happen next. */}
+            now — where the plan says something will happen next.
+
+            Drawn at x=0 and translated, so the moment can be TRANSITIONED
+            rather than redrawn. A reassessment is a relative condition: every
+            wake re-arms it, and the moment it stands for jumps minutes further
+            out in a single projection update. Drawn as a new x each time, the
+            rule vanished from one place and appeared in another, which reads as
+            two rules rather than as one that reset. Eased, it slides right, and
+            the reset is the thing you see. */}
         {geometry.timeMarkers.map((marker) => (
           <line
             key={`marker-${marker.key}`}
-            x1={marker.x}
+            className="mission-marker-slide"
+            transform={`translate(${marker.x} 0)`}
+            x1={0}
             y1={0}
-            x2={marker.x}
+            x2={0}
             y2={CHART_VIEWBOX_HEIGHT}
             stroke={marker.tone === "auto" ? "var(--color-muted-foreground)" : "var(--color-armed)"}
             strokeWidth={1}
@@ -721,7 +732,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           <span
             key={`marker-label-${marker.key}`}
             className={cn(
-              "pointer-events-none absolute top-0.5 whitespace-nowrap pr-1 text-[9px] leading-none",
+              "mission-marker-slide pointer-events-none absolute top-0.5 whitespace-nowrap pr-1 text-[9px] leading-none",
               marker.tone === "auto" ? "text-muted-foreground" : "text-armed",
             )}
             style={{ right: `${(1 - marker.x / CHART_VIEWBOX_WIDTH) * 100}%` }}

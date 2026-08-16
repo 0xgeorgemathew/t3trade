@@ -1888,6 +1888,7 @@ export function deriveChartTimeMarkers(mission: {
     const watch = persisted.watch;
     if (watch.type !== "scheduled_reassessment") continue;
     scheduled.push({
+      // Replaced by a rank-based key once sorted; see below.
       key: persisted.id,
       label: "",
       at: watch.runAt,
@@ -1898,10 +1899,20 @@ export function deriveChartTimeMarkers(mission: {
 
   scheduled.sort((a, b) => a.at - b.at);
 
-  const nearest = scheduled[0]!;
+  // Re-keyed by rank once sorted, so the chart can render the queue as a set of
+  // moving markers rather than as a set of rows. A reassessment is re-armed on
+  // every wake: the old watch is consumed and a new row takes its place minutes
+  // further out. Keyed by row id that is one marker unmounting and another
+  // mounting, so the rule vanishes from one x and appears at another. Keyed by
+  // rank, the nearest reassessment is one continuous thing whatever row is
+  // currently carrying it, and the renderer can ease it to its new moment —
+  // which is what makes a reset legible as a reset.
+  const ranked = scheduled.map((marker, index) => ({ ...marker, key: `reassess-${index}` }));
+
+  const nearest = ranked[0]!;
   const labelled: ChartTimeMarkerInput[] = [
     { ...nearest, label: nearest.tone === "auto" ? "reassess (auto)" : "reassess" },
-    ...scheduled.slice(1),
+    ...ranked.slice(1),
   ];
   if (labelled.length <= MAX_DRAWN_TIME_MARKERS) return labelled;
 

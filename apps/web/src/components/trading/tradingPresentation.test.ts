@@ -1497,6 +1497,20 @@ describe("deriveChartTimeMarkers", () => {
     expect(markers[1]).toMatchObject({ label: "", tone: "planned" });
   });
 
+  it("keys a marker by its rank, so a re-arm is the same marker moving", () => {
+    // A reassessment is re-armed on every wake: the row that carried it is
+    // consumed and a new row, minutes further out, takes its place. Keyed by
+    // row id the chart unmounts one rule and mounts another, so the reset reads
+    // as two rules rather than as one sliding right. Keyed by rank, the nearest
+    // reassessment is one continuous thing whatever row is carrying it.
+    const before = deriveChartTimeMarkers({ watches: [reassessment("row-1", 1_700_000_120_000)] });
+    const after = deriveChartTimeMarkers({ watches: [reassessment("row-2", 1_700_000_600_000)] });
+
+    expect(before[0]?.key).toBe("reassess-0");
+    expect(after[0]?.key).toBe(before[0]?.key);
+    expect(after[0]?.at).toBeGreaterThan(before[0]!.at);
+  });
+
   it("labels a harness-armed nearest tick without the auto chip", () => {
     const markers = deriveChartTimeMarkers({ watches: [reassessment("a", 1_700_000_120_000)] });
     expect(markers[0]).toMatchObject({ label: "reassess", tone: "planned" });
