@@ -687,6 +687,35 @@ export const TradingPlanStopReconcileView = Schema.Struct({
 });
 export type TradingPlanStopReconcileView = typeof TradingPlanStopReconcileView.Type;
 
+/** Mirrors the server's `TakeProfitOutcomeStatus`, one literal for one literal. */
+export const TradingPlanTargetReconcileStatus = Schema.Literals([
+  "flat",
+  "withdrawn",
+  "unchanged",
+  "placed",
+  "replaced",
+  "failed",
+]);
+export type TradingPlanTargetReconcileStatus = typeof TradingPlanTargetReconcileStatus.Type;
+
+/**
+ * What the exchange did with the revised plan's take-profit.
+ *
+ * Same reason the stop half is carried back: on `failed` the placement could
+ * not be confirmed inside the window and nothing was cancelled, so the chart
+ * would be drawing a target the exchange does not hold. It self-heals — the
+ * watchdog reconciles the same target every ~5s — but a panel that says
+ * nothing for the seconds in between is telling the operator something untrue.
+ */
+export const TradingPlanTargetReconcileView = Schema.Struct({
+  status: TradingPlanTargetReconcileStatus,
+  /** The target price the pass derived, when the plan produced one. */
+  targetPrice: Schema.NullOr(Schema.Number),
+  /** Why the pass failed, when it did. */
+  detail: Schema.optional(TrimmedNonEmptyString),
+});
+export type TradingPlanTargetReconcileView = typeof TradingPlanTargetReconcileView.Type;
+
 /**
  * A drag on the chart, on its way to `publishPlan`.
  *
@@ -712,6 +741,8 @@ export const OrchestrationReviseTradingPlanResult = Schema.Union([
     warnings: Schema.Array(Schema.String),
     /** Null when the publish never reached the exchange reconcile. */
     stop: Schema.NullOr(TradingPlanStopReconcileView),
+    /** The take-profit half of the same reconcile. Null for the same reason. */
+    target: Schema.NullOr(TradingPlanTargetReconcileView),
   }),
   Schema.Struct({
     outcome: Schema.Literal("rejected"),

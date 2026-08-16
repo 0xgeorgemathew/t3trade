@@ -1581,6 +1581,20 @@ const makeWsRpcLayer = (
                           ? {}
                           : { refusal: reconciled.refusal }),
                       },
+                // The target half was being dropped on the floor: a drag that
+                // moved the take-profit could fail to confirm and the panel
+                // would redraw the line anyway, showing an order the exchange
+                // does not hold until the watchdog's next pass repairs it.
+                target:
+                  reconciled === null
+                    ? null
+                    : {
+                        status: reconciled.target.status,
+                        targetPrice: reconciled.target.targetPrice,
+                        ...(reconciled.target.detail === undefined
+                          ? {}
+                          : { detail: reconciled.target.detail }),
+                      },
               };
             }).pipe(
               Effect.tapError((cause) =>

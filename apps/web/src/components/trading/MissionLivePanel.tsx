@@ -69,7 +69,7 @@ import { cn } from "~/lib/utils";
 import { Skeleton } from "../ui/skeleton";
 
 import { MissionPriceChart } from "./MissionPriceChart";
-import { useMissionPlanRevision } from "./useMissionPlanRevision";
+import { useMissionPlanRevision, type MissionPlanRevision } from "./useMissionPlanRevision";
 import {
   dedupeConditions,
   deriveEntryFillAtMillis,
@@ -691,23 +691,7 @@ export function MissionLivePanel({
               positionSize={position?.size ?? null}
             />
           </div>
-          {/* What the last drag came back saying. Two sentences and no third: the
-            model republished underneath it, or the exchange refused to move the
-            stop. Both stay until the operator drags again — a message that
-            disappears on a timer is one they will miss while looking at the
-            chart. */}
-          {revision.lockLost || revision.refusedStop !== null || revision.error !== null ? (
-            <button
-              type="button"
-              onClick={revision.dismiss}
-              data-testid="mission-revision-note"
-              className="w-full px-3 py-1.5 text-left text-[11px] leading-snug text-muted-foreground"
-            >
-              {revision.lockLost
-                ? "The model republished the plan while you were dragging, so the level snapped back. Drag again against what is there now."
-                : (revision.refusedStop?.detail ?? revision.error)}
-            </button>
-          ) : null}
+          <RevisionNote revision={revision} />
         </>
       ) : (
         <>
@@ -737,23 +721,7 @@ export function MissionLivePanel({
               positionSize={position?.size ?? null}
             />
           </div>
-          {/* What the last drag came back saying. Two sentences and no third: the
-            model republished underneath it, or the exchange refused to move the
-            stop. Both stay until the operator drags again — a message that
-            disappears on a timer is one they will miss while looking at the
-            chart. */}
-          {revision.lockLost || revision.refusedStop !== null || revision.error !== null ? (
-            <button
-              type="button"
-              onClick={revision.dismiss}
-              data-testid="mission-revision-note"
-              className="w-full px-3 py-1.5 text-left text-[11px] leading-snug text-muted-foreground"
-            >
-              {revision.lockLost
-                ? "The model republished the plan while you were dragging, so the level snapped back. Drag again against what is there now."
-                : (revision.refusedStop?.detail ?? revision.error)}
-            </button>
-          ) : null}
+          <RevisionNote revision={revision} />
           {/* What is actually held, at the foot of the panel. This used to be a
             `Position` card in the timeline — but a position is state, not an
             event, and state in a scrolling log reads as a fact from the moment
@@ -831,6 +799,32 @@ export function MissionLivePanel({
 
       <FooterRow data={chart.data} isHolding={position !== null} />
     </div>
+  );
+}
+
+/**
+ * What the last drag came back saying.
+ *
+ * Three sentences and no fourth: the model republished underneath it, the
+ * exchange refused to move the stop, or the take-profit could not be confirmed
+ * and the previous one is still resting. All stay until the operator drags
+ * again — a message that disappears on a timer is one they will miss while
+ * looking at the chart.
+ */
+function RevisionNote({ revision }: { readonly revision: MissionPlanRevision }): ReactNode {
+  const message = revision.lockLost
+    ? "The model republished the plan while you were dragging, so the level snapped back. Drag again against what is there now."
+    : (revision.refusedStop?.detail ?? revision.unconfirmedTarget?.detail ?? revision.error);
+  if (message === null || message === undefined) return null;
+  return (
+    <button
+      type="button"
+      onClick={revision.dismiss}
+      data-testid="mission-revision-note"
+      className="w-full px-3 py-1.5 text-left text-[11px] leading-snug text-muted-foreground"
+    >
+      {message}
+    </button>
   );
 }
 

@@ -48,13 +48,6 @@ describe("applyPlanDrag", () => {
     expect(next.target).toEqual({ method: "the range high", price: 1912, profitUsd: 40 });
   });
 
-  it("moves one trigger's price level and keeps its confirmation and its siblings", () => {
-    const next = applyPlanDrag(plan, { kind: "trigger", index: 1, price: 1852.5 });
-    expect(next.entry.triggers[0]).toEqual(plan.entry.triggers[0]);
-    expect(next.entry.triggers[1]).toEqual({ description: "retests 1,850", priceLevel: 1852.5 });
-    expect(next.entry.urgency).toBe("patient");
-  });
-
   it("does not mutate the plan it was given", () => {
     applyPlanDrag(plan, { kind: "stop", price: 1 });
     expect(plan.stop.price).toBe(1840);

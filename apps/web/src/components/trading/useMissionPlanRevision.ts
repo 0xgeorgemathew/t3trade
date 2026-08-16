@@ -25,11 +25,21 @@ import { useAtomCommand } from "../../state/use-atom-command";
 
 import { describeControlFailure } from "./useMissionControls";
 
-/** Which leaf of the plan a drag replaced. */
+/**
+ * Which leaf of the plan a drag replaced.
+ *
+ * Stop and target only, which is what `draggableKinds` offers. A trigger drag
+ * needs three things this hook cannot do on its own and must not be enabled by
+ * adding a kind here: the trigger's DESCRIPTION carries the authoritative price
+ * (`strategy.ts` says so), so a plan would read "short if we tag 3,009" with a
+ * `priceLevel` of 3,015; the armed watch would not move, because step 4.2
+ * removed supersede-on-publish, so the mission would still wake at the old
+ * level; and a trigger published as a bare string has no `priceLevel` to
+ * replace at all.
+ */
 export type PlanDragTarget =
   | { readonly kind: "stop"; readonly price: number }
-  | { readonly kind: "target"; readonly price: number }
-  | { readonly kind: "trigger"; readonly index: number; readonly price: number };
+  | { readonly kind: "target"; readonly price: number };
 
 /**
  * What the panel has to say about the last drag, or null when it has nothing.
@@ -47,6 +57,13 @@ export interface PlanRevisionState {
    * stop. The rule stays where the stop rests; this is what the plan now says.
    */
   readonly refusedStop: { readonly planPrice: number; readonly detail: string } | null;
+  /**
+   * Set when the publish was accepted and the take-profit could not be
+   * confirmed. Nothing was cancelled, so the order the exchange holds is the
+   * previous one; the watchdog converges it on its next pass, and until then
+   * the panel must not draw a target that is not there.
+   */
+  readonly unconfirmedTarget: { readonly planPrice: number | null; readonly detail: string } | null;
 }
 
 /** The eight authored fields, with exactly one leaf replaced. */
@@ -56,16 +73,6 @@ export function applyPlanDrag(plan: TradingPlanState, drag: PlanDragTarget): Tra
       return { ...plan, stop: { ...plan.stop, price: drag.price } };
     case "target":
       return { ...plan, target: { ...plan.target, price: drag.price } };
-    case "trigger":
-      return {
-        ...plan,
-        entry: {
-          ...plan.entry,
-          triggers: plan.entry.triggers.map((trigger, index) =>
-            index === drag.index ? { ...trigger, priceLevel: drag.price } : trigger,
-          ),
-        },
-      };
   }
 }
 
@@ -84,11 +91,18 @@ export function useMissionPlanRevision(
     lockLost: false,
     error: null,
     refusedStop: null,
+    unconfirmedTarget: null,
   });
 
   const revise = useCallback<MissionPlanRevision["revise"]>(
     (plan, drag, missionVersion) => {
-      setState({ isBusy: true, lockLost: false, error: null, refusedStop: null });
+      setState({
+        isBusy: true,
+        lockLost: false,
+        error: null,
+        refusedStop: null,
+        unconfirmedTarget: null,
+      });
       const { updatedAt: _updatedAt, ...authored } = applyPlanDrag(plan, drag);
       void dispatch({
         environmentId,
@@ -97,7 +111,13 @@ export function useMissionPlanRevision(
         .then((result) => {
           const failure = describeControlFailure(result);
           if (failure !== null) {
-            setState({ isBusy: false, lockLost: false, error: failure, refusedStop: null });
+            setState({
+              isBusy: false,
+              lockLost: false,
+              error: failure,
+              refusedStop: null,
+              unconfirmedTarget: null,
+            });
             return;
           }
           if (result._tag !== "Success") return;
@@ -113,10 +133,12 @@ export function useMissionPlanRevision(
                   ? null
                   : (revision.detail ?? "The mission is no longer taking revisions."),
               refusedStop: null,
+              unconfirmedTarget: null,
             });
             return;
           }
           const stop = revision.stop;
+          const target = revision.target;
           setState({
             isBusy: false,
             lockLost: false,
@@ -126,6 +148,15 @@ export function useMissionPlanRevision(
                 ? {
                     planPrice: stop.planStopPrice,
                     detail: stop.refusal ?? "the exchange stop was left where it is",
+                  }
+                : null,
+            unconfirmedTarget:
+              target !== null && target.status === "failed"
+                ? {
+                    planPrice: target.targetPrice,
+                    detail:
+                      target.detail ??
+                      "the take-profit could not be confirmed; the previous one is still resting",
                   }
                 : null,
           });
@@ -139,6 +170,7 @@ export function useMissionPlanRevision(
             lockLost: false,
             error: "The revision could not be sent.",
             refusedStop: null,
+            unconfirmedTarget: null,
           });
         });
     },
@@ -146,7 +178,13 @@ export function useMissionPlanRevision(
   );
 
   const dismiss = useCallback(() => {
-    setState({ isBusy: false, lockLost: false, error: null, refusedStop: null });
+    setState({
+      isBusy: false,
+      lockLost: false,
+      error: null,
+      refusedStop: null,
+      unconfirmedTarget: null,
+    });
   }, []);
 
   return { ...state, revise, dismiss };
