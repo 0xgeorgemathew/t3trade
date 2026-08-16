@@ -81,6 +81,11 @@ export interface TradingWatchServiceShape {
    * cancelled by harness or user, or expires. A plan revision does not touch
    * it (plan 29 step 4.2).
    *
+   * Arming a watch while the mission is `analysing` and a published plan
+   * exists takes the §11.1 `analysing → waiting` edge (plan 29 step 4.4): a
+   * plan whose triggers are armed is no longer analysing, it is waiting. The
+   * publish keeps its own flip of the same edge.
+   *
    * With `replacesWatchId`, the cancel and the insert are one transaction, so
    * the mission is never momentarily uncovered on the side being re-levelled.
    */
@@ -215,6 +220,29 @@ const makeTradingWatchService = Effect.gen(function* () {
                 (${watchId}, ${input.missionId}, ${watchJson}, 'active',
                  ${input.armedReason ?? null}, 1, ${now}, ${now})
             `;
+
+            // §11.1 `analysing → waiting`, second actor (plan 29 step 4.4):
+            // triggers armed under a published plan end the analysis. Same
+            // shape as the publish's flip — the WHERE pins the source status,
+            // which is the whole legality check for an edge with one source,
+            // and the plan's existence is checked in the same statement so a
+            // plan-less mission keeps analysing no matter what it arms.
+            const advanced = yield* sql<{ readonly mission_id: string }>`
+              UPDATE trading_missions
+              SET status = 'waiting', version = version + 1, updated_at = ${now}
+              WHERE mission_id = ${input.missionId}
+                AND status = 'analysing'
+                AND EXISTS (
+                  SELECT 1 FROM trading_plan_history WHERE mission_id = ${input.missionId}
+                )
+              RETURNING mission_id
+            `;
+            if (advanced.length > 0) {
+              yield* Effect.logInfo(
+                "TradingWatchService: triggers armed under a published plan; analysing → waiting",
+                { missionId: input.missionId, watchId, reason: "triggers_armed" },
+              );
+            }
             return cancelled;
           }),
         )

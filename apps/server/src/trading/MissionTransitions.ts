@@ -39,6 +39,10 @@ export const LOOP_STATUSES = [
  *
  * `MissionTransitions.test.ts` asserts this table equals the published one edge
  * for edge, so the meaning of each edge stays with the spec rather than here.
+ *
+ * `analysing → waiting` has two actors (plan 29 step 4.4): publishing a plan,
+ * and arming a watch while a published plan exists. Both take the same edge;
+ * the table stays one edge.
  */
 const LOOP_TRANSITIONS: Readonly<
   Record<(typeof LOOP_STATUSES)[number], readonly TradingMissionStatus[]>

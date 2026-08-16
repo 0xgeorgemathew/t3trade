@@ -47,6 +47,13 @@ const migrated = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_plan_history`;
 });
 
+/** Move the mission into `analysing`, where step 4.4's second actor starts. */
+const moveAnalysing = Effect.gen(function* () {
+  const missions = yield* TradingMissionService;
+  const expectedVersion = yield* missions.getMissionVersion("mission_1");
+  yield* missions.transition({ missionId: "mission_1", to: "analysing", expectedVersion });
+});
+
 /** Create a mission and publish a plan, so the mission is live and working. */
 const seedMission = Effect.gen(function* () {
   const missions = yield* TradingMissionService;
@@ -94,6 +101,70 @@ layer("TradingWatchService", (it) => {
       assert.equal(watch.status, "active");
       assert.deepStrictEqual(watch.watch, candleCloseWatch);
       assert.equal(replaced, undefined);
+    }),
+  );
+
+  // Plan 29 step 4.4: `analysing → waiting` gained its second actor. A plan
+  // whose triggers are armed is waiting, not analysing; the publish keeps its
+  // own flip of the same edge.
+  it.effect("moves an analysing mission to waiting when a watch arms under a published plan", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission;
+      yield* moveAnalysing;
+
+      const watches = yield* TradingWatchService;
+      yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: candleCloseWatch,
+      });
+
+      const missions = yield* TradingMissionService;
+      assert.equal((yield* missions.getMission("mission_1")).status, "waiting");
+    }),
+  );
+
+  it.effect("leaves an analysing mission analysing when no plan exists", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      // Create the mission but publish nothing: arming a watch is not, on its
+      // own, evidence that any thesis exists.
+      const missions = yield* TradingMissionService;
+      yield* missions.createMission({
+        missionId: "mission_1",
+        userId: "user_1",
+        tradingAccountId: "acct_1",
+        instruction: "Trade ETH momentum",
+        allocatedCapitalUsd: 1_000,
+        harness,
+      });
+      yield* moveAnalysing;
+
+      const watches = yield* TradingWatchService;
+      yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: candleCloseWatch,
+      });
+
+      assert.equal((yield* missions.getMission("mission_1")).status, "analysing");
+    }),
+  );
+
+  it.effect("does not touch a mission that is not analysing", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      // seedMission leaves the mission in initializing (the publish does not
+      // move it out of initializing), so arming changes nothing.
+      yield* seedMission;
+
+      const watches = yield* TradingWatchService;
+      yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: candleCloseWatch,
+      });
+
+      const missions = yield* TradingMissionService;
+      assert.equal((yield* missions.getMission("mission_1")).status, "initializing");
     }),
   );
 

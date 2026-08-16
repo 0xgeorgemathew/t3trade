@@ -19,7 +19,8 @@ import type { TradingMissionStatus } from "./Schemas.ts";
  * cartesian product of §11.1 statuses.
  */
 const LEGAL_EDGES: ReadonlyArray<readonly [TradingMissionStatus, TradingMissionStatus]> = [
-  // Active loop
+  // Active loop. `analysing → waiting` has two actors since plan 29 step 4.4
+  // (publishing a plan, and arming a watch while one exists) — one edge.
   ["initializing", "analysing"],
   ["analysing", "waiting"],
   ["waiting", "analysing"],
