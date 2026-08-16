@@ -512,6 +512,29 @@ layer("trading_publish_plan (§14.3)", (it) => {
     }),
   );
 
+  it.effect("reaches ten revisions back and no further", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const strategies = yield* TradingStrategyService;
+      // Twelve revisions: the journal keeps them all, the read a look takes
+      // every turn stops at ten so an old belief cannot cost the turn tokens.
+      for (let revision = 1; revision <= 12; revision++) {
+        yield* strategies.publishPlan({
+          missionId: "mission_1",
+          expectedMissionVersion: yield* missionVersion,
+          strategy: body(`thesis ${revision}`),
+        });
+      }
+
+      const history = yield* strategies.listStrategyVersions("mission_1");
+
+      assert.equal(history.length, 10);
+      // Newest first, so it is the OLDEST two that fall off.
+      assert.equal(history[0]?.version, 12);
+      assert.equal(history[9]?.version, 3);
+    }),
+  );
+
   it.effect("skips a plan whose stored JSON no longer decodes", () =>
     Effect.gen(function* () {
       yield* setup;

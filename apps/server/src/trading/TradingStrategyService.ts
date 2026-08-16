@@ -112,6 +112,19 @@ interface WatchRow {
  * became required still sit in this table, and a history is a nicety that must
  * never take a mission read down with it.
  */
+/**
+ * How many revisions back a read of the plan journal reaches.
+ *
+ * This list used to ride an occasional `trading_get_mission`; since plan 29
+ * step 6.1 it rides EVERY `trading_look`, which is the one read a turn always
+ * takes. Unbounded, a mission that revised forty times would spend a few
+ * thousand tokens per turn re-reading beliefs it has already replaced —
+ * exactly the context phase 6 exists to give back. Ten is more revisions than
+ * "was the last target the right rung?" needs, and the whole journal is still
+ * in `trading_plan_history` for the session report.
+ */
+const PLAN_HISTORY_READ_LIMIT = 10;
+
 const toStrategySummary = (row: {
   readonly version: number;
   readonly strategy_json: string;
@@ -174,6 +187,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
       FROM trading_plan_history
       WHERE mission_id = ${missionId}
       ORDER BY version DESC
+      LIMIT ${PLAN_HISTORY_READ_LIMIT}
     `.pipe(
       Effect.mapError(sqlFail("listStrategyVersions")),
       Effect.map((rows) => rows.flatMap((row) => toStrategySummary(row))),

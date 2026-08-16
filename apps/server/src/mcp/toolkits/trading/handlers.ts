@@ -18,6 +18,7 @@ import { classifyFailure, type FailureRecovery } from "@t3tools/trading-contract
 import type { TradingLookInput, TradingObservation } from "@t3tools/trading-contracts/observation";
 import { DEFAULT_TRADING_MARKET, type TradingMarket } from "@t3tools/trading-contracts/primitives";
 import { CommandId, ThreadId, TradingMissionId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -594,7 +595,7 @@ const executeExit = (request: {
  * Read the multi-timeframe structure, priced at the size the mission would
  * actually take.
  *
- * Lifted out of the retired `trading_look` handler unchanged:
+ * Lifted out of the retired `trading_get_market_structure` handler unchanged:
  * one history read per timeframe concurrently, the prior-read memory write
  * (plan 27 B2), and the candidate table joined with the live cost of taking
  * each setup (plan 29 2.6 prices it at the plan's intended notional, not at the
@@ -756,7 +757,7 @@ const readObservation = Effect.fn("TradingToolkit.readObservation")(function* (
         market,
         missionId: mission?.id,
         cause,
-      }).pipe(Effect.as({ marketReadFailed: "the exchange read failed; try again" as const })),
+      }).pipe(Effect.as({ marketReadFailed: describeMarketReadFailure(market, cause) })),
     ),
   );
 
@@ -776,6 +777,22 @@ const readObservation = Effect.fn("TradingToolkit.readObservation")(function* (
     mission: missionResult,
   } satisfies TradingObservation;
 });
+
+/**
+ * Why the market half is missing, in one line the model can act on.
+ *
+ * "the exchange read failed" alone reads the same whether Hyperliquid is down
+ * (retry) or the market does not exist (do not retry, ever), and a model told
+ * the first will keep asking for the second. The squashed cause carries which
+ * one it was; it is bounded because this rides back inside every look.
+ */
+const MARKET_READ_FAILURE_CHARS = 200;
+
+const describeMarketReadFailure = (market: string, cause: Cause.Cause<unknown>): string => {
+  const squashed = Cause.squash(cause);
+  const detail = squashed instanceof Error ? squashed.message : String(squashed);
+  return `the ${market} exchange read failed: ${detail.slice(0, MARKET_READ_FAILURE_CHARS)}`;
+};
 
 /**
  * Everything a look reports about the market and the position in it.
