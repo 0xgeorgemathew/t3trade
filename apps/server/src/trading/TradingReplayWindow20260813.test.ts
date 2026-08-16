@@ -95,8 +95,8 @@ describe("the window under the policy in force (D2)", () => {
       ...TRADING_POLICY_V1,
       version: 99,
       label: "candidate: earlier trend calls, cheaper rungs",
-      momentum: {
-        ...TRADING_POLICY_V1.momentum,
+      readings: {
+        ...TRADING_POLICY_V1.readings,
         targetCostMultiple: 1.5,
         directionScoreThreshold: 0.1,
       },

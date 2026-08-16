@@ -25,8 +25,8 @@
  * @module TradingPolicy
  */
 
-/** How momentum decides a target is worth its costs. */
-export interface MomentumPolicy {
+/** How the market readings decide a target is worth its costs. */
+export interface MarketReadingPolicy {
   /**
    * How many round trips a target is aiming to be worth — the rung to bank at,
    * not a precondition for entering.
@@ -160,7 +160,7 @@ export interface TradingPolicy {
   readonly version: number;
   /** What this version was trying to do, for whoever reads a replay report. */
   readonly label: string;
-  readonly momentum: MomentumPolicy;
+  readonly readings: MarketReadingPolicy;
   readonly rangeReversion: RangePolicy;
   readonly openingRange: OpeningRangePolicy;
   readonly emaCross: EmaCrossPolicy;
@@ -179,7 +179,7 @@ export interface TradingPolicy {
 export const TRADING_POLICY_V1: TradingPolicy = {
   version: 1,
   label: "as-shipped baseline; the constants before they were collected",
-  momentum: {
+  readings: {
     targetCostMultiple: 2,
     directionScoreThreshold: 0.15,
   },

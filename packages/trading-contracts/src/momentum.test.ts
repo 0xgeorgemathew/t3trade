@@ -10,13 +10,13 @@ import { assert, describe, it } from "@effect/vitest";
 
 import type { MarketCandle } from "./market.ts";
 import {
-  analyseMomentum,
+  analyseMarketStructure,
   analyseTimeframe,
   classifyRegime,
   compareCandidates,
   DIRECTION_SCORE_THRESHOLD,
   findPivots,
-  MIN_MOMENTUM_BARS,
+  MIN_MARKET_STRUCTURE_BARS,
 } from "./momentum.ts";
 
 /** A bar with a given close and a fixed range around it. */
@@ -127,7 +127,7 @@ describe("swing drift", () => {
 
 describe("regime", () => {
   it("classifies a straight trend as trending", () => {
-    const structure = analyseMomentum({
+    const structure = analyseMarketStructure({
       market: "ETH",
       measuredAt: 1_000,
       frames: [
@@ -168,7 +168,7 @@ describe("regime", () => {
 
 describe("trend_continuation setup", () => {
   it("scores a drift resuming after a shallow pullback, close-confirmed at the impulse end", () => {
-    const structure = analyseMomentum({
+    const structure = analyseMarketStructure({
       market: "ETH",
       measuredAt: 1_000,
       frames: [{ interval: "1m", candles: descendingZigzag() }],
@@ -187,7 +187,7 @@ describe("trend_continuation setup", () => {
   it("reports a too-deep pullback as a near-miss rather than silence", () => {
     // Same zigzag, but the recovery retraces most of the last down leg.
     const candles = [...descendingZigzag(), ...ramp(91, 1, 8)];
-    const structure = analyseMomentum({
+    const structure = analyseMarketStructure({
       market: "ETH",
       measuredAt: 1_000,
       frames: [{ interval: "1m", candles }],
@@ -216,7 +216,7 @@ describe("trend_continuation setup", () => {
   });
 
   it("carries no rejectedBy on a setup that cleared every gate", () => {
-    const structure = analyseMomentum({
+    const structure = analyseMarketStructure({
       market: "ETH",
       measuredAt: 1_000,
       frames: [{ interval: "1m", candles: descendingZigzag() }],
@@ -231,7 +231,7 @@ describe("trend_continuation setup", () => {
 
 describe("compareCandidates", () => {
   const structure = () =>
-    analyseMomentum({
+    analyseMarketStructure({
       market: "ETH",
       measuredAt: 1_000,
       frames: [{ interval: "1m", candles: descendingZigzag() }],
@@ -274,7 +274,7 @@ describe("compareCandidates", () => {
   it("flags a near-miss row in the table without gating it", () => {
     // The too-deep pullback window: the continuation is on the table only as
     // context, visibly flagged and carrying the same cost arithmetic.
-    const near = analyseMomentum({
+    const near = analyseMarketStructure({
       market: "ETH",
       measuredAt: 1_000,
       frames: [{ interval: "1m", candles: [...descendingZigzag(), ...ramp(91, 1, 8)] }],
@@ -381,7 +381,7 @@ describe("swing distances", () => {
 
 describe("alignment", () => {
   it("calls a direction only when a majority of timeframes agree", () => {
-    const context = analyseMomentum({
+    const context = analyseMarketStructure({
       market: "ETH",
       measuredAt: 1_000,
       frames: [
@@ -397,7 +397,7 @@ describe("alignment", () => {
   });
 
   it("reports contradiction as mixed rather than as a weak direction", () => {
-    const context = analyseMomentum({
+    const context = analyseMarketStructure({
       market: "ETH",
       measuredAt: 1_000,
       frames: [
@@ -411,7 +411,7 @@ describe("alignment", () => {
   });
 
   it("says so when every timeframe is chopping", () => {
-    const context = analyseMomentum({
+    const context = analyseMarketStructure({
       market: "ETH",
       measuredAt: 1_000,
       frames: [
@@ -425,8 +425,8 @@ describe("alignment", () => {
   });
 
   it("ignores a timeframe that had too few bars to speak", () => {
-    const short = MIN_MOMENTUM_BARS - 1;
-    const context = analyseMomentum({
+    const short = MIN_MARKET_STRUCTURE_BARS - 1;
+    const context = analyseMarketStructure({
       market: "ETH",
       measuredAt: 1_000,
       frames: [
@@ -444,7 +444,7 @@ describe("alignment", () => {
   });
 
   it("says nothing rather than guessing when no timeframe had enough bars", () => {
-    const context = analyseMomentum({
+    const context = analyseMarketStructure({
       market: "ETH",
       measuredAt: 1_000,
       frames: [{ interval: "1m", candles: ramp(3_000, 1, 5) }],
@@ -456,7 +456,7 @@ describe("alignment", () => {
   });
 
   it("survives an empty window without reporting a zero-priced market", () => {
-    const context = analyseMomentum({
+    const context = analyseMarketStructure({
       market: "ETH",
       measuredAt: 1_000,
       frames: [{ interval: "1m", candles: [] }],

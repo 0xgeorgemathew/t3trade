@@ -134,7 +134,7 @@ describe("replayPolicy", () => {
       ...TRADING_POLICY_V1,
       version: 2,
       label: "direction threshold above anything reachable",
-      momentum: { ...TRADING_POLICY_V1.momentum, directionScoreThreshold: 0.99 },
+      readings: { ...TRADING_POLICY_V1.readings, directionScoreThreshold: 0.99 },
     };
     expect(replayPolicy([fixture()], TRADING_POLICY_V1).setupsTaken).toBe(1);
     // A just-confirmed breakout is deliberately allowed to lead the slow

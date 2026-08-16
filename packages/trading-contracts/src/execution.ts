@@ -23,7 +23,7 @@ import {
   UsdAmount,
 } from "./primitives.ts";
 import { TradingDirection } from "./authority.ts";
-import { MomentumOrderPreference } from "./strategy.ts";
+import { OrderPreference } from "./strategy.ts";
 
 // ---------------------------------------------------------------------------
 // §15.3 · Order side, time-in-force, and the action-type discriminator
@@ -40,7 +40,7 @@ export type TradingOrderSide = typeof TradingOrderSide.Type;
  * `gtc` rests at the limit until cancelled; `alo` (add-limit-only) rests as
  * post-only — the exchange rejects it rather than let it take liquidity, so
  * the mapper refuses a limit that would have crossed before signing. The
- * harness expresses a preference via `MomentumOrderPreference`; the order
+ * harness expresses a preference via `OrderPreference`; the order
  * mapper turns it into one of these.
  */
 export const TradingOrderTimeInForce = Schema.Literals(["ioc", "gtc", "alo"]);
@@ -129,7 +129,7 @@ export const TradingOrderIntent = Schema.Struct({
    * wire price from a fresh best bid/ask ± slippage (§15.4); for
    * `resting_limit` it rests at this price as GTC.
    */
-  orderPreference: MomentumOrderPreference,
+  orderPreference: OrderPreference,
   limitPrice: Price,
 
   /**

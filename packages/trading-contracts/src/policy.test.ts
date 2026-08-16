@@ -34,8 +34,8 @@ describe("the policy in force", () => {
     // Not a style point. A v1 that differed from shipped behaviour would make
     // every later replay a comparison against a policy that never traded — so
     // it stays frozen even now that it is no longer the version in force.
-    expect(TRADING_POLICY_V1.momentum.targetCostMultiple).toBe(2);
-    expect(TRADING_POLICY_V1.momentum.directionScoreThreshold).toBe(0.15);
+    expect(TRADING_POLICY_V1.readings.targetCostMultiple).toBe(2);
+    expect(TRADING_POLICY_V1.readings.directionScoreThreshold).toBe(0.15);
     expect(TRADING_POLICY_V1.rangeReversion.heightCostMultiple).toBe(2.2);
     expect(TRADING_POLICY_V1.rangeReversion.edgePercent).toBe(20);
     expect(TRADING_POLICY_V1.rangeReversion.stabilityPercent).toBe(30);
@@ -57,11 +57,11 @@ describe("the policy in force", () => {
     // session budget and the reassessment cadence are all v1's, unchanged.
     // (V2 also loosened the entry cost gates; plan 29 step 3.1 removed those
     // numbers outright — cost is context, never a gate.)
-    expect(ACTIVE_TRADING_POLICY.momentum.targetCostMultiple).toBe(
-      TRADING_POLICY_V1.momentum.targetCostMultiple,
+    expect(ACTIVE_TRADING_POLICY.readings.targetCostMultiple).toBe(
+      TRADING_POLICY_V1.readings.targetCostMultiple,
     );
-    expect(ACTIVE_TRADING_POLICY.momentum.directionScoreThreshold).toBe(
-      TRADING_POLICY_V1.momentum.directionScoreThreshold,
+    expect(ACTIVE_TRADING_POLICY.readings.directionScoreThreshold).toBe(
+      TRADING_POLICY_V1.readings.directionScoreThreshold,
     );
     expect(ACTIVE_TRADING_POLICY.rangeReversion.heightCostMultiple).toBe(
       TRADING_POLICY_V1.rangeReversion.heightCostMultiple,
@@ -70,8 +70,8 @@ describe("the policy in force", () => {
   });
 
   it("is where the arithmetic gets its numbers", () => {
-    expect(PROFIT_TARGET_COST_MULTIPLE).toBe(ACTIVE_TRADING_POLICY.momentum.targetCostMultiple);
-    expect(DIRECTION_SCORE_THRESHOLD).toBe(ACTIVE_TRADING_POLICY.momentum.directionScoreThreshold);
+    expect(PROFIT_TARGET_COST_MULTIPLE).toBe(ACTIVE_TRADING_POLICY.readings.targetCostMultiple);
+    expect(DIRECTION_SCORE_THRESHOLD).toBe(ACTIVE_TRADING_POLICY.readings.directionScoreThreshold);
   });
 
   it("is where the doctrine gets its numbers", () => {
@@ -84,7 +84,7 @@ describe("the policy in force", () => {
 
     const momentum = playbook("momentum");
     expect(momentum).toContain(
-      `(${ACTIVE_TRADING_POLICY.momentum.targetCostMultiple}x the round trip)`,
+      `(${ACTIVE_TRADING_POLICY.readings.targetCostMultiple}x the round trip)`,
     );
 
     // The session cutoff and the cooldown lived ONLY in this prose. They were

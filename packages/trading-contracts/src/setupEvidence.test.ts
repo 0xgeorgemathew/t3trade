@@ -9,7 +9,7 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import type { MarketCandle } from "./market.ts";
-import { analyseMomentum, analyseTimeframe, findCandidateSetups } from "./momentum.ts";
+import { analyseMarketStructure, analyseTimeframe, findCandidateSetups } from "./momentum.ts";
 import { findMisarmedEntryConditions, type PersistedWatch } from "./watch.ts";
 
 const bar = (input: {
@@ -195,7 +195,7 @@ describe("structure evidence", () => {
   });
 
   it("says nothing at all about a window too short to measure", () => {
-    const structure = analyseMomentum({
+    const structure = analyseMarketStructure({
       market: "ETH",
       measuredAt: 1_000,
       frames: [{ interval: "1m", candles: rangingCandles().slice(0, 10) }],

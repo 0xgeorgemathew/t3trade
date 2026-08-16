@@ -28,7 +28,7 @@ import { ExchangeMarket, Price, UnixMillis } from "./primitives.ts";
  * management turns argue against — is the profit in hand worth the exit that
  * realises it, and is there enough left on offer to justify extending.
  */
-export const PROFIT_TARGET_COST_MULTIPLE = ACTIVE_TRADING_POLICY.momentum.targetCostMultiple;
+export const PROFIT_TARGET_COST_MULTIPLE = ACTIVE_TRADING_POLICY.readings.targetCostMultiple;
 
 /** Where the taker fee rate in an estimate came from. */
 export const FeeRateSource = Schema.Literals(["hyperliquid_user_fees", "authority_fallback"]);

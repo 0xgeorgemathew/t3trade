@@ -24,7 +24,7 @@
 import { Effect, Schema } from "effect";
 import { TradingOrderSide } from "./execution.ts";
 import { Price, TradingId, TradingMarket, UnixMillis, UsdAmount } from "./primitives.ts";
-import { MomentumOrderPreference, TradingUrgency } from "./strategy.ts";
+import { OrderPreference, TradingUrgency } from "./strategy.ts";
 
 export const TRADING_QUOTE_ENTRY_TOOL = "trading_quote_entry";
 
@@ -386,7 +386,7 @@ export function deriveFeasibleSize(input: QuoteSizingInput): QuoteSizing {
  */
 export function deriveQuoteLimitPrice(input: {
   readonly side: "buy" | "sell";
-  readonly orderPreference: MomentumOrderPreference;
+  readonly orderPreference: OrderPreference;
   readonly bestBid: number;
   readonly bestAsk: number;
   readonly slippageBps: number;

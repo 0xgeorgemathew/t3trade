@@ -22,10 +22,10 @@
  */
 import type { MarketCandle, MarketCandleInterval } from "./market.ts";
 import {
-  analyseMomentum,
+  analyseMarketStructure,
   analyseTimeframe,
   type CandidateSetup,
-  type MomentumTimeframeContext,
+  type TimeframeReading,
 } from "./momentum.ts";
 import { ACTIVE_TRADING_POLICY, type TradingPolicy } from "./policy.ts";
 
@@ -129,7 +129,7 @@ const declinedEvaluation = (reason: string): SetupEvaluation => ({
  */
 export function evaluateSetup(input: {
   readonly fixture: ReplayFixture;
-  readonly frame: MomentumTimeframeContext;
+  readonly frame: TimeframeReading;
   readonly candidates: ReadonlyArray<CandidateSetup>;
   readonly entryPrice: number;
   readonly policy: TradingPolicy;
@@ -245,7 +245,7 @@ export function evaluateSetup(input: {
   // The measured move is the smaller of current ATR and the fresh impulse.
   // It comes from the bars, not from the cost multiple being tested.
   const targetMovePrice = Math.min(frame.atrUsd, frame.lastImpulse?.sizeUsd ?? frame.atrUsd);
-  if (!clearsCosts(targetMovePrice, policy.momentum.targetCostMultiple)) {
+  if (!clearsCosts(targetMovePrice, policy.readings.targetCostMultiple)) {
     return declinedEvaluation("costs_exceed_target");
   }
   return {
@@ -267,7 +267,7 @@ export function evaluateSetup(input: {
  * a target exactly large enough to clear its own cost gate.
  */
 function replayFixture(fixture: ReplayFixture, policy: TradingPolicy): ReplayResult {
-  const structure = analyseMomentum(
+  const structure = analyseMarketStructure(
     {
       market: fixture.name,
       measuredAt: 0,

@@ -208,12 +208,8 @@ export type AgentConditionInput = typeof AgentConditionInput.Type;
 export const TradingPlanIntent = Schema.Literals(["long", "short", "stand_aside"]);
 export type TradingPlanIntent = typeof TradingPlanIntent.Type;
 
-export const MomentumOrderPreference = Schema.Literals([
-  "marketable_ioc",
-  "resting_limit",
-  "post_only",
-]);
-export type MomentumOrderPreference = typeof MomentumOrderPreference.Type;
+export const OrderPreference = Schema.Literals(["marketable_ioc", "resting_limit", "post_only"]);
+export type OrderPreference = typeof OrderPreference.Type;
 
 /**
  * How urgently the harness wants an order to land — the vocabulary it is given
@@ -229,7 +225,7 @@ export const TradingUrgency = Schema.Literals(["now", "patient"]);
 export type TradingUrgency = typeof TradingUrgency.Type;
 
 /** `now` crosses (a marketable IOC); `patient` rests post-only (ALO on the wire). */
-export function urgencyToOrderPreference(urgency: TradingUrgency): MomentumOrderPreference {
+export function urgencyToOrderPreference(urgency: TradingUrgency): OrderPreference {
   return urgency === "patient" ? "post_only" : "marketable_ioc";
 }
 

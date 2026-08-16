@@ -43,10 +43,10 @@ import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
 import type { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 import {
-  analyseMomentum,
+  analyseMarketStructure,
   compareCandidates,
-  MOMENTUM_LOOKBACK_BARS,
-  MOMENTUM_TIMEFRAMES,
+  MARKET_STRUCTURE_LOOKBACK_BARS,
+  MARKET_STRUCTURE_TIMEFRAMES,
 } from "@t3tools/trading-contracts/momentum";
 import { PLAYBOOKS } from "@t3tools/trading-contracts/playbook";
 import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
@@ -992,8 +992,8 @@ const handlers = {
       // Market data, not mission state: an unbound thread reads it too.
       const { mission } = yield* resolveReadCall(input.missionId);
       const gateway = yield* HyperliquidGateway;
-      const intervals = input.intervals ?? MOMENTUM_TIMEFRAMES;
-      const maxBars = input.lookbackBars ?? MOMENTUM_LOOKBACK_BARS;
+      const intervals = input.intervals ?? MARKET_STRUCTURE_TIMEFRAMES;
+      const maxBars = input.lookbackBars ?? MARKET_STRUCTURE_LOOKBACK_BARS;
 
       // One read per timeframe, concurrently — the point of the tool is the
       // comparison, so serialising them would put seconds between the fastest
@@ -1007,7 +1007,7 @@ const handlers = {
         { concurrency: "unbounded" },
       ).pipe(Effect.orDie);
 
-      const structure = analyseMomentum({
+      const structure = analyseMarketStructure({
         market: input.market,
         // The candles carry their own observation time, so the reading is
         // stamped with when the data was read rather than when this returned.

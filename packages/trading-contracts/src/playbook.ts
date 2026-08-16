@@ -148,7 +148,7 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
     ],
     gates: [
       "Then ask the one question costs answer, ONCE, at the entry: call trading_estimate_costs at your size and hold the move on offer against the round trip — is the expected move over your intended hold bigger than the round trip is worth? If it is, the trade is worth taking, and the question of which rung to bank at is a question for the position, not for the flat turn deciding whether to have one. `preferredTargetUsd` (" +
-        policy.momentum.targetCostMultiple +
+        policy.readings.targetCostMultiple +
         "x the round trip) is the rung to AIM at, never a precondition — waiting for the market to pre-pay the ideal target is how a session of available trades goes untaken.",
     ],
     standDownIf: [

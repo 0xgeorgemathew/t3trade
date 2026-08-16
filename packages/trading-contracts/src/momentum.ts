@@ -21,10 +21,15 @@ import { ACTIVE_TRADING_POLICY, type TradingPolicy } from "./policy.ts";
 import { ExchangeMarket, Price, UnixMillis } from "./primitives.ts";
 
 /** The timeframes the momentum read covers, fastest first. */
-export const MOMENTUM_TIMEFRAMES: ReadonlyArray<MarketCandleInterval> = ["1m", "5m", "15m", "1h"];
+export const MARKET_STRUCTURE_TIMEFRAMES: ReadonlyArray<MarketCandleInterval> = [
+  "1m",
+  "5m",
+  "15m",
+  "1h",
+];
 
 /** Bars of history each timeframe is measured over. */
-export const MOMENTUM_LOOKBACK_BARS = 120;
+export const MARKET_STRUCTURE_LOOKBACK_BARS = 120;
 
 /** Bars in each ATR leg of the expansion ratio. Matches `ATR_PERIOD`. */
 const ATR_LEG_BARS = 14;
@@ -33,7 +38,7 @@ const ATR_LEG_BARS = 14;
  * Fewest bars a timeframe is willing to speak from. Below this the pivots are
  * noise and the ratios are arithmetic on nothing.
  */
-export const MIN_MOMENTUM_BARS = 30;
+export const MIN_MARKET_STRUCTURE_BARS = 30;
 
 /**
  * Bars either side of a bar that must not exceed it before it counts as a
@@ -57,10 +62,10 @@ export const SWING_PIVOT_BARS = 3;
  * Policy, not physics: read from the version in force so a calibrated value
  * reaches this arithmetic and the playbook prose in the same change.
  */
-export const DIRECTION_SCORE_THRESHOLD = ACTIVE_TRADING_POLICY.momentum.directionScoreThreshold;
+export const DIRECTION_SCORE_THRESHOLD = ACTIVE_TRADING_POLICY.readings.directionScoreThreshold;
 
-export const MomentumDirection = Schema.Literals(["up", "down", "flat"]);
-export type MomentumDirection = typeof MomentumDirection.Type;
+export const MarketDirection = Schema.Literals(["up", "down", "flat"]);
+export type MarketDirection = typeof MarketDirection.Type;
 
 /**
  * Bars the recent directional score is measured over.
@@ -78,7 +83,7 @@ export const RECENT_DIRECTION_BARS = 30;
  * 9 over 21 is the shortest pair that still smooths a 1m series instead of
  * tracing it, and it is the pair the doctrine names, so the two cannot drift
  * apart. Nothing here is timeframe-specific: the same pair is measured on every
- * interval in {@link MOMENTUM_TIMEFRAMES}, and the mission's own timeframe
+ * interval in {@link MARKET_STRUCTURE_TIMEFRAMES}, and the mission's own timeframe
  * decides which frame's cross it trades.
  */
 export const EMA_FAST_PERIOD = 9;
@@ -116,7 +121,7 @@ export type PivotTrend = typeof PivotTrend.Type;
  * that end — a momentum entry taken twenty bars after the impulse finished is
  * not a momentum entry.
  */
-export const MomentumImpulse = Schema.Struct({
+export const SwingImpulse = Schema.Struct({
   direction: Schema.Literals(["up", "down"]),
   startPrice: Price,
   endPrice: Price,
@@ -128,7 +133,7 @@ export const MomentumImpulse = Schema.Struct({
   /** Bars printed since the leg ended. Zero means it just ended. */
   ageBars: Schema.Number,
 });
-export type MomentumImpulse = typeof MomentumImpulse.Type;
+export type SwingImpulse = typeof SwingImpulse.Type;
 
 /**
  * Whether the last close actually went through a level, or only wicked at it.
@@ -268,10 +273,10 @@ export const CandidateSetup = Schema.Struct({
 export type CandidateSetup = typeof CandidateSetup.Type;
 
 /** What one timeframe says about direction, expansion, and structure. */
-export const MomentumTimeframeContext = Schema.Struct({
+export const TimeframeReading = Schema.Struct({
   interval: MarketCandleInterval,
   barsObserved: Schema.Number,
-  /** False when the window is shorter than `MIN_MOMENTUM_BARS`. */
+  /** False when the window is shorter than `MIN_MARKET_STRUCTURE_BARS`. */
   sufficientData: Schema.Boolean,
   /** The last close; every distance below is measured from it. */
   referencePrice: Price,
@@ -284,7 +289,7 @@ export const MomentumTimeframeContext = Schema.Struct({
    * `direction` applies one so the caller does not have to.
    */
   directionScore: Schema.Number,
-  direction: MomentumDirection,
+  direction: MarketDirection,
   /**
    * The same net-over-total travel, over only the last `RECENT_DIRECTION_BARS`
    * bars (the whole window when it is shorter).
@@ -310,7 +315,7 @@ export const MomentumTimeframeContext = Schema.Struct({
    * too short to hold two legs.
    */
   atrExpansionRatio: Schema.optional(Schema.Number),
-  lastImpulse: Schema.optional(MomentumImpulse),
+  lastImpulse: Schema.optional(SwingImpulse),
   /** How far price has retraced from the impulse's end, in USD of price. */
   pullbackDepthUsd: Schema.optional(Schema.Number),
   /** That retracement as a percentage of the impulse it is undoing. */
@@ -392,10 +397,10 @@ export const MomentumTimeframeContext = Schema.Struct({
    */
   impulseIsFresh: Schema.optional(Schema.Boolean),
 });
-export type MomentumTimeframeContext = typeof MomentumTimeframeContext.Type;
+export type TimeframeReading = typeof TimeframeReading.Type;
 
 /** Whether the timeframes agree, and how strongly. */
-export const MomentumAlignment = Schema.Struct({
+export const TimeframeAlignment = Schema.Struct({
   direction: Schema.Literals(["up", "down", "mixed"]),
   /** Mean `directionScore` across every timeframe with sufficient data. */
   score: Schema.Number,
@@ -404,7 +409,7 @@ export const MomentumAlignment = Schema.Struct({
   /** One line stating what the agreement or disagreement actually is. */
   note: Schema.String,
 });
-export type MomentumAlignment = typeof MomentumAlignment.Type;
+export type TimeframeAlignment = typeof TimeframeAlignment.Type;
 
 /**
  * The classify playbook's regime read, applied in code.
@@ -479,8 +484,8 @@ export type StrategyCandidate = typeof StrategyCandidate.Type;
 export const MarketStructure = Schema.Struct({
   market: ExchangeMarket,
   measuredAt: UnixMillis,
-  timeframes: Schema.Array(MomentumTimeframeContext),
-  alignment: MomentumAlignment,
+  timeframes: Schema.Array(TimeframeReading),
+  alignment: TimeframeAlignment,
   /** The computed regime verdict — evidence for the classify turn, never permission. */
   regime: MarketRegime,
   /** Every setup the measurements support, best score first. Often empty. */
@@ -672,7 +677,7 @@ const directionalEfficiency = (candles: ReadonlyArray<MarketCandle>): number => 
   return travelled === 0 ? 0 : net / travelled;
 };
 
-const callDirection = (score: number, threshold: number): MomentumDirection => {
+const callDirection = (score: number, threshold: number): MarketDirection => {
   if (score >= threshold) return "up";
   if (score <= -threshold) return "down";
   return "flat";
@@ -721,7 +726,7 @@ const pivotBefore = (pivots: ReadonlyArray<number>, index: number): number | und
 };
 
 interface ImpulseWithIndex {
-  readonly impulse: MomentumImpulse;
+  readonly impulse: SwingImpulse;
   /** Index of the bar the impulse ended on — where a pullback is measured from. */
   readonly endIndex: number;
 }
@@ -972,7 +977,7 @@ export function analyseTimeframe(
    * passes a candidate so the same bars can be re-read under other numbers.
    */
   policy: TradingPolicy = ACTIVE_TRADING_POLICY,
-): MomentumTimeframeContext {
+): TimeframeReading {
   const { candles, interval } = input;
   const referencePrice = candles[candles.length - 1]?.close ?? 0;
   const ranges = trueRanges(candles);
@@ -1002,12 +1007,12 @@ export function analyseTimeframe(
   return {
     interval,
     barsObserved: candles.length,
-    sufficientData: candles.length >= MIN_MOMENTUM_BARS && referencePrice > 0,
+    sufficientData: candles.length >= MIN_MARKET_STRUCTURE_BARS && referencePrice > 0,
     // `Price` is strictly positive; an empty window has no reference price and
     // is already reported as insufficient.
     referencePrice: referencePrice > 0 ? referencePrice : 1,
     directionScore,
-    direction: callDirection(directionScore, policy.momentum.directionScoreThreshold),
+    direction: callDirection(directionScore, policy.readings.directionScoreThreshold),
     recentDirectionScore,
     pivotTrend: readPivotTrend(candles, highs, lows),
     atrUsd,
@@ -1062,7 +1067,7 @@ export function analyseTimeframe(
  * is chopping. Saying "mixed" is the useful answer — a momentum thesis that
  * needs the higher timeframe to disagree with it is a thesis about noise.
  */
-function readAlignment(frames: ReadonlyArray<MomentumTimeframeContext>): MomentumAlignment {
+function readAlignment(frames: ReadonlyArray<TimeframeReading>): TimeframeAlignment {
   const measured = frames.filter((frame) => frame.sufficientData);
   if (measured.length === 0) {
     return {
@@ -1132,13 +1137,10 @@ interface RegimeFact {
 }
 
 /** Every regime fact one measured timeframe contributes. */
-function readRegimeFacts(
-  frame: MomentumTimeframeContext,
-  policy: TradingPolicy,
-): Array<RegimeFact> {
+function readRegimeFacts(frame: TimeframeReading, policy: TradingPolicy): Array<RegimeFact> {
   const facts: Array<RegimeFact> = [];
   const at = frame.interval;
-  const threshold = policy.momentum.directionScoreThreshold;
+  const threshold = policy.readings.directionScoreThreshold;
 
   if (frame.direction !== "flat") {
     facts.push({
@@ -1254,7 +1256,7 @@ function readRegimeFacts(
  * may overrule the verdict, against the named evidence.
  */
 export function classifyRegime(
-  frames: ReadonlyArray<MomentumTimeframeContext>,
+  frames: ReadonlyArray<TimeframeReading>,
   policy: TradingPolicy = ACTIVE_TRADING_POLICY,
 ): MarketRegime {
   const facts = frames
@@ -1294,7 +1296,7 @@ export function classifyRegime(
  * still returned, with `sufficientData: false`, so the harness can see what was
  * missing rather than receive a shorter list than it asked for.
  */
-export function analyseMomentum(
+export function analyseMarketStructure(
   input: {
     readonly market: string;
     readonly measuredAt: number;
@@ -1337,7 +1339,7 @@ export const TREND_CONTINUATION_MAX_PULLBACK_PERCENT = 50;
  * and only the close says the drift resumed.
  */
 function readTrendContinuation(
-  frame: MomentumTimeframeContext,
+  frame: TimeframeReading,
   policy: TradingPolicy,
 ): CandidateSetup | null {
   const impulse = frame.lastImpulse;
@@ -1372,7 +1374,7 @@ function readTrendContinuation(
     rejections.push({ gate: "recent_direction", margin: Math.abs(recent) });
   }
 
-  const threshold = policy.momentum.directionScoreThreshold;
+  const threshold = policy.readings.directionScoreThreshold;
   const score = clamp01(
     0.35 * clamp01(run / 4) +
       0.35 * clamp01(Math.abs(recent) / threshold / 2) +
@@ -1408,10 +1410,7 @@ function readTrendContinuation(
  * cross itself is a state of two averages, and the close is what says price
  * agrees with it.
  */
-function readEmaCross(
-  frame: MomentumTimeframeContext,
-  policy: TradingPolicy,
-): CandidateSetup | null {
+function readEmaCross(frame: TimeframeReading, policy: TradingPolicy): CandidateSetup | null {
   const ema = frame.ema;
   if (ema === undefined) return null;
   // No flip anywhere in the window is a trend that has been one way for the
@@ -1445,7 +1444,7 @@ function readEmaCross(
   const score = clamp01(
     0.5 * (1 - age / Math.max(1, policy.emaCross.maxCrossAgeBars)) +
       0.3 * clamp01(separation / (policy.emaCross.minSpreadAtrRatio * 4)) +
-      0.2 * clamp01(Math.abs(frame.recentDirectionScore) / policy.momentum.directionScoreThreshold),
+      0.2 * clamp01(Math.abs(frame.recentDirectionScore) / policy.readings.directionScoreThreshold),
   );
 
   return {
@@ -1476,10 +1475,7 @@ function readEmaCross(
  * an extreme which has HELD for many bars is a trend being ridden, not a market
  * stretched away from its mean.
  */
-function readRsiReversion(
-  frame: MomentumTimeframeContext,
-  policy: TradingPolicy,
-): CandidateSetup | null {
+function readRsiReversion(frame: TimeframeReading, policy: TradingPolicy): CandidateSetup | null {
   const rsi = frame.rsi;
   // A neutral oscillator is no signal — there is no extreme to be near.
   if (rsi === undefined || rsi.condition === "neutral") return null;
@@ -1493,7 +1489,7 @@ function readRsiReversion(
   // check cannot see it — a breakout prints an overbought reading on its
   // first bar — so the recent directional score is the veto.
   const recent = frame.recentDirectionScore;
-  const threshold = policy.momentum.directionScoreThreshold;
+  const threshold = policy.readings.directionScoreThreshold;
   const trendingIntoBand = direction === "down" ? recent >= threshold : recent <= -threshold;
 
   const rejections: Array<SetupRejection> = [];
@@ -1553,7 +1549,7 @@ function readRsiReversion(
  * compares them.
  */
 function readStructuralSetup(
-  frame: MomentumTimeframeContext,
+  frame: TimeframeReading,
   policy: TradingPolicy,
 ): CandidateSetup | null {
   const edgePercent = policy.rangeReversion.edgePercent;
@@ -1575,7 +1571,7 @@ function readStructuralSetup(
       (frame.swingHighTouches ?? 0) >= policy.openingRange.minBoundaryTouches &&
       (frame.swingLowTouches ?? 0) >= policy.openingRange.minBoundaryTouches;
     const score = clamp01(
-      0.4 * clamp01(Math.abs(frame.directionScore) / policy.momentum.directionScoreThreshold / 2) +
+      0.4 * clamp01(Math.abs(frame.directionScore) / policy.readings.directionScoreThreshold / 2) +
         0.3 * clamp01(expansion - 1) +
         0.2 * (frame.impulseIsFresh === true ? 1 : 0) +
         0.1 * (aligned ? 1 : 0),
@@ -1635,7 +1631,7 @@ function readStructuralSetup(
       // Conviction beyond the flat band.
       rejections.push({
         gate: "direction_not_flat",
-        margin: Math.abs(frame.directionScore) - policy.momentum.directionScoreThreshold,
+        margin: Math.abs(frame.directionScore) - policy.readings.directionScoreThreshold,
       });
     }
     const highShort = minTouches - (frame.swingHighTouches ?? 0);
@@ -1696,7 +1692,7 @@ function readStructuralSetup(
  * near-miss (plan 29 step 3.4).
  */
 export function findCandidateSetups(
-  frames: ReadonlyArray<MomentumTimeframeContext>,
+  frames: ReadonlyArray<TimeframeReading>,
   policy: TradingPolicy = ACTIVE_TRADING_POLICY,
 ): ReadonlyArray<CandidateSetup> {
   const setups: Array<CandidateSetup> = [];
@@ -1737,7 +1733,7 @@ export function findCandidateSetups(
  */
 function availableMoveUsd(
   setup: CandidateSetup,
-  frame: MomentumTimeframeContext | undefined,
+  frame: TimeframeReading | undefined,
   policy: TradingPolicy,
 ): number | undefined {
   if (frame === undefined) return undefined;

@@ -34,14 +34,14 @@ import {
 import type { TradingOrderIntent, TradingOrderSide } from "@t3tools/trading-contracts/execution";
 import {
   urgencyToOrderPreference,
-  type MomentumOrderPreference,
+  type OrderPreference,
   type TradingUrgency,
 } from "@t3tools/trading-contracts/strategy";
 import { evaluateLossBudget } from "@t3tools/trading-contracts/loss-accounting";
 import {
-  analyseMomentum,
-  MOMENTUM_LOOKBACK_BARS,
-  MOMENTUM_TIMEFRAMES,
+  analyseMarketStructure,
+  MARKET_STRUCTURE_LOOKBACK_BARS,
+  MARKET_STRUCTURE_TIMEFRAMES,
 } from "@t3tools/trading-contracts/momentum";
 import { targetNotionalForPlan } from "@t3tools/trading-contracts/costs";
 import { stopNoiseFloorUsd } from "@t3tools/trading-contracts/stop-adjustment";
@@ -399,20 +399,20 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       // time, not prose the harness asserted.
       const setupSnapshot = yield* Effect.gen(function* () {
         const histories = yield* Effect.all(
-          MOMENTUM_TIMEFRAMES.map((interval) =>
+          MARKET_STRUCTURE_TIMEFRAMES.map((interval) =>
             gateway
               .getMarketHistory({
                 // Equal to request.market by the mandate guard above, but
                 // carries the market type the gateway wants.
                 market: mission.market,
                 interval,
-                maxBars: MOMENTUM_LOOKBACK_BARS,
+                maxBars: MARKET_STRUCTURE_LOOKBACK_BARS,
               })
               .pipe(Effect.map((history) => ({ interval, candles: history.candles }))),
           ),
           { concurrency: "unbounded" },
         );
-        const structure = analyseMomentum({
+        const structure = analyseMarketStructure({
           market: request.market,
           measuredAt: now,
           frames: histories,
@@ -644,7 +644,7 @@ export const makeTradingQuoteService = Effect.gen(function* () {
           market: row.market as TradingOrderIntent["market"],
           side: row.side as TradingOrderSide,
           size: row.size,
-          orderPreference: row.order_preference as MomentumOrderPreference,
+          orderPreference: row.order_preference as OrderPreference,
           limitPrice: row.limit_price,
           stop: {
             stopPrice: row.stop_price,
