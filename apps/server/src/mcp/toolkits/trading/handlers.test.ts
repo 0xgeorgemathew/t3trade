@@ -406,6 +406,10 @@ const withMcpServer = <A, E>(
       readonly updatedAt: number;
       readonly profitUsd?: number | undefined;
     }) => Effect.Effect<void, never, never>;
+    /** Open one harness run, as a wake would — the run the funnel records against. */
+    readonly seedHarnessRun: () => Effect.Effect<void, never, never>;
+    /** What the open run recorded as its first execution refusal, if anything. */
+    readonly readFirstRefusal: () => Effect.Effect<string | null, never, never>;
   }) => Effect.Effect<A, E, HttpServer.HttpServer>,
   tradingLayer: TradingLayerInput = TradingLayerLive,
 ) =>
@@ -498,6 +502,18 @@ const withMcpServer = <A, E>(
             ${input.updatedAt}
           )
         `.pipe(Effect.asVoid, Effect.orDie);
+      const seedHarnessRun = () =>
+        sql`
+          INSERT INTO trading_harness_runs (run_id, mission_id, cause, status, started_at, created_at)
+          VALUES ('run_funnel', ${MISSION_ID}, 'scheduled_reassessment', 'starting', 1000, 1000)
+        `.pipe(Effect.asVoid, Effect.orDie);
+      const readFirstRefusal = () =>
+        sql<{ readonly first_preview_refusal: string | null }>`
+          SELECT first_preview_refusal FROM trading_harness_runs WHERE run_id = 'run_funnel'
+        `.pipe(
+          Effect.map((rows) => rows[0]?.first_preview_refusal ?? null),
+          Effect.orDie,
+        );
       const httpClient = yield* HttpClient.HttpClient;
 
       yield* runMigrations({ toMigrationInclusive: 65 }).pipe(Effect.provide(built), Effect.orDie);
@@ -567,6 +583,8 @@ const withMcpServer = <A, E>(
         seedTradingAccount,
         seedPosition,
         seedPlan,
+        seedHarnessRun,
+        readFirstRefusal,
       });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest));
@@ -974,6 +992,29 @@ it.effect("refuses an entry outside a turn that owns the decision lease", () =>
       assert.equal(entered.result.structuredContent.status, "rejected");
       assert.include(entered.result.structuredContent.detail, "harness_run_owns_lease");
       assert.equal(entered.result.structuredContent.recovery?.retryable, false);
+    }),
+  ),
+);
+
+it.effect("tells the run's funnel that an entry was attempted and refused", () =>
+  withMcpServer(({ callTool, seedHarnessRun, readFirstRefusal }) =>
+    Effect.gen(function* () {
+      yield* seedHarnessRun();
+
+      // The mandate guard refuses before any exchange read, which is the point:
+      // an entry is priced and pre-checked before anything is dispatched, so
+      // the reactor — which records its own refusals — never sees this one.
+      const entered = yield* callTool(BOUND_THREAD, "trading_enter", {
+        market: "BTC",
+        side: "buy",
+        stopPrice: 3_100,
+        sizeEth: 0.1,
+      });
+      assert.equal(entered.result.structuredContent.status, "rejected");
+
+      // Without this the turn records as `no_setup` — the same shape as a turn
+      // that never wanted to trade at all.
+      assert.include(yield* readFirstRefusal(), "market_is_eth");
     }),
   ),
 );

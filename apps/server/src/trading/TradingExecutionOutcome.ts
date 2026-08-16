@@ -1,7 +1,7 @@
 /**
  * What actually happened to an execution the harness requested.
  *
- * `trading_request_entry` raises `trading.execution.requested` and the reactor
+ * `trading_enter` raises `trading.execution.requested` and the reactor
  * answers it on its own worker. The tool used to return a synthesized
  * `status: "submitted"` the moment the dispatch landed — before preview, before
  * signing, before the exchange had been asked anything. A refusal downstream

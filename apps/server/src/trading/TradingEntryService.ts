@@ -37,6 +37,7 @@ import {
 } from "@t3tools/trading-contracts/entry";
 import type { TradingOrderIntent, TradingOrderSide } from "@t3tools/trading-contracts/execution";
 import { urgencyToOrderPreference, type TradingUrgency } from "@t3tools/trading-contracts/strategy";
+import { classifyFailure, type FailureRecovery } from "@t3tools/trading-contracts/recovery";
 import { evaluateLossBudget } from "@t3tools/trading-contracts/loss-accounting";
 import {
   analyseMarketStructure,
@@ -108,6 +109,16 @@ export interface RefusedEntry {
   readonly detail: string;
   /** The largest size that would have cleared, when a smaller one would. */
   readonly feasibleSize?: number | undefined;
+  /**
+   * What to do about it, derived where the refusal happened.
+   *
+   * The reason alone cannot be classified: `classifyFailure` needs the error's
+   * tag to tell a §16.3 item from a dropped read, and with only a bare string
+   * every refusal here — a preview verdict, a book that went one-sided, a
+   * ceiling — falls to the same permanent `read_state`. This is the only place
+   * that knows which of the three produced it.
+   */
+  readonly recovery: FailureRecovery;
 }
 
 export type EntryPreparation = PreparedEntry | RefusedEntry;
@@ -119,11 +130,45 @@ export class TradingEntryService extends Context.Service<
   }
 >()("t3/trading/TradingEntryService") {}
 
+/**
+ * A refusal about this mission's own state — a mandate, a lease, a ceiling.
+ *
+ * Permanent and worth a look at what is actually true, which is what the
+ * classifier's default already says; it is spelled out here so every refusal
+ * carries the field rather than some of them.
+ */
 const refused = (reason: string, detail: string, feasibleSize?: number): RefusedEntry => ({
   outcome: "refused",
   reason,
   detail,
   ...(feasibleSize === undefined ? {} : { feasibleSize }),
+  recovery: classifyFailure({ reason }),
+});
+
+/**
+ * A refusal from a read that could answer differently in a second — a book
+ * with one side, a mission or account read that dropped. The detail already
+ * says "retry"; this is the same instruction in the field the harness acts on.
+ */
+const refusedTransiently = (reason: string, detail: string): RefusedEntry => ({
+  outcome: "refused",
+  reason,
+  detail,
+  recovery: classifyFailure({ tag: "HyperliquidRequestError", reason: "network" }),
+});
+
+/**
+ * A refusal by the §16.3 checklist, classified as the preview rejection it is
+ * — so `account_and_bbo_fresh` reads as "price again" and every other item as
+ * the rule it is, exactly as it did when the reactor ran the checklist and the
+ * refusal came back wrapped.
+ */
+const refusedByPreview = (item: string, detail: string, feasibleSize: number): RefusedEntry => ({
+  outcome: "refused",
+  reason: item,
+  detail,
+  feasibleSize,
+  recovery: classifyFailure({ tag: "TradingPreviewRejection", reason: item }),
 });
 
 export const makeTradingEntryService = Effect.gen(function* () {
@@ -232,7 +277,7 @@ export const makeTradingEntryService = Effect.gen(function* () {
       const bestBid = bbo.bidPrice;
       const bestAsk = bbo.askPrice;
       if (bestBid === undefined || bestAsk === undefined) {
-        return refused(
+        return refusedTransiently(
           "market_data_unavailable",
           `${request.market} has no two-sided book right now, so there is no price to enter against`,
         );
@@ -351,7 +396,7 @@ export const makeTradingEntryService = Effect.gen(function* () {
       );
 
       if (verdict !== null) {
-        return refused(verdict.item, verdict.detail, sizing.size);
+        return refusedByPreview(verdict.item, verdict.detail, sizing.size);
       }
 
       const costs = yield* estimator
@@ -532,7 +577,7 @@ export const makeTradingEntryService = Effect.gen(function* () {
       Effect.catchCause((cause) =>
         Effect.logWarning("trading entry could not be prepared", { cause: String(cause) }).pipe(
           Effect.as(
-            refused(
+            refusedTransiently(
               "market_data_unavailable",
               "the mission, book, or account state an entry is made of could not be read; retry once",
             ),

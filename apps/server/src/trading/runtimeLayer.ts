@@ -166,7 +166,7 @@ const TradingExecutionLayerLive = Layer.mergeAll(
   // Provisions the account row a mission names. Merged here because it needs
   // the resolved interim signer, which the foundation below supplies.
   TradingAccountBootstrapLive,
-  // Reports an execution's real outcome back to `trading_request_entry`; needs
+  // Reports an execution's real outcome back to `trading_enter`; needs
   // the budget reader and the gateway the layers below supply, plus the inbox
   // the reactor records refusals in.
   TradingExecutionOutcomeLive.pipe(Layer.provide(TradingEventInboxLive)),

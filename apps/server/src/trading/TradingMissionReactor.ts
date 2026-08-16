@@ -1606,7 +1606,7 @@ const make = Effect.gen(function* () {
   /**
    * Record why an execution request was refused, where the harness can read it.
    *
-   * A refusal used to exist only as a server log line, so `trading_request_entry`
+   * A refusal used to exist only as a server log line, so the entry tool
    * had nothing to report and the harness carried on as though it had entered.
    * Writing it to the mission inbox puts the reason on both paths that reach the
    * harness: `TradingExecutionOutcome` reads it back for the tool's own return,

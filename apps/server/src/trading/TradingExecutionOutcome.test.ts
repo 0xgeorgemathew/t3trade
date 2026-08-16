@@ -1,5 +1,5 @@
 /**
- * What `trading_request_entry` tells the harness.
+ * What `trading_enter` tells the harness.
  *
  * The tool used to report `status: "submitted"` the instant the request was
  * dispatched, so a request the reactor went on to refuse read as a request that

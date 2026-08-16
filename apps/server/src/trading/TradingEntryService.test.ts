@@ -47,6 +47,16 @@ const book: OrderBook = {
   freshness,
 };
 
+/** A book that lost a side — one read that can answer differently in a second. */
+const oneSidedBook: OrderBook = {
+  ...book,
+  asks: [],
+  bestBidOffer: { ...bestBidOffer, askPrice: undefined, askSize: undefined },
+};
+
+/** What the stub gateway serves. `seed()` puts the two-sided book back. */
+let servedBook: OrderBook = book;
+
 const unusedRead = () => Effect.die("not used by TradingEntryService tests");
 
 const stubGateway = Layer.succeed(HyperliquidGateway, {
@@ -60,7 +70,7 @@ const stubGateway = Layer.succeed(HyperliquidGateway, {
     }),
   getMarketSnapshot: () => Effect.succeed(snapshot),
   getMarketHistory: unusedRead,
-  getOrderBook: () => Effect.succeed(book),
+  getOrderBook: () => Effect.succeed(servedBook),
   getAccountSnapshot: unusedRead,
   getPosition: unusedRead,
   getOpenOrders: unusedRead,
@@ -104,6 +114,7 @@ const harness: TradingHarnessBinding = {
 const seed = (options?: { readonly withOpenRun?: boolean }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    servedBook = book;
     yield* runMigrations({ toMigrationInclusive: 65 });
     yield* sql`DELETE FROM trading_missions`;
     yield* sql`DELETE FROM trading_authority_versions`;
@@ -255,6 +266,56 @@ layer("TradingEntryService", (it) => {
       assert.strictEqual(result.outcome, "refused");
       if (result.outcome !== "refused") return;
       assert.strictEqual(result.reason, "harness_run_owns_lease");
+    }),
+  );
+
+  // The §16.3 checklist runs here rather than on the reactor, so the refusal
+  // it produces has to reach the harness classified as the preview rejection
+  // it is. A bare reason string classifies as `read_state`, which reads to a
+  // harness as "look again" for a rule that is not going to change.
+  it.effect("classifies a checklist refusal as the preview rejection it is", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        UPDATE trading_missions
+        SET control_json = json_set(control_json, '$.entriesAllowed', json('false'))
+        WHERE mission_id = 'mission_1'
+      `;
+
+      const result = yield* enterALong;
+
+      assert.strictEqual(result.outcome, "refused");
+      if (result.outcome !== "refused") return;
+      assert.strictEqual(result.reason, "entries_allowed");
+      assert.strictEqual(result.recovery.action, "stand_down");
+      assert.strictEqual(result.recovery.reason, "preview_entries_allowed");
+      assert.strictEqual(result.recovery.retryable, false);
+    }),
+  );
+
+  // The opposite end of the same range: a read that could answer differently
+  // in a second must not tell the harness the answer is settled.
+  it.effect("says a book that went one-sided is worth one more attempt", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const entries = yield* TradingEntryService;
+
+      servedBook = oneSidedBook;
+
+      const result = yield* entries.prepare({
+        missionId: "mission_1",
+        market: "ETH",
+        side: "buy",
+        stopPrice: 1_980,
+        sizeEth: 0.05,
+      });
+
+      assert.strictEqual(result.outcome, "refused");
+      if (result.outcome !== "refused") return;
+      assert.strictEqual(result.reason, "market_data_unavailable");
+      assert.strictEqual(result.recovery.retryable, true);
+      assert.strictEqual(result.recovery.action, "retry");
     }),
   );
 

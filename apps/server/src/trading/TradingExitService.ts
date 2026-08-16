@@ -1,7 +1,7 @@
 /**
  * TradingExitService — the server half of getting out.
  *
- * The mirror of `TradingQuoteService`, and for the same reason: an exit is made
+ * The mirror of `TradingEntryService`, and for the same reason: an exit is made
  * of a strategy version, an authority version, a lease-owning run, a monotonic
  * sequence, a crossing limit price, a side and a size, and the harness can
  * usefully answer none of them. The side and size in particular have exactly

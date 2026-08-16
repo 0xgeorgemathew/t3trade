@@ -40,6 +40,7 @@ import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
 import { TradingWakeupComposer } from "../../../trading/TradingWakeupComposer.ts";
 import { allocateExecutionSequence } from "../../../trading/TradingExecutionSequence.ts";
 import { recordStructureRead } from "../../../trading/TradingLevelHistory.ts";
+import { recordExecutionRefusal } from "../../../trading/TradingRunTelemetry.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
@@ -418,6 +419,23 @@ const announceStopAdjusted = Effect.fn("TradingToolkit.announceStopAdjusted")(fu
       ),
     );
 });
+
+/**
+ * Tell the run's decision funnel that an entry was attempted and refused.
+ *
+ * The reactor records the refusals it produces itself, but an entry is priced,
+ * sized and pre-checked before anything is dispatched, so the refusals that
+ * matter most — a ceiling, the mandatory stop, a stop inside the noise floor —
+ * never reach it. Losing the record costs the funnel a turn, never the
+ * refusal, so it is logged and dropped rather than raised.
+ */
+const recordEntryRefusal = (missionId: string, reason: string) =>
+  SqlClient.SqlClient.pipe(
+    Effect.flatMap((sql) => recordExecutionRefusal(sql, { missionId, reason })),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("could not record an entry refusal against the run", { missionId, cause }),
+    ),
+  );
 
 /** An execution whose intent and versions are already settled. */
 interface ResolvedExecuteInput {
@@ -946,6 +964,12 @@ const handlers = {
       });
 
       if (prepared.outcome === "refused") {
+        // The checklist runs here now, not on the reactor, so this is the only
+        // place that can tell the run's funnel an entry was attempted and
+        // stopped. Without it a turn that tried, was refused by a ceiling, and
+        // published a stand-aside records as `no_setup` — the same shape as a
+        // turn that never wanted to trade.
+        yield* recordEntryRefusal(mission.id, prepared.reason);
         return {
           status: "rejected" as const,
           cloid: "",
@@ -953,7 +977,7 @@ const handlers = {
           budget: { remainingCumulativeLossUsd: 0, exhausted: false },
           detail: `${prepared.reason}: ${prepared.detail}`,
           ...(prepared.feasibleSize === undefined ? {} : { feasibleSize: prepared.feasibleSize }),
-          recovery: classifyFailure({ reason: prepared.reason }),
+          recovery: prepared.recovery,
         };
       }
 
