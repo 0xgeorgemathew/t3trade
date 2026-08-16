@@ -449,7 +449,7 @@ const tradingWithPreview = Layer.mergeAll(
 ).pipe(Layer.provideMerge(tradingFoundationWithFakes));
 
 // The wakeup prices the round trip on any position it finds open, through the
-// same estimator `trading_estimate_costs` uses.
+// same estimator `trading_look` uses.
 const composerWithDeps = TradingWakeupComposerLive.pipe(
   Layer.provide(TradingCostEstimatorLive),
   Layer.provideMerge(tradingWithPreview),

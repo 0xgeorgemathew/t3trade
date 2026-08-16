@@ -120,7 +120,7 @@ export type LevelHistoryEntry = typeof LevelHistoryEntry.Type;
  * A mission re-derives its regime and its boundaries from scratch every wake,
  * which is how a boundary quietly redrawn lower on three consecutive reads
  * looked like three fresh ranges instead of one trend. The echo is the last
- * `trading_get_market_structure` read this mission made: its regime verdict
+ * `trading_look` read this mission made: its regime verdict
  * and the primary timeframe's swing bounds, with how old that read is.
  */
 export const PreviousStructureRead = Schema.Struct({
@@ -140,7 +140,7 @@ export type PreviousStructureRead = typeof PreviousStructureRead.Type;
  * versioned snapshot of market, account, position, recent price action, active
  * strategy, authority, and the coalesced pending events the run was started
  * with. The bounded snapshot answers "what do I hold, what did price just do?"
- * without tool calls; deeper history stays behind `trading_get_market_history`.
+ * without tool calls; deeper history stays behind `trading_look`.
  *
  * `cause` is the §11.2 `TradingHarnessRunCause` union verbatim, including
  * `mission_created` for the first run.
@@ -187,7 +187,7 @@ export const TradingHarnessWakeup = Schema.Struct({
    * The mission's net position for `market`, always present.
    *
    * Flat is modelled as `size: 0` (the contract already treats that as a valid
-   * state), so a woken run never needs a boilerplate `trading_get_position`
+   * state), so a woken run never needs a boilerplate `trading_look`
    * call to learn whether it holds anything before it can think.
    */
   position: AgentNetPosition,
@@ -196,7 +196,7 @@ export const TradingHarnessWakeup = Schema.Struct({
    * else `1m` — see `runtimeTimeframe` in `./strategy.ts`).
    *
    * A bounded slice of recent price action so the run can answer "what did
-   * price just do?" without a `trading_get_market_history` round-trip. Deeper
+   * price just do?" without a `trading_look` round-trip. Deeper
    * history stays behind that tool; this never exceeds 8 bars.
    */
   recentCandles: MarketHistory,
@@ -218,10 +218,10 @@ export const TradingHarnessWakeup = Schema.Struct({
    *
    * One timeframe is not enough to set a target from: this is the primary
    * timeframe only. `higherTimeframeVolatility` below carries the second one, so
-   * the pair is already here and a `trading_measure_volatility` call is only
+   * the pair is already here and a `trading_look` call is only
    * needed for a third. Nothing here is netted of fees — `costContext` below
    * carries the round trip at a stated reference notional, and
-   * `trading_estimate_costs` prices a hypothetical size exactly.
+   * `trading_look` prices a hypothetical size exactly.
    */
   observedVolatility: ObservedVolatility,
   /**
@@ -232,7 +232,7 @@ export const TradingHarnessWakeup = Schema.Struct({
    * and on 1m its longest horizon reaches an hour. That is long enough to see
    * the oscillation a range scalp rides and still not long enough to see the
    * structure a momentum move runs into, and asking the harness
-   * to remember to call `trading_measure_volatility` on a second timeframe every
+   * to remember to call `trading_look` on a second timeframe every
    * time is asking it to remember. Absent only when the mission already runs on
    * the highest interval, or when the higher read failed.
    */
@@ -266,7 +266,7 @@ export const TradingHarnessWakeup = Schema.Struct({
    * Declared (and therefore rendered) BEFORE `activeStrategy`: when a wakeup
    * exceeds its budget the renderer truncates from the tail, and the armed
    * levels are the one thing a woken run cannot re-derive from
-   * `trading_get_mission` prose. The strategy echo is the re-readable part, so
+   * `trading_look` prose. The strategy echo is the re-readable part, so
    * it takes the truncation risk instead.
    */
   armedWatches: Schema.Array(WakeupArmedWatch),
@@ -342,7 +342,7 @@ export const TradingHarnessWakeup = Schema.Struct({
   enteredWithoutScoredSetup: Schema.optional(Schema.Boolean),
   /**
    * The mission's previous market-structure read — plan 27 B2. Absent until
-   * the mission has called `trading_get_market_structure` once.
+   * the mission has called `trading_look` once.
    *
    * Compare before re-classifying: a boundary re-drawn in the same direction
    * as the last read, or a regime that was `transition` last read, is memory
@@ -357,7 +357,7 @@ export const TradingHarnessWakeup = Schema.Struct({
    *
    * Optional on the wakeup: the composer no longer embeds the full mandate
    * (large, mostly fixed for the mission's life). A resumed run reads it via
-   * `trading_get_mission` when it needs the rails.
+   * `trading_look` when it needs the rails.
    */
   authority: Schema.optional(TradingAuthority),
   pendingEvents: Schema.Array(TradingDomainEventSummary),
@@ -384,7 +384,7 @@ export const TradingHarnessWakeup = Schema.Struct({
    * on. See `POC_DEFAULT_TIMEFRAME`.
    *
    * Optional on the wakeup: the composer points the run at
-   * `trading_get_mission` for the mandate and authority instead of duplicating
+   * `trading_look` for the mandate and authority instead of duplicating
    * them on every wake.
    */
   defaultTimeframe: Schema.optional(TradingTimeframe),

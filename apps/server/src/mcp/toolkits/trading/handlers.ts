@@ -15,6 +15,8 @@ import {
 import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
 import type { TradingUrgency } from "@t3tools/trading-contracts/strategy";
 import { classifyFailure, type FailureRecovery } from "@t3tools/trading-contracts/recovery";
+import type { TradingLookInput, TradingObservation } from "@t3tools/trading-contracts/observation";
+import { DEFAULT_TRADING_MARKET, type TradingMarket } from "@t3tools/trading-contracts/primitives";
 import { CommandId, ThreadId, TradingMissionId } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -35,6 +37,7 @@ import { TradingQuoteService } from "../../../trading/TradingQuoteService.ts";
 import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
+import { TradingWakeupComposer } from "../../../trading/TradingWakeupComposer.ts";
 import { allocateExecutionSequence } from "../../../trading/TradingExecutionSequence.ts";
 import { recordStructureRead } from "../../../trading/TradingLevelHistory.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -163,7 +166,7 @@ const resolveReadCall = Effect.fn("TradingToolkit.resolveReadCall")(function* (
 });
 
 /**
- * What `trading_get_mission` answers when the thread has no live mission: the
+ * What `trading_look` answers when the thread has no live mission: the
  * last one it held and, if the slot has moved on, who holds it now.
  */
 const readUnboundMission = Effect.fn("TradingToolkit.readUnboundMission")(function* (
@@ -587,22 +590,275 @@ const executeExit = (request: {
     };
   });
 
+/**
+ * Read the multi-timeframe structure, priced at the size the mission would
+ * actually take.
+ *
+ * Lifted out of the retired `trading_look` handler unchanged:
+ * one history read per timeframe concurrently, the prior-read memory write
+ * (plan 27 B2), and the candidate table joined with the live cost of taking
+ * each setup (plan 29 2.6 prices it at the plan's intended notional, not at the
+ * approved ceiling). A cost read that fails costs the multiples, never the
+ * read.
+ */
+const readMarketStructure = Effect.fn("TradingToolkit.readMarketStructure")(function* (input: {
+  readonly market: TradingMarket;
+  readonly mission: TradingMission | null;
+}) {
+  const gateway = yield* HyperliquidGateway;
+  const histories = yield* Effect.all(
+    MARKET_STRUCTURE_TIMEFRAMES.map((interval) =>
+      gateway
+        .getMarketHistory({
+          market: input.market,
+          interval,
+          maxBars: MARKET_STRUCTURE_LOOKBACK_BARS,
+        })
+        .pipe(Effect.map((history) => ({ interval, history }))),
+    ),
+    { concurrency: "unbounded" },
+  ).pipe(Effect.orDie);
+
+  const structure = analyseMarketStructure({
+    market: input.market,
+    measuredAt: histories[0]?.history.freshness.observedAt ?? 0,
+    frames: histories.map(({ interval, history }) => ({ interval, candles: history.candles })),
+  });
+
+  const mission = input.mission;
+  if (mission !== null) {
+    yield* Effect.forEach(
+      structure.timeframes.filter((frame) => frame.sufficientData),
+      (frame) =>
+        recordStructureRead({
+          missionId: mission.id,
+          market: input.market,
+          interval: frame.interval,
+          classification: structure.regime.classification,
+          swingHigh: frame.swingHighPrice ?? null,
+          swingLow: frame.swingLowPrice ?? null,
+          measuredAt: structure.measuredAt,
+        }),
+    );
+  }
+
+  const cost =
+    mission === null
+      ? null
+      : yield* Effect.gen(function* () {
+          const missions = yield* TradingMissionService;
+          const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+          const estimator = yield* TradingCostEstimator;
+          const fallbackFeeBps = mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide;
+          // The approved ceiling first: the fallback answer, and the read of
+          // the fee rate, mark and half spread the plan's size is derived from,
+          // so both estimates price the same market.
+          const atCeiling = yield* estimator.estimate({
+            market: input.market,
+            masterAddress,
+            notionalUsd: mission.authority.allocatedCapitalUsd,
+            fallbackTakerFeeBpsPerSide: fallbackFeeBps,
+          });
+
+          const strategies = yield* TradingStrategyService;
+          const plan = yield* strategies
+            .getCurrentStrategy(mission.id)
+            .pipe(Effect.catchCause(() => Effect.succeed(Option.none<TradingPlanState>())));
+          const currentPlan = Option.isSome(plan) ? plan.value : null;
+          const intended = currentPlan?.entry.initialNotionalUsd;
+          const sized =
+            currentPlan === null ||
+            currentPlan.intent === "stand_aside" ||
+            intended === undefined ||
+            intended <= 0
+              ? null
+              : Math.min(Math.max(intended, MIN_NOTIONAL_USD), atCeiling.notionalUsd);
+          if (sized === null || sized >= atCeiling.notionalUsd) return atCeiling;
+          return yield* estimator.estimate({
+            market: input.market,
+            masterAddress,
+            notionalUsd: sized,
+            fallbackTakerFeeBpsPerSide: fallbackFeeBps,
+          });
+        }).pipe(Effect.catchCause(() => Effect.succeed(null)));
+
+  const candidates = compareCandidates(
+    structure,
+    cost === null ? null : { breakEvenPriceMoveUsd: cost.breakEvenPriceMoveUsd },
+  );
+
+  // A degraded estimate is a lower bound — part of the round trip could not be
+  // read — and the table was built on it silently. One line on each row the
+  // estimate priced; said, never a gate.
+  const pricedCandidates =
+    cost !== null && cost.degraded
+      ? candidates.map((candidate) =>
+          candidate.costMultiple === undefined
+            ? candidate
+            : {
+                ...candidate,
+                note:
+                  `${candidate.note} — cost caveat: the estimate this multiple was priced on ` +
+                  "is degraded (part of the round trip could not be read, so the true cost is " +
+                  "higher than shown)",
+              },
+        )
+      : candidates;
+
+  return { ...structure, candidates: pricedCandidates };
+});
+
+/**
+ * `trading_look` — the one read, plan 29 step 6.1.
+ *
+ * Twelve read tools and the `TradingWakeupComposer` were two implementations of
+ * "what does the model need to know". This is the surviving one: the composer's
+ * own gather step, returned as a structure instead of rendered into a wakeup.
+ *
+ * An unbound thread still gets the market half. Market data is the same answer
+ * whoever asks, and a mission that has just ended is exactly when the model
+ * most needs to be able to read why — so `mission.bound: false` is an answer,
+ * not a refusal.
+ */
+const readObservation = Effect.fn("TradingToolkit.readObservation")(function* (
+  input: TradingLookInput,
+) {
+  const call = yield* resolveReadCall(input.missionId);
+  // Omitting `missionId` resolves to the bound mission. Naming a different one
+  // is still a mismatch, not an unbound read.
+  if (
+    call.mission !== null &&
+    input.missionId !== undefined &&
+    call.mission.id !== input.missionId
+  ) {
+    return yield* rejectCall({
+      reason: "mission_not_bound_to_thread",
+      threadId: call.threadId,
+      missionId: input.missionId,
+    });
+  }
+
+  const mission = call.mission;
+  const market = input.market ?? mission?.market ?? DEFAULT_TRADING_MARKET;
+  const observedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+
+  // The mission half first, and never conditional on the exchange. A look that
+  // failed because Hyperliquid was unreachable would go dark at exactly the
+  // moment the model most needs to read what it holds and what it is allowed
+  // to do — so the market half below is best-effort, and its failure costs the
+  // fields it would have filled and nothing else.
+  const missionResult =
+    mission === null ? yield* readUnboundMission(call.threadId) : yield* readMission(mission);
+
+  const marketHalf = yield* readMarketHalf({ market, mission }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("trading_look: the market half could not be read", {
+        market,
+        missionId: mission?.id,
+        cause,
+      }).pipe(Effect.as({ marketReadFailed: "the exchange read failed; try again" as const })),
+    ),
+  );
+
+  const trades =
+    mission === null
+      ? null
+      : yield* Effect.gen(function* () {
+          const history = yield* TradingTradeHistoryService;
+          return yield* history.read({ missionId: mission.id });
+        }).pipe(Effect.catchCause(() => Effect.succeed(null)));
+
+  return {
+    observedAt,
+    market,
+    ...marketHalf,
+    ...(trades === null ? {} : { trades }),
+    mission: missionResult,
+  } satisfies TradingObservation;
+});
+
+/**
+ * Everything a look reports about the market and the position in it.
+ *
+ * With a mission, this IS the composer's `observe` — the same snapshots, the
+ * same volatility pair, the same cost line — so what a look reports and what a
+ * wake carries can never drift apart. Without one, it is the market alone.
+ */
+const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (input: {
+  readonly market: TradingMarket;
+  readonly mission: TradingMission | null;
+}) {
+  const { market, mission } = input;
+  const gateway = yield* HyperliquidGateway;
+
+  if (mission === null) {
+    const [resolvedMarket, snapshot, orderBook, candles, structure] = yield* Effect.all(
+      [
+        gateway.resolveMarket(market),
+        gateway.getMarketSnapshot(market),
+        gateway.getOrderBook(market),
+        gateway.getMarketHistory({ market, interval: "1m", maxBars: VOLATILITY_LOOKBACK_BARS }),
+        readMarketStructure({ market, mission: null }),
+      ],
+      { concurrency: "unbounded" },
+    );
+    return {
+      resolvedMarket,
+      snapshot,
+      orderBook,
+      candles,
+      volatility: measureVolatility({
+        market,
+        interval: "1m",
+        candles: candles.candles,
+        measuredAt: candles.freshness.observedAt,
+      }),
+      structure,
+    };
+  }
+
+  const composer = yield* TradingWakeupComposer;
+  const strategies = yield* TradingStrategyService;
+  const plan = yield* strategies
+    .getCurrentStrategy(mission.id)
+    .pipe(Effect.catchCause(() => Effect.succeed(Option.none<TradingPlanState>())));
+  const facts = yield* composer.observe({
+    mission,
+    occurredAt: yield* Effect.clockWith((clock) => clock.currentTimeMillis),
+    market,
+    ...(Option.isNone(plan) ? {} : { activeStrategy: plan.value }),
+  });
+
+  const [resolvedMarket, orderBook, structure, openOrders] = yield* Effect.all(
+    [
+      gateway.resolveMarket(market),
+      gateway.getOrderBook(market),
+      readMarketStructure({ market, mission }),
+      gateway.getOpenOrders(facts.address as `0x${string}`),
+    ],
+    { concurrency: "unbounded" },
+  );
+
+  return {
+    resolvedMarket,
+    snapshot: facts.marketSnapshot,
+    orderBook,
+    candles: facts.history,
+    volatility: facts.observedVolatility,
+    ...(facts.higherTimeframeVolatility === null
+      ? {}
+      : { higherTimeframeVolatility: facts.higherTimeframeVolatility }),
+    structure,
+    ...(facts.costContext === null ? {} : { cost: facts.costContext }),
+    ...(facts.positionCosts === null ? {} : { positionCosts: facts.positionCosts }),
+    account: facts.accountSnapshot,
+    position: facts.position,
+    openOrders,
+  };
+});
+
 const handlers = {
-  trading_get_mission: (input) =>
-    Effect.gen(function* () {
-      const call = yield* resolveReadCall(input.missionId);
-      if (call.mission === null) return yield* readUnboundMission(call.threadId);
-      // Omitting `missionId` resolves to the bound mission. Naming a different
-      // one is still a mismatch, not an unbound read.
-      if (input.missionId !== undefined && call.mission.id !== input.missionId) {
-        return yield* rejectCall({
-          reason: "mission_not_bound_to_thread",
-          threadId: call.threadId,
-          missionId: input.missionId,
-        });
-      }
-      return yield* readMission(call.mission);
-    }),
+  trading_look: (input) => readObservation(input),
 
   trading_publish_plan: (input) =>
     Effect.gen(function* () {
@@ -895,296 +1151,12 @@ const handlers = {
   // boundary surfaces generically. `Effect.orDie` collapses the gateway's typed
   // errors into a defect so they never widen the handler's error channel.
 
-  trading_resolve_market: (input) =>
-    Effect.gen(function* () {
-      // Market data, not mission state: an unbound thread reads it too.
-      yield* resolveReadCall(input.missionId);
-      const gateway = yield* HyperliquidGateway;
-      return yield* gateway.resolveMarket(input.market).pipe(Effect.orDie);
-    }),
-
-  trading_get_market_snapshot: (input) =>
-    Effect.gen(function* () {
-      // Market data, not mission state: an unbound thread reads it too.
-      yield* resolveReadCall(input.missionId);
-      const gateway = yield* HyperliquidGateway;
-      return yield* gateway.getMarketSnapshot(input.market).pipe(Effect.orDie);
-    }),
-
-  trading_get_market_history: (input) =>
-    Effect.gen(function* () {
-      // Market data, not mission state: an unbound thread reads it too.
-      yield* resolveReadCall(input.missionId);
-      const gateway = yield* HyperliquidGateway;
-      return yield* gateway
-        .getMarketHistory({
-          market: input.market,
-          interval: input.interval,
-          startTime: input.startTime,
-          endTime: input.endTime,
-          maxBars: input.maxBars,
-        })
-        .pipe(Effect.orDie);
-    }),
-
-  trading_measure_volatility: (input) =>
-    Effect.gen(function* () {
-      // Market data, not mission state: an unbound thread reads it too.
-      yield* resolveReadCall(input.missionId);
-      const gateway = yield* HyperliquidGateway;
-      const history = yield* gateway
-        .getMarketHistory({
-          market: input.market,
-          interval: input.interval,
-          maxBars: input.lookbackBars ?? VOLATILITY_LOOKBACK_BARS,
-        })
-        .pipe(Effect.orDie);
-
-      // The candles carry their own observation time, so the measurement is
-      // stamped with when the data was read rather than when this returned.
-      return measureVolatility({
-        market: input.market,
-        interval: input.interval,
-        candles: history.candles,
-        measuredAt: history.freshness.observedAt,
-        ...(input.holdBars === undefined ? {} : { holdHorizons: input.holdBars }),
-      });
-    }),
-
-  trading_estimate_costs: (input) =>
-    Effect.gen(function* () {
-      // The fee rate is per-wallet, so this one needs the bound mission: both
-      // to resolve the master address and to read the authority's fallback rate.
-      const { mission, threadId } = yield* resolveBoundCall(input.missionId);
-      const missions = yield* TradingMissionService;
-      const masterAddress = yield* missions
-        .getMasterWalletAddress(mission.tradingAccountId)
-        .pipe(Effect.orDie);
-      const estimator = yield* TradingCostEstimator;
-      return yield* estimator
-        .estimate({
-          market: input.market,
-          masterAddress,
-          sizeEth: input.sizeEth,
-          notionalUsd: input.notionalUsd,
-          fallbackTakerFeeBpsPerSide: mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
-        })
-        .pipe(
-          // The mark and the book are what the estimate is made of. Without
-          // them there is no lower bound worth reporting, so this refuses in
-          // the harness's own vocabulary rather than dying as a defect — a
-          // refused call is retried, an opaque crash is not.
-          Effect.catchTag("TradingCostDataUnavailableError", (error) =>
-            Effect.logInfo("trading tool call rejected", {
-              reason: "market_data_unavailable",
-              threadId,
-              market: error.market,
-              cause: String(error.cause),
-            }).pipe(
-              Effect.andThen(
-                new TradingToolRejectedError({
-                  reason: "market_data_unavailable",
-                  threadId,
-                  ...(input.missionId === undefined ? {} : { missionId: input.missionId }),
-                }),
-              ),
-            ),
-          ),
-        );
-    }),
-
-  trading_get_market_structure: (input) =>
-    Effect.gen(function* () {
-      // Market data, not mission state: an unbound thread reads it too.
-      const { mission } = yield* resolveReadCall(input.missionId);
-      const gateway = yield* HyperliquidGateway;
-      const intervals = input.intervals ?? MARKET_STRUCTURE_TIMEFRAMES;
-      const maxBars = input.lookbackBars ?? MARKET_STRUCTURE_LOOKBACK_BARS;
-
-      // One read per timeframe, concurrently — the point of the tool is the
-      // comparison, so serialising them would put seconds between the fastest
-      // and the slowest view of the same moment.
-      const histories = yield* Effect.all(
-        intervals.map((interval) =>
-          gateway
-            .getMarketHistory({ market: input.market, interval, maxBars })
-            .pipe(Effect.map((history) => ({ interval, history }))),
-        ),
-        { concurrency: "unbounded" },
-      ).pipe(Effect.orDie);
-
-      const structure = analyseMarketStructure({
-        market: input.market,
-        // The candles carry their own observation time, so the reading is
-        // stamped with when the data was read rather than when this returned.
-        measuredAt: histories[0]?.history.freshness.observedAt ?? 0,
-        frames: histories.map(({ interval, history }) => ({
-          interval,
-          candles: history.candles,
-        })),
-      });
-
-      // Prior-read memory (plan 27 B2): keep this read's verdict and swing
-      // bounds per timeframe so the next wakeup can echo what the mission
-      // believed last time. Mission-bound reads only — an unbound thread has
-      // no mission to remember for.
-      if (mission !== null) {
-        yield* Effect.forEach(
-          structure.timeframes.filter((frame) => frame.sufficientData),
-          (frame) =>
-            recordStructureRead({
-              missionId: mission.id,
-              market: input.market,
-              interval: frame.interval,
-              classification: structure.regime.classification,
-              swingHigh: frame.swingHighPrice ?? null,
-              swingLow: frame.swingLowPrice ?? null,
-              measuredAt: structure.measuredAt,
-            }),
-        );
-      }
-
-      // The tournament table (plan 27 E1): each setup joined with what it
-      // costs to take at the current book. The estimate is priced at
-      // the size the mission would actually take — the current plan's target
-      // notional when it publishes one, the allocated capital otherwise — and
-      // its absence costs the multiples, never the read.
-      const cost =
-        mission === null
-          ? null
-          : yield* Effect.gen(function* () {
-              const missions = yield* TradingMissionService;
-              const masterAddress = yield* missions.getMasterWalletAddress(
-                mission.tradingAccountId,
-              );
-              const estimator = yield* TradingCostEstimator;
-              const fallbackFeeBps = mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide;
-              // Priced at the approved ceiling first: the fallback answer, and
-              // the read of the fee rate, mark and half spread the plan's size
-              // is derived from, so both estimates price the same market.
-              const atCeiling = yield* estimator.estimate({
-                market: input.market,
-                masterAddress,
-                notionalUsd: mission.authority.allocatedCapitalUsd,
-                fallbackTakerFeeBpsPerSide: fallbackFeeBps,
-              });
-
-              // Plan 29 2.6 (plan 28 defect 5): the ceiling is the worst fill
-              // the mission could possibly take, not the one it would take —
-              // on a thin book, every candidate was priced against it. When
-              // the current plan states an intended entry notional, re-price
-              // at that size, floored at the exchange minimum and capped by
-              // the ceiling the fallback priced at. A mission without a plan,
-              // a stand-aside, or a plan that names no size keeps the ceiling:
-              // there is nothing better to price at.
-              const strategies = yield* TradingStrategyService;
-              const plan = yield* strategies.getCurrentStrategy(mission.id).pipe(
-                // A sizing hint is never worth the read: an unreadable plan
-                // leaves the estimate priced exactly as it was above.
-                Effect.catchCause(() => Effect.succeed(Option.none<TradingPlanState>())),
-              );
-              const currentPlan = Option.isSome(plan) ? plan.value : null;
-              const intended = currentPlan?.entry.initialNotionalUsd;
-              const sized =
-                currentPlan === null ||
-                currentPlan.intent === "stand_aside" ||
-                intended === undefined ||
-                intended <= 0
-                  ? null
-                  : Math.min(Math.max(intended, MIN_NOTIONAL_USD), atCeiling.notionalUsd);
-              // A plan sized at (or past) the ceiling is already priced by the
-              // first estimate.
-              if (sized === null || sized >= atCeiling.notionalUsd) return atCeiling;
-              return yield* estimator.estimate({
-                market: input.market,
-                masterAddress,
-                notionalUsd: sized,
-                fallbackTakerFeeBpsPerSide: fallbackFeeBps,
-              });
-            }).pipe(Effect.catchCause(() => Effect.succeed(null)));
-
-      const candidates = compareCandidates(
-        structure,
-        cost === null ? null : { breakEvenPriceMoveUsd: cost.breakEvenPriceMoveUsd },
-      );
-
-      // Plan 28 defect 5: a degraded estimate is a lower bound — part of the
-      // round trip could not be read — and the table was built on it silently.
-      // One line on each row the estimate priced; said, never a gate.
-      const pricedCandidates =
-        cost !== null && cost.degraded
-          ? candidates.map((candidate) =>
-              candidate.costMultiple === undefined
-                ? candidate
-                : {
-                    ...candidate,
-                    note:
-                      `${candidate.note} — cost caveat: the estimate this multiple was priced on ` +
-                      "is degraded (part of the round trip could not be read, so the true cost is " +
-                      "higher than shown); trading_estimate_costs carries the itemised note",
-                  },
-            )
-          : candidates;
-
-      return { ...structure, candidates: pricedCandidates };
-    }),
-
-  trading_get_trade_history: (input) =>
-    Effect.gen(function* () {
-      // A mission's own trades are mission state, so this one needs the binding.
-      const { mission } = yield* resolveBoundCall(input.missionId);
-      const history = yield* TradingTradeHistoryService;
-      return yield* history.read({ missionId: mission.id, limit: input.limit }).pipe(Effect.orDie);
-    }),
-
   trading_get_target_calibration: (input) =>
     Effect.gen(function* () {
       // A mission grading its own targets is mission state.
       const { mission } = yield* resolveBoundCall(input.missionId);
       const calibration = yield* TradingCalibrationService;
       return yield* calibration.read({ missionId: mission.id }).pipe(Effect.orDie);
-    }),
-
-  trading_get_order_book: (input) =>
-    Effect.gen(function* () {
-      // Market data, not mission state: an unbound thread reads it too.
-      yield* resolveReadCall(input.missionId);
-      const gateway = yield* HyperliquidGateway;
-      return yield* gateway.getOrderBook(input.market).pipe(Effect.orDie);
-    }),
-
-  trading_get_account_state: (input) =>
-    Effect.gen(function* () {
-      const { mission } = yield* resolveBoundCall(input.missionId);
-      const missions = yield* TradingMissionService;
-      const address = yield* missions
-        .getMasterWalletAddress(mission.tradingAccountId)
-        .pipe(Effect.orDie);
-      const gateway = yield* HyperliquidGateway;
-      return yield* gateway.getAccountSnapshot(address).pipe(Effect.orDie);
-    }),
-
-  trading_get_position: (input) =>
-    Effect.gen(function* () {
-      const { mission } = yield* resolveBoundCall(input.missionId);
-      const missions = yield* TradingMissionService;
-      const address = yield* missions
-        .getMasterWalletAddress(mission.tradingAccountId)
-        .pipe(Effect.orDie);
-      const gateway = yield* HyperliquidGateway;
-      const position = yield* gateway.getPosition(address, input.market).pipe(Effect.orDie);
-      return yield* withPeakPnl(position, mission.id, input.market);
-    }),
-
-  trading_get_open_orders: (input) =>
-    Effect.gen(function* () {
-      const { mission } = yield* resolveBoundCall(input.missionId);
-      const missions = yield* TradingMissionService;
-      const address = yield* missions
-        .getMasterWalletAddress(mission.tradingAccountId)
-        .pipe(Effect.orDie);
-      const gateway = yield* HyperliquidGateway;
-      return yield* gateway.getOpenOrders(address).pipe(Effect.orDie);
     }),
 
   trading_get_playbook: (input) =>

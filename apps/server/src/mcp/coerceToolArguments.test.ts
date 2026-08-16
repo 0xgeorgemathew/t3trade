@@ -270,14 +270,13 @@ describe("coerceToolArguments", () => {
       ]);
     });
 
-    it('coerces maxBars: "100" on trading_get_market_history', () => {
+    it('coerces newStopPrice: "100" on trading_adjust_stop', () => {
       expect(
-        coerceToolArguments(schemaFor("trading_get_market_history"), {
+        coerceToolArguments(schemaFor("trading_adjust_stop"), {
           market: "ETH",
-          interval: "1m",
-          maxBars: "100",
+          newStopPrice: "100",
         }),
-      ).toEqual({ market: "ETH", interval: "1m", maxBars: 100 });
+      ).toEqual({ market: "ETH", newStopPrice: 100 });
     });
 
     it("coerces the numeric entry fields on trading_quote_entry", () => {
@@ -353,12 +352,11 @@ describe("coerceToolArguments", () => {
       // The number branch is emitted alongside a string enum of
       // `Infinity`/`-Infinity`/`NaN`. Those are the string branch's business.
       expect(
-        coerceToolArguments(schemaFor("trading_get_market_history"), {
+        coerceToolArguments(schemaFor("trading_adjust_stop"), {
           market: "ETH",
-          interval: "1m",
-          maxBars: "Infinity",
+          newStopPrice: "Infinity",
         }),
-      ).toEqual({ market: "ETH", interval: "1m", maxBars: "Infinity" });
+      ).toEqual({ market: "ETH", newStopPrice: "Infinity" });
     });
   });
 });

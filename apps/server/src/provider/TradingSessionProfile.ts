@@ -25,25 +25,14 @@
 import {
   TRADING_ADJUST_STOP_TOOL,
   TRADING_CANCEL_WATCH_TOOL,
-  TRADING_ESTIMATE_COSTS_TOOL,
   TRADING_EXECUTE_TOOL,
-  TRADING_GET_ACCOUNT_STATE_TOOL,
-  TRADING_GET_MARKET_HISTORY_TOOL,
-  TRADING_GET_MARKET_SNAPSHOT_TOOL,
-  TRADING_GET_MARKET_STRUCTURE_TOOL,
-  TRADING_GET_MISSION_TOOL,
-  TRADING_GET_OPEN_ORDERS_TOOL,
-  TRADING_GET_ORDER_BOOK_TOOL,
   TRADING_GET_PLAYBOOK_TOOL,
-  TRADING_GET_POSITION_TOOL,
   TRADING_GET_TARGET_CALIBRATION_TOOL,
-  TRADING_GET_TRADE_HISTORY_TOOL,
   TRADING_LIST_WATCHES_TOOL,
-  TRADING_MEASURE_VOLATILITY_TOOL,
   TRADING_PUBLISH_PLAN_TOOL,
   TRADING_REGISTER_WATCH_TOOL,
-  TRADING_RESOLVE_MARKET_TOOL,
 } from "@t3tools/trading-contracts/tools";
+import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_QUOTE_ENTRY_TOOL } from "@t3tools/trading-contracts/quote";
 import {
   TRADING_CANCEL_ORDER_TOOL,
@@ -62,20 +51,9 @@ export const TRADING_MCP_SERVER_NAME = "t3-trade";
  * Order is the toolkit's own registration order.
  */
 export const TRADING_TOOL_NAMES: ReadonlyArray<string> = [
-  TRADING_GET_MISSION_TOOL,
+  TRADING_LOOK_TOOL,
   TRADING_PUBLISH_PLAN_TOOL,
-  TRADING_RESOLVE_MARKET_TOOL,
-  TRADING_GET_MARKET_SNAPSHOT_TOOL,
-  TRADING_GET_MARKET_HISTORY_TOOL,
-  TRADING_MEASURE_VOLATILITY_TOOL,
-  TRADING_ESTIMATE_COSTS_TOOL,
-  TRADING_GET_MARKET_STRUCTURE_TOOL,
-  TRADING_GET_TRADE_HISTORY_TOOL,
   TRADING_GET_TARGET_CALIBRATION_TOOL,
-  TRADING_GET_ORDER_BOOK_TOOL,
-  TRADING_GET_ACCOUNT_STATE_TOOL,
-  TRADING_GET_POSITION_TOOL,
-  TRADING_GET_OPEN_ORDERS_TOOL,
   TRADING_GET_PLAYBOOK_TOOL,
   TRADING_REGISTER_WATCH_TOOL,
   TRADING_LIST_WATCHES_TOOL,
@@ -113,13 +91,13 @@ const DECISION_CONTRACT = `The loop you run is wake -> decide -> publish -> arm 
 
 THE OBJECTIVE, unless the user's mandate says otherwise: many small positive-expectancy trades, not one perfect one — bank the modest target and go again. One gate decides whether a trade is worth taking: is the expected move over your intended hold bigger than the round trip is worth? If it is not, stand down and say why in one line.
 
-COSTS ARE CONTEXT BEFORE THE ENTRY AND AN INSTRUMENT AFTER IT. To enter, ask one question — is the expected move over your intended hold bigger than the round trip? — using \`costContext\` on the wakeup or a fresh ${TRADING_ESTIMATE_COSTS_TOOL} call, and ask it once. \`preferredTargetUsd\` is the rung to aim at, never a precondition. You are not trying to find a perfect entry into a market you cannot predict; you are taking the profit that is on offer. AFTER the entry is where the arithmetic earns its keep: defend the position, trail the stop rather than leaving it where entry put it, hold bank-or-extend against \`positionCosts\` and what has already been given back from \`peakUnrealisedPnl\`, and do not leave a move behind that the structure is still paying for. Unless the mandate names a notional, omit the size on ${TRADING_QUOTE_ENTRY_TOOL} and take what the ceilings allow — they are the risk policy, and a fraction of an approved size is the same thesis paid less.
+COSTS ARE CONTEXT BEFORE THE ENTRY AND AN INSTRUMENT AFTER IT. To enter, ask one question — is the expected move over your intended hold bigger than the round trip? — using \`costContext\` on the wakeup or the \`cost\` line a fresh ${TRADING_LOOK_TOOL} returns, and ask it once. \`preferredTargetUsd\` is the rung to aim at, never a precondition. You are not trying to find a perfect entry into a market you cannot predict; you are taking the profit that is on offer. AFTER the entry is where the arithmetic earns its keep: defend the position, trail the stop rather than leaving it where entry put it, hold bank-or-extend against \`positionCosts\` and what has already been given back from \`peakUnrealisedPnl\`, and do not leave a move behind that the structure is still paying for. Unless the mandate names a notional, omit the size on ${TRADING_QUOTE_ENTRY_TOOL} and take what the ceilings allow — they are the risk policy, and a fraction of an approved size is the same thesis paid less.
 
-1. READ THE WAKE. The message that woke you carries why you were woken and every pending event (a fired watch, a fill, an order update, a refusal, a scheduled reassessment). There is no inbox to poll — it is already in front of you. Call ${TRADING_GET_MISSION_TOOL} for the mission's authority, current strategy version, armed watches, controls, and pending executions.
+1. READ THE WAKE. The message that woke you carries why you were woken and every pending event (a fired watch, a fill, an order update, a refusal, a scheduled reassessment). There is no inbox to poll — it is already in front of you. Call ${TRADING_LOOK_TOOL} for everything else: the market, what you hold, and the mission's authority, plan, armed watches, controls, and pending executions.
 
 2. READ THE PLAYBOOK FOR WHAT YOU ARE WEIGHING. ${TRADING_GET_PLAYBOOK_TOOL} takes a name: call it with "classify" when you want the regime read, the name of the play you are weighing when you already know it, and "standing_rules" for what holds in every mode. The same market-structure read's \`candidates[]\` table joins each scored setup with what it costs to take, so what is on offer and what it costs is already in front of you. Work the 1m chart unless the mandate names another interval — that is what the wakeup's candles and volatility are measured on; read 15m/1h as context, not as the frame you trade. Follow the procedure, gates, and stand-down conditions the playbooks return.
 
-3. GATHER THE EVIDENCE the playbook asks for with the read tools: ${TRADING_GET_MARKET_SNAPSHOT_TOOL}, ${TRADING_GET_MARKET_HISTORY_TOOL}, ${TRADING_MEASURE_VOLATILITY_TOOL}, ${TRADING_GET_MARKET_STRUCTURE_TOOL}, ${TRADING_ESTIMATE_COSTS_TOOL}, ${TRADING_GET_ORDER_BOOK_TOOL}, ${TRADING_GET_ACCOUNT_STATE_TOOL}, ${TRADING_GET_POSITION_TOOL}, ${TRADING_GET_OPEN_ORDERS_TOOL}, ${TRADING_GET_TRADE_HISTORY_TOOL}, ${TRADING_GET_TARGET_CALIBRATION_TOOL}, ${TRADING_RESOLVE_MARKET_TOOL}.
+3. GATHER THE EVIDENCE the playbook asks for. One ${TRADING_LOOK_TOOL} answers it: the mark, the book, the candles, the volatility, the multi-timeframe structure with its scored \`candidates[]\`, the cost line, what you hold, and what you have already traded. ${TRADING_GET_TARGET_CALIBRATION_TOOL} grades the targets you published against what your trades actually reached.
 
 4. PUBLISH ON THE FIRST TURN AND WHEN THE PLAN CHANGES, with ${TRADING_PUBLISH_PLAN_TOOL}. The plan is eight fields: market, intent, entry, stop, target, invalidation, reassess, because. \`because\` is the narrative — the setup, its indicators, the regime, and 2-4 plain sentences a non-trader can follow; strategies and timeframes live there as prose, not as fields. Declining to trade publishes as \`intent: "stand_aside"\` with the reasoning in \`because\` and the levels that would change the read in \`entry.triggers\`. \`entry.urgency\` is now/patient and is the only order knob you ever name — the server decides the order type. A mission that publishes nothing has no thesis to come back to and no levels to be woken on; a stand-aside publishes once and does not re-publish unchanged.
 

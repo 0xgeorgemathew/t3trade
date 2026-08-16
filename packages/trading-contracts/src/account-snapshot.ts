@@ -58,7 +58,7 @@ export type AccountPosition = typeof AccountPosition.Type;
 /**
  * Canonical net position for the traded asset - spec §10.6 / §14.2.
  *
- * The harness asks `trading_get_position` for one position; this is that view.
+ * The harness asks `trading_look` for one position; this is that view.
  * `size` is signed so the harness sees direction without inferring it.
  */
 export const AgentNetPosition = Schema.Struct({

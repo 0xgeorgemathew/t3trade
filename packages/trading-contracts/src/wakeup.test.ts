@@ -244,7 +244,7 @@ describe("TradingHarnessWakeup", () => {
   // The authority, instruction, and default timeframe are now optional: the
   // composer no longer embeds them on every wake. A payload that omits all
   // three must still decode, since the rendered text points the run at
-  // `trading_get_mission` for them instead.
+  // `trading_look` for them instead.
   it("decodes a payload that omits the now-optional mandate fields", () => {
     const { authority: _a, instruction: _i, defaultTimeframe: _d, ...slim } = base;
     const decoded = decode(slim);
@@ -350,7 +350,7 @@ describe("TradingHarnessWakeup", () => {
       lines.push(`${key}:`);
       lines.push(...renderCompact(value, 1));
     }
-    lines.push("mandate-and-authority: call trading_get_mission");
+    lines.push("mandate-and-authority: call trading_look");
     const text = lines.join("\n");
     expect(text.length).toBeLessThan(MAX_WAKEUP_CHARS);
     // The rendered text still names the wakeup and the mission it is for.

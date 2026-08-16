@@ -94,6 +94,7 @@ const stubEngine = Layer.effect(
 /** Never called: every run under test takes the `mission_created` bootstrap branch. */
 const stubComposer = Layer.succeed(TradingWakeupComposer, {
   compose: () => Effect.die("the bootstrap branch does not compose a wakeup"),
+  observe: () => Effect.die("the bootstrap branch does not observe"),
 });
 
 const layer = it.layer(

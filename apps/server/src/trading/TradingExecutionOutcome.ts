@@ -227,7 +227,7 @@ const make = Effect.gen(function* () {
 
   const BUDGET_UNREADABLE =
     "the loss budget could not be read, so the budget in this result is unknown, not exhausted — " +
-    "read trading_get_mission before sizing anything on it";
+    "read trading_look before sizing anything on it";
 
   const withBudget = (
     detail: string,

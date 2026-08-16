@@ -163,7 +163,7 @@ export type AgentConditionDescription = typeof AgentConditionDescription.Type;
  *
  * The union is ordered object-branch-first, so encoding always takes the object
  * branch: a strategy that decoded a prose string re-encodes as `{description}`,
- * which is what the persisted row, `trading_get_mission`, and the wakeup all
+ * which is what the persisted row, `trading_look`, and the wakeup all
  * carry. The string branch is an input affordance only.
  */
 const conditionStringToObject = Schema.String.pipe(

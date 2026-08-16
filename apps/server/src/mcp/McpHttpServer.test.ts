@@ -311,6 +311,6 @@ it("reports every invalid publish parameter in one message", () => {
 
 it("stays silent on a payload the toolkit would accept", () => {
   expect(
-    McpHttpServer.makeParameterIssueReporter(TradingToolkit.tools.trading_get_mission)({}),
+    McpHttpServer.makeParameterIssueReporter(TradingToolkit.tools.trading_look)({}),
   ).toBeUndefined();
 });

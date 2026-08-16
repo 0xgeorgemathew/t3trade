@@ -79,6 +79,7 @@ const stubComposer = Layer.succeed(TradingWakeupComposer, {
         ? Effect.fail({ _tag: "ComposeWakeupError" as const, reason: "test_forced_failure" })
         : Effect.succeed({ wakeup: {} as never, text: "" });
     }),
+  observe: () => Effect.die("the coordinator never observes directly"),
 });
 
 const layer = it.layer(

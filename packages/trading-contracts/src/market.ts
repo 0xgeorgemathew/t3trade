@@ -140,7 +140,7 @@ export const MarketSnapshot = Schema.Struct(marketSnapshotFields);
 export type MarketSnapshot = typeof MarketSnapshot.Type;
 
 /**
- * Agent-facing market snapshot - spec §10.6 + §14.2 `trading_get_market_snapshot`.
+ * Agent-facing market snapshot - spec §10.6 + §14.2 `trading_look`.
  *
  * Extends the raw snapshot with the one computed feature the harness and the
  * chat header need: the 24h change. It is derived by the gateway, never read

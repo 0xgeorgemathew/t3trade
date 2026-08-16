@@ -1130,7 +1130,7 @@ const make = Effect.gen(function* () {
           stage: "intent_invalid",
           detail:
             "a cancel names the order it withdraws: supply targetCloid, the client order id " +
-            "read from trading_get_open_orders",
+            "read from trading_look",
         });
       }
 
@@ -1783,7 +1783,7 @@ const make = Effect.gen(function* () {
    * execution request, and a user control. A stop-out drives neither — the
    * exchange flattens the position, §18's `after_fill` converges the snapshot,
    * and the mission goes on reporting `position_open` to every
-   * `trading_get_mission` until the harness happens to ask for another entry. A
+   * `trading_look` until the harness happens to ask for another entry. A
    * harness that reads its own status as the answer to "am I in a trade" is then
    * wrong for as long as it waits, which is precisely when it should be looking
    * for the next entry.

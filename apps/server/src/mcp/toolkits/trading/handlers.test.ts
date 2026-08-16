@@ -22,6 +22,7 @@ import * as Stream from "effect/Stream";
 
 import { HyperliquidExecutionService } from "../../../trading/HyperliquidExecutionService.ts";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
+import { TradingWakeupComposerLive } from "../../../trading/TradingWakeupComposer.ts";
 import type { AgentOpenOrder } from "@t3tools/trading-contracts/account-snapshot";
 import type { MarketCandle } from "@t3tools/trading-contracts/market";
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
@@ -153,8 +154,8 @@ const makeFakeExchange = (overrides: Partial<FakeExchange> = {}): FakeExchange =
   cancels: [],
   // Forty 1m candles ranging 12 USD, so the server's own ATR measures 12.
   candles: Array.from({ length: 40 }, (_, i) => ({
-    openTime: 1_000_000 - (40 - i) * 60_000,
-    closeTime: 1_000_000 - (40 - i) * 60_000 + 59_000,
+    openTime: 4_000_000 - (40 - i) * 60_000,
+    closeTime: 4_000_000 - (40 - i) * 60_000 + 59_000,
     open: 3_010,
     close: 3_010,
     high: 3_016,
@@ -196,6 +197,11 @@ const exchangeGatewayLayer = (fake: FakeExchange) =>
   Layer.succeed(HyperliquidGateway, {
     getAccountSnapshot: () =>
       Effect.succeed({
+        address: "0x1234567890abcdef1234567890abcdef12345678",
+        accountValue: 1_000,
+        marginUsed: 0,
+        withdrawable: 1_000,
+        freshness: { observedAt: 1_000_000, source: "info_api", staleAfterMillis: 5_000 },
         positions:
           fake.positionSize === 0
             ? []
@@ -205,6 +211,7 @@ const exchangeGatewayLayer = (fake: FakeExchange) =>
                   size: fake.positionSize,
                   entryPrice: 3_000,
                   unrealisedPnl: 0,
+                  cumulativeFunding: 0,
                   marginUsed: 100,
                 },
               ],
@@ -212,8 +219,22 @@ const exchangeGatewayLayer = (fake: FakeExchange) =>
     getOpenOrders: () => Effect.succeed(fake.orders),
     getMarketSnapshot: () =>
       Effect.succeed({
+        market: "ETH",
         markPrice: fake.markPrice,
-        bestBidOffer: { bidPrice: fake.bidPrice, askPrice: fake.askPrice },
+        midPrice: fake.markPrice,
+        oraclePrice: fake.markPrice,
+        fundingRate8h: 0,
+        change24hPercent: 0,
+        openInterest: 1_000,
+        dayVolumeUsd: 1_000_000,
+        bestBidOffer: {
+          bidPrice: fake.bidPrice,
+          bidSize: 10,
+          askPrice: fake.askPrice,
+          askSize: 10,
+          freshness: { observedAt: 1_000_000, source: "info_api", staleAfterMillis: 2_000 },
+        },
+        freshness: { observedAt: 1_000_000, source: "info_api", staleAfterMillis: 5_000 },
       }),
     getMarketHistory: () =>
       Effect.succeed({
@@ -222,11 +243,56 @@ const exchangeGatewayLayer = (fake: FakeExchange) =>
         candles: fake.candles,
         freshness: { observedAt: 1_000_000, source: "info_api", staleAfterMillis: 5_000 },
       }),
-    resolveMarket: () => Effect.die("not used"),
-    getOrderBook: () => Effect.die("not used"),
-    getPosition: () => Effect.die("not used"),
-    getTakerFeeRateBps: () => Effect.die("not used"),
+    // `trading_look` reads all three (plan 29 step 6.1), so the fake answers
+    // them from the same book the rest of the exchange stub is built on.
+    resolveMarket: () =>
+      Effect.succeed({
+        symbol: "ETH",
+        assetIndex: 1,
+        szDecimals: 4,
+        maxLeverage: 25,
+        available: true,
+      }),
+    getOrderBook: () =>
+      Effect.succeed({
+        market: "ETH",
+        bids: [{ price: fake.bidPrice, size: 10 }],
+        asks: [{ price: fake.askPrice, size: 10 }],
+        bestBidOffer: {
+          bidPrice: fake.bidPrice,
+          bidSize: 10,
+          askPrice: fake.askPrice,
+          askSize: 10,
+          freshness: { observedAt: 1_000_000, source: "info_api", staleAfterMillis: 2_000 },
+        },
+        freshness: { observedAt: 1_000_000, source: "info_api", staleAfterMillis: 2_000 },
+      }),
+    getPosition: () =>
+      Effect.succeed({
+        market: "ETH",
+        size: fake.positionSize,
+        ...(fake.positionSize === 0 ? {} : { entryPrice: 3_000 }),
+        unrealisedPnl: 0,
+        cumulativeFunding: 0,
+        marginUsed: fake.positionSize === 0 ? 0 : 100,
+        freshness: { observedAt: 1_000_000, source: "info_api", staleAfterMillis: 5_000 },
+      }),
+    getTakerFeeRateBps: () => Effect.succeed(4.5),
   } as unknown as HyperliquidGateway["Service"]);
+
+const fakeCostEstimator = Layer.succeed(TradingCostEstimator, {
+  estimate: (input: { readonly notionalUsd?: number | undefined }) =>
+    Effect.succeed({
+      market: "ETH",
+      notionalUsd: input.notionalUsd ?? 1_000,
+      roundTripUsd: 1,
+      roundTripFeeUsd: 0.9,
+      roundTripSpreadUsd: 0.1,
+      roundTripSlippageUsd: 0,
+      breakEvenPriceMoveUsd: 3,
+      degraded: false,
+    }),
+} as unknown as TradingCostEstimator["Service"]);
 
 const exchangeExecutionLayer = (fake: FakeExchange) =>
   Layer.succeed(HyperliquidExecutionService, {
@@ -244,6 +310,9 @@ const exchangeExecutionLayer = (fake: FakeExchange) =>
 
 const tradingLayerOverExchange = (fake: FakeExchange) =>
   Layer.mergeAll(
+    // `trading_look` reaches the exchange directly, so the fake gateway is part
+    // of what this layer offers rather than only an input to the services.
+    exchangeGatewayLayer(fake),
     TradingMissionServiceLive,
     TradingStrategyServiceLive,
     TradingWatchServiceLive,
@@ -268,8 +337,18 @@ const tradingLayerOverExchange = (fake: FakeExchange) =>
     Layer.succeed(TradingPlanProtectionService, {
       reconcilePlan: () => Effect.succeed(null),
     } as unknown as TradingPlanProtectionService["Service"]),
-    // Present so the toolkit layer can build; nothing on these paths calls in.
-    Layer.succeed(TradingCostEstimator, {} as unknown as TradingCostEstimator["Service"]),
+    // `trading_look` prices its one cost line through this. A fixed estimate
+    // keeps the read deterministic; nothing under test grades the number.
+    fakeCostEstimator,
+    // The one read IS the composer's gather step (plan 29 step 6.1), so the
+    // toolkit needs it wherever `trading_look` is exercised.
+    TradingWakeupComposerLive.pipe(
+      Layer.provide(exchangeGatewayLayer(fake)),
+      Layer.provide(TradingMissionServiceLive),
+      Layer.provide(TradingWatchServiceLive),
+      Layer.provide(TradingStrategyServiceLive),
+      Layer.provide(fakeCostEstimator),
+    ),
     Layer.succeed(TradingExecutionOutcome, {} as unknown as TradingExecutionOutcome["Service"]),
     Layer.succeed(TradingQuoteService, {} as unknown as TradingQuoteService["Service"]),
     Layer.succeed(TradingExitService, {} as unknown as TradingExitService["Service"]),
@@ -492,47 +571,60 @@ const withMcpServer = <A, E>(
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest));
 
-it.effect("serves trading_get_mission and a versioned publish over the real /mcp endpoint", () =>
-  withMcpServer(({ callTool }) =>
-    Effect.gen(function* () {
-      const initial = yield* callTool(BOUND_THREAD, "trading_get_mission", {
-        missionId: MISSION_ID,
-      });
-      assert.equal(initial.result.isError, false);
-      const before = initial.result.structuredContent;
-      assert.equal(before.mission.id, MISSION_ID);
-      assert.equal(before.mission.status, "initializing");
-      assert.equal(before.missionVersion, 1);
-      assert.equal(before.strategy, undefined);
-      assert.equal(before.authorityVersion, 1);
-      assert.equal(before.authority.allocatedCapitalUsd, 1_000);
-      assert.equal(before.harness.threadId, BOUND_THREAD);
-      assert.deepStrictEqual(before.watches, []);
+it.effect("serves trading_look and a versioned publish over the real /mcp endpoint", () =>
+  withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        // The market half reads the account through the mission's master wallet.
+        yield* seedTradingAccount();
+        const initial = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+        });
+        assert.equal(initial.result.isError, false);
+        const before = initial.result.structuredContent.mission;
+        assert.equal(before.mission.id, MISSION_ID);
+        assert.equal(before.mission.status, "initializing");
+        assert.equal(before.missionVersion, 1);
+        assert.equal(before.strategy, undefined);
+        assert.equal(before.authorityVersion, 1);
+        assert.equal(before.authority.allocatedCapitalUsd, 1_000);
+        assert.equal(before.harness.threadId, BOUND_THREAD);
+        assert.deepStrictEqual(before.watches, []);
+        // The market half of the same answer, which used to be eleven more calls.
+        assert.equal(initial.result.structuredContent.market, "ETH");
+        assert.equal(initial.result.structuredContent.position.size, 0);
+        assert.equal(typeof initial.result.structuredContent.snapshot.markPrice, "number");
 
-      const published = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
-        missionId: MISSION_ID,
-        expectedMissionVersion: 1,
-        strategy: strategyBody("overnight range break"),
-      });
-      assert.equal(published.result.isError, false);
-      assert.equal(published.result.structuredContent.outcome, "accepted");
-      assert.equal(published.result.structuredContent.strategy.intent, "long");
+        const published = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
+          missionId: MISSION_ID,
+          expectedMissionVersion: 1,
+          strategy: strategyBody("overnight range break"),
+        });
+        assert.equal(published.result.isError, false);
+        assert.equal(published.result.structuredContent.outcome, "accepted");
+        assert.equal(published.result.structuredContent.strategy.intent, "long");
 
-      const after = yield* callTool(BOUND_THREAD, "trading_get_mission", {
-        missionId: MISSION_ID,
-      });
-      assert.equal(after.result.structuredContent.missionVersion, 2);
-      assert.equal(after.result.structuredContent.strategy.because, "overnight range break");
+        const after = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+        });
+        assert.equal(after.result.structuredContent.mission.missionVersion, 2);
+        assert.equal(
+          after.result.structuredContent.mission.strategy.because,
+          "overnight range break",
+        );
 
-      // The accepted publish was announced on the orchestration engine, which
-      // is what puts it on the server's ordered WS push path — and so was the
-      // status the publish settled the mission on (§11.1 `analysing → waiting`
-      // happens inside the publish write, so the UI has to hear about it too).
-      assert.deepStrictEqual(
-        dispatchedCommands.map((command) => command.type),
-        ["trading.mission.strategy-published", "trading.mission.status-set"],
-      );
-    }),
+        // The accepted publish was announced on the orchestration engine, which
+        // is what puts it on the server's ordered WS push path — and so was the
+        // status the publish settled the mission on (§11.1 `analysing → waiting`
+        // happens inside the publish write, so the UI has to hear about it too).
+        assert.deepStrictEqual(
+          dispatchedCommands.map((command) => command.type),
+          ["trading.mission.strategy-published", "trading.mission.status-set"],
+        );
+      }),
+    // Over the faked exchange, so the market half of the one read is answered
+    // without reaching Hyperliquid.
+    tradingLayerOverExchange(makeFakeExchange()),
   ),
 );
 
@@ -559,11 +651,11 @@ it.effect("rejects a stale expectedMissionVersion over MCP and leaves the plan i
       });
 
       // v1 survived the rejected publish untouched.
-      const current = yield* callTool(BOUND_THREAD, "trading_get_mission", {
+      const current = yield* callTool(BOUND_THREAD, "trading_look", {
         missionId: MISSION_ID,
       });
-      assert.equal(current.result.structuredContent.missionVersion, 2);
-      assert.equal(current.result.structuredContent.strategy.because, "v1");
+      assert.equal(current.result.structuredContent.mission.missionVersion, 2);
+      assert.equal(current.result.structuredContent.mission.strategy.because, "v1");
     }),
   ),
 );
@@ -589,10 +681,10 @@ it.effect("keeps the prior version's active watches working across an accepted p
       // Plan 29 step 4.2: revising the plan does not touch the watches. The
       // trigger armed under v1 keeps working until the model itself cancels
       // or replaces it.
-      const current = yield* callTool(BOUND_THREAD, "trading_get_mission", {
+      const current = yield* callTool(BOUND_THREAD, "trading_look", {
         missionId: MISSION_ID,
       });
-      const watches = current.result.structuredContent.watches;
+      const watches = current.result.structuredContent.mission.watches;
       assert.equal(watches.length, 1);
       assert.equal(watches[0].status, "active");
     }),
@@ -603,16 +695,16 @@ it.effect("answers an unbound thread instead of failing every tool on it", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
       // A thread with no live mission is not an authorization failure for a
-      // read: `trading_get_mission` says so in-band, so the agent can learn
-      // that its mission ended rather than seeing every tool error.
-      const unbound = yield* callTool(UNBOUND_THREAD, "trading_get_mission", {
+      // read: `trading_look` says so in-band, so the agent can learn that its
+      // mission ended rather than seeing every tool error.
+      const unbound = yield* callTool(UNBOUND_THREAD, "trading_look", {
         missionId: MISSION_ID,
       });
       assert.notEqual(unbound.result.isError, true);
-      assert.equal(unbound.result.structuredContent.bound, false);
+      assert.equal(unbound.result.structuredContent.mission.bound, false);
 
       // A bound thread naming someone else's mission is still refused, firmly.
-      const wrongMission = yield* callTool(BOUND_THREAD, "trading_get_mission", {
+      const wrongMission = yield* callTool(BOUND_THREAD, "trading_look", {
         missionId: "mission_belonging_to_someone_else",
       });
       assert.equal(wrongMission.result.isError, true);
@@ -762,9 +854,9 @@ it.effect("serves the mission its own completed trades over MCP", () =>
       yield* seedFill({ fillId: "f1", orderId: 100, closedPnl: 12, feeUsd: 1 });
       yield* seedFill({ fillId: "f2", orderId: 200, closedPnl: -4, feeUsd: 1 });
 
-      const read = yield* callTool(BOUND_THREAD, "trading_get_trade_history", {});
+      const read = yield* callTool(BOUND_THREAD, "trading_look", {});
       assert.equal(read.result.isError, false);
-      const history = read.result.structuredContent;
+      const history = read.result.structuredContent.trades;
 
       assert.equal(history.orders.length, 2);
       assert.equal(history.summary.realizedPnlUsd, 8);
@@ -781,9 +873,9 @@ it.effect("resolves an omitted missionId to the bound mission for a read tool", 
     Effect.gen(function* () {
       // Omitting `missionId` entirely: the call resolves to the one mission the
       // thread is bound to, exactly as naming it would.
-      const omitted = yield* callTool(BOUND_THREAD, "trading_get_mission", {});
+      const omitted = yield* callTool(BOUND_THREAD, "trading_look", {});
       assert.equal(omitted.result.isError, false);
-      assert.equal(omitted.result.structuredContent.mission.id, MISSION_ID);
+      assert.equal(omitted.result.structuredContent.mission.mission.id, MISSION_ID);
     }),
   ),
 );
@@ -801,8 +893,11 @@ it.effect("resolves an omitted missionId to the bound mission for a write tool",
       assert.equal(published.result.structuredContent.outcome, "accepted");
 
       // The bound mission now carries the published plan.
-      const after = yield* callTool(BOUND_THREAD, "trading_get_mission", {});
-      assert.equal(after.result.structuredContent.strategy.because, "no missionId supplied");
+      const after = yield* callTool(BOUND_THREAD, "trading_look", {});
+      assert.equal(
+        after.result.structuredContent.mission.strategy.because,
+        "no missionId supplied",
+      );
     }),
   ),
 );
@@ -812,7 +907,7 @@ it.effect("still rejects a wrong missionId with mission_not_bound_to_thread", ()
     Effect.gen(function* () {
       // An explicit `missionId` that does not match the bound mission is still a
       // firm refusal — making the argument optional did not make it trusted.
-      const wrong = yield* callTool(BOUND_THREAD, "trading_get_mission", {
+      const wrong = yield* callTool(BOUND_THREAD, "trading_look", {
         missionId: "mission_belonging_to_someone_else",
       });
       assert.equal(wrong.result.isError, true);
@@ -847,10 +942,10 @@ it.effect("decodes a prose-string entry trigger and round-trips it as the object
       assert.equal(published.result.isError, false);
       assert.equal(published.result.structuredContent.outcome, "accepted");
 
-      const after = yield* callTool(BOUND_THREAD, "trading_get_mission", {
+      const after = yield* callTool(BOUND_THREAD, "trading_look", {
         missionId: MISSION_ID,
       });
-      const triggers = after.result.structuredContent.strategy.entry.triggers;
+      const triggers = after.result.structuredContent.mission.strategy.entry.triggers;
       assert.equal(triggers.length, 1);
       // The persisted/encoded form is the object shape, not the bare string.
       assert.deepStrictEqual(triggers[0], {

@@ -76,7 +76,6 @@ export {
 export {
   PublishTradingPlanBody,
   PublishTradingPlanRejection,
-  TRADING_GET_MISSION_TOOL,
   TRADING_PUBLISH_PLAN_TOOL,
   TradingBoundMissionResult,
   TradingGetMissionInput,

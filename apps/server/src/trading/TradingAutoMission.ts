@@ -38,7 +38,7 @@ const LOCAL_TRADING_USER_ID = "local";
 /**
  * The longest instruction a mission is created with.
  *
- * The instruction is read back on every `trading_get_mission` and embedded in
+ * The instruction is read back on every `trading_look` and embedded in
  * the bootstrap wakeup, so a pasted essay would ride along for the mission's
  * life. Two thousand characters is more mandate than anyone writes and still
  * bounded.

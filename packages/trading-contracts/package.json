@@ -84,6 +84,10 @@
       "types": "./src/volatility.ts",
       "import": "./src/volatility.ts"
     },
+    "./observation": {
+      "types": "./src/observation.ts",
+      "import": "./src/observation.ts"
+    },
     "./protection": {
       "types": "./src/protection.ts",
       "import": "./src/protection.ts"

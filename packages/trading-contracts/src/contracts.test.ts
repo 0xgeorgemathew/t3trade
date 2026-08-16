@@ -331,7 +331,7 @@ describe("§14.3 mission tool contracts", () => {
     ).toBe("rejected");
   });
 
-  it("decodes a trading_get_mission result", () => {
+  it("decodes a trading_look result", () => {
     const decoded = decodeGetMissionResult({
       bound: true,
       mission,
@@ -824,6 +824,7 @@ describe("subpath exports", () => {
         "./stop-adjustment",
         "./wakeup",
         "./volatility",
+        "./observation",
         "./costs",
         "./market-structure",
         "./history",

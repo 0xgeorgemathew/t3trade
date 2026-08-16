@@ -122,7 +122,7 @@ export interface SessionPolicy {
   readonly cooldownMinutes: number;
   /**
    * Fees as a share of gross, above which the size is too big for the range
-   * being traded. Read off `trading_get_trade_history`.
+   * being traded. Read off `trading_look`.
    */
   readonly feeShareOfGrossWarningPercent: number;
   /**

@@ -114,7 +114,7 @@ export const makeTradingExitService = Effect.gen(function* () {
       ) {
         return refused(
           "no_target_named",
-          "name the cloid of the resting order to withdraw; trading_get_open_orders lists them",
+          "name the cloid of the resting order to withdraw; trading_look lists them",
         );
       }
 

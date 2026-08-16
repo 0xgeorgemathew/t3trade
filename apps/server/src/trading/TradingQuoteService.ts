@@ -559,7 +559,7 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       }
       if (costs === null) {
         warnings.push(
-          "the round-trip cost could not be read, so estimatedRoundTripCostUsd is 0 — hold the target against trading_estimate_costs before executing",
+          "the round-trip cost could not be read, so estimatedRoundTripCostUsd is 0 — hold the target against trading_look before executing",
         );
       }
 

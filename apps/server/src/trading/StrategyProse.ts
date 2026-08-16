@@ -11,7 +11,7 @@
  * - `TradingStrategyService` bounds the text at publish time, so the persisted
  *   row can never grow past a readable paragraph per field.
  * - `TradingWakeupComposer` bounds it much harder for the wakeup projection,
- *   which is a snapshot the run can expand with `trading_get_mission`.
+ *   which is a snapshot the run can expand with `trading_look`.
  *
  * Truncation is reported, never silent: the publish path returns the bounded
  * fields as in-band warnings so the harness learns its prose was clipped.

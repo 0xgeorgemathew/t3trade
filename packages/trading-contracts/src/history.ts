@@ -18,7 +18,7 @@
 import { Schema } from "effect";
 import { ExchangeMarket, Price, TradingId, UnixMillis } from "./primitives.ts";
 
-/** Default number of completed orders `trading_get_trade_history` returns. */
+/** Default number of completed orders `trading_look` returns. */
 export const TRADE_HISTORY_DEFAULT_LIMIT = 20;
 
 /** Hard cap on that count, so one tool response stays bounded. */

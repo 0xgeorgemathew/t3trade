@@ -189,8 +189,8 @@ export interface TradingMissionServiceShape {
   /**
    * The master-wallet address for the account a mission trades against.
    *
-   * Account reads (§14.2 `trading_get_account_state`, `trading_get_position`,
-   * `trading_get_open_orders`) use the user-owned master-wallet address as
+   * Account reads (§14.2 `trading_look`, `trading_look`,
+   * `trading_look`) use the user-owned master-wallet address as
    * identity — never the execution-wallet address (§10.6). This resolves the
    * address from the mission's trading account so the gateway receives it
    * server-side; the harness never supplies an address.

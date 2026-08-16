@@ -183,10 +183,10 @@ export const TradingLayerLive = Layer.mergeAll(
   TradingStrategyServiceLive,
   TradingWatchServiceLive,
   TradingEventInboxLive,
-  // `trading_estimate_costs` reads the book, the mark, and the fee rate — all
+  // `trading_look` reads the book, the mark, and the fee rate — all
   // through the gateway the read layer already builds.
   costEstimatorWithGateway,
-  // `trading_get_trade_history` is a pure read-join over the mission's own
+  // `trading_look` is a pure read-join over the mission's own
   // fills and strategy versions.
   TradingTradeHistoryServiceLive,
   // `trading_get_target_calibration` scores those targets against the closed

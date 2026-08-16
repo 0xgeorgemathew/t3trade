@@ -99,7 +99,7 @@ export type VolatilityHorizon = typeof VolatilityHorizon.Type;
  * The volatility a market actually produced over a bounded candle window.
  *
  * Published on every wakeup for the mission's primary timeframe, and readable
- * for any other interval through `trading_measure_volatility`.
+ * for any other interval through `trading_look`.
  */
 export const ObservedVolatility = Schema.Struct({
   market: ExchangeMarket,

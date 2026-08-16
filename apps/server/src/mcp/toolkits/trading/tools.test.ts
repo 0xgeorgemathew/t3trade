@@ -2,25 +2,14 @@ import { expect, it } from "@effect/vitest";
 import {
   TRADING_CANCEL_WATCH_TOOL,
   TRADING_ADJUST_STOP_TOOL,
-  TRADING_ESTIMATE_COSTS_TOOL,
   TRADING_EXECUTE_TOOL,
-  TRADING_GET_MARKET_STRUCTURE_TOOL,
   TRADING_GET_PLAYBOOK_TOOL,
   TRADING_GET_TARGET_CALIBRATION_TOOL,
-  TRADING_GET_TRADE_HISTORY_TOOL,
-  TRADING_GET_ACCOUNT_STATE_TOOL,
-  TRADING_GET_MARKET_HISTORY_TOOL,
-  TRADING_MEASURE_VOLATILITY_TOOL,
-  TRADING_GET_MARKET_SNAPSHOT_TOOL,
-  TRADING_GET_MISSION_TOOL,
-  TRADING_GET_OPEN_ORDERS_TOOL,
-  TRADING_GET_ORDER_BOOK_TOOL,
-  TRADING_GET_POSITION_TOOL,
   TRADING_LIST_WATCHES_TOOL,
   TRADING_PUBLISH_PLAN_TOOL,
   TRADING_REGISTER_WATCH_TOOL,
-  TRADING_RESOLVE_MARKET_TOOL,
 } from "@t3tools/trading-contracts/tools";
+import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
 import { TRADING_QUOTE_ENTRY_TOOL } from "@t3tools/trading-contracts/quote";
 import {
   TRADING_CANCEL_ORDER_TOOL,
@@ -32,27 +21,16 @@ import { Tool } from "effect/unstable/ai";
 
 import { TradingToolkit } from "./tools.ts";
 
-it("exposes the §14.3 mission tools, the §14.2 read tools, and the §14.4 watch tools", () => {
+it("exposes one read, the mission tools, and the watch tools", () => {
   expect(
     Object.values(TradingToolkit.tools)
       .map((tool) => tool.name)
       .sort(),
   ).toEqual(
     [
-      TRADING_GET_MISSION_TOOL,
+      TRADING_LOOK_TOOL,
       TRADING_PUBLISH_PLAN_TOOL,
-      TRADING_RESOLVE_MARKET_TOOL,
-      TRADING_GET_MARKET_SNAPSHOT_TOOL,
-      TRADING_GET_MARKET_HISTORY_TOOL,
-      TRADING_MEASURE_VOLATILITY_TOOL,
-      TRADING_ESTIMATE_COSTS_TOOL,
-      TRADING_GET_MARKET_STRUCTURE_TOOL,
-      TRADING_GET_TRADE_HISTORY_TOOL,
       TRADING_GET_TARGET_CALIBRATION_TOOL,
-      TRADING_GET_ORDER_BOOK_TOOL,
-      TRADING_GET_ACCOUNT_STATE_TOOL,
-      TRADING_GET_POSITION_TOOL,
-      TRADING_GET_OPEN_ORDERS_TOOL,
       TRADING_GET_PLAYBOOK_TOOL,
       TRADING_REGISTER_WATCH_TOOL,
       TRADING_QUOTE_ENTRY_TOOL,
@@ -122,46 +100,21 @@ it("publish description states the publish contract, not the methodology", () =>
   expect(publish).not.toContain("MEASURE TWO TIMEFRAMES");
 });
 
-// The volatility tool carries its own measurement contract; the caveat that
-// matters is that every figure is gross of costs.
-it("keeps the measure-volatility description honest about costs and data", () => {
-  const measure = TradingToolkit.tools[TRADING_MEASURE_VOLATILITY_TOOL].description ?? "";
-  expect(measure).toContain("horizons[]");
-  expect(measure).toContain("gross of costs");
-  expect(measure).toContain("sufficientData");
-});
-
-// The cost tool is context, not a gate (plan 29 step 3.1): the description
-// names the total it exists to produce and the honesty flag, and no floor.
-it("points the cost tool at the total it exists to compute", () => {
-  const costs = TradingToolkit.tools[TRADING_ESTIMATE_COSTS_TOOL].description ?? "";
-  expect(costs).toContain("roundTripUsd");
-  expect(costs).toContain("degraded");
-  expect(costs).toContain("never a gate");
-  expect(costs).not.toContain("minimumViableTargetUsd");
-});
-
-// The two Phase 2 reads exist to answer questions the harness was previously
-// left to guess at: which way the timeframes point, and how its own last trades
-// actually went. A description that does not name the fields carrying those
-// answers leaves the tool as decorative as the data was before it.
-it("points the research reads at the fields that carry the answer", () => {
-  const momentum = TradingToolkit.tools[TRADING_GET_MARKET_STRUCTURE_TOOL].description ?? "";
-  expect(momentum).toContain("directionScore");
-  expect(momentum).toContain("atrExpansionRatio");
-  // The entry-location discount, which nothing else measures.
-  expect(momentum).toContain("lastImpulse");
-  expect(momentum).toContain("alignment");
-  // The close-versus-wick distinction every breakout rule turns on.
-  expect(momentum).toContain("wickOnly");
-  expect(momentum).toContain("candidates");
-
-  const history = TradingToolkit.tools[TRADING_GET_TRADE_HISTORY_TOOL].description ?? "";
-  // Fills arrive as partials; the harness reads orders and flat-to-flat pairs.
-  expect(history).toContain("aggregate into orders");
-  expect(history).toContain("roundTrips");
-  // Each order scored against the target it was actually published under.
-  expect(history).toContain("targetProfitUsd");
+// Twelve read tools became one (plan 29 step 6.1), so one description now
+// carries what twelve carried. What it must still say is which fields answer
+// the questions those tools existed for — and that the cost line is context.
+it("points the one read at the fields that carry the answers", () => {
+  const look = TradingToolkit.tools[TRADING_LOOK_TOOL].description ?? "";
+  // The multi-timeframe read and its scored setups.
+  expect(look).toContain("structure");
+  expect(look).toContain("candidates");
+  // Flat is a state, not an absence — the distinction a merged read can blur.
+  expect(look).toContain("flat is size 0");
+  // Cost survived the un-gating as context only (plan 29 step 3.1).
+  expect(look).toContain("never a gate");
+  expect(look).not.toContain("minimumViableTargetUsd");
+  // An ended mission is reported, not hidden.
+  expect(look).toContain("lastMission");
 });
 
 // The two learning reads: what the mission believed before, and whether any of
@@ -174,12 +127,6 @@ it("points the calibration read at the verdict it exists to produce", () => {
   expect(calibration).toContain("observedHitRatePercent");
   expect(calibration).toContain("claimedHitRatePercent");
   expect(calibration).toContain("recommendation");
-
-  const mission = TradingToolkit.tools[TRADING_GET_MISSION_TOOL].description ?? "";
-  // Authority numbers are ceilings, and an ended mission is reported, not
-  // hidden.
-  expect(mission).toContain("ceilings");
-  expect(mission).toContain("lastMission");
 });
 
 // Re-levelling used to be cancel-then-register, with the side being re-levelled
@@ -217,11 +164,11 @@ it("marks reading as safe and publishing as non-idempotent", () => {
     openWorld: Context.get(tool.annotations, Tool.OpenWorld),
   });
 
-  expect(annotations(TradingToolkit.tools[TRADING_GET_MISSION_TOOL])).toEqual({
+  expect(annotations(TradingToolkit.tools[TRADING_LOOK_TOOL])).toEqual({
     readonly: true,
     idempotent: true,
     destructive: false,
-    openWorld: false,
+    openWorld: true,
   });
   expect(annotations(TradingToolkit.tools[TRADING_PUBLISH_PLAN_TOOL])).toEqual({
     readonly: false,
@@ -244,18 +191,18 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 
-  expect(tools.length, "expected exactly 24 trading tools").toBe(24);
+  expect(tools.length, "expected exactly 13 trading tools").toBe(13);
 
   const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
-  expect(total, "total description chars must stay under 6,000").toBeLessThan(6_000);
+  expect(total, "total description chars must stay under 4,000").toBeLessThan(4_000);
 
   for (const tool of tools) {
     const len = (tool.description ?? "").length;
-    // Measured max at the plan-29 shrink: 350 chars
-    // (trading_get_market_structure). 400 leaves edit headroom, not room for
+    // `trading_look` answers what twelve tools used to, so it carries the
+    // longest description in the set. 500 leaves edit headroom, not room for
     // a new field glossary.
-    expect(len, `${tool.name} description is ${len} chars, must be <= 400`).toBeLessThanOrEqual(
-      400,
+    expect(len, `${tool.name} description is ${len} chars, must be <= 500`).toBeLessThanOrEqual(
+      500,
     );
   }
 });

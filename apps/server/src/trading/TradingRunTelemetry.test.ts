@@ -105,31 +105,28 @@ layer("TradingRunTelemetry", (it) => {
       const sql = yield* SqlClient.SqlClient;
       yield* seed();
 
-      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_get_mission", ok: true });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_look", ok: true });
       yield* recordToolCall(sql, {
         threadId: THREAD,
-        tool: "trading_get_market_snapshot",
+        tool: "trading_look",
         ok: false,
         errorMessage: "market data unavailable\nstack",
       });
       yield* recordToolCall(sql, {
         threadId: THREAD,
-        tool: "trading_estimate_costs",
+        tool: "trading_look",
         ok: false,
         errorMessage: "no book",
       });
 
       const run = yield* readRun;
       assert.deepStrictEqual(JSON.parse(String(run["tools_called_json"])), [
-        "trading_get_mission",
-        "trading_get_market_snapshot",
-        "trading_estimate_costs",
+        "trading_look",
+        "trading_look",
+        "trading_look",
       ]);
       assert.strictEqual(run["tool_error_count"], 2);
-      assert.strictEqual(
-        run["first_tool_error"],
-        "trading_get_market_snapshot: market data unavailable",
-      );
+      assert.strictEqual(run["first_tool_error"], "trading_look: market data unavailable");
       assert.strictEqual(run["published_plan"], 0);
       assert.strictEqual(run["execute_attempted"], 0);
     }),
@@ -141,7 +138,7 @@ layer("TradingRunTelemetry", (it) => {
       yield* seed();
       yield* sql`UPDATE trading_harness_runs SET status = 'completed' WHERE run_id = 'run_1'`;
 
-      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_get_mission", ok: true });
+      yield* recordToolCall(sql, { threadId: THREAD, tool: "trading_look", ok: true });
 
       const run = yield* readRun;
       assert.strictEqual(run["tools_called_json"], null);
@@ -224,7 +221,7 @@ layer("TradingRunTelemetry", (it) => {
       yield* seed();
       yield* recordToolCall(sql, {
         threadId: THREAD,
-        tool: "trading_get_market_snapshot",
+        tool: "trading_look",
         ok: false,
         errorMessage: "internal server error",
       });

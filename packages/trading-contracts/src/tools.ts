@@ -41,23 +41,12 @@ import { tradingPlanAuthoredFields, TradingPlanState } from "./strategy.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
 import { Playbook, TradingPlaybookName } from "./playbook.ts";
 
-export const TRADING_GET_MISSION_TOOL = "trading_get_mission";
 export const TRADING_PUBLISH_PLAN_TOOL = "trading_publish_plan";
 
-// -- §14.2 read-tool names (Phase 2) -----------------------------------------
+// The twelve read-tool names that used to live here retired into
+// `TRADING_LOOK_TOOL` (./observation.ts) — plan 29 step 6.1.
 
-export const TRADING_RESOLVE_MARKET_TOOL = "trading_resolve_market";
-export const TRADING_GET_MARKET_SNAPSHOT_TOOL = "trading_get_market_snapshot";
-export const TRADING_GET_MARKET_HISTORY_TOOL = "trading_get_market_history";
-export const TRADING_GET_ORDER_BOOK_TOOL = "trading_get_order_book";
-export const TRADING_MEASURE_VOLATILITY_TOOL = "trading_measure_volatility";
-export const TRADING_ESTIMATE_COSTS_TOOL = "trading_estimate_costs";
-export const TRADING_GET_MARKET_STRUCTURE_TOOL = "trading_get_market_structure";
-export const TRADING_GET_TRADE_HISTORY_TOOL = "trading_get_trade_history";
 export const TRADING_GET_TARGET_CALIBRATION_TOOL = "trading_get_target_calibration";
-export const TRADING_GET_ACCOUNT_STATE_TOOL = "trading_get_account_state";
-export const TRADING_GET_POSITION_TOOL = "trading_get_position";
-export const TRADING_GET_OPEN_ORDERS_TOOL = "trading_get_open_orders";
 export const TRADING_GET_PLAYBOOK_TOOL = "trading_get_playbook";
 export const TRADING_ADJUST_STOP_TOOL = "trading_adjust_stop";
 /**
@@ -124,7 +113,7 @@ export class TradingToolRejectedError extends Schema.TaggedErrorClass<TradingToo
   }
 }
 
-// -- trading_get_mission -----------------------------------------------------
+// -- trading_look -----------------------------------------------------
 
 export const TradingGetMissionInput = Schema.Struct({
   /**
@@ -155,7 +144,7 @@ export type TradingPendingExecution = typeof TradingPendingExecution.Type;
 /**
  * One plan version the mission published, as its own history reads it.
  *
- * `trading_get_mission` returns the CURRENT plan, so a mission that has
+ * `trading_look` returns the CURRENT plan, so a mission that has
  * republished four times can see only its latest thesis — and "did the last
  * three targets work?" was a question with no way to ask it. This is the
  * skeleton of each: what it intended, what it targeted, and why.
@@ -205,7 +194,7 @@ export const TradingBoundMissionResult = Schema.Struct({
 export type TradingBoundMissionResult = typeof TradingBoundMissionResult.Type;
 
 /**
- * What `trading_get_mission` answers on a thread no live mission owns.
+ * What `trading_look` answers on a thread no live mission owns.
  *
  * A mission that ends — revoked, completed — stops matching the binding query,
  * and every tool on the thread then failed with `thread_not_bound_to_mission`,
@@ -247,7 +236,7 @@ export const TradingPublishPlanInput = Schema.Struct({
   missionId: Schema.optional(TradingId),
   /**
    * The mission row's optimistic-lock version as the harness last read it
-   * (`trading_get_mission` returns it as `missionVersion`). A publish against
+   * (`trading_look` returns it as `missionVersion`). A publish against
    * a mission that has moved on is refused — plan 29 step 4.2 re-keyed this
    * guard from the retired strategy-version counter onto the mission row's
    * own version, keeping the strength without the version semantics.

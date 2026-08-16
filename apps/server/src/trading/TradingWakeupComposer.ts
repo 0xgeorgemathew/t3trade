@@ -24,6 +24,12 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
+import type {
+  AgentAccountSnapshot,
+  AgentNetPosition,
+} from "@t3tools/trading-contracts/account-snapshot";
+import type { AgentMarketSnapshot, MarketHistory } from "@t3tools/trading-contracts/market";
+import type { LevelHistoryEntry, PreviousStructureRead } from "@t3tools/trading-contracts/wakeup";
 import {
   costContextFromEstimate,
   type TradingCostContext,
@@ -72,7 +78,7 @@ const isTradingTimeframe = (value: string): value is TradingTimeframe =>
  *
  * A target is checked against a near and a far window; the four middle points
  * the default distribution adds are noise the resumed turn does not read. The
- * `trading_measure_volatility` tool still uses the full default — this trims
+ * `trading_look` tool still uses the full default — this trims
  * only what the wakeup embeds.
  */
 const WAKEUP_HOLD_HORIZONS: ReadonlyArray<number> = [3, 20] as const;
@@ -109,7 +115,7 @@ const WAKEUP_TRIMMED_CANDLES = 4;
  * A target has to be checked against a structure longer than the one it was
  * read off, and on 1m the longest horizon the measurement offers is twenty
  * minutes. Rather than instruct the harness to remember a second
- * `trading_measure_volatility` call it is free to skip, the wakeup carries the
+ * `trading_look` call it is free to skip, the wakeup carries the
  * pair. A mission already running on 1h has nothing higher to pair with.
  */
 const HIGHER_TIMEFRAME: Readonly<Record<TradingTimeframe, TradingTimeframe | null>> = {
@@ -126,7 +132,7 @@ const HIGHER_TIMEFRAME: Readonly<Record<TradingTimeframe, TradingTimeframe | nul
  * A target has to be checked against a structure longer than the one it was
  * read off, and on 1m the longest horizon the measurement offers is twenty
  * minutes. Rather than instruct the harness to remember a second
- * `trading_measure_volatility` call it is free to skip, the wakeup carries the
+ * `trading_look` call it is free to skip, the wakeup carries the
  * pair. A mission already running on 1h has nothing higher to pair with.
  *
  * This used to prefer the plan's published `timeframes[0]` when it sat above
@@ -299,7 +305,7 @@ const renderWakeupProjection = (projection: Record<string, unknown>): string => 
   }
   // The mandate and authority are no longer embedded on every wake — point the
   // run at the one tool that returns them, so it does not have to discover it.
-  lines.push("mandate-and-authority: call trading_get_mission");
+  lines.push("mandate-and-authority: call trading_look");
   return lines.join("\n");
 };
 
@@ -311,7 +317,7 @@ export const renderWakeup = (wakeup: TradingHarnessWakeup): string =>
  *
  * The marker entry matters more than it looks: a run that sees five exit
  * conditions where it published nine would work from a plan it never wrote.
- * `(+4 more)` tells it the list is a projection and `trading_get_mission`
+ * `(+4 more)` tells it the list is a projection and `trading_look`
  * returns the whole thing.
  */
 const capList = <A>(
@@ -329,7 +335,7 @@ const conditionMarker = (dropped: number) => ({ description: `(+${dropped} more)
  *
  * The publish path already bounds each field at 600 chars; this is the harder
  * wakeup projection. The persisted strategy is untouched — the full text stays
- * one `trading_get_mission` call away.
+ * one `trading_look` call away.
  */
 const boundWakeupProse = (strategy: TradingPlanState): TradingPlanState => ({
   ...strategy,
@@ -356,14 +362,14 @@ const boundStrategyLists = (strategy: TradingPlanState): TradingPlanState => ({
 /**
  * The hardest strategy projection: prose clipped to a line each and the
  * trigger list replaced by a pointer. The persisted plan is untouched and one
- * `trading_get_mission` call away.
+ * `trading_look` call away.
  */
 const digestStrategy = (strategy: TradingPlanState): TradingPlanState => ({
   ...strategy,
   ...boundStrategyProse(strategy, WAKEUP_DIGEST_PROSE_CHARS).strategy,
   entry: {
     ...strategy.entry,
-    triggers: [{ description: "(clipped — call trading_get_mission for the full plan)" }],
+    triggers: [{ description: "(clipped — call trading_look for the full plan)" }],
   },
 });
 
@@ -427,7 +433,7 @@ export const renderBoundedWakeup = (
   // Prose and list bounding used to be the first two trim rungs, but in
   // practice every real plan tripped them: the "full" rendering never survived
   // to a provider anyway, so it is now the baseline projection rather than a
-  // logged trim step. The full text stays one trading_get_mission call away.
+  // logged trim step. The full text stays one trading_look call away.
   let current: TradingHarnessWakeup =
     wakeup.activeStrategy === undefined
       ? wakeup
@@ -489,7 +495,7 @@ export const renderBoundedWakeup = (
     unarmedEntryConditions: current.unarmedEntryConditions,
     misarmedEntryConditions: current.misarmedEntryConditions,
     pendingEvents: current.pendingEvents.slice(-3),
-    omitted: "call trading_get_mission for the full plan, authority, watches, and pending state",
+    omitted: "call trading_look for the full plan, authority, watches, and pending state",
   });
   if (essential.length <= MAX_WAKEUP_CHARS) {
     return { text: essential, steps, untrimmedChars };
@@ -508,7 +514,7 @@ export const renderBoundedWakeup = (
     triggeringWatch: current.triggeringWatch,
     pendingEvents: current.pendingEvents.slice(-1),
     omitted:
-      "wakeup exceeded the context budget; call trading_get_mission and fresh market tools before deciding",
+      "wakeup exceeded the context budget; call trading_look and fresh market tools before deciding",
   });
   return { text: minimal, steps, untrimmedChars };
 };
@@ -548,6 +554,47 @@ export interface ComposeWakeupInput {
   readonly activeStrategy?: TradingPlanState | undefined;
 }
 
+/** What one observation of a mission's market and state is made of. */
+export interface ObserveInput {
+  readonly mission: TradingMission;
+  readonly occurredAt: number;
+  /** The market to read. Defaults to the mission's own. */
+  readonly market?: TradingMission["market"] | undefined;
+  /** The plan in force, when there is one — it sizes the cost context. */
+  readonly activeStrategy?: TradingPlanState | undefined;
+}
+
+/**
+ * The facts a wake and a `trading_look` are both made of — plan 29 step 6.1.
+ *
+ * The twelve read tools and this composer were two implementations of "what
+ * does the model need to know". This is the single gather both now run; the
+ * wakeup adds its framing (cause, triggering watch, the reviews) and renders,
+ * and `trading_look` returns it as a structure.
+ */
+export interface ObservedFacts {
+  readonly address: string;
+  readonly market: TradingMission["market"];
+  readonly primaryTimeframe: TradingTimeframe;
+  readonly marketSnapshot: AgentMarketSnapshot;
+  readonly accountSnapshot: AgentAccountSnapshot;
+  /** The position, carrying T3's own high-water mark when one is recorded. */
+  readonly position: AgentNetPosition;
+  /** The full lookback window the measurements were taken over. */
+  readonly history: MarketHistory;
+  /** The bounded tail of `history` a wakeup carries. */
+  readonly recentCandles: MarketHistory;
+  readonly observedVolatility: ObservedVolatility;
+  readonly higherTimeframeVolatility: ObservedVolatility | null;
+  readonly positionCosts: TradingCostEstimate | null;
+  readonly costContext: TradingCostContext | null;
+  readonly levelHistory: ReadonlyArray<LevelHistoryEntry>;
+  readonly previousStructureRead: PreviousStructureRead | undefined;
+  readonly enteredWithoutScoredSetup: boolean | undefined;
+  /** Every watch this mission has registered, in whatever status. */
+  readonly watches: ReadonlyArray<PersistedWatch>;
+}
+
 export interface TradingWakeupComposerShape {
   /**
    * Gather the fresh market/account snapshots, resolve the triggering watch,
@@ -562,6 +609,15 @@ export interface TradingWakeupComposerShape {
     { readonly wakeup: TradingHarnessWakeup; readonly text: string },
     ComposeWakeupError
   >;
+
+  /**
+   * The gather half of `compose`, on its own — what `trading_look` returns.
+   *
+   * Same reads, same failure surface, same enrichment-never-fails rule: a
+   * higher timeframe, a cost line, or a memory read that fails costs its field
+   * and nothing else.
+   */
+  readonly observe: (input: ObserveInput) => Effect.Effect<ObservedFacts, ComposeWakeupError>;
 }
 
 export class TradingWakeupComposer extends Context.Service<
@@ -618,7 +674,7 @@ const make = Effect.gen(function* () {
    * Cost the round trip on the size actually held.
    *
    * Flat there is nothing to cost, and the hypothetical belongs to
-   * `trading_estimate_costs`. On a profit-target wake this is the number that
+   * `trading_look`. On a profit-target wake this is the number that
    * decides whether the unrealised PnL beside it is worth banking, so it is
    * measured at the real size rather than at a round one.
    */
@@ -682,10 +738,11 @@ const make = Effect.gen(function* () {
       return watch === null ? Option.none() : Option.some(watch);
     });
 
-  const compose: TradingWakeupComposerShape["compose"] = (input) =>
+  const observe: TradingWakeupComposerShape["observe"] = (input) =>
     Effect.gen(function* () {
-      const { mission, harnessRunId, cause, occurredAt, pendingEvents } = input;
+      const { mission, occurredAt } = input;
       const activeStrategy = input.activeStrategy;
+      const market = input.market ?? mission.market;
 
       // §10.6: account reads always use the master-wallet address as identity.
       const address = yield* missions
@@ -703,14 +760,14 @@ const make = Effect.gen(function* () {
       const primaryTimeframe = runtimeTimeframe(mission.instruction);
       const [marketSnapshot, accountSnapshot, position, history] = yield* Effect.all(
         [
-          gateway.getMarketSnapshot(mission.market),
+          gateway.getMarketSnapshot(market),
           gateway.getAccountSnapshot(address),
-          gateway.getPosition(address, mission.market),
+          gateway.getPosition(address, market),
           // One read serves both halves of "what did price just do?": the last
           // 20 bars the harness reads directly, and the longer window the
           // volatility measurement needs to say anything trustworthy.
           gateway.getMarketHistory({
-            market: mission.market,
+            market,
             interval: primaryTimeframe,
             maxBars: VOLATILITY_LOOKBACK_BARS,
           }),
@@ -726,7 +783,7 @@ const make = Effect.gen(function* () {
         candles: history.candles.slice(-WAKEUP_RECENT_CANDLES),
       };
       const observedVolatility = measureVolatility({
-        market: mission.market,
+        market,
         interval: primaryTimeframe,
         candles: history.candles,
         measuredAt: history.freshness.observedAt,
@@ -739,7 +796,7 @@ const make = Effect.gen(function* () {
       // that. A profit-target wake that has to choose between banking and
       // extending needs both, and the exchange reports neither.
       const peak = yield* missions
-        .readPeakUnrealisedPnl({ missionId: mission.id, market: mission.market })
+        .readPeakUnrealisedPnl({ missionId: mission.id, market })
         .pipe(Effect.mapError((error) => fail("peak_pnl_read_failed", error)));
       const positionWithPeak =
         peak === null
@@ -758,16 +815,16 @@ const make = Effect.gen(function* () {
       // allocated capital.
       const [higherTimeframeVolatility, positionCosts, costContext] = yield* Effect.all(
         [
-          measureHigherTimeframe(mission.market, pairedTimeframe(primaryTimeframe)),
+          measureHigherTimeframe(market, pairedTimeframe(primaryTimeframe)),
           costOpenPosition(
-            mission.market,
+            market,
             position.size,
             address,
             mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
           ),
           position.size === 0
             ? costFlatWakeup(
-                mission.market,
+                market,
                 activeStrategy !== undefined &&
                   activeStrategy.entry.initialNotionalUsd !== undefined &&
                   activeStrategy.entry.initialNotionalUsd > 0
@@ -788,13 +845,13 @@ const make = Effect.gen(function* () {
       // the wake.
       const levelHistory = yield* readLevelHistory({
         missionId: mission.id,
-        market: mission.market,
+        market,
         markPrice: marketSnapshot.markPrice,
         toleranceUsd: LEVEL_GROUP_TOLERANCE_ATR * observedVolatility.atrUsd,
       }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
       const previousRead = yield* readPreviousStructureRead({
         missionId: mission.id,
-        market: mission.market,
+        market,
         preferredInterval: primaryTimeframe,
       }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
       // Plan 27 C2: whether the open position's entry had a scored setup
@@ -828,15 +885,64 @@ const make = Effect.gen(function* () {
               readAgeMillis: Math.max(0, occurredAt - previousRead.measured_at),
             };
 
+      // Every watch this mission has registered. A wake describes the active
+      // ones with their distance from the mark; a `look` reports the whole
+      // list, including what already fired.
+      const watches = yield* strategies
+        .listWatches(mission.id)
+        .pipe(Effect.mapError((error) => fail("watch_list_failed", error)));
+
+      return {
+        address,
+        market,
+        primaryTimeframe,
+        marketSnapshot,
+        accountSnapshot,
+        position: positionWithPeak,
+        history,
+        recentCandles,
+        observedVolatility,
+        higherTimeframeVolatility,
+        positionCosts,
+        costContext,
+        levelHistory,
+        previousStructureRead,
+        enteredWithoutScoredSetup,
+        watches,
+      } satisfies ObservedFacts;
+    });
+
+  const compose: TradingWakeupComposerShape["compose"] = (input) =>
+    Effect.gen(function* () {
+      const { mission, harnessRunId, cause, occurredAt, pendingEvents } = input;
+      const activeStrategy = input.activeStrategy;
+
+      const facts = yield* observe({
+        mission,
+        occurredAt,
+        ...(activeStrategy === undefined ? {} : { activeStrategy }),
+      });
+      const {
+        marketSnapshot,
+        accountSnapshot,
+        recentCandles,
+        observedVolatility,
+        higherTimeframeVolatility,
+        positionCosts,
+        costContext,
+        levelHistory,
+        previousStructureRead,
+        enteredWithoutScoredSetup,
+      } = facts;
+      const position = facts.position;
+      const armed = facts.watches;
+
       const triggeringWatch = yield* resolveTriggeringWatch(input.triggeringWatchId);
 
       // What is still armed, and how far the market has to travel to fire each
-      // one. Without this a woken run has to call `trading_list_watches` and do
-      // the arithmetic itself before it can tell a near miss from a level it
-      // armed an hour ago and forgot.
-      const armed = yield* strategies
-        .listWatches(mission.id)
-        .pipe(Effect.mapError((error) => fail("watch_list_failed", error)));
+      // one. Without this a woken run has to read the watch list and do the
+      // arithmetic itself before it can tell a near miss from a level it armed
+      // an hour ago and forgot.
       const armedWatches = armed
         .filter((persisted) => persisted.status === "active")
         .map((persisted) => describeArmedWatch(persisted, marketSnapshot.markPrice));
@@ -909,7 +1015,7 @@ const make = Effect.gen(function* () {
         userMessage: input.userMessage,
         marketSnapshot,
         accountSnapshot,
-        position: positionWithPeak,
+        position,
         recentCandles,
         observedVolatility,
         ...(higherTimeframeVolatility === null ? {} : { higherTimeframeVolatility }),
@@ -932,7 +1038,7 @@ const make = Effect.gen(function* () {
 
       // The mandate, instruction, and default timeframe are stable for a
       // mission's life and no longer duplicated onto every wake — the rendered
-      // text points the run at `trading_get_mission` for them instead.
+      // text points the run at `trading_look` for them instead.
       const validated = decodeWakeup(wakeup);
       const { text, steps, untrimmedChars } = renderBoundedWakeup(validated);
       if (steps.length > 0) {
@@ -948,7 +1054,7 @@ const make = Effect.gen(function* () {
       return { wakeup: validated, text };
     });
 
-  return { compose } satisfies TradingWakeupComposerShape;
+  return { compose, observe } satisfies TradingWakeupComposerShape;
 });
 
 export const TradingWakeupComposerLive = Layer.effect(TradingWakeupComposer, make);
