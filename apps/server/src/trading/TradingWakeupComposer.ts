@@ -397,7 +397,11 @@ const TRIM_LADDER: ReadonlyArray<{
     name: "strategy_digest",
     apply: (wakeup) => {
       const { strategyReview: _dropped, positionReview: _alsoDropped, ...rest } = wakeup;
-      return { ...rest, activeStrategy: digestStrategy(wakeup.activeStrategy) };
+      // A plan-less wakeup has nothing to digest; the rung still drops the
+      // review reminders, which is the point of arriving here.
+      return wakeup.activeStrategy === undefined
+        ? rest
+        : { ...rest, activeStrategy: digestStrategy(wakeup.activeStrategy) };
     },
   },
 ];
@@ -424,10 +428,13 @@ export const renderBoundedWakeup = (
   // practice every real plan tripped them: the "full" rendering never survived
   // to a provider anyway, so it is now the baseline projection rather than a
   // logged trim step. The full text stays one trading_get_mission call away.
-  let current: TradingHarnessWakeup = {
-    ...wakeup,
-    activeStrategy: boundStrategyLists(boundWakeupProse(wakeup.activeStrategy)),
-  };
+  let current: TradingHarnessWakeup =
+    wakeup.activeStrategy === undefined
+      ? wakeup
+      : {
+          ...wakeup,
+          activeStrategy: boundStrategyLists(boundWakeupProse(wakeup.activeStrategy)),
+        };
   let text = renderWakeup(current);
   const untrimmedChars = text.length;
   const steps: string[] = [];
@@ -464,16 +471,20 @@ export const renderBoundedWakeup = (
     observedVolatility: current.observedVolatility,
     positionCosts: current.positionCosts,
     costContext: current.costContext,
-    strategy: {
-      market: current.activeStrategy.market,
-      intent: current.activeStrategy.intent,
-      // The phase the old `currentAction` used to carry, derived from what the
-      // mission holds: flat is waiting, a position is holding.
-      planPhase: planPhase(current.position.size),
-      entryTriggers: current.activeStrategy.entry.triggers.slice(0, 3),
-      stop: current.activeStrategy.stop,
-      target: current.activeStrategy.target,
-    },
+    ...(current.activeStrategy === undefined
+      ? {}
+      : {
+          strategy: {
+            market: current.activeStrategy.market,
+            intent: current.activeStrategy.intent,
+            // The phase the old `currentAction` used to carry, derived from
+            // what the mission holds: flat is waiting, a position is holding.
+            planPhase: planPhase(current.position.size),
+            entryTriggers: current.activeStrategy.entry.triggers.slice(0, 3),
+            stop: current.activeStrategy.stop,
+            target: current.activeStrategy.target,
+          },
+        }),
     armedWatches: current.armedWatches.slice(0, 6),
     unarmedEntryConditions: current.unarmedEntryConditions,
     misarmedEntryConditions: current.misarmedEntryConditions,
@@ -530,11 +541,11 @@ export interface ComposeWakeupInput {
    */
   readonly pendingEvents: ReadonlyArray<TradingDomainEventSummary>;
   /**
-   * The active strategy the coordinator already loaded (check 7). Passed in so
-   * the composer does not re-fetch and observe a different version than the one
-   * the lease was acquired against.
+   * The active plan the coordinator already loaded. Optional since plan 29
+   * step 4.3: a plan-less mission wakes on the same snapshot, with
+   * `strategyReview` saying there is no plan and the turn is there to decide.
    */
-  readonly activeStrategy: TradingPlanState;
+  readonly activeStrategy?: TradingPlanState | undefined;
 }
 
 export interface TradingWakeupComposerShape {
@@ -673,7 +684,8 @@ const make = Effect.gen(function* () {
 
   const compose: TradingWakeupComposerShape["compose"] = (input) =>
     Effect.gen(function* () {
-      const { mission, harnessRunId, cause, occurredAt, pendingEvents, activeStrategy } = input;
+      const { mission, harnessRunId, cause, occurredAt, pendingEvents } = input;
+      const activeStrategy = input.activeStrategy;
 
       // §10.6: account reads always use the master-wallet address as identity.
       const address = yield* missions
@@ -756,7 +768,8 @@ const make = Effect.gen(function* () {
           position.size === 0
             ? costFlatWakeup(
                 mission.market,
-                activeStrategy.entry.initialNotionalUsd &&
+                activeStrategy !== undefined &&
+                  activeStrategy.entry.initialNotionalUsd !== undefined &&
                   activeStrategy.entry.initialNotionalUsd > 0
                   ? activeStrategy.entry.initialNotionalUsd
                   : null,
@@ -834,7 +847,7 @@ const make = Effect.gen(function* () {
       // waiting phase (`planPhase`); the old gate read the nine-value
       // `currentAction`, and "flat" is the whole of what it meant.
       const unarmedEntryConditions =
-        planPhase(position.size) === "waiting"
+        activeStrategy !== undefined && planPhase(position.size) === "waiting"
           ? findUnarmedEntryConditions({
               conditions: activeStrategy.entry.triggers,
               watches: armed,
@@ -843,10 +856,15 @@ const make = Effect.gen(function* () {
 
       // Flat: every playbook is a candidate again this turn. See
       // `strategyReview` on the wakeup schema for why this rides the payload
-      // rather than living only in the playbook the run may not call.
+      // rather than living only in the playbook the run may not call. A
+      // plan-less flat mission gets the decision prompt instead — the turn is
+      // the mission's read on the market, not an apology for a missing plan
+      // (plan 29 step 4.3).
       const strategyReview =
         position.size === 0
-          ? "FLAT — the field is open: momentum, range_reversion, opening_range, ema_cross, and rsi_reversion are all candidates again, and `candidates[]` carries each setup with its own cost arithmetic. Weigh each against one question — is the expected move over the intended hold bigger than the round trip is worth? (`costContext` prices it) — and take the one that answers it best, or none of them if none do."
+          ? activeStrategy === undefined
+            ? "FLAT, NO PLAN ACTIVE — nothing is armed for this mission and no thesis is on file. Decide this turn: weigh the market against one question — is the expected move over the intended hold bigger than the round trip is worth? (`costContext` prices it) — and either publish a plan (`trading_publish_plan`; standing aside is a plan too) or arm what you are waiting for."
+            : "FLAT — the field is open: momentum, range_reversion, opening_range, ema_cross, and rsi_reversion are all candidates again, and `candidates[]` carries each setup with its own cost arithmetic. Weigh each against one question — is the expected move over the intended hold bigger than the round trip is worth? (`costContext` prices it) — and take the one that answers it best, or none of them if none do."
           : undefined;
 
       // Holding: the turn belongs to the position, not to the thesis. See
@@ -858,10 +876,13 @@ const make = Effect.gen(function* () {
 
       // The other half of the same read: a level that IS armed, with a watch
       // that cannot evaluate the confirmation the trigger declared.
-      const misarmedEntryConditions = findMisarmedEntryConditions({
-        conditions: activeStrategy.entry.triggers,
-        watches: armed,
-      });
+      const misarmedEntryConditions =
+        activeStrategy === undefined
+          ? []
+          : findMisarmedEntryConditions({
+              conditions: activeStrategy.entry.triggers,
+              watches: armed,
+            });
 
       const wakeup: TradingHarnessWakeup = {
         kind: "trading-harness-wakeup",
@@ -882,8 +903,10 @@ const make = Effect.gen(function* () {
         ...(higherTimeframeVolatility === null ? {} : { higherTimeframeVolatility }),
         ...(positionCosts === null ? {} : { positionCosts }),
         ...(costContext === null ? {} : { costContext }),
-        activeStrategy,
-        strategyAgeMillis: Math.max(0, occurredAt - activeStrategy.updatedAt),
+        ...(activeStrategy === undefined ? {} : { activeStrategy }),
+        ...(activeStrategy === undefined
+          ? {}
+          : { strategyAgeMillis: Math.max(0, occurredAt - activeStrategy.updatedAt) }),
         armedWatches,
         ...(unarmedEntryConditions.length === 0 ? {} : { unarmedEntryConditions }),
         ...(misarmedEntryConditions.length === 0 ? {} : { misarmedEntryConditions }),

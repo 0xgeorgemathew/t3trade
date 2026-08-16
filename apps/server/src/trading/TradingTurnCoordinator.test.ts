@@ -60,13 +60,21 @@ const awaitBootstrapWake = (cause: string) =>
  * the run failed — but what the coordinator asked to be composed is exactly
  * what a user-message run has to get right.
  */
-const composed: Array<{ readonly cause: string; readonly userMessage?: string | undefined }> = [];
+const composed: Array<{
+  readonly cause: string;
+  readonly userMessage?: string | undefined;
+  readonly hasPlan: boolean;
+}> = [];
 /** Flipped by the tests that pin what a failed wake must leave behind. */
 let composeFails = false;
 const stubComposer = Layer.succeed(TradingWakeupComposer, {
   compose: (input) =>
     Effect.suspend(() => {
-      composed.push({ cause: input.cause, userMessage: input.userMessage });
+      composed.push({
+        cause: input.cause,
+        userMessage: input.userMessage,
+        hasPlan: input.activeStrategy !== undefined,
+      });
       return composeFails
         ? Effect.fail({ _tag: "ComposeWakeupError" as const, reason: "test_forced_failure" })
         : Effect.succeed({ wakeup: {} as never, text: "" });
@@ -104,6 +112,7 @@ const migrated = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_plan_history`;
   composeFails = false;
   dispatchedTexts.length = 0;
+  composed.length = 0;
 });
 
 /** Create a mission and leave it without a strategy — the stand-down shape. */
@@ -194,13 +203,15 @@ layer("TradingTurnCoordinator", (it) => {
     }),
   );
 
-  it.effect("blocks a watch-fired run for a mission with no published strategy", () =>
-    // Nothing could have armed the watch without a strategy, so a watch cause
-    // arriving here is stale — unlike a schedule or an operator message, which
-    // are the mission asking to finish the job of publishing one.
+  // Plan 29 step 4.3's headline: publishing stopped being a precondition for
+  // waking. A watch-fired cause on a plan-less mission used to be bounced as
+  // `no_active_strategy` — the churn loop's ignition, since the model had to
+  // publish to stay wakeable and publishing cancelled its own alerts.
+  it.effect("starts a watch-fired run for a mission with no published plan", () =>
     Effect.gen(function* () {
       yield* migrated;
       yield* seedMissionWithoutStrategy;
+      composed.length = 0;
 
       const coordinator = yield* TradingTurnCoordinator;
       const outcome = yield* coordinator.requestRun({
@@ -208,10 +219,14 @@ layer("TradingTurnCoordinator", (it) => {
         cause: "market_watch_triggered",
       });
 
-      assert.equal(outcome.status, "blocked");
-      if (outcome.status === "blocked") {
-        assert.equal(outcome.reason, "no_active_strategy");
+      assert.equal(outcome.status, "started");
+      // The composer was asked for a plan-less wakeup: market context and a
+      // decision prompt, not a refusal.
+      for (let attempt = 0; attempt < 500 && composed.length === 0; attempt++) {
+        yield* Effect.yieldNow;
       }
+      assert.equal(composed[0]?.cause, "market_watch_triggered");
+      assert.equal(composed[0]?.hasPlan, false);
     }),
   );
 
@@ -235,14 +250,15 @@ layer("TradingTurnCoordinator", (it) => {
     }),
   );
 
-  it.effect("wakes a strategy-less mission on its staleness floor, publish overdue", () =>
+  it.effect("wakes a strategy-less mission on its staleness floor, plan-less compose", () =>
     // The stand-down mission. Its first turn declined to enter and published
     // nothing, so the coverage floor armed a reassessment. That wake used to be
     // bounced here as `no_active_strategy`, which left the mission dormant and
-    // burned a failed run per floor.
+    // burned a failed run per floor; now it composes the plan-less snapshot.
     Effect.gen(function* () {
       yield* migrated;
       yield* seedMissionWithoutStrategy;
+      composed.length = 0;
 
       const coordinator = yield* TradingTurnCoordinator;
       const outcome = yield* coordinator.requestRun({
@@ -252,9 +268,11 @@ layer("TradingTurnCoordinator", (it) => {
 
       assert.equal(outcome.status, "started");
 
-      const wake = yield* awaitBootstrapWake("scheduled_reassessment");
-      assert.equal(wake["publishOverdue"], true);
-      assert.include(String(wake["firstTurnContract"]), "trading_publish_plan");
+      for (let attempt = 0; attempt < 500 && composed.length === 0; attempt++) {
+        yield* Effect.yieldNow;
+      }
+      assert.equal(composed[0]?.cause, "scheduled_reassessment");
+      assert.equal(composed[0]?.hasPlan, false);
     }),
   );
 
@@ -273,9 +291,12 @@ layer("TradingTurnCoordinator", (it) => {
       });
       assert.isTrue(routed);
 
-      const wake = yield* awaitBootstrapWake("user_message");
-      assert.equal(wake["userMessage"], "why did you not take that trade?");
-      assert.equal(wake["publishOverdue"], true);
+      for (let attempt = 0; attempt < 500 && composed.length === 0; attempt++) {
+        yield* Effect.yieldNow;
+      }
+      assert.equal(composed[0]?.cause, "user_message");
+      assert.equal(composed[0]?.userMessage, "why did you not take that trade?");
+      assert.equal(composed[0]?.hasPlan, false);
     }),
   );
 
@@ -305,7 +326,9 @@ layer("TradingTurnCoordinator", (it) => {
         yield* Effect.yieldNow;
       }
       const userWake = composed.filter((entry) => entry.cause === "user_message");
-      assert.deepEqual(userWake, [{ cause: "user_message", userMessage: "take half off here" }]);
+      assert.deepEqual(userWake, [
+        { cause: "user_message", userMessage: "take half off here", hasPlan: true },
+      ]);
     }),
   );
 

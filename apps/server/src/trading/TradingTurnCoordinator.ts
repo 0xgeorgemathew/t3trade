@@ -2,7 +2,7 @@
  * TradingTurnCoordinator - the single gate between an observed event and a
  * started run, spec §12.3, and the wake path that resumes the provider session.
  *
- * It runs the seven pre-run checks in their listed order before acquiring the
+ * It runs the §12.3 pre-run checks in their listed order before acquiring the
  * decision lease, and returns one of three outcomes so a caller can tell
  * whether a run actually started, was queued behind an active one, or was
  * blocked. Only one run may own the mission decision lease at a time; the
@@ -90,7 +90,7 @@ export interface RequestRunInput extends HarnessRunRequest {
 
 export interface TradingTurnCoordinatorShape {
   /**
-   * Run the seven §12.3 pre-run checks and, if they pass, acquire the lease,
+   * Run the §12.3 pre-run checks and, if they pass, acquire the lease,
    * build the wakeup snapshot, dispatch `thread.turn.start` to resume the bound
    * provider session, and fork a watcher that releases the lease when the turn
    * ends.
@@ -131,13 +131,10 @@ export class TradingTurnCoordinator extends Context.Service<
 const sqlFail = (operation: string) => toPersistenceSqlError(`TradingTurnCoordinator.${operation}`);
 
 /**
- * The strategy-less wakeup message: the resumed turn's first job is to author a
- * strategy, so it carries just the mission instruction rather than the full
- * snapshot (which requires an active strategy).
- *
- * `mission_created` is the ordinary case, but a mission that ended its first
- * turn without publishing — a stand-down that never became a plan — is woken
- * on this same shape by its staleness floor or by the operator typing.
+ * The first-turn wakeup message: the resumed turn's first job is to author a
+ * plan, so it carries just the mission instruction rather than the full
+ * snapshot. Only `mission_created` takes this shape — every later wake, plan
+ * or no plan, gets the composer's full market snapshot (plan 29 step 4.3).
  */
 const BootstrapWakeup = Schema.Struct({
   kind: Schema.Literal("trading-harness-wakeup"),
@@ -152,43 +149,23 @@ const BootstrapWakeup = Schema.Struct({
   /** The operator's text, on a `user_message` wake. Without this the message
       that caused the wake never reaches the turn it caused. */
   userMessage: Schema.optional(Schema.String),
-  /** Set on any wake after the first: this mission has already taken a turn and
-      still has no plan. Standing down is a plan too — publish one. */
-  publishOverdue: Schema.optional(Schema.Literal(true)),
   firstTurnContract: Schema.optional(Schema.String),
 });
 const encodeBootstrapText = Schema.encodeSync(Schema.fromJsonString(BootstrapWakeup));
 
 /**
- * The one thing every strategy-less turn owes: a published plan. A turn that
- * looks at the market and declines to trade has reached a conclusion, and a
- * conclusion the mission does not record leaves it with no thesis to come back
- * to, no armed levels, and nothing for the operator's panel to show.
+ * The one thing the first turn owes: a recorded decision. A turn that looks at
+ * the market and declines to trade has reached a conclusion, and a conclusion
+ * the mission does not record leaves it with no thesis to come back to, no
+ * armed levels, and nothing for the operator's panel to show.
  */
 const FIRST_TURN_CONTRACT =
-  "Until a plan exists, the turn owes one: end it with trading_publish_plan, " +
-  "whatever you decide. The plan is eight fields: market, intent, entry, " +
-  "stop, target, invalidation, reassess, because. If the costs or the market " +
-  'do not justify entering, publish intent "stand_aside" — the reasoning in ' +
-  "because, and entry.triggers carrying the price levels that would change " +
-  "the read. Once a plan is published, revise it when it changes — a " +
-  "stand-aside does not re-publish unchanged. A declined entry is a plan, not " +
-  "a missing one.";
-
-/**
- * Causes that may wake a mission with no published strategy. Each of these
- * originates with the mission or its operator rather than with an armed level,
- * so there is a turn worth running even though there is no thesis to snapshot.
- */
-const CAUSES_ALLOWED_WITHOUT_STRATEGY: ReadonlySet<TradingHarnessRunCause> = new Set([
-  "mission_created",
-  "scheduled_reassessment",
-  "user_message",
-]);
-
-const PUBLISH_OVERDUE_NOTE =
-  "This mission has already taken a turn and still has no published plan. " +
-  "Publish one now — including a stand-aside plan if the read has not changed.";
+  "End the turn with trading_publish_plan, whatever you decide. The plan is " +
+  "eight fields: market, intent, entry, stop, target, invalidation, reassess, " +
+  "because. If the costs or the market do not justify entering, publish intent " +
+  '"stand_aside" — the reasoning in because, and entry.triggers carrying the ' +
+  "price levels that would change the read. A declined entry is a plan, not a " +
+  "missing one.";
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -487,9 +464,9 @@ const make = Effect.gen(function* () {
         // on the reasoning that there was nothing to come back to — but a turn
         // that looked at the market and declined to enter has plenty to come
         // back to, and skipping the floor left it dormant until the operator
-        // typed. The floor runs on the default timeframe in that case, and the
-        // wake it arms takes the bootstrap path (check 7) asking for the
-        // publish the turn owes.
+        // typed. The floor runs on the default timeframe in that case, and
+        // the wake it arms takes the plan-less composer path — market context
+        // and a decision prompt, no plan required (plan 29 step 4.3).
         const flatFloor = watchCoverageFloorMillis({
           timeframe: primaryTimeframe,
           holdingPosition: false,
@@ -581,12 +558,12 @@ const make = Effect.gen(function* () {
    * turn — the persisted `resumeCursor` is what continues the conversation.
    *
    * Two shapes:
-   * - A watch/timer/user-message cause always has an active strategy (check 7),
-   *   so it carries the full bounded `TradingHarnessWakeup` snapshot.
-   * - The `mission_created` first run may have no strategy yet (the harness's
-   *   first job is to author one); it dispatches a plain bootstrap message
-   *   carrying just the mission instruction. Step 7 refines this into the full
-   *   thread-derived binding flow.
+   * - Every wake but the first carries the full bounded `TradingHarnessWakeup`
+   *   snapshot — with or without a plan (plan 29 step 4.3 took the plan
+   *   precondition off waking, so a plan-less mission wakes with the same
+   *   market context and a decision prompt in `strategyReview`).
+   * - The `mission_created` first run dispatches a plain bootstrap message
+   *   carrying just the mission instruction and the first-turn contract.
    */
   const wakeProvider = Effect.fn("TradingTurnCoordinator.wakeProvider")(function* (input: {
     readonly missionId: string;
@@ -604,9 +581,24 @@ const make = Effect.gen(function* () {
     const messageId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
 
     let text: string;
-    if (activeStrategy._tag === "Some") {
-      // Full bounded wakeup for strategy-bearing causes (the watch/timer/resume
-      // path the keystone test exercises).
+    if (input.cause === "mission_created" && activeStrategy._tag === "None") {
+      // The first turn. Its job is to author the plan, so it carries the
+      // instruction and the contract rather than a snapshot of a market it is
+      // about to read itself.
+      text = encodeBootstrapText({
+        kind: "trading-harness-wakeup",
+        bootstrap: true,
+        missionId: input.missionId,
+        harnessRunId: input.harnessRunId,
+        cause: input.cause,
+        instruction: mission.instruction,
+        defaultTimeframe: POC_DEFAULT_TIMEFRAME,
+        ...(input.userMessage !== undefined ? { userMessage: input.userMessage } : {}),
+        firstTurnContract: FIRST_TURN_CONTRACT,
+      });
+    } else {
+      // The full bounded wakeup — plan or no plan (plan 29 step 4.3). A
+      // plan-less mission is told so in `strategyReview` and left to decide.
       const occurredAt = yield* Clock.currentTimeMillis;
       const composed = yield* composer.compose({
         mission,
@@ -618,32 +610,12 @@ const make = Effect.gen(function* () {
           : {}),
         ...(input.userMessage !== undefined ? { userMessage: input.userMessage } : {}),
         pendingEvents: input.pendingEvents,
-        activeStrategy: activeStrategy.value,
+        ...(activeStrategy._tag === "Some" ? { activeStrategy: activeStrategy.value } : {}),
       });
       // The composer validates the struct against the schema before rendering
       // and returns it; the rendered text is a compact form, not JSON, so the
       // round-trip here is the struct the composer already decoded.
       text = composed.text;
-    } else {
-      // No strategy yet. Ordinarily this is the `mission_created` bootstrap and
-      // the resumed turn's first job is to author one — but a mission that
-      // finished a turn without publishing is woken on this same shape by its
-      // staleness floor or by the operator, and is told the publish is overdue.
-      const publishOverdue = input.cause !== "mission_created";
-      text = encodeBootstrapText({
-        kind: "trading-harness-wakeup",
-        bootstrap: true,
-        missionId: input.missionId,
-        harnessRunId: input.harnessRunId,
-        cause: input.cause,
-        instruction: mission.instruction,
-        defaultTimeframe: POC_DEFAULT_TIMEFRAME,
-        ...(input.userMessage !== undefined ? { userMessage: input.userMessage } : {}),
-        ...(publishOverdue ? { publishOverdue: true as const } : {}),
-        firstTurnContract: publishOverdue
-          ? `${PUBLISH_OVERDUE_NOTE} ${FIRST_TURN_CONTRACT}`
-          : FIRST_TURN_CONTRACT,
-      });
     }
 
     // Every wake goes through here, so this is the one place that sees a live
@@ -767,20 +739,6 @@ const make = Effect.gen(function* () {
       // claimed set is carried into the wakeup so the harness sees exactly the
       // events that warranted it.
       const pendingEvents = yield* inbox.claimPending(input.missionId);
-
-      // §12.3 check 7: The latest strategy and authority versions are loaded.
-      // A cause that can only have come from the mission itself may proceed
-      // without a published strategy and takes the bootstrap wakeup: the first
-      // run authors a plan, and a scheduled reassessment or an operator message
-      // on a mission that never published one asks it to finish that job. A
-      // watch-fired cause still requires a strategy — nothing could have armed
-      // the watch without one — so the wakeup's `activeStrategy` is present
-      // wherever it is required.
-      const currentStrategy = yield* strategies.getCurrentStrategy(input.missionId);
-      if (currentStrategy._tag === "None" && !CAUSES_ALLOWED_WITHOUT_STRATEGY.has(input.cause)) {
-        yield* completeRun(runId, "failed");
-        return { status: "blocked", reason: "no_active_strategy" } as const;
-      }
 
       // All checks passed: watch for the turn ending, build the wakeup, and
       // dispatch `thread.turn.start`.

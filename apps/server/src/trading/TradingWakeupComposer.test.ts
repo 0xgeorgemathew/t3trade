@@ -234,6 +234,8 @@ const layer = it.layer(
 const composeFull = (input?: {
   readonly triggeringWatchId?: string;
   readonly activeStrategy?: TradingPlanState;
+  /** Pass `true` to compose the wakeup of a mission with no plan at all. */
+  readonly planless?: boolean;
   readonly instruction?: string;
 }) =>
   Effect.gen(function* () {
@@ -248,7 +250,7 @@ const composeFull = (input?: {
         ? {}
         : { triggeringWatchId: input.triggeringWatchId }),
       pendingEvents: [],
-      activeStrategy: input?.activeStrategy ?? strategy,
+      ...(input?.planless === true ? {} : { activeStrategy: input?.activeStrategy ?? strategy }),
     });
   });
 
@@ -350,6 +352,41 @@ layer("TradingWakeupComposer", (it) => {
       const holding = yield* compose();
       positionSize = 0;
       assert.isUndefined(holding.strategyReview);
+    }),
+  );
+
+  // Plan 29 step 4.3: a plan-less mission wakes on the same market snapshot,
+  // with a decision prompt where the plan echo would be. No field that a plan
+  // would carry becomes required; the budget discipline is unchanged.
+  it.effect("composes a coherent plan-less wakeup", () =>
+    Effect.gen(function* () {
+      positionSize = 0;
+      const { wakeup, text } = yield* composeFull({ planless: true });
+      positionSize = 0;
+
+      assert.isUndefined(wakeup.activeStrategy);
+      assert.isUndefined(wakeup.strategyAgeMillis);
+      assert.isUndefined(wakeup.unarmedEntryConditions);
+      assert.isUndefined(wakeup.misarmedEntryConditions);
+      // The snapshot half is all still there.
+      assert.equal(wakeup.marketSnapshot.market, "ETH");
+      assert.isArray(wakeup.armedWatches);
+      assert.isArray(wakeup.recentCandles.candles);
+      // The decision prompt says the mission has no plan and what to do.
+      assert.include(wakeup.strategyReview ?? "", "NO PLAN ACTIVE");
+      assert.include(wakeup.strategyReview ?? "", "trading_publish_plan");
+      assert.isBelow(text.length, 5_000);
+    }),
+  );
+
+  it.effect("a plan-less holding wake still gets the management brief", () =>
+    Effect.gen(function* () {
+      positionSize = -1.25;
+      const { wakeup } = yield* composeFull({ planless: true });
+      positionSize = 0;
+      assert.isUndefined(wakeup.activeStrategy);
+      assert.include(wakeup.positionReview ?? "", "HOLDING");
+      assert.isUndefined(wakeup.strategyReview);
     }),
   );
 

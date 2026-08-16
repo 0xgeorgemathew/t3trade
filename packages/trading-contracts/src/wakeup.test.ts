@@ -199,6 +199,14 @@ describe("TradingHarnessWakeup", () => {
     expect(decoded.kind).toBe("trading-harness-wakeup");
   });
 
+  it("decodes a plan-less wakeup (plan 29 step 4.3)", () => {
+    const { activeStrategy: _plan, strategyAgeMillis: _age, ...planless } = base;
+    const decoded = decode(planless);
+    expect(decoded.activeStrategy).toBeUndefined();
+    expect(decoded.strategyAgeMillis).toBeUndefined();
+    expect(decoded.pendingEvents).toEqual([]);
+  });
+
   it("carries the net position and the bounded recent-candle slice", () => {
     const decoded = decode(base);
     // Flat is a valid position state, not an absence of position.
@@ -210,8 +218,9 @@ describe("TradingHarnessWakeup", () => {
   });
 
   it("requires the new fields rather than treating them as optional", () => {
-    const { strategyAgeMillis: _age, ...withoutAge } = base;
-    expect(() => decode(withoutAge)).toThrow();
+    // `strategyAgeMillis` rides with `activeStrategy` (both optional since
+    // plan 29 step 4.3 let a plan-less mission wake); dropping one of the
+    // pair alone must still fail.
     const { armedWatches: _armed, ...withoutArmed } = base;
     expect(() => decode(withoutArmed)).toThrow();
     const { position: _position, ...withoutPosition } = base;

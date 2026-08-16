@@ -361,15 +361,21 @@ export const TradingHarnessWakeup = Schema.Struct({
    */
   authority: Schema.optional(TradingAuthority),
   pendingEvents: Schema.Array(TradingDomainEventSummary),
-  activeStrategy: TradingPlanState,
   /**
-   * How long ago the active strategy was published, in milliseconds.
-   *
-   * A thesis has a shelf life and the harness cannot read one from a version
-   * number. This is the number that says "you wrote this forty minutes ago on a
-   * 1m chart" without a second tool call.
+   * The mission's current plan. Optional since plan 29 step 4.3 took the plan
+   * off waking's preconditions: a mission with no plan still wakes, on the
+   * same market and account snapshot, and `strategyReview` says the field is
+   * absent and the turn is there to decide. Absent only on plan-less missions.
    */
-  strategyAgeMillis: Schema.Number,
+  activeStrategy: Schema.optional(TradingPlanState),
+  /**
+   * How long ago the active plan was published, in milliseconds. Absent in
+   * lockstep with `activeStrategy`.
+   *
+   * A thesis has a shelf life. This is the number that says "you wrote this
+   * forty minutes ago on a 1m chart" without a second tool call.
+   */
+  strategyAgeMillis: Schema.optional(Schema.Number),
   instruction: Schema.optional(TradingText),
   /**
    * The timeframe to work on unless the instruction names another. Published on
