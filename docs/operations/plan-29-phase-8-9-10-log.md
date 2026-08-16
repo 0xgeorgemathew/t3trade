@@ -564,3 +564,61 @@ the phone shot and is the pre-existing 8.7 problem already flagged at the top
 of this log. New and mine to watch: at 375 the drag readout spans most of the
 plot width. It is legible, but it is a 8.7 question and I am noting it here
 rather than pretending it is fine.
+
+---
+
+## Step 8.5 — Strip the panel — `97e1200b0`
+
+Worked to the amendment, not the original sentence: the checklist rows and the
+`held` strip are not the duplication the step was aimed at, and the landed
+visual system is untouched. What went is what the chart already draws, what is
+repeated from the header, and what is derivable from figures already on screen.
+
+**Cut.** Entry and mark from the held strip — the chart draws the entry as its
+one solid rule and the mark as the moving dot, both tagged with their price in
+the gutter. Margin used, because it is size × entry ÷ leverage and all three
+are on the panel: a figure that cannot disagree with the ones above it is not a
+second fact. The leverage ceiling from the armed header, because it is a
+constant of the mission's authority rather than a state of it. Open interest
+and 24h volume from the footer, and funding now shows only while something is
+held, since it is the cost of carrying.
+
+**Kept, deliberately.** Liquidation, because the chart shows it only when it is
+inside the drawn domain and the strip is its only home when it is not. Size and
+max loss on the armed header, because those two are what the next entry would
+risk, which is the one thing an armed panel is for. The 24h change, because the
+chart is an hour wide and nothing else says where the day has been.
+
+**The harness now renders the panel, not just the chart.** This is new
+infrastructure and worth knowing about: `apps/web/vite.harness.config.ts`
+aliases `MissionLivePanel`'s two data seams — `~/lib/tradingMarketChartState`
+and the orchestration command — to stubs under `apps/web/harness/stubs/`, so
+the component the app ships renders against fixed props with no atom runtime
+and no server. It is the real component, not a copy; a copy would drift, and
+8.6 and 8.7 are both panel steps that need to be looked at.
+
+Two harness artefacts that are not defects and will show in the shots: the
+fixture clock is rounded to the minute, so the position's `observedAt` can be
+up to a minute behind and the header shows its "stale 35s" chip; and the armed
+fixture registers no watches, so its checklist says "entry? 1,873.5 not armed",
+which is the panel correctly reporting a gap the fixture created.
+
+**Decisions you might have made differently.** Funding is the borderline one. I
+made it conditional on holding rather than cutting it, because an operator
+carrying a position overnight is paying it and that is actionable; while flat
+it is market trivia. If you would rather it were always there, it is one
+boolean.
+
+**Numbers.** `pnpm typecheck` 0 errors. `apps/web` full suite 2,264 passed (226
+files) — no new tests this step: nothing gained behaviour, four things stopped
+being rendered, and the suites that assert the panel's state machine
+(`missionLivePanelState.test.ts`) still pass unchanged, which is the useful
+signal. `pnpm lint` 35 warnings, same 2 pre-existing errors.
+
+**Verified in the browser.** `8-5-strip-the-panel-desktop.png` (1280) and
+`-phone.png` (375), both showing the two real panels — holding and armed —
+below the chart fixtures. The held strip now reads `Size 0.5 · Liq 1,499.2 ·
+Protected Full` and the footer `Funding 0.0013%/8h · 24h +1.84%` under the
+holding panel, `24h +1.84%` alone under the armed one.
+
+**Found broken, not mine.** Nothing new.
