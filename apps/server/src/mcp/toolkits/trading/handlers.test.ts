@@ -20,14 +20,35 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { OrchestrationCommand } from "@t3tools/contracts";
 import * as Stream from "effect/Stream";
 
+import { HyperliquidExecutionService } from "../../../trading/HyperliquidExecutionService.ts";
+import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
+import type { AgentOpenOrder } from "@t3tools/trading-contracts/account-snapshot";
+import type { MarketCandle } from "@t3tools/trading-contracts/market";
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import { ServerConfig } from "../../../config.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { runMigrations } from "../../../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../../../persistence/NodeSqliteClient.ts";
 import type { PublishTradingPlanBody } from "../../../trading/Schemas.ts";
+import {
+  makeTradingWorkingOrderService,
+  TradingWorkingOrderService,
+} from "../../../trading/TradingWorkingOrderService.ts";
+import { TradingCalibrationServiceLive } from "../../../trading/TradingCalibrationService.ts";
+import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
+import { TradingExecutionOutcome } from "../../../trading/TradingExecutionOutcome.ts";
+import { TradingExitService } from "../../../trading/TradingExitService.ts";
 import { TradingLayerLive } from "../../../trading/runtimeLayer.ts";
-import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
+import {
+  TradingMissionService,
+  TradingMissionServiceLive,
+} from "../../../trading/TradingMissionService.ts";
+import { TradingPlanProtectionService } from "../../../trading/TradingPlanProtectionService.ts";
+import { TradingQuoteService } from "../../../trading/TradingQuoteService.ts";
+import { TradingStopAdjustmentServiceLive } from "../../../trading/TradingStopAdjustmentService.ts";
+import { TradingStrategyServiceLive } from "../../../trading/TradingStrategyService.ts";
+import { TradingTradeHistoryServiceLive } from "../../../trading/TradingTradeHistoryService.ts";
+import { TradingWatchServiceLive } from "../../../trading/TradingWatchService.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpSessionRegistry from "../../McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
@@ -104,20 +125,178 @@ const recordingEngine = Layer.succeed(OrchestrationEngineService, {
   latestSequence: Effect.succeed(0),
 });
 
-const TradingMcpLayer = McpHttpServer.layer.pipe(
-  Layer.provideMerge(McpSessionRegistry.layer),
-  Layer.provideMerge(TradingLayerLive),
-  Layer.provideMerge(NodeSqliteClient.layerMemory()),
-  Layer.provide(recordingEngine),
-  Layer.provide(PreviewAutomationBroker.layer),
-  Layer.provide(Layer.succeed(ServerEnvironment.ServerEnvironment, fakeEnvironment)),
-  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-mcp-" })),
-  Layer.provide(NodeServices.layer),
-);
+// -- a fake exchange for the publish/adjust-stop aftermaths -------------------
+//
+// The full TradingLayerLive wires its own Hyperliquid gateway deep inside, so
+// an outer provide cannot swap it for a fake. `tradingLayerOverExchange`
+// rebuilds the trading services those aftermaths actually use over the same
+// memory SQLite, with the exchange faked exactly the way
+// TradingWorkingOrderService.test.ts fakes it: a position, a book, a set of
+// resting orders, and a record of what was cancelled.
+
+interface FakeExchange {
+  positionSize: number;
+  markPrice: number;
+  bidPrice: number | undefined;
+  askPrice: number | undefined;
+  orders: AgentOpenOrder[];
+  cancels: string[];
+  candles: MarketCandle[];
+}
+
+const makeFakeExchange = (overrides: Partial<FakeExchange> = {}): FakeExchange => ({
+  positionSize: 0,
+  markPrice: 3_010,
+  bidPrice: 3_009.5,
+  askPrice: 3_010.5,
+  orders: [],
+  cancels: [],
+  // Forty 1m candles ranging 12 USD, so the server's own ATR measures 12.
+  candles: Array.from({ length: 40 }, (_, i) => ({
+    openTime: 1_000_000 - (40 - i) * 60_000,
+    closeTime: 1_000_000 - (40 - i) * 60_000 + 59_000,
+    open: 3_010,
+    close: 3_010,
+    high: 3_016,
+    low: 3_004,
+    volume: 100,
+  })),
+  ...overrides,
+});
+
+/** A resting non-reduce-only limit with a cloid — the working entry's shape. */
+const restingWorkingEntry = (cloid: string, limitPrice: number): AgentOpenOrder =>
+  ({
+    market: "ETH",
+    orderId: 11,
+    cloid,
+    side: "buy",
+    limitPrice,
+    size: 0.5,
+    remainingSize: 0.5,
+    status: "open",
+    createdAt: 970_000,
+    reduceOnly: false,
+    isTrigger: false,
+    orderType: "Limit",
+  }) as AgentOpenOrder;
+
+/** A reduce-only trigger under a 0.5 long — the resting stop's shape. */
+const restingProtectiveStop = (triggerPrice: number): AgentOpenOrder =>
+  ({
+    ...restingWorkingEntry("0xstopcloid0000000000000000001", triggerPrice),
+    side: "sell",
+    reduceOnly: true,
+    isTrigger: true,
+    triggerPrice,
+    orderType: "Stop Market",
+  }) as AgentOpenOrder;
+
+const exchangeGatewayLayer = (fake: FakeExchange) =>
+  Layer.succeed(HyperliquidGateway, {
+    getAccountSnapshot: () =>
+      Effect.succeed({
+        positions:
+          fake.positionSize === 0
+            ? []
+            : [
+                {
+                  market: "ETH",
+                  size: fake.positionSize,
+                  entryPrice: 3_000,
+                  unrealisedPnl: 0,
+                  marginUsed: 100,
+                },
+              ],
+      }),
+    getOpenOrders: () => Effect.succeed(fake.orders),
+    getMarketSnapshot: () =>
+      Effect.succeed({
+        markPrice: fake.markPrice,
+        bestBidOffer: { bidPrice: fake.bidPrice, askPrice: fake.askPrice },
+      }),
+    getMarketHistory: () =>
+      Effect.succeed({
+        market: "ETH",
+        interval: "1m",
+        candles: fake.candles,
+        freshness: { observedAt: 1_000_000, source: "info_api", staleAfterMillis: 5_000 },
+      }),
+    resolveMarket: () => Effect.die("not used"),
+    getOrderBook: () => Effect.die("not used"),
+    getPosition: () => Effect.die("not used"),
+    getTakerFeeRateBps: () => Effect.die("not used"),
+  } as unknown as HyperliquidGateway["Service"]);
+
+const exchangeExecutionLayer = (fake: FakeExchange) =>
+  Layer.succeed(HyperliquidExecutionService, {
+    submitCancel: (input: { readonly cloid: string }) =>
+      Effect.sync(() => {
+        fake.cancels.push(input.cloid);
+        fake.orders = fake.orders.filter((order) => order.cloid !== input.cloid);
+      }),
+    submitWorkingEntry: () => Effect.die("not used"),
+    submitOrder: () => Effect.die("not used"),
+    submitProtectiveStop: () => Effect.die("not used"),
+    submitReduceOnlyIoc: () => Effect.die("not used"),
+    submitReduceOnlyAlo: () => Effect.die("not used"),
+  } as unknown as HyperliquidExecutionService["Service"]);
+
+const tradingLayerOverExchange = (fake: FakeExchange) =>
+  Layer.mergeAll(
+    TradingMissionServiceLive,
+    TradingStrategyServiceLive,
+    TradingWatchServiceLive,
+    TradingTradeHistoryServiceLive,
+    TradingCalibrationServiceLive,
+    // `trading_adjust_stop` runs for real against the fake book.
+    TradingStopAdjustmentServiceLive.pipe(
+      Layer.provide(exchangeGatewayLayer(fake)),
+      Layer.provide(TradingMissionServiceLive),
+      Layer.provide(TradingStrategyServiceLive),
+    ),
+    // The publish aftermath's direct withdrawal, through the same service the
+    // reactor's retirement path uses.
+    Layer.effect(TradingWorkingOrderService, makeTradingWorkingOrderService).pipe(
+      Layer.provide(exchangeGatewayLayer(fake)),
+      Layer.provide(exchangeExecutionLayer(fake)),
+    ),
+    // The publish aftermath reconciles protection through this service; the
+    // retraction under test is the working-entry half, so the stop/target
+    // reconcile is a no-op stand-in. Everything else the toolkit needs but
+    // these paths never call is present only so the layer can build.
+    Layer.succeed(TradingPlanProtectionService, {
+      reconcilePlan: () => Effect.succeed(null),
+    } as unknown as TradingPlanProtectionService["Service"]),
+    // Present so the toolkit layer can build; nothing on these paths calls in.
+    Layer.succeed(TradingCostEstimator, {} as unknown as TradingCostEstimator["Service"]),
+    Layer.succeed(TradingExecutionOutcome, {} as unknown as TradingExecutionOutcome["Service"]),
+    Layer.succeed(TradingQuoteService, {} as unknown as TradingQuoteService["Service"]),
+    Layer.succeed(TradingExitService, {} as unknown as TradingExitService["Service"]),
+  );
+
+/** Either the real trading runtime or the fake-exchange rebuild above. */
+type TradingLayerInput = typeof TradingLayerLive | ReturnType<typeof tradingLayerOverExchange>;
+
+const mcpLayerOver = (tradingLayer: TradingLayerInput) =>
+  McpHttpServer.layer.pipe(
+    Layer.provideMerge(McpSessionRegistry.layer),
+    Layer.provideMerge(tradingLayer),
+    Layer.provideMerge(NodeSqliteClient.layerMemory()),
+    Layer.provide(recordingEngine),
+    Layer.provide(PreviewAutomationBroker.layer),
+    Layer.provide(Layer.succeed(ServerEnvironment.ServerEnvironment, fakeEnvironment)),
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-mcp-" })),
+    Layer.provide(NodeServices.layer),
+  );
+
+const TradingMcpLayer = mcpLayerOver(TradingLayerLive);
 
 /**
  * Boot the real endpoint, migrate, seed one mission bound to `BOUND_THREAD`,
- * and hand back a `callTool` bound to a freshly minted credential.
+ * and hand back a `callTool` bound to a freshly minted credential. The
+ * trading layer is swappable so a test can run the same real endpoint over a
+ * faked exchange.
  */
 const withMcpServer = <A, E>(
   body: (context: {
@@ -136,13 +315,29 @@ const withMcpServer = <A, E>(
       readonly closedPnl: number;
       readonly feeUsd: number;
     }) => Effect.Effect<void, never, never>;
+    /** Give the mission's account a master wallet, as bootstrap would. */
+    readonly seedTradingAccount: () => Effect.Effect<void, never, never>;
+    /** Record an open position, as the reconciler would. */
+    readonly seedPosition: (input: {
+      readonly size: number;
+      readonly entryPrice: number;
+    }) => Effect.Effect<void, never, never>;
+    /** Publish a plan row directly, with a known `updatedAt`. */
+    readonly seedPlan: (input: {
+      readonly updatedAt: number;
+      readonly profitUsd?: number | undefined;
+    }) => Effect.Effect<void, never, never>;
   }) => Effect.Effect<A, E, HttpServer.HttpServer>,
+  tradingLayer: TradingLayerInput = TradingLayerLive,
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
       dispatchedCommands.length = 0;
       const built = yield* Layer.build(
-        HttpRouter.serve(TradingMcpLayer, { disableListenLog: true, disableLogger: true }),
+        HttpRouter.serve(mcpLayerOver(tradingLayer), {
+          disableListenLog: true,
+          disableLogger: true,
+        }),
       );
       const registry = Context.get(built, McpSessionRegistry.McpSessionRegistry);
       const missions = Context.get(built, TradingMissionService);
@@ -172,6 +367,56 @@ const withMcpServer = <A, E>(
           ) VALUES (
             ${input.fillId}, ${MISSION_ID}, NULL, NULL, ${input.orderId}, 'ETH', 'sell',
             1, 3000, ${input.feeUsd}, 'USDC', ${input.closedPnl}, 1, 1
+          )
+        `.pipe(Effect.asVoid, Effect.orDie);
+      const seedTradingAccount = () =>
+        sql`
+          INSERT INTO trading_accounts (
+            account_id, user_id, environment, master_wallet_json,
+            execution_wallet_json, status, created_at, updated_at
+          ) VALUES (
+            'acct_mcp_trading', 'user_mcp_trading', 'testnet',
+            ${JSON.stringify({
+              privyWalletId: "wal_mcp_trading",
+              address: "0x1234567890abcdef1234567890abcdef12345678",
+              ownership: "user",
+            })},
+            '{"privyWalletId":"wal_mcp_trading","address":"0x0000000000000000000000000000000000000001","hyperliquidAgentName":"t3","status":"ready"}',
+            'ready', 1, 1
+          )
+        `.pipe(Effect.asVoid, Effect.orDie);
+      const seedPosition = (input: { readonly size: number; readonly entryPrice: number }) =>
+        sql`
+          INSERT INTO trading_position_snapshots (
+            mission_id, market, size, entry_price, unrealised_pnl,
+            margin_used, protected_size, observed_at, opened_at
+          ) VALUES (
+            ${MISSION_ID}, 'ETH', ${input.size}, ${input.entryPrice}, 5, 100, 0, 1_000_000, 400_000
+          )
+        `.pipe(Effect.asVoid, Effect.orDie);
+      const seedPlan = (input: {
+        readonly updatedAt: number;
+        readonly profitUsd?: number | undefined;
+      }) =>
+        sql`
+          INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
+          VALUES (
+            ${MISSION_ID}, 1,
+            ${JSON.stringify({
+              market: "ETH",
+              intent: "long",
+              entry: {
+                triggers: [{ description: "5m candle closes above 3,200" }],
+                urgency: "now",
+              },
+              stop: { method: "Beneath the breakout low." },
+              target: { profitUsd: input.profitUsd ?? 20 },
+              invalidation: ["Range high is lost on a 15m close."],
+              reassess: { afterMinutes: 90 },
+              because: "range break",
+              updatedAt: input.updatedAt,
+            })},
+            ${input.updatedAt}
           )
         `.pipe(Effect.asVoid, Effect.orDie);
       const httpClient = yield* HttpClient.HttpClient;
@@ -235,7 +480,15 @@ const withMcpServer = <A, E>(
           return parseJsonRpc(yield* response.text);
         }).pipe(Effect.orDie);
 
-      return yield* body({ callTool, missions, seedActiveWatch, seedFill });
+      return yield* body({
+        callTool,
+        missions,
+        seedActiveWatch,
+        seedFill,
+        seedTradingAccount,
+        seedPosition,
+        seedPlan,
+      });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest));
 
@@ -692,3 +945,126 @@ it.effect("refuses a cancel that names no resting order", () =>
     }),
   ),
 );
+
+// -- the stop-adjustment refusals and the publish retraction ------------------
+//
+// The stop-adjustment service had no coverage at all: the staleness guard
+// re-keyed onto the plan's `updatedAt` (plan 29 step 4.2) and the cheap
+// mission-state refusals were reachable but unwitnessed. These run the real
+// `/mcp` path; the exchange-touching ones use `tradingLayerOverExchange`.
+
+/** The `updatedAt` a stale caller must fail to quote. */
+const PLAN_READ_AT = 900_000;
+
+const adjustStopArgs = (expectedPlanUpdatedAt: number) => ({
+  market: "ETH",
+  newStopPrice: 2_984,
+  justification: "trail_peak",
+  expectedPlanUpdatedAt,
+});
+
+it.effect("refuses a stop adjustment when the mission holds no position", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      // The first read the service makes is the position; nothing is seeded.
+      const refused = yield* callTool(
+        BOUND_THREAD,
+        "trading_adjust_stop",
+        adjustStopArgs(PLAN_READ_AT),
+      );
+
+      assert.equal(refused.result.isError, false);
+      assert.equal(refused.result.structuredContent.status, "refused");
+      assert.equal(refused.result.structuredContent.refusalCode, "no_position");
+    }),
+  ),
+);
+
+it.effect("refuses a stop adjustment asked against a plan the mission has revised", () => {
+  const fake = makeFakeExchange({ orders: [restingProtectiveStop(2_980)] });
+  return withMcpServer(
+    ({ callTool, seedTradingAccount, seedPosition, seedPlan }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+        yield* seedPosition({ size: 0.5, entryPrice: 3_000 });
+        yield* seedPlan({ updatedAt: PLAN_READ_AT });
+
+        const refused = yield* callTool(
+          BOUND_THREAD,
+          "trading_adjust_stop",
+          adjustStopArgs(PLAN_READ_AT - 1),
+        );
+
+        assert.equal(refused.result.isError, false);
+        const decision = refused.result.structuredContent;
+        assert.equal(decision.status, "refused");
+        assert.equal(decision.refusalCode, "stale_plan");
+        // The refusal cost nothing: the stop the exchange holds is untouched.
+        assert.deepEqual(fake.cancels, []);
+        assert.equal(fake.orders.length, 1);
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
+it.effect("lets a current plan through the staleness guard — the next check refuses", () => {
+  // A fresh `expectedPlanUpdatedAt` gets past staleness; with a two-sided book
+  // and nothing protective resting, the refusal that answers is
+  // `no_resting_stop` — the check that runs after the guard.
+  const fake = makeFakeExchange({ orders: [] });
+  return withMcpServer(
+    ({ callTool, seedTradingAccount, seedPosition, seedPlan }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+        yield* seedPosition({ size: 0.5, entryPrice: 3_000 });
+        yield* seedPlan({ updatedAt: PLAN_READ_AT });
+
+        const refused = yield* callTool(
+          BOUND_THREAD,
+          "trading_adjust_stop",
+          adjustStopArgs(PLAN_READ_AT),
+        );
+
+        assert.equal(refused.result.isError, false);
+        const decision = refused.result.structuredContent;
+        assert.equal(decision.status, "refused");
+        assert.equal(decision.refusalCode, "no_resting_stop");
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
+it.effect("an accepted publish withdraws the mission's resting working entry", () => {
+  // The audited risk fix (plan 29 step 4.2 aftermath): a resting patient entry
+  // kept working up to the ~90s cross horizon even after the model changed
+  // its mind. A publish IS the mind changing — the entry is withdrawn and the
+  // response says so.
+  const CLOID = "0xworkingentry0000000000000000001";
+  const fake = makeFakeExchange({ orders: [restingWorkingEntry(CLOID, 2_990)] });
+  return withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+
+        const published = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
+          missionId: MISSION_ID,
+          expectedMissionVersion: 1,
+          strategy: strategyBody("revised: no longer wants the resting entry"),
+        });
+
+        assert.equal(published.result.isError, false);
+        const content = published.result.structuredContent;
+        assert.equal(content.outcome, "accepted");
+        // The entry was withdrawn through the same abandon() the reactor's
+        // retirement path uses, and the model is told to re-place under the
+        // new plan if it still wants in.
+        assert.deepEqual(fake.cancels, [CLOID]);
+        assert.deepEqual(fake.orders, []);
+        const warning = (content.warnings as string[]).find((line: string) =>
+          line.includes("resting patient entry was withdrawn"),
+        );
+        assert.isDefined(warning, "expected the publish response to report the retraction");
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
