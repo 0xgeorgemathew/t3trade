@@ -86,7 +86,7 @@ const candles = missionSeries();
    bottom third. It gets a rail along the top edge and the reward strip
    underneath instead. */
 const CHART_W = 900;
-const CHART_H = 430;
+const CHART_H = 500;
 const P_MIN = 1874.0;
 const P_MAX = 1890.6;
 const GUTTER = 104; // right-hand room for the level labels
@@ -1163,7 +1163,7 @@ const harnesses = [
     display: flex;
     flex-direction: column;
     justify-content: center;
-    padding: 88px 0 56px;
+    padding: 74px 0 28px;
   }
 
   .console {
@@ -1198,7 +1198,7 @@ const harnesses = [
   .chart-svg {
     width: 100%;
     height: auto;
-    aspect-ratio: 900 / 430;
+    aspect-ratio: 900 / 500;
     display: block;
   }
 
@@ -1613,7 +1613,7 @@ const harnesses = [
     gap: 0;
     padding-top: 0;
     padding-bottom: 92px;
-    margin-top: 34px;
+    margin-top: 0;
     border-top: 1px solid var(--border);
   }
 

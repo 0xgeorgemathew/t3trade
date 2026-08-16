@@ -855,21 +855,18 @@ const make = Effect.gen(function* () {
         preferredInterval: primaryTimeframe,
       }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
       // Plan 27 C2: whether the open position's entry had a scored setup
-      // behind it, read off the consumed quote that opened it. Absent while
-      // flat, and absent (not asserted) when the quote row cannot be read.
+      // behind it, read off the entry the server committed to. Absent while
+      // flat, and absent (not asserted) when the row cannot be read.
       const enteredWithoutScoredSetup =
         position.size === 0
           ? undefined
-          : yield* sql<{ readonly setup_kind_at_entry: string | null }>`
-              SELECT setup_kind_at_entry FROM trading_entry_quotes
+          : yield* sql<{ readonly setup_kind: string | null }>`
+              SELECT setup_kind FROM trading_entry_context
               WHERE mission_id = ${mission.id} AND action_type = 'open'
-                AND consumed_at IS NOT NULL
-              ORDER BY consumed_at DESC
+              ORDER BY recorded_at DESC
               LIMIT 1
             `.pipe(
-              Effect.map((rows) =>
-                rows.length === 0 ? true : rows[0]?.setup_kind_at_entry == null,
-              ),
+              Effect.map((rows) => (rows.length === 0 ? true : rows[0]?.setup_kind == null)),
               Effect.orElseSucceed(() => undefined),
             );
       const previousStructureRead =
