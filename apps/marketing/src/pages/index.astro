@@ -11,67 +11,121 @@ function kineticWords(sentence: string) {
   }));
 }
 
-/* The lifecycle chart is generated at build time from a fixed seed so every
-   deploy renders the identical shape: a range, a break, then a run. No prices
-   are printed on it. It shows the structure of a mission, not a real trade. */
-const CANDLE_COUNT = 34;
+/* ── The mission console ───────────────────────────────────────────────────
+   Every level, size, and dollar figure below is from the ETH mission in the
+   hero screenshot, so the console and the screenshot describe the same run.
+   The candles between those levels are drawn from a fixed seed at build time:
+   the levels are the record, the shape between them is an illustration. */
+const MISSION = {
+  market: "ETH",
+  leverage: "20x",
+  side: "Long",
+  size: 2.1766,
+  entry: 1883.54,
+  stop: 1874.94,
+  wake: 1879.21,
+  trigger: 1882.76,
+  mark: 1888.8,
+  target: 1907,
+  liquidation: 1471.34,
+  margin: 206,
+};
 
-function tradeSeries() {
+const risk = (MISSION.entry - MISSION.stop) * MISSION.size; // 18.72
+const reward = (MISSION.target - MISSION.entry) * MISSION.size; // 51.06
+const open = (MISSION.mark - MISSION.entry) * MISSION.size; // 11.45
+const toTarget = ((MISSION.mark - MISSION.entry) / (MISSION.target - MISSION.entry)) * 100;
+
+const usd = (value: number) => `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
+const px = (value: number) =>
+  value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+const rr = reward / risk;
+
+const CANDLE_COUNT = 48;
+const BREAK_INDEX = 33;
+
+/* Anchored walk: a range, a shakeout under it, the reclaim, then the run. */
+const ANCHORS: [number, number][] = [
+  [0, 1881.2], [8, 1883.1], [14, 1880.4], [22, 1882.6], [27, 1877.1],
+  [31, 1880.6], [33, 1883.6], [37, 1885.9], [41, 1887.3], [45, 1888.3], [47, 1888.8],
+];
+
+function missionSeries() {
   let seed = 20260814;
   const rand = () => {
     seed = (seed * 1103515245 + 12345) % 2147483648;
     return seed / 2147483648;
   };
 
-  const candles: { open: number; close: number; high: number; low: number; up: boolean }[] = [];
-  let price = 42;
+  const at = (index: number) => {
+    for (let a = 0; a < ANCHORS.length - 1; a += 1) {
+      const [i0, p0] = ANCHORS[a];
+      const [i1, p1] = ANCHORS[a + 1];
+      if (index <= i1) return p0 + ((p1 - p0) * (index - i0)) / (i1 - i0);
+    }
+    return ANCHORS[ANCHORS.length - 1][1];
+  };
 
-  for (let index = 0; index < CANDLE_COUNT; index += 1) {
-    const phase = index / CANDLE_COUNT;
-    const drift = phase < 0.5 ? (rand() - 0.5) * 3.2 : phase < 0.62 ? 3.4 : 1.6;
-    const open = price;
-    const close = Math.max(8, Math.min(88, open + drift + (rand() - 0.5) * 2.4));
-    const high = Math.max(open, close) + rand() * 2.6;
-    const low = Math.min(open, close) - rand() * 2.6;
-    price = close;
-    candles.push({ open, close, high, low, up: close >= open });
-  }
-
-  return candles;
+  return Array.from({ length: CANDLE_COUNT }, (_, index) => {
+    const openPrice = at(index) + (rand() - 0.5) * 0.5;
+    const closePrice = at(index + 1) + (rand() - 0.5) * 0.5;
+    return {
+      open: openPrice,
+      close: closePrice,
+      high: Math.max(openPrice, closePrice) + rand() * 0.55,
+      low: Math.min(openPrice, closePrice) - rand() * 0.55,
+      up: closePrice >= openPrice,
+    };
+  });
 }
 
-/* Rescale the walk into the middle 66% of the chart so the levels above and
-   below it have room to sit. */
-const rawCandles = tradeSeries();
-const seriesLow = Math.min(...rawCandles.map((candle) => candle.low));
-const seriesHigh = Math.max(...rawCandles.map((candle) => candle.high));
-const fit = (value: number) => 17 + ((value - seriesLow) / (seriesHigh - seriesLow)) * 66;
+const candles = missionSeries();
 
-const candles = rawCandles.map((candle) => ({
-  open: fit(candle.open),
-  close: fit(candle.close),
-  high: fit(candle.high),
-  low: fit(candle.low),
-  up: candle.up,
-}));
-
-const CHART_W = 660;
-const CHART_H = 280;
-const SLOT = CHART_W / CANDLE_COUNT;
-const yOf = (value: number) => CHART_H - (value / 100) * CHART_H;
-
-const BREAK_INDEX = 17;
-const entry = candles[BREAK_INDEX].close;
-const stop = Math.min(...candles.slice(0, BREAK_INDEX).map((candle) => candle.low)) - 3;
-const target = candles[CANDLE_COUNT - 1].close + 7;
+/* The domain covers the action, not the target. At 1,907 the target is far
+   above every candle, and including it flattened the whole run into the
+   bottom third. It gets a rail along the top edge and the reward strip
+   underneath instead. */
+const CHART_W = 900;
+const CHART_H = 430;
+const P_MIN = 1874.0;
+const P_MAX = 1890.6;
+const GUTTER = 104; // right-hand room for the level labels
+const SLOT = (CHART_W - GUTTER) / CANDLE_COUNT;
+const yOf = (price: number) => CHART_H - ((price - P_MIN) / (P_MAX - P_MIN)) * CHART_H;
+const xOf = (index: number) => index * SLOT + SLOT / 2;
 
 const runPath = candles
   .slice(BREAK_INDEX)
-  .map((candle, index) => {
-    const x = (BREAK_INDEX + index) * SLOT + SLOT / 2;
-    return `${index === 0 ? "M" : "L"}${x.toFixed(1)} ${yOf(candle.close).toFixed(1)}`;
-  })
+  .map((candle, index) => `${index === 0 ? "M" : "L"}${xOf(BREAK_INDEX + index).toFixed(1)} ${yOf(candle.close).toFixed(1)}`)
   .join(" ");
+
+/* Seven beats share one timeline. Each owns a slice of the pinned scroll, and
+   the chart annotation, the console row, and the rail step that belong to a
+   beat all animate over the same slice. */
+const BEATS = [
+  { at: 2, label: "Mandate", note: "Trade ETH. Long only, 20x ceiling, capped loss in USD." },
+  { at: 12, label: "Waiting", note: "Price is inside the range. The agent takes no entry." },
+  { at: 26, label: "Watch armed", note: `Resume this thread when ETH mark crosses ${px(MISSION.trigger)}.` },
+  { at: 40, label: "Watch fires", note: "The thread wakes with fresh account, book, and budget data." },
+  { at: 52, label: "17 checks", note: "Every check passes, so T3 Trade signs the order locally." },
+  { at: 64, label: "Protected", note: `A reduce-only stop rests at ${px(MISSION.stop)} on the exchange.` },
+  { at: 78, label: "Running", note: `${usd(open)} open, ${toTarget.toFixed(0)}% of the way to ${px(MISSION.target)}.` },
+];
+
+/* Beats carry their slice as two custom properties. The pinned desktop
+   layout maps them onto the `contain` range, and the un-pinned mobile layout
+   maps the same numbers onto `cover`, so one set of timings drives both. */
+const span = (from: number, to: number) => `--from:${from}%;--to:${to}%`;
+
+/* The open-PnL readout counts on the same timeline as the run. */
+const PNL_STEPS = 16;
+const pnlReel = Array.from({ length: PNL_STEPS + 1 }, (_, step) => usd((open * step) / PNL_STEPS));
+
+const armedWatches = [
+  { label: `ETH mark crosses above ${px(MISSION.trigger)}`, value: px(MISSION.mark), metAt: 40 },
+  { label: `ETH 15m candle closes below ${px(MISSION.wake)}`, value: "waiting", metAt: null },
+  { label: `ETH unrealised PnL reaches ${usd(reward)}`, value: "waiting", metAt: null },
+];
 
 /* Six of the seventeen, named the way the preview tool names them. */
 const previewChecks = [
@@ -91,11 +145,11 @@ const controls = ["Pause", "Cancel entries", "Reduce 50%", "Close", "Revoke"];
 const tapeMarkets = ["BTC", "ETH", "SOL", "HYPE", "AVAX", "LINK", "ARB", "DOGE"];
 
 const harnesses = [
-  { name: "Claude Code", tag: "trading missions", icon: "claude-ai-icon.svg" },
-  { name: "Codex CLI", tag: "trading missions", icon: "openai_dark.svg" },
-  { name: "OpenCode", tag: "trading missions", icon: "opencode-dark.svg" },
-  { name: "Cursor", tag: "coding threads", icon: "cursor_light.svg" },
-  { name: "Grok CLI", tag: "coding threads", icon: "grok-dark.svg" },
+  { name: "Claude Code", command: "claude auth login", trades: true, icon: "claude-ai-icon.svg" },
+  { name: "Codex CLI", command: "codex login", trades: true, icon: "openai_dark.svg" },
+  { name: "OpenCode", command: "opencode auth login", trades: true, icon: "opencode-dark.svg" },
+  { name: "Cursor", command: "agent login", trades: false, icon: "cursor_light.svg" },
+  { name: "Grok CLI", command: "grok login", trades: false, icon: "grok-dark.svg" },
 ];
 ---
 
@@ -183,84 +237,194 @@ const harnesses = [
 
   <!-- ── Mission lifecycle ─────────────────────────────────────── -->
   <section id="missions" class="sec-mission">
-    <div class="container mission-inner">
-      <figure class="mission-chart" aria-hidden="true">
-        <svg viewBox={`0 0 ${CHART_W} ${CHART_H}`} preserveAspectRatio="none" class="chart-svg">
-          <line class="chart-level chart-level--target" x1="0" x2={CHART_W} y1={yOf(target)} y2={yOf(target)} />
-          <line class="chart-level chart-level--entry" x1="0" x2={CHART_W} y1={yOf(entry)} y2={yOf(entry)} />
-          <line class="chart-level chart-level--stop" x1="0" x2={CHART_W} y1={yOf(stop)} y2={yOf(stop)} />
+    <div class="container">
+      <h2 class="section-title kinetic">
+        {kineticWords("Watch one mission run.").map(({ word, range }) => (
+          <>
+            <span style={`animation-range: ${range}`}>{word}</span>{" "}
+          </>
+        ))}
+      </h2>
+      <p class="section-lede scrub">
+        A mission binds one agent thread to one market. Scroll to step through the ETH run
+        from the screenshot above: the wait, the watch that woke the agent, the checks, the
+        stop that had to exist before the fill, and the position it left behind.
+      </p>
+    </div>
 
-          {candles.map((candle, index) => {
-            const x = index * SLOT + SLOT / 2;
-            const top = yOf(Math.max(candle.open, candle.close));
-            const bottom = yOf(Math.min(candle.open, candle.close));
-            const start = 16 + index * 1.1;
-            return (
-              <g
-                class={`candle ${candle.up ? "candle--up" : "candle--down"}`}
-                style={`animation-range: entry ${start.toFixed(1)}% cover ${(start + 22).toFixed(1)}%; transform-origin: ${x.toFixed(1)}px ${CHART_H}px`}
-              >
-                <line class="candle-wick" x1={x} x2={x} y1={yOf(candle.high)} y2={yOf(candle.low)} />
-                <rect
-                  class="candle-body"
-                  x={x - SLOT * 0.3}
-                  width={SLOT * 0.6}
-                  y={top}
-                  height={Math.max(1.5, bottom - top)}
-                />
-              </g>
-            );
-          })}
+    <!-- The console pins for the length of the story. Each beat owns a slice
+         of this timeline, and the chart, the readout, and the rail all move
+         together on it. -->
+    <div class="mission-scroller">
+      <div class="mission-sticky">
+        <div class="container">
+          <div class="console">
+            <figure class="console-chart">
+              <svg viewBox={`0 0 ${CHART_W} ${CHART_H}`} class="chart-svg" role="img"
+                aria-label={`Price chart of the ETH mission: a range, a break above ${px(MISSION.trigger)}, an entry at ${px(MISSION.entry)}, a stop at ${px(MISSION.stop)}, and a target at ${px(MISSION.target)}.`}>
 
-          <path class="chart-run" d={runPath} pathLength="1" />
-        </svg>
+                <!-- The band the stop is defending. Everything inside it is
+                     the money at risk, and nothing below it is reachable
+                     while the stop rests on the exchange. -->
+                <rect class="zone zone--risk" x="0" width={CHART_W}
+                  y={yOf(MISSION.entry)} height={yOf(MISSION.stop) - yOf(MISSION.entry)}
+                  style={`${span(62, 74)}`} />
 
-        <figcaption class="chart-legend">
-          <span class="chart-key chart-key--target">target</span>
-          <span class="chart-key chart-key--entry">entry</span>
-          <span class="chart-key chart-key--stop">stop</span>
-        </figcaption>
-      </figure>
+                {candles.map((candle, index) => {
+                  const x = xOf(index);
+                  const top = yOf(Math.max(candle.open, candle.close));
+                  const bottom = yOf(Math.min(candle.open, candle.close));
+                  /* Range candles print through the wait, run candles through
+                     the run, so the chart keeps pace with the story. */
+                  const from = index < BREAK_INDEX ? 3 + index * 1.05 : 64 + (index - BREAK_INDEX) * 1.9;
+                  return (
+                    <g class={`candle ${candle.up ? "candle--up" : "candle--down"}`}
+                      style={`${span(from, from + 7)}; transform-origin: ${x.toFixed(1)}px ${bottom.toFixed(1)}px`}>
+                      <line class="candle-wick" x1={x} x2={x} y1={yOf(candle.high)} y2={yOf(candle.low)} />
+                      <rect class="candle-body" x={x - SLOT * 0.32} width={SLOT * 0.64}
+                        y={top} height={Math.max(1.4, bottom - top)} />
+                    </g>
+                  );
+                })}
 
-      <div class="mission-copy">
-        <h2 class="section-title kinetic">
-          {kineticWords("One thread. One market. One mandate.").map(({ word, range }) => (
-            <>
-              <span style={`animation-range: ${range}`}>{word}</span>{" "}
-            </>
-          ))}
-        </h2>
-        <p class="section-lede scrub">
-          A mission is a trading thread. Pick a perp market, type your mandate as the first
-          message, and T3 Trade binds that conversation to one testnet account with a fixed
-          direction, leverage ceiling, notional cap, and loss budget in USD.
+                <!-- Levels, each drawn on the beat that creates it. -->
+                <g class="level level--trigger" style={`${span(24, 34)}`}>
+                  <line x1="0" x2={CHART_W} y1={yOf(MISSION.trigger)} y2={yOf(MISSION.trigger)} />
+                  <text x="8" y={yOf(MISSION.trigger) - 8}>watch · mark crosses {px(MISSION.trigger)}</text>
+                </g>
+
+                <g class="level level--entry" style={`${span(48, 58)}`}>
+                  <line x1="0" x2={CHART_W} y1={yOf(MISSION.entry)} y2={yOf(MISSION.entry)} />
+                  <text x={CHART_W - 8} text-anchor="end" y={yOf(MISSION.entry) - 8}>entry {px(MISSION.entry)}</text>
+                </g>
+
+                <g class="level level--stop" style={`${span(62, 72)}`}>
+                  <line x1="0" x2={CHART_W} y1={yOf(MISSION.stop)} y2={yOf(MISSION.stop)} />
+                  <text x="8" y={yOf(MISSION.stop) + 18}>stop {px(MISSION.stop)} · risks {usd(-risk)}</text>
+                </g>
+
+                <!-- The second watch is only armed once there is a position
+                     to defend, so it draws after the stop. -->
+                <g class="level level--wake" style={`${span(68, 78)}`}>
+                  <line x1="0" x2={CHART_W} y1={yOf(MISSION.wake)} y2={yOf(MISSION.wake)} />
+                  <text x={CHART_W - 8} text-anchor="end" y={yOf(MISSION.wake) + 16}>wake @ {px(MISSION.wake)}</text>
+                </g>
+
+                <!-- The target sits well above this window, so it rides the
+                     top edge with the distance still to run. -->
+                <g class="level level--target" style={`${span(56, 68)}`}>
+                  <line x1="0" x2={CHART_W} y1="1" y2="1" />
+                  <text x="8" y="18">target {px(MISSION.target)} · {usd(reward)} · {(reward - open).toFixed(2)} away</text>
+                </g>
+
+                <!-- The break candle pulses when the watch fires. -->
+                <circle class="fire-ping" cx={xOf(BREAK_INDEX)} cy={yOf(MISSION.trigger)} r="7"
+                  style={`${span(36, 48)}`} />
+                <circle class="fire-dot" cx={xOf(BREAK_INDEX)} cy={yOf(MISSION.trigger)} r="3.5"
+                  style={`${span(34, 42)}`} />
+
+                <path class="chart-run" d={runPath} pathLength="1" style={`${span(66, 96)}`} />
+
+                <circle class="mark-dot" r="4.5" cx={xOf(CANDLE_COUNT - 1)} cy={yOf(MISSION.mark)}
+                  style={`${span(88, 96)}`} />
+              </svg>
+
+              <!-- What the two levels are actually worth, to scale. -->
+              <figcaption class="rr">
+                <span class="rr-bar" style={`${span(64, 80)}`}>
+                  <span class="rr-seg rr-seg--risk" style={`flex: ${risk}`}>{usd(-risk)}</span>
+                  <span class="rr-seg rr-seg--reward" style={`flex: ${reward}`}>{usd(reward)}</span>
+                </span>
+                <span class="rr-note">
+                  <strong>{rr.toFixed(1)}:1</strong> planned. The stop caps the left side before
+                  the order is signed.
+                </span>
+              </figcaption>
+            </figure>
+
+            <!-- The position readout, the same fields the app shows. -->
+            <div class="console-readout">
+              <div class="readout-head">
+                <span class="tag tag--market">{MISSION.market}</span>
+                <span class="tag">{MISSION.leverage}</span>
+                <span class="tag">{MISSION.side}</span>
+                <span class="readout-pnl">
+                  <span class="pnl-window"><span class="pnl-reel" style={`${span(76, 94)}`}>
+                    {pnlReel.map((value) => <span>{value}</span>)}
+                  </span></span>
+                </span>
+              </div>
+
+              <div class="readout-progress" style={`${span(74, 92)}`}>
+                <span class="progress-track"><span class="progress-fill" style={`${span(76, 94)}`}></span></span>
+                <span class="progress-label">{toTarget.toFixed(0)}% to target</span>
+              </div>
+
+              <dl class="readout-grid">
+                {[
+                  { term: "Size", value: MISSION.size.toFixed(4), at: 50 },
+                  { term: "Entry", value: px(MISSION.entry), at: 52 },
+                  { term: "Mark", value: px(MISSION.mark), at: 78 },
+                  { term: "Stop", value: px(MISSION.stop), at: 64 },
+                  { term: "Liq", value: px(MISSION.liquidation), at: 66 },
+                  { term: "Margin", value: `$${MISSION.margin}`, at: 54 },
+                ].map((row) => (
+                  <div class="readout-row" style={`${span(row.at, row.at + 8)}`}>
+                    <dt>{row.term}</dt>
+                    <dd>{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
+
+              <div class="readout-armed">
+                <span class="readout-legend">Armed watches</span>
+                {armedWatches.map((watch, index) => (
+                  <div class={`armed-row ${watch.metAt ? "armed-row--met" : ""}`}
+                    style={`${span(26 + index * 3, 36 + index * 3)}`}>
+                    <span class="armed-label">{watch.label}</span>
+                    <span class="armed-state" style={watch.metAt ? `${span(watch.metAt, watch.metAt + 8)}` : undefined}>
+                      {watch.metAt ? "met" : "waiting"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <!-- The rail names the beat the chart is currently on. -->
+          <ol class="beat-rail">
+            {BEATS.map((beat) => (
+              <li class="beat" style={`${span(beat.at, beat.at + 10)}`}>
+                <span class="beat-label">{beat.label}</span>
+                <span class="beat-note">{beat.note}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <div class="container mission-notes">
+      <div class="note">
+        <h3>The exchange is the source of truth</h3>
+        <p>
+          Positions, orders, and fills are re-read from Hyperliquid after every submission,
+          fill, reconnect, and restart. Local records never override it.
         </p>
-
-        <ol class="mission-steps">
-          <li class="mission-step scrub">
-            <h3>It sleeps until the market moves</h3>
-            <p>
-              The agent registers a price cross, candle close, position update, or
-              unrealised-PnL watch. When one fires, the same thread resumes with fresh
-              account, position, order, and budget data.
-            </p>
-          </li>
-          <li class="mission-step scrub">
-            <h3>The exchange is the source of truth</h3>
-            <p>
-              Positions, orders, and fills are re-read from Hyperliquid after every
-              submission, fill, reconnect, and restart. Local records never override it.
-            </p>
-          </li>
-          <li class="mission-step scrub">
-            <h3>Risk is counted before entry, not after</h3>
-            <p>
-              Realised loss, paid fees, protected open risk, and pending-entry risk all draw
-              down the same budget. Exhaust it and new exposure is blocked while existing
-              stops stay in place.
-            </p>
-          </li>
-        </ol>
+      </div>
+      <div class="note">
+        <h3>Risk is counted before entry</h3>
+        <p>
+          Realised loss, paid fees, protected open risk, and pending-entry risk all draw down
+          the same budget. Exhaust it and new exposure is blocked while stops stay in place.
+        </p>
+      </div>
+      <div class="note">
+        <h3>The stop is not advisory</h3>
+        <p>
+          It rests on Hyperliquid as a reduce-only order, and its size is reconciled against
+          the position the exchange reports. It survives the app closing.
+        </p>
       </div>
     </div>
   </section>
@@ -301,7 +465,7 @@ const harnesses = [
 
               <ul class="preview-list">
                 {previewChecks.map((check, index) => (
-                  <li style={`animation-range: contain ${6 + index * 9}% contain ${20 + index * 9}%`}>
+                  <li style={`animation-range: cover ${16 + index * 5}% cover ${29 + index * 5}%`}>
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
                     <span class="preview-check-label">{check.label}</span>
                     <span class="preview-check-detail">{check.detail}</span>
@@ -318,7 +482,7 @@ const harnesses = [
             <div class="controls-strip">
               <span class="controls-strip-label">Operator controls</span>
               {controls.map((control, index) => (
-                <span class="control-chip" style={`animation-range: contain ${58 + index * 6}% contain ${70 + index * 6}%`}>{control}</span>
+                <span class="control-chip" style={`animation-range: cover ${56 + index * 3}% cover ${65 + index * 3}%`}>{control}</span>
               ))}
             </div>
           </div>
@@ -345,11 +509,14 @@ const harnesses = [
       <div class="harness-grid">
         {harnesses.map((harness, index) => (
           <div class="harness scrub" style={`animation-range: entry ${4 + index * 5}% cover ${26 + index * 5}%`}>
-            <div class="harness-mark"><img src={`/harnesses/${harness.icon}`} alt="" /></div>
-            <div class="harness-meta">
-              <div class="harness-name">{harness.name}</div>
-              <div class="harness-tag">{harness.tag}</div>
+            <div class="harness-top">
+              <span class="harness-mark"><img src={`/harnesses/${harness.icon}`} alt="" /></span>
+              <span class="harness-name">{harness.name}</span>
             </div>
+            <code class="harness-cmd">{harness.command}</code>
+            <span class={`harness-tag ${harness.trades ? "harness-tag--trades" : ""}`}>
+              {harness.trades ? "trading missions" : "coding threads"}
+            </span>
           </div>
         ))}
       </div>
@@ -933,138 +1100,401 @@ const harnesses = [
     line-height: 1.6;
   }
 
-  /* ── Mission lifecycle ────────────────────────────────────── */
-  .mission-inner {
-    display: grid;
-    grid-template-columns: 1.05fr 0.95fr;
-    gap: 72px;
-    align-items: start;
+  /* ── Mission console ──────────────────────────────────────── */
+  .sec-mission {
+    padding-bottom: 0;
   }
 
-  .mission-chart {
+  .mission-scroller {
+    min-height: 300vh;
+    margin-top: 44px;
+  }
+
+  .mission-sticky {
     position: sticky;
-    top: 116px;
+    top: 0;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 88px 0 56px;
+  }
+
+  .console {
+    display: grid;
+    grid-template-columns: minmax(0, 1.75fr) minmax(300px, 1fr);
+    gap: 14px;
+    align-items: stretch;
+  }
+
+  .panel,
+  .console-chart,
+  .console-readout {
+    position: relative;
     border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.2));
-    padding: 20px 18px 14px;
+    border-radius: var(--radius-lg);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.006) 42%),
+      rgba(10, 10, 12, 0.6);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 30px 60px -34px rgba(0, 0, 0, 0.9);
+  }
+
+  .console-chart {
+    padding: 16px 14px 12px;
     overflow: hidden;
   }
 
+  /* Scaling by aspect rather than a fixed height. A fixed height letterboxed
+     the viewBox at narrow widths and left a band of dead space above the
+     candles. */
   .chart-svg {
     width: 100%;
-    height: 300px;
+    height: auto;
+    aspect-ratio: 900 / 430;
     display: block;
-    overflow: visible;
   }
 
-  .chart-level {
-    stroke-width: 1;
-    stroke-dasharray: 3 5;
+  .zone { opacity: 1; }
+  .zone--risk { fill: color-mix(in srgb, var(--loss) 6%, transparent); }
+
+  /* ── Risk and reward, to scale ────────────────────────────── */
+  .rr {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 10px;
+    padding-top: 11px;
+    border-top: 1px solid var(--border);
   }
 
-  .chart-level--entry { stroke: var(--fg-faint); }
-  .chart-level--stop { stroke: var(--loss); opacity: 0.7; }
-  .chart-level--target { stroke: var(--accent); opacity: 0.7; }
+  .rr-bar {
+    display: flex;
+    flex: 1;
+    height: 22px;
+    border-radius: 6px;
+    overflow: hidden;
+    transform-origin: 0 50%;
+  }
+
+  .rr-seg {
+    display: grid;
+    place-items: center;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+    min-width: 0;
+  }
+
+  .rr-seg--risk {
+    background: color-mix(in srgb, var(--loss) 26%, transparent);
+    color: color-mix(in srgb, var(--loss) 78%, white);
+  }
+
+  .rr-seg--reward {
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+    color: color-mix(in srgb, var(--accent) 82%, white);
+  }
+
+  .rr-note {
+    font-size: 12px;
+    color: var(--fg-dim);
+    max-width: 30ch;
+    line-height: 1.4;
+  }
+
+  .rr-note strong {
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-weight: 500;
+  }
 
   .candle-body { fill: currentColor; }
-  .candle-wick { stroke: currentColor; stroke-width: 1.2; }
+  .candle-wick { stroke: currentColor; stroke-width: 1.1; }
   .candle--up { color: var(--ok); }
   .candle--down { color: var(--loss); }
+
+  .level line {
+    stroke-width: 1;
+    stroke-dasharray: 4 4;
+  }
+
+  .level text {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    fill: currentColor;
+    /* The labels cross candles, so each one carries its own dark halo. */
+    stroke: #0a0a0c;
+    stroke-width: 3.5;
+    paint-order: stroke fill;
+  }
+
+  .level--entry { color: var(--fg-muted); }
+  .level--entry line { stroke: var(--fg-faint); stroke-dasharray: none; }
+  .level--stop { color: var(--loss); }
+  .level--stop line { stroke: var(--loss); }
+  .level--target { color: var(--accent); }
+  .level--target line { stroke: var(--accent); }
+  .level--trigger { color: var(--warn); }
+  .level--trigger line { stroke: var(--warn); }
+  .level--wake { color: var(--warn); }
+  .level--wake line { stroke: var(--warn); opacity: 0.55; }
 
   .chart-run {
     fill: none;
     stroke: var(--accent);
-    stroke-width: 2;
+    stroke-width: 2.25;
     stroke-linecap: round;
     stroke-linejoin: round;
     stroke-dasharray: 1;
     stroke-dashoffset: 0;
   }
 
-  .chart-legend {
+  .fire-dot { fill: var(--warn); }
+  .fire-ping { fill: none; stroke: var(--warn); stroke-width: 1.5; opacity: 0; }
+  .mark-dot { fill: var(--accent); stroke: var(--bg); stroke-width: 2; }
+
+  /* ── Position readout ─────────────────────────────────────── */
+  .console-readout {
+    padding: 16px;
     display: flex;
-    gap: 18px;
-    margin-top: 14px;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
+    flex-direction: column;
+    gap: 16px;
   }
 
-  .chart-key {
-    display: inline-flex;
+  .readout-head {
+    display: flex;
     align-items: center;
     gap: 6px;
   }
 
-  .chart-key::before {
-    content: "";
-    width: 14px;
-    height: 1px;
-    background: currentColor;
+  .tag {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-muted);
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
   }
 
-  .chart-key--target { color: var(--accent); }
-  .chart-key--entry { color: var(--fg-dim); }
-  .chart-key--stop { color: var(--loss); }
+  .tag--market {
+    color: var(--ok);
+    border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+  }
 
-  .mission-steps {
-    list-style: none;
-    counter-reset: step;
-    margin-top: 44px;
+  .readout-pnl {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 19px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ok);
+    letter-spacing: -0.01em;
+  }
+
+  .pnl-window {
+    display: block;
+    height: 1.3em;
+    overflow: hidden;
+  }
+
+  /* Rests on the final figure so a browser without scroll timelines shows the
+     number rather than a zero it will never count up from. */
+  .pnl-reel {
+    display: block;
+    transform: translateY(calc(-16 * 1.3em));
+  }
+
+  .pnl-reel span {
+    display: block;
+    height: 1.3em;
+    line-height: 1.3em;
+    text-align: right;
+  }
+
+  .readout-progress {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .progress-track {
+    flex: 1;
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.07);
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    display: block;
+    height: 100%;
+    width: 22.4%;
+    border-radius: 999px;
+    background: var(--accent);
+    transform-origin: 0 50%;
+  }
+
+  .progress-label {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-dim);
+    white-space: nowrap;
+  }
+
+  .readout-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+
+  .readout-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 9px 11px;
+    background: rgba(9, 9, 11, 0.9);
+  }
+
+  .readout-row dt {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+
+  .readout-row dd {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
+  }
+
+  .readout-legend {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+
+  .readout-armed {
     display: flex;
     flex-direction: column;
-    gap: 30px;
+    gap: 7px;
+    margin-top: auto;
   }
 
-  .mission-step {
-    counter-increment: step;
-    position: relative;
-    padding-left: 26px;
-    border-left: 1px solid var(--border);
+  .armed-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-top: 7px;
+    border-top: 1px dashed var(--border);
+    font-family: var(--font-mono);
+    font-size: 11px;
   }
 
-  .mission-step::before {
-    content: "";
-    position: absolute;
-    left: -1px;
-    top: 6px;
-    bottom: 6px;
-    width: 1px;
-    background: var(--accent);
+  .armed-label {
+    flex: 1;
+    color: var(--fg-muted);
+    line-height: 1.35;
   }
 
-  .mission-step h3 {
-    font-size: 17px;
+  .armed-state {
+    color: var(--fg-faint);
+    flex-shrink: 0;
+  }
+
+  .armed-row--met .armed-state { color: var(--ok); }
+
+  /* ── Beat rail ────────────────────────────────────────────── */
+  .beat-rail {
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 1px;
+    margin-top: 14px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+
+  .beat {
+    padding: 12px 13px;
+    background: rgba(9, 9, 11, 0.9);
+    border-top: 2px solid transparent;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .beat-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+  }
+
+  .beat-note {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--fg-faint);
+  }
+
+  /* ── Mission notes ────────────────────────────────────────── */
+  .mission-notes {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 40px;
+    padding-top: 8px;
+    padding-bottom: 104px;
+  }
+
+  .note {
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+
+  .note h3 {
+    font-size: 15.5px;
     font-weight: 500;
     letter-spacing: -0.015em;
     margin-bottom: 8px;
   }
 
-  .mission-step p {
+  .note p {
     color: var(--fg-muted);
-    font-size: 15px;
+    font-size: 14.5px;
     line-height: 1.6;
   }
 
   /* ── Checks ───────────────────────────────────────────────── */
+  /* Not pinned. The console above already holds the reader still for three
+     viewports, and a second pinned box left a screen of empty space between
+     the two. This one scrubs as it enters, at normal section height. */
   .sec-checks {
     padding: 0;
     background: #08080a;
   }
 
   .checks-scroller {
-    min-height: 220vh;
+    min-height: 0;
   }
 
   .checks-sticky {
-    position: sticky;
-    top: 0;
-    min-height: 100dvh;
-    display: flex;
-    align-items: center;
-    padding: 96px 0;
+    padding: 104px 0;
   }
 
   .checks-inner {
@@ -1243,46 +1673,67 @@ const harnesses = [
   }
 
   .harness {
-    padding: 22px 20px;
+    padding: 20px 18px;
     display: flex;
-    align-items: center;
-    gap: 14px;
+    flex-direction: column;
+    gap: 12px;
     border-right: 1px solid var(--border);
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent);
     transition: background 0.2s ease;
   }
 
   .harness:last-child { border-right: 0; }
-  .harness:hover { background: rgba(255, 255, 255, 0.03); }
+  .harness:hover { background: rgba(255, 255, 255, 0.035); }
+
+  .harness-top {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
 
   .harness-mark {
     flex-shrink: 0;
-    width: 28px;
-    height: 28px;
+    width: 24px;
+    height: 24px;
     display: grid;
     place-items: center;
   }
 
   .harness-mark img {
-    width: 22px;
-    height: 22px;
+    width: 20px;
+    height: 20px;
     object-fit: contain;
   }
-
-  .harness-meta { min-width: 0; }
 
   .harness-name {
     font-size: 14px;
     font-weight: 500;
     letter-spacing: -0.01em;
-    margin-bottom: 2px;
+  }
+
+  /* The command you already run to authenticate it. */
+  .harness-cmd {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--fg-muted);
+    padding: 6px 9px;
+    border-radius: var(--radius-sm);
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--border);
+    overflow-x: auto;
+    white-space: nowrap;
   }
 
   .harness-tag {
     font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--fg-dim);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    margin-top: auto;
   }
+
+  .harness-tag--trades { color: var(--ok); }
 
   /* ── Signer key ───────────────────────────────────────────── */
   .arming-inner {
@@ -1542,42 +1993,172 @@ const harnesses = [
         to { transform: translateX(-50%); }
       }
 
-      /* Each candle prints in turn against the chart's own view timeline. */
-      .mission-chart {
-        view-timeline-name: --chart;
+      /* ── The mission console ────────────────────────────────
+         One pinned scroller drives everything: the candles, the four price
+         levels and their labels, the watch that fires, the run, the counting
+         PnL, the armed watches, and the rail that names the current beat.
+         Each element carries its own slice as an inline animation-range, so
+         the beats stay in step with each other. */
+      .mission-scroller {
+        view-timeline-name: --mission;
         view-timeline-axis: block;
       }
 
+      .candle,
+      .zone,
+      .level,
+      .fire-dot,
+      .fire-ping,
+      .mark-dot,
+      .chart-run,
+      .pnl-reel,
+      .progress-fill,
+      .readout-row,
+      .readout-progress,
+      .armed-row,
+      .armed-state,
+      .rr-bar,
+      .beat {
+        animation-timeline: --mission;
+        animation-range: contain var(--from) contain var(--to);
+      }
+
       .candle {
-        animation: candle-print linear both;
-        animation-timeline: --chart;
+        animation-name: candle-print;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
       }
 
       @keyframes candle-print {
-        from { opacity: 0; transform: scaleY(0.05); }
+        from { opacity: 0; transform: scaleY(0.04); }
         to { opacity: 1; transform: scaleY(1); }
+      }
+
+      .zone {
+        animation-name: zone-in;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      @keyframes zone-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+
+      .level {
+        animation-name: level-draw;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        transform-origin: 0 50%;
+      }
+
+      @keyframes level-draw {
+        from { opacity: 0; transform: scaleX(0.02); }
+        to { opacity: 1; transform: scaleX(1); }
+      }
+
+      /* The watch firing is the one moment the page should feel like an
+         event, so the marker lands and a ring leaves it. */
+      .fire-dot {
+        animation-name: zone-in;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      .fire-ping {
+        animation-name: fire-ping;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        transform-origin: center;
+        transform-box: fill-box;
+      }
+
+      @keyframes fire-ping {
+        from { opacity: 0.9; transform: scale(0.4); }
+        to { opacity: 0; transform: scale(3.4); }
+      }
+
+      .mark-dot {
+        animation-name: zone-in;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
       }
 
       .chart-run {
         stroke-dashoffset: 1;
-        animation: scrub-draw linear both;
-        animation-timeline: --chart;
-        animation-range: entry 42% cover 92%;
+        animation-name: scrub-draw;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
       }
 
-      .chart-level {
-        animation: level-draw linear both;
-        animation-timeline: --chart;
-        animation-range: entry 20% cover 44%;
+      .readout-row,
+      .readout-progress,
+      .armed-row {
+        animation-name: check-in;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
       }
 
-      @keyframes level-draw {
-        from { opacity: 0; transform: scaleX(0); }
-        to { opacity: 1; transform: scaleX(1); }
+      .pnl-reel {
+        animation-name: pnl-count;
+        animation-timing-function: steps(16, end);
+        animation-fill-mode: both;
       }
 
-      /* The checks section pins for two viewports. The checks tick, the reel
-         counts to seventeen, and the controls arrive last. */
+      @keyframes pnl-count {
+        from { transform: translateY(0); }
+        to { transform: translateY(calc(-16 * 1.3em)); }
+      }
+
+      .rr-bar {
+        animation-name: bar-fill;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      .progress-fill {
+        animation-name: bar-fill;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      @keyframes bar-fill {
+        from { transform: scaleX(0); }
+        to { transform: scaleX(1); }
+      }
+
+      .armed-row--met .armed-state {
+        animation-name: state-met;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      @keyframes state-met {
+        from { color: var(--fg-faint); }
+        to { color: var(--ok); }
+      }
+
+      /* The rail step for the current beat lifts out of the row. */
+      .beat {
+        animation-name: beat-live;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      @keyframes beat-live {
+        from {
+          border-top-color: transparent;
+          background: rgba(9, 9, 11, 0.9);
+        }
+        to {
+          border-top-color: var(--accent);
+          background: rgba(255, 255, 255, 0.035);
+        }
+      }
+
+      /* ── The seventeen checks ───────────────────────────────
+         Not pinned. The checks tick, the reel counts to seventeen, and the
+         controls arrive last, all across the card's own pass up the screen. */
       .checks-scroller {
         view-timeline-name: --checks;
         view-timeline-axis: block;
@@ -1589,14 +2170,14 @@ const harnesses = [
       }
 
       @keyframes check-in {
-        from { opacity: 0.1; transform: translateY(8px); }
+        from { opacity: 0.12; transform: translateY(8px); }
         to { opacity: 1; transform: none; }
       }
 
       .tally-reel {
         animation: tally-count steps(17, end) both;
         animation-timeline: --checks;
-        animation-range: contain 4% contain 68%;
+        animation-range: cover 16% cover 56%;
       }
 
       @keyframes tally-count {
@@ -1607,17 +2188,17 @@ const harnesses = [
       .preview-stamp {
         animation: stamp-land linear both;
         animation-timeline: --checks;
-        animation-range: contain 70% contain 82%;
+        animation-range: cover 56% cover 64%;
       }
 
       .preview-verdict-note {
         animation: check-in linear both;
         animation-timeline: --checks;
-        animation-range: contain 78% contain 88%;
+        animation-range: cover 60% cover 68%;
       }
 
       @keyframes stamp-land {
-        from { opacity: 0; transform: scale(1.5) rotate(-6deg); }
+        from { opacity: 0; transform: scale(1.4) rotate(-5deg); }
         to { opacity: 1; transform: none; }
       }
 
@@ -1630,27 +2211,62 @@ const harnesses = [
 
   /* ── Responsive ───────────────────────────────────────────── */
   @media (max-width: 1080px) {
-    .mission-inner,
     .checks-inner,
     .arming-inner {
       grid-template-columns: 1fr;
       gap: 44px;
     }
 
-    .mission-chart {
-      position: static;
+    /* Pinning a console this tall costs more than a small screen has. It
+       becomes a normal block, and every beat re-times onto `cover` so the
+       same slices now play as the section passes up the screen. */
+    .mission-scroller {
+      min-height: 0;
+      margin-top: 32px;
     }
 
-    /* Pinning costs too much of a small screen. The section becomes a normal
-       block and the checks scrub in as they enter instead. */
-    .checks-scroller {
-      min-height: 0;
-    }
-
-    .checks-sticky {
+    .mission-sticky {
       position: static;
       min-height: 0;
-      padding: 96px 0;
+      padding: 0;
+    }
+
+    .candle,
+    .zone,
+    .level,
+    .fire-dot,
+    .fire-ping,
+    .mark-dot,
+    .chart-run,
+    .pnl-reel,
+    .progress-fill,
+    .readout-row,
+    .readout-progress,
+    .armed-row,
+    .armed-state,
+    .rr-bar,
+    .beat {
+      animation-range: cover var(--from) cover var(--to);
+    }
+
+    .console {
+      grid-template-columns: 1fr;
+    }
+
+    .beat-rail {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    /* Seven beats in two columns leaves the last row half empty, so the
+       final beat takes the whole row. */
+    .beat:last-child {
+      grid-column: 1 / -1;
+    }
+
+    .mission-notes {
+      grid-template-columns: 1fr;
+      gap: 24px;
+      padding-bottom: 76px;
     }
 
     .harness-grid {
@@ -1718,10 +2334,6 @@ const harnesses = [
 
     .state-grid {
       grid-template-columns: 1fr;
-    }
-
-    .chart-svg {
-      height: 220px;
     }
 
     /* The full window is unreadable at phone width, so the frame crops into
