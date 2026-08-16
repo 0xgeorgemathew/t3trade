@@ -421,7 +421,7 @@ const makeHyperliquidGateway = Effect.gen(function* () {
       // No open position is a valid net-zero state, not an error. Return a
       // flat position so the harness sees a deterministic shape — with no
       // entry price, because a flat account has none. Reporting `0` here made
-      // every `trading_get_position` call fail to encode while flat, which is
+      // every `trading_look` call fail to encode while flat, which is
       // exactly when the harness asks.
       const flat: AgentNetPosition = {
         market: symbol,

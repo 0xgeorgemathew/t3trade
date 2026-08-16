@@ -968,7 +968,7 @@ describe("deriveWakeupCard", () => {
       "activeStrategy:",
       "  market=BTC",
       "  intent=long",
-      "mandate-and-authority: call trading_get_mission",
+      "mandate-and-authority: call trading_look",
     ].join("\n");
 
     const card = deriveWakeupCard(flat);

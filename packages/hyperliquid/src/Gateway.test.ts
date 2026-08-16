@@ -318,7 +318,7 @@ describe("HyperliquidGateway.getPosition", () => {
       expect(pos.market).toBe("ETH");
       // A flat account has no entry price. Reporting one — `0` in particular —
       // fails to encode against `Price`, which is what made every
-      // `trading_get_position` call throw at the tool boundary while flat.
+      // `trading_look` call throw at the tool boundary while flat.
       expect(pos.entryPrice).toBeUndefined();
       expect(() => Schema.encodeUnknownSync(AgentNetPosition)(pos)).not.toThrow();
     }).pipe(
