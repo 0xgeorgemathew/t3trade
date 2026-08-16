@@ -481,7 +481,6 @@ export function MissionLivePanel({
           <ArmedHeader
             market={mission.market}
             plan={plan}
-            maximumLeverage={mission.authority.maximumLeverage}
             nextReassessmentAt={nextReassessmentAt}
           />
         ) : (
@@ -669,11 +668,8 @@ export function MissionLivePanel({
       {position === null ? null : (
         <PositionStrip
           size={position.size}
-          entryPrice={position.entryPrice ?? null}
-          markPrice={markPrice}
           liquidationPrice={position.liquidationPrice ?? null}
           protectedSize={position.protectedSize}
-          marginUsed={position.marginUsed}
         />
       )}
 
@@ -682,7 +678,7 @@ export function MissionLivePanel({
           anyone was reading it. */}
       {plan === null ? null : <PlanDisclosure plan={plan} />}
 
-      <FooterRow data={chart.data} />
+      <FooterRow data={chart.data} isHolding={position !== null} />
     </div>
   );
 }
@@ -800,12 +796,10 @@ function PlanningHeader({
 function ArmedHeader({
   market,
   plan,
-  maximumLeverage,
   nextReassessmentAt,
 }: {
   readonly market: string;
   readonly plan: StrategyPlan | null;
-  readonly maximumLeverage: number;
   readonly nextReassessmentAt: number | null;
 }): ReactNode {
   const countdown = formatReassessmentCountdown(nextReassessmentAt);
@@ -836,9 +830,12 @@ function ArmedHeader({
           max loss {formatUsd(plan.maxLossUsd)}
         </span>
       )}
-      <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
-        up to {formatLeverage(maximumLeverage)}
-      </span>
+      {/* The leverage ceiling stood here. Step 8.5: it is a constant of the
+          mission's authority, not a state of it — it says the same thing on
+          every turn of every session, and nothing the operator does while
+          waiting is decided by it. It is still in the plan disclosure. Size
+          and max loss stay: those two are what the next entry would actually
+          risk, which is the one thing an armed panel is for. */}
       {countdown === null ? null : (
         <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
           {countdown}
@@ -1160,18 +1157,12 @@ function SideChip({
  */
 function PositionStrip({
   size,
-  entryPrice,
-  markPrice,
   liquidationPrice,
   protectedSize,
-  marginUsed,
 }: {
   readonly size: number;
-  readonly entryPrice: number | null;
-  readonly markPrice: number | null;
   readonly liquidationPrice: number | null;
   readonly protectedSize: number;
-  readonly marginUsed: number;
 }): ReactNode {
   // §16.1: a stop covering less than the position is the difference between a
   // bounded loss and an open-ended one, so it is a figure and not a checkmark.
@@ -1192,8 +1183,15 @@ function PositionStrip({
     >
       <span className={cn("mr-0.5", BAND_LEGEND_CLASS)}>held</span>
       <PositionStat label="Size" value={formatSize(Math.abs(size))} />
-      {entryPrice === null ? null : <PositionStat label="Entry" value={formatPrice(entryPrice)} />}
-      {markPrice === null ? null : <PositionStat label="Mark" value={formatPrice(markPrice)} />}
+      {/* Entry, mark and margin used to stand here. Step 8.5: the chart draws
+          the entry as its one solid rule and the mark as the moving dot, both
+          tagged with their price in the gutter — a second copy three rows down
+          is the same fact in a worse place. Margin went for a different
+          reason: it is size × entry ÷ leverage, and all three of those are
+          already on the panel, so it was a figure that could not disagree with
+          the ones above it. Liquidation stays: the chart shows it only when it
+          is inside the drawn domain, and when it is not, this is its only
+          home. */}
       {liquidationPrice === null ? null : (
         <PositionStat label="Liq" value={formatPrice(liquidationPrice)} />
       )}
@@ -1203,7 +1201,6 @@ function PositionStrip({
         // An unprotected position is the one fact on this line worth a colour.
         toneClass={protectedSize === 0 ? "text-loss" : undefined}
       />
-      <PositionStat label="Margin" value={formatUsd(marginUsed)} />
     </div>
   );
 }
@@ -1270,7 +1267,24 @@ function CollapsedRow({
  * `openInterest` is in base units of the market, so a dollar figure is the mark
  * price times the size.
  */
-function FooterRow({ data }: { readonly data: TradingMarketChartView | null }): ReactNode {
+/**
+ * The market's own numbers, under everything.
+ *
+ * Step 8.5 took two of the four away. Open interest and 24h volume are market
+ * structure the model reads through `look` and weighs in its own plan; nothing
+ * the operator does with this panel turns on either, and they were here because
+ * the chart view had fields for them. Funding is a cost of *carrying* — so it
+ * appears when something is being carried and not before. The 24h change stays
+ * unconditionally: the chart is an hour wide, so it is the one line on the
+ * panel that says where the day has been.
+ */
+function FooterRow({
+  data,
+  isHolding,
+}: {
+  readonly data: TradingMarketChartView | null;
+  readonly isHolding: boolean;
+}): ReactNode {
   if (data === null) {
     // Keep the row's border so expanding/collapsing doesn't reflow.
     return <div className="h-6 border-t border-border/40" />;
@@ -1283,15 +1297,12 @@ function FooterRow({ data }: { readonly data: TradingMarketChartView | null }): 
         : "text-muted-foreground";
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-border/40 px-3 py-1 font-mono text-[10.5px] tabular-nums text-muted-foreground/70 sm:px-4">
-      <span>
-        Funding <span className="text-foreground">{(data.fundingRate8h * 100).toFixed(4)}%</span>/8h
-      </span>
-      <span>
-        OI <span className="text-foreground">{formatUsd(data.openInterest * data.markPrice)}</span>
-      </span>
-      <span>
-        24h vol <span className="text-foreground">{formatUsd(data.dayVolumeUsd)}</span>
-      </span>
+      {isHolding ? (
+        <span>
+          Funding <span className="text-foreground">{(data.fundingRate8h * 100).toFixed(4)}%</span>
+          /8h
+        </span>
+      ) : null}
       <span className={changeTone}>24h {formatSignedPercent(data.change24hPercent)}</span>
     </div>
   );
