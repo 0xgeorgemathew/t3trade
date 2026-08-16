@@ -954,7 +954,13 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           aspect ratio and a long caption can ellipsis instead of overflowing. */}
       <div
         className="pointer-events-none absolute inset-y-0 right-0 text-[10px] leading-none tabular-nums"
-        style={{ width: `${gutterPercent}%` }}
+        // Step 8.7. The gutter was a flat 15% of the frame, which is ~56px on a
+        // 375px phone — narrower than "○ ▲ 1,873.5" — so every tag clipped to
+        // "1,8" and the panel stopped answering what is protecting you and at
+        // what price. A floor in real pixels is what makes the tag legible at
+        // any width; it eats into the right end of the plot, which is the
+        // future gutter and is empty by construction.
+        style={{ width: `max(${gutterPercent}%, 4.5rem)` }}
         aria-hidden="true"
       >
         {geometry.gutterTags.map((tag) => {

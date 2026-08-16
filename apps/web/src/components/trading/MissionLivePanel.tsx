@@ -138,7 +138,11 @@ const MAX_CONDITION_ROWS = 4;
  * what fits one line on a narrow workspace, and the seventh-nearest event is
  * not the one anyone is reading.
  */
-const MAX_UP_NEXT_PILLS = 6;
+// Five, not six: step 8.7's bound is that no more than five future markers are
+// ever visible, and the chart's own gutter has held five since
+// MAX_DRAWN_TIME_MARKERS. A strip that showed six was the one surface breaking
+// the rule the chart was written to.
+const MAX_UP_NEXT_PILLS = 5;
 
 /**
  * How long a clicked level stays lit.
@@ -557,6 +561,22 @@ export function MissionLivePanel({
           </button>
         </span>
       </div>
+
+      {/* Step 8.7, question five: "why?". An armed panel has carried the
+          plan's own sentence in its header since the restyle; a HOLDING panel
+          did not, so the one question a walk-away user could not answer from
+          one screen was the reason they were in the trade — it was behind the
+          plan disclosure. One line, the plan's own words, clamped to two rows
+          so a long thesis cannot push the chart off a phone. */}
+      {state === "live" && plan?.because != null && plan.because !== "" ? (
+        <p
+          data-testid="mission-live-because"
+          className="line-clamp-2 px-3 pb-1.5 text-[11px] leading-snug text-muted-foreground sm:px-4"
+          title={plan.because}
+        >
+          {plan.because}
+        </p>
+      ) : null}
 
       {/* Step 8.6: the bands are the same in every state; their ORDER is not.
           What belongs at the top is whatever that state is a question about.
