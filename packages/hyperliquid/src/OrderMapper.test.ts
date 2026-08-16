@@ -24,7 +24,6 @@ const FRESH_BBO = (observedAt: number): MarketBestBidOffer => ({
 
 const baseIntent = (overrides: Partial<TradingOrderIntent>): TradingOrderIntent => ({
   missionId: "mission_1",
-  strategyVersion: 1,
   executionSequence: 0,
   actionType: "open",
   market: "ETH",

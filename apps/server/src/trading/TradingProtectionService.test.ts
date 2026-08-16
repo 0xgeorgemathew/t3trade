@@ -31,7 +31,6 @@ const MASTER = "0xmaster";
 
 const INPUT: ProtectionInput = {
   missionId: "mission_protect",
-  strategyVersion: 1,
   executionSequence: 0,
   masterAddress: MASTER,
   market: "ETH",
@@ -44,7 +43,6 @@ const INPUT: ProtectionInput = {
  */
 const TP_INPUT: TakeProfitInput = {
   missionId: "mission_protect",
-  strategyVersion: 1,
   executionSequence: 0,
   masterAddress: MASTER,
   market: "ETH",

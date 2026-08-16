@@ -31,9 +31,9 @@ const MISSION = "mission_history";
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 47 });
+  yield* runMigrations({ toMigrationInclusive: 63 });
   yield* sql`DELETE FROM trading_fills`;
-  yield* sql`DELETE FROM momentum_strategy_versions`;
+  yield* sql`DELETE FROM trading_plan_history`;
 });
 
 /** One partial fill, as the reconciler persists them. */
@@ -70,7 +70,7 @@ const insertStrategy = (version: number, targetProfitUsd: number, createdAt: num
     // this column with `json_extract`, so the row only has to carry that field.
     const json = `{"target":{"profitUsd":${targetProfitUsd}}}`;
     yield* sql`
-      INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+      INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
       VALUES (${MISSION}, ${version}, ${json}, ${createdAt})
     `;
   });

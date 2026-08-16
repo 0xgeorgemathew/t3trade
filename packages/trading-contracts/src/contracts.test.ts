@@ -122,7 +122,6 @@ const mission: TradingMission = {
   tradingAccountId: "acct_1",
   instruction: "Trade ETH momentum",
   market: "ETH",
-  strategyFamily: "momentum",
   harness: {
     provider: "claude",
     providerInstanceId: "instance_1",
@@ -138,7 +137,6 @@ const mission: TradingMission = {
     reentryAllowed: true,
     pauseAfterPositionClose: false,
   },
-  strategyVersion: 1,
   authorityVersion: 1,
   lastHarnessRunId: "run_1",
   createdAt: 1_753_000_000_000,
@@ -313,10 +311,10 @@ describe("§14.3 mission tool contracts", () => {
     const { updatedAt: _updatedAt, ...body } = strategy;
     const decoded = decodePublishInput({
       missionId: "mission_1",
-      expectedVersion: 0,
+      expectedMissionVersion: 0,
       strategy: body,
     });
-    expect(decoded.expectedVersion).toBe(0);
+    expect(decoded.expectedMissionVersion).toBe(0);
     expect("updatedAt" in decoded.strategy).toBe(false);
   });
 
@@ -326,13 +324,11 @@ describe("§14.3 mission tool contracts", () => {
       decode({
         outcome: "accepted",
         strategy,
-        strategyVersion: 1,
-        supersededWatchIds: ["watch_1"],
         warnings: [],
       }).outcome,
     ).toBe("accepted");
     expect(
-      decode({ outcome: "rejected", reason: "stale_strategy_version", currentVersion: 4 }).outcome,
+      decode({ outcome: "rejected", reason: "stale_mission_state", currentVersion: 4 }).outcome,
     ).toBe("rejected");
   });
 
@@ -343,7 +339,7 @@ describe("§14.3 mission tool contracts", () => {
       authority: mission.authority,
       authorityVersion: 1,
       strategy,
-      strategyVersion: 1,
+      missionVersion: 2,
       watches: [],
       control: mission.control,
       harness: mission.harness,
@@ -389,7 +385,7 @@ describe("§14.3 mission tool contracts", () => {
     // `missionId` is optional on every trading tool input: the calling thread
     // is bound to exactly one mission, so the argument is a check, not a route.
     const decoded = decodePublishInput({
-      expectedVersion: 0,
+      expectedMissionVersion: 1,
       strategy: (() => {
         const { updatedAt: _u, ...body } = strategy;
         return body;
@@ -401,7 +397,6 @@ describe("§14.3 mission tool contracts", () => {
   it("does not accept competing execution forms", () => {
     const intent = {
       missionId: "mission_1",
-      strategyVersion: 1,
       executionSequence: 1,
       actionType: "open",
       market: "ETH",
@@ -471,7 +466,7 @@ describe("§14.3 mission tool contracts", () => {
     const { updatedAt: _u, ...body } = strategy;
     const decoded = decodePublishInput({
       missionId: "mission_1",
-      expectedVersion: 0,
+      expectedMissionVersion: 1,
       strategy: {
         ...body,
         entry: { ...body.entry, triggers: ["Enter on a finalized 1m close above 3760."] },

@@ -156,7 +156,7 @@ it.layer(NodeServices.layer)("trading decider", (it) => {
     }),
   );
 
-  it.effect("carries the superseded watch ids through a strategy publication", () =>
+  it.effect("carries a strategy publication through as an event", () =>
     Effect.gen(function* () {
       const event = singleEvent(
         yield* decideOrchestrationCommand({
@@ -165,8 +165,6 @@ it.layer(NodeServices.layer)("trading decider", (it) => {
             commandId: CommandId.make("cmd-publish"),
             threadId: THREAD_ID,
             missionId: MISSION_ID,
-            strategyVersion: 2,
-            supersededWatchIds: ["watch-1"],
             createdAt: NOW,
           },
           readModel: makeReadModel(),
@@ -174,10 +172,11 @@ it.layer(NodeServices.layer)("trading decider", (it) => {
       );
 
       expect(event.type).toBe("trading.mission-strategy-published");
-      expect(event.payload).toMatchObject({
-        strategyVersion: 2,
-        supersededWatchIds: ["watch-1"],
-      });
+      // Plan 29 step 4.2: a publication revises in place — no version number
+      // and no superseded watch ids ride the event any more.
+      expect(event.payload).toMatchObject({ missionId: MISSION_ID, threadId: THREAD_ID });
+      expect("strategyVersion" in event.payload).toBe(false);
+      expect("supersededWatchIds" in event.payload).toBe(false);
     }),
   );
 });

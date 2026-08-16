@@ -230,10 +230,10 @@ export const moduleReadPlanTarget = (missionId: TradingMissionId) =>
         json_extract(s.strategy_json, '$.target.price') AS take_profit_price,
         json_extract(s.strategy_json, '$.target.profitUsd') AS target_profit_usd,
         json_extract(s.strategy_json, '$.intent') = 'stand_aside' AS stand_aside
-      FROM momentum_strategy_versions s
-      JOIN trading_missions m
-        ON m.mission_id = s.mission_id AND m.strategy_version = s.version
+      FROM trading_plan_history s
       WHERE s.mission_id = ${missionId}
+      ORDER BY s.version DESC
+      LIMIT 1
     `;
     const row = rows[0];
     if (row === undefined || row.stand_aside === 1) return null;
@@ -965,7 +965,6 @@ const make = Effect.gen(function* () {
     function* (input: {
       readonly missionId: TradingMissionId;
       readonly market: TradingMarket;
-      readonly strategyVersion: number;
       readonly masterAddress: string;
       /** Varies the placement cloid across passes; watchdog passes use epoch seconds. */
       readonly executionSequence: number;
@@ -977,7 +976,6 @@ const make = Effect.gen(function* () {
       });
       const outcome = yield* protection.reconcileTakeProtection({
         missionId: input.missionId,
-        strategyVersion: input.strategyVersion,
         executionSequence: input.executionSequence,
         masterAddress: input.masterAddress,
         market: input.market,
@@ -1000,7 +998,6 @@ const make = Effect.gen(function* () {
   const reconcileTakeProtectionQuietly = (input: {
     readonly missionId: TradingMissionId;
     readonly market: TradingMarket;
-    readonly strategyVersion: number;
     readonly masterAddress: string;
     readonly executionSequence: number;
   }) =>
@@ -1037,7 +1034,6 @@ const make = Effect.gen(function* () {
 
     const outcome = yield* protection.reconcileProtection({
       missionId,
-      strategyVersion: intent.strategyVersion,
       executionSequence: intent.executionSequence,
       masterAddress,
       market: intent.market,
@@ -1064,7 +1060,6 @@ const make = Effect.gen(function* () {
       yield* reconcileTakeProtectionQuietly({
         missionId,
         market: intent.market,
-        strategyVersion: intent.strategyVersion,
         masterAddress,
         executionSequence: intent.executionSequence,
       });
@@ -1135,7 +1130,6 @@ const make = Effect.gen(function* () {
       if (isPositionIncreasing(order.action_type) && order.stop_price !== null) {
         const outcome = yield* protection.cancelEntriesWithProtection({
           missionId,
-          strategyVersion: intent.strategyVersion,
           executionSequence: intent.executionSequence,
           masterAddress,
           market: intent.market,
@@ -1228,7 +1222,6 @@ const make = Effect.gen(function* () {
 
     const outcome = yield* protection.replaceProtection({
       missionId,
-      strategyVersion: intent.strategyVersion,
       executionSequence: intent.executionSequence,
       masterAddress,
       market: intent.market,
@@ -1448,7 +1441,6 @@ const make = Effect.gen(function* () {
       masterAddress,
       previewContext: {
         mission,
-        currentStrategyVersion: mission.strategyVersion,
         currentAuthorityVersion: mission.authorityVersion,
         expectedAuthorityVersion,
         activeHarnessRunId: currentHarnessRunId,
@@ -1803,7 +1795,6 @@ const make = Effect.gen(function* () {
     yield* reconcileTakeProtectionQuietly({
       missionId,
       market: mission.market,
-      strategyVersion: mission.strategyVersion,
       masterAddress,
       // No harness execution to borrow a sequence from; epoch seconds keep
       // this pass's cloid distinct, the same trick the stop watchdog uses.
@@ -1883,7 +1874,6 @@ const make = Effect.gen(function* () {
     const masterAddress = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
     const outcome = yield* protection.reconcileProtection({
       missionId,
-      strategyVersion: mission.strategyVersion,
       // Not a harness execution, so there is no sequence to borrow. Epoch
       // seconds keeps each watchdog placement's cloid distinct from the last
       // one's and from every harness sequence, which are small counters.
@@ -1932,7 +1922,6 @@ const make = Effect.gen(function* () {
     yield* reconcileTakeProtectionFor({
       missionId,
       market: mission.market,
-      strategyVersion: mission.strategyVersion,
       masterAddress,
       // Not a harness execution, so there is no sequence to borrow; epoch
       // seconds keep each pass's cloid distinct — the same trick the stop

@@ -115,7 +115,6 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
         // not a hand-rolled price. 50 bps is the ratified IOC slippage.
         const entryIntent = {
           missionId: MISSION,
-          strategyVersion: 1,
           executionSequence: 0,
           actionType: "open" as const,
           market: "ETH" as const,
@@ -236,7 +235,6 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
         const closeWireOrder = yield* mapOrder({
           intent: {
             missionId: MISSION,
-            strategyVersion: 1,
             executionSequence: 1,
             actionType: "close" as const,
             market: "ETH" as const,
@@ -310,7 +308,6 @@ describeLive("HyperliquidExecutionLive — Gate E (real testnet order)", () => {
         const restingOrder = yield* mapOrder({
           intent: {
             missionId: MISSION,
-            strategyVersion: 1,
             executionSequence: 2,
             actionType: "open" as const,
             market: "ETH" as const,

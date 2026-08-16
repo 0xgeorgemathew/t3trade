@@ -6,7 +6,6 @@ describe("deriveCloid", () => {
   it("is deterministic for identical inputs", () => {
     const input = {
       missionId: "mission_1",
-      strategyVersion: 1,
       executionSequence: 0,
       actionType: "open",
     };
@@ -16,7 +15,6 @@ describe("deriveCloid", () => {
   it("returns a 0x-prefixed 34-char lowercase hex string (the Hyperliquid wire shape)", () => {
     const cloid = deriveCloid({
       missionId: "mission_1",
-      strategyVersion: 1,
       executionSequence: 0,
       actionType: "open",
     });
@@ -29,13 +27,11 @@ describe("deriveCloid", () => {
   it("changes when any input changes", () => {
     const base = {
       missionId: "mission_1",
-      strategyVersion: 1,
       executionSequence: 0,
       actionType: "open",
     };
     const original = deriveCloid(base);
     expect(deriveCloid({ ...base, missionId: "mission_2" })).not.toBe(original);
-    expect(deriveCloid({ ...base, strategyVersion: 2 })).not.toBe(original);
     expect(deriveCloid({ ...base, executionSequence: 1 })).not.toBe(original);
     expect(deriveCloid({ ...base, actionType: "scale_in" })).not.toBe(original);
   });
@@ -45,13 +41,11 @@ describe("deriveCloid", () => {
     // the field separator distinguishes them.
     const a = deriveCloid({
       missionId: "ab",
-      strategyVersion: 1,
       executionSequence: 12,
       actionType: "open",
     });
     const b = deriveCloid({
       missionId: "a",
-      strategyVersion: 1,
       executionSequence: 12,
       actionType: "open",
     });
@@ -64,7 +58,6 @@ describe("deriveCloid", () => {
       for (const action of ["open", "scale_in", "reduce", "close", "cancel"]) {
         const cloid = deriveCloid({
           missionId: "mission_1",
-          strategyVersion: 1,
           executionSequence: seq,
           actionType: action,
         });

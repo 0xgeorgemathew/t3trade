@@ -215,7 +215,6 @@ interface CanonicalView {
 interface WorkingRecordRow {
   readonly execution_id: string;
   readonly mission_id: string;
-  readonly strategy_version: number;
   readonly execution_sequence: number;
   readonly action_type: string;
   readonly cloid: string;
@@ -412,7 +411,7 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
       // mandatory-stop gate owns that defect, and re-placing it preview-free
       // would launder it into a fresh approval.
       const rows = yield* sql<WorkingRecordRow>`
-        SELECT execution_id, mission_id, strategy_version, execution_sequence,
+        SELECT execution_id, mission_id, execution_sequence,
                action_type, cloid, market, side, size, stop_price,
                planned_loss_at_stop_usd, created_at, updated_at
         FROM trading_execution_records
@@ -448,7 +447,7 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
   ): Effect.Effect<WorkingLineage> =>
     Effect.gen(function* () {
       const rows = yield* sql<WorkingRecordRow>`
-        SELECT execution_id, mission_id, strategy_version, execution_sequence,
+        SELECT execution_id, mission_id, execution_sequence,
                action_type, cloid, market, side, size, stop_price,
                planned_loss_at_stop_usd, created_at, updated_at
         FROM trading_execution_records
@@ -544,7 +543,6 @@ export const makeTradingWorkingOrderService = Effect.gen(function* () {
     };
     const intent: TradingOrderIntent = {
       missionId: original.mission_id,
-      strategyVersion: original.strategy_version,
       executionSequence: input.freshSequence,
       // Read back from a column only the intent writer ever fills; the cast
       // re-narrows the SQL text to the literal it was written from.

@@ -65,7 +65,6 @@ export const TradingMission = Schema.Struct({
 
   instruction: TradingText,
   market: TradingMarket,
-  strategyFamily: Schema.Literal("momentum"),
   harness: TradingHarnessBinding,
 
   authority: TradingAuthority,
@@ -76,7 +75,6 @@ export const TradingMission = Schema.Struct({
 
   control: TradingMissionControl,
 
-  strategyVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   authorityVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   lastHarnessRunId: Schema.optional(TradingId),
   createdAt: UnixMillis,

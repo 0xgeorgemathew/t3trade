@@ -1,12 +1,12 @@
 /**
  * TradingWatchService - persisted watch registry, spec §11.3 / §12.1.
  *
- * A watch is a simple, deterministic, typed predicate bound to the strategy
- * version that registered it. This service owns the per-watch lifecycle writes
- * the watch tools and evaluator need: register, cancel, mark triggered, and
- * consume. Supersession on strategy publish stays in `TradingStrategyService`
- * (it is part of the publish transaction); `listWatches` stays there too, since
- * the mission read model already reads watches through it.
+ * A watch is a simple, deterministic, typed predicate bound to the mission
+ * that registered it — not to a plan revision (plan 29 step 4.2). This service
+ * owns the per-watch lifecycle writes the watch tools and evaluator need:
+ * register, cancel, mark triggered, and consume. `listWatches` lives in
+ * `TradingStrategyService`, since the mission read model already reads
+ * watches through it.
  *
  * @module TradingWatchService
  */
@@ -75,11 +75,11 @@ export interface CancelWatchInput {
 
 export interface TradingWatchServiceShape {
   /**
-   * Persist a watch bound to the mission's current strategy version.
+   * Persist a watch for the mission.
    *
-   * The watch is created `active`. It is supersedable later by a strategy
-   * publish (see `TradingStrategyService.publishMomentumStrategy`) or
-   * cancelable by harness or user.
+   * The watch is created `active` and stays that way until it fires, is
+   * cancelled by harness or user, or expires. A plan revision does not touch
+   * it (plan 29 step 4.2).
    *
    * With `replacesWatchId`, the cancel and the insert are one transaction, so
    * the mission is never momentarily uncovered on the side being re-levelled.
@@ -103,7 +103,7 @@ export interface TradingWatchServiceShape {
    * Flip an active watch to `triggered` — its predicate matched.
    *
    * No-op (returns `null`) if the watch is no longer active, so the evaluator
-   * never re-fires a watch a concurrent publish has already superseded.
+   * never re-fires a watch that has already been cancelled or consumed.
    */
   readonly markTriggered: (
     watchId: string,
@@ -127,7 +127,6 @@ export class TradingWatchService extends Context.Service<
 interface WatchRow {
   readonly watch_id: string;
   readonly mission_id: string;
-  readonly strategy_version: number;
   readonly watch_json: string;
   readonly status: string;
   readonly armed_reason: string | null;
@@ -145,7 +144,6 @@ interface WatchRow {
 export const toPersistedWatch = (row: WatchRow): PersistedWatch => ({
   id: row.watch_id,
   missionId: row.mission_id,
-  strategyVersion: row.strategy_version,
   watch: decodeWatch(row.watch_json),
   status: decodeWatchStatus(row.status),
   ...(row.armed_reason === null ? {} : { armedReason: decodeArmedReason(row.armed_reason) }),
@@ -169,8 +167,8 @@ const makeTradingWatchService = Effect.gen(function* () {
   const requireActiveMission = Effect.fn("TradingWatchService.requireActiveMission")(function* (
     missionId: string,
   ) {
-    const rows = yield* sql<{ readonly status: string; readonly strategy_version: number }>`
-      SELECT status, strategy_version FROM trading_missions WHERE mission_id = ${missionId}
+    const rows = yield* sql<{ readonly status: string }>`
+      SELECT status FROM trading_missions WHERE mission_id = ${missionId}
     `.pipe(Effect.mapError(sqlFail("requireActiveMission")));
 
     const row = rows[0];
@@ -186,14 +184,13 @@ const makeTradingWatchService = Effect.gen(function* () {
       UPDATE trading_watches
       SET status = 'cancelled', version = version + 1, updated_at = ${now}
       WHERE watch_id = ${watchId} AND mission_id = ${missionId} AND status = 'active'
-      RETURNING watch_id, mission_id, strategy_version, watch_json, status, armed_reason,
+      RETURNING watch_id, mission_id, watch_json, status, armed_reason,
                 created_at, updated_at, last_observed_value, last_evaluated_at
     `.pipe(Effect.map((rows) => (rows[0] ? toPersistedWatch(rows[0]) : null)));
 
   const registerWatch: TradingWatchServiceShape["registerWatch"] = (input) =>
     Effect.gen(function* () {
-      const mission = yield* requireActiveMission(input.missionId);
-      const strategyVersion = mission.strategy_version;
+      yield* requireActiveMission(input.missionId);
 
       const now = yield* Clock.currentTimeMillis;
       const watchId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
@@ -212,10 +209,10 @@ const makeTradingWatchService = Effect.gen(function* () {
 
             yield* sql`
               INSERT INTO trading_watches
-                (watch_id, mission_id, strategy_version, watch_json, status, armed_reason, version,
+                (watch_id, mission_id, watch_json, status, armed_reason, version,
                  created_at, updated_at)
               VALUES
-                (${watchId}, ${input.missionId}, ${strategyVersion}, ${watchJson}, 'active',
+                (${watchId}, ${input.missionId}, ${watchJson}, 'active',
                  ${input.armedReason ?? null}, 1, ${now}, ${now})
             `;
             return cancelled;
@@ -241,7 +238,6 @@ const makeTradingWatchService = Effect.gen(function* () {
         watch: {
           id: watchId,
           missionId: input.missionId,
-          strategyVersion,
           watch: input.watch,
           status: "active",
           ...(input.armedReason === undefined ? {} : { armedReason: input.armedReason }),
@@ -264,7 +260,7 @@ const makeTradingWatchService = Effect.gen(function* () {
         WHERE watch_id = ${input.watchId}
           AND mission_id = ${input.missionId}
           AND status = 'active'
-        RETURNING watch_id, mission_id, strategy_version, watch_json, status, armed_reason,
+        RETURNING watch_id, mission_id, watch_json, status, armed_reason,
                 created_at, updated_at, last_observed_value, last_evaluated_at
       `.pipe(Effect.mapError(sqlFail("cancel:update")));
 
@@ -280,7 +276,7 @@ const makeTradingWatchService = Effect.gen(function* () {
         UPDATE trading_watches
         SET status = 'triggered', version = version + 1, updated_at = ${now}
         WHERE watch_id = ${watchId} AND status = 'active'
-        RETURNING watch_id, mission_id, strategy_version, watch_json, status, armed_reason,
+        RETURNING watch_id, mission_id, watch_json, status, armed_reason,
                   created_at, updated_at, last_observed_value, last_evaluated_at
       `.pipe(Effect.mapError(sqlFail("markTriggered:update")));
 
@@ -290,7 +286,7 @@ const makeTradingWatchService = Effect.gen(function* () {
   const getWatch: TradingWatchServiceShape["getWatch"] = (watchId) =>
     Effect.gen(function* () {
       const rows = yield* sql<WatchRow>`
-        SELECT watch_id, mission_id, strategy_version, watch_json, status, armed_reason,
+        SELECT watch_id, mission_id, watch_json, status, armed_reason,
                created_at, updated_at, last_observed_value, last_evaluated_at
         FROM trading_watches WHERE watch_id = ${watchId}
       `.pipe(Effect.mapError(sqlFail("getWatch")));

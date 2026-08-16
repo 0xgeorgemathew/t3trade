@@ -179,7 +179,6 @@ interface RunRow {
 interface MissionRow {
   readonly market: string;
   readonly harness_json: string;
-  readonly strategy_version: number;
   readonly authority_version: number;
 }
 
@@ -261,7 +260,7 @@ export const settleRunDecision = (
     if (run === undefined || run.outcome !== null) return;
 
     const missions = yield* sql<MissionRow>`
-      SELECT market, harness_json, strategy_version, authority_version
+      SELECT market, harness_json, authority_version
       FROM trading_missions WHERE mission_id = ${run.mission_id}
     `;
     const mission = missions[0];
@@ -270,8 +269,9 @@ export const settleRunDecision = (
       mission === undefined
         ? []
         : yield* sql<{ readonly strategy_json: string }>`
-            SELECT strategy_json FROM momentum_strategy_versions
-            WHERE mission_id = ${run.mission_id} AND version = ${mission.strategy_version}
+            SELECT strategy_json FROM trading_plan_history
+            WHERE mission_id = ${run.mission_id}
+            ORDER BY version DESC LIMIT 1
           `;
 
     const plan = readPlan(strategies[0]?.strategy_json ?? null);
@@ -320,7 +320,6 @@ export const settleRunDecision = (
         model = ${binding.model},
         market = ${mission?.market ?? null},
         playbook = null,
-        strategy_version = ${mission?.strategy_version ?? null},
         authority_version = ${mission?.authority_version ?? null},
         latency_ms = ${latency}
       WHERE run_id = ${input.runId} AND outcome IS NULL
@@ -601,10 +600,9 @@ export interface SessionWakeCounts {
   /** The stricter count: settled runs whose outcome was `no_decision`. */
   readonly noDecisionWakes: number;
   /**
-   * Plan versions published. Counted from `momentum_strategy_versions` rather
-   * than SUM(published_plan) over runs: every accepted publish inserts a
-   * version row (supersede-on-publish), so the table is the authoritative
-   * count.
+   * Plan versions published. Counted from `trading_plan_history` rather
+   * than SUM(published_plan) over runs: every accepted publish appends a
+   * history row, so the table is the authoritative count.
    */
   readonly planVersionsPublished: number;
 }
@@ -624,7 +622,7 @@ export const readSessionWakes = (sql: Sql, input: { readonly missionId: string }
       WHERE mission_id = ${input.missionId}
     `;
     const versions = yield* sql<{ readonly plan_versions: number }>`
-      SELECT COUNT(*) AS plan_versions FROM momentum_strategy_versions
+      SELECT COUNT(*) AS plan_versions FROM trading_plan_history
       WHERE mission_id = ${input.missionId}
     `;
     return {

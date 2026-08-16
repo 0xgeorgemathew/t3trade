@@ -123,7 +123,7 @@ const seed = (options?: { readonly withOpenRun?: boolean; readonly position?: nu
     transientFailuresLeft = 0;
 
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 53 });
+    yield* runMigrations({ toMigrationInclusive: 63 });
     yield* sql`DELETE FROM trading_missions`;
     yield* sql`DELETE FROM trading_authority_versions`;
     yield* sql`DELETE FROM trading_harness_runs`;
@@ -150,7 +150,7 @@ const seed = (options?: { readonly withOpenRun?: boolean; readonly position?: nu
       allocatedCapitalUsd: 1_000,
       harness,
     });
-    yield* sql`UPDATE trading_missions SET strategy_version = 1, status = 'position_open' WHERE mission_id = 'mission_1'`;
+    yield* sql`UPDATE trading_missions SET status = 'position_open' WHERE mission_id = 'mission_1'`;
 
     if (options?.withOpenRun !== false) {
       yield* sql`
@@ -176,7 +176,6 @@ layer("TradingExitService", (it) => {
       assert.strictEqual(intent.size, 0.5);
       assert.strictEqual(intent.market, "ETH");
       assert.strictEqual(intent.reduceOnly, true);
-      assert.strictEqual(intent.strategyVersion, 1);
       assert.strictEqual(intent.executionSequence, 0);
       assert.strictEqual(prepared.activeHarnessRunId, "run_1");
       // A crossing sell sits below the bid by the slippage allowance.
@@ -382,11 +381,11 @@ layer("TradingExitService", (it) => {
       // execution the first one wrote.
       yield* sql`
         INSERT INTO trading_execution_records (
-          execution_id, mission_id, strategy_version, execution_sequence, action_type,
+          execution_id, mission_id, execution_sequence, action_type,
           cloid, idempotency_key, market, side, size, limit_price, time_in_force,
           reduce_only, signer_address, status, order_results_json, created_at, updated_at
         ) VALUES (
-          'exec_1', 'mission_1', 1, 0, 'reduce',
+          'exec_1', 'mission_1', 0, 'reduce',
           '0xcloid', 'idem_1', 'ETH', 'sell', 0.1, 1999, 'ioc',
           1, '0xsigner', 'submitted', '[]', 1000, 1000
         )

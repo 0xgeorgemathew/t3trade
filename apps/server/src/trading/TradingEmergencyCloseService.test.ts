@@ -148,7 +148,7 @@ const missionsLayer = (fake: FakeExchange) =>
 /** Migrate the shared in-memory db so the order-cancel query has tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 40 });
+  yield* runMigrations({ toMigrationInclusive: 63 });
   yield* sql`DELETE FROM trading_orders`;
   yield* sql`DELETE FROM trading_execution_records`;
 });
@@ -281,20 +281,22 @@ it.effect("cancels increasing orders but never the reduce-only protection", () =
         ["0xstop", "open", 1],
         ["0xclose", "close", 0],
       ];
-      for (const [cloid, actionType, reduceOnly] of rows) {
+      for (const [index, [cloid, actionType, reduceOnly]] of rows.entries()) {
         yield* sql`
           INSERT INTO trading_orders (
             mission_id, cloid, order_id, market, side, limit_price,
             remaining_size, reduce_only, observed_at
           ) VALUES (${MISSION}, ${cloid}, 1, 'ETH', 'sell', 3000, 0.5, ${reduceOnly}, 0)
         `;
+        // (mission, sequence) is unique since migration 053; one per row.
+        const executionSequence = index;
         yield* sql`
           INSERT INTO trading_execution_records (
-            execution_id, mission_id, strategy_version, execution_sequence, action_type,
+            execution_id, mission_id, execution_sequence, action_type,
             cloid, idempotency_key, market, side, size, limit_price, time_in_force,
             reduce_only, signer_address, status, order_results_json, created_at, updated_at
           ) VALUES (
-            ${`exec_${cloid}`}, ${MISSION}, 1, 0, ${actionType}, ${cloid}, ${`idem_${cloid}`},
+            ${`exec_${cloid}`}, ${MISSION}, ${executionSequence}, ${actionType}, ${cloid}, ${`idem_${cloid}`},
             'ETH', 'sell', 0.5, 3000, 'gtc', ${reduceOnly}, '0xsigner', 'accepted', '[]', 0, 0
           )
         `;

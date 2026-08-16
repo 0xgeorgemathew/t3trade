@@ -104,11 +104,11 @@ const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   // `trading_orders` arrives in 038 (the `order_update` watch reads it) and
   // `peak_unrealised_pnl` in 045 (the `pnl_giveback` watch reads it).
-  yield* runMigrations({ toMigrationInclusive: 60 });
+  yield* runMigrations({ toMigrationInclusive: 63 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
-  yield* sql`DELETE FROM momentum_strategy_versions`;
+  yield* sql`DELETE FROM trading_plan_history`;
   yield* sql`DELETE FROM trading_event_inbox`;
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_orders`;
@@ -189,7 +189,7 @@ const seed = (watch: MarketWatch) =>
     const strategies = yield* TradingStrategyService;
     const published = yield* strategies.publishMomentumStrategy({
       missionId: "mission_1",
-      expectedVersion: 0,
+      expectedMissionVersion: 1,
       strategy: {
         market: "ETH",
         intent: "long",

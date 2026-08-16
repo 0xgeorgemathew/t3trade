@@ -1,10 +1,14 @@
 /**
- * TradingStrategyService - versioned momentum strategy publishing (§14.3).
+ * TradingStrategyService - plan publishing, revised in place (§14.3, plan 29
+ * step 4.2).
  *
- * Publishing is a versioned, side-effecting operation. It requires an expected
- * current version and, on acceptance, increments the strategy version and
- * supersedes the watches bound to the previous version, so an obsolete watch can
- * never wake a harness against stale intent (§11.3).
+ * Publishing is a side-effecting operation guarded by the mission row's own
+ * optimistic-lock version: a publish against a mission that has moved on is
+ * refused rather than silently overwriting current state. On acceptance the
+ * plan document is appended to `trading_plan_history` and becomes the
+ * mission's current plan; the watches are NOT supersended — a revision updates
+ * its triggers in place, and only genuinely changed conditions re-arm (the
+ * model cancels or replaces what it no longer wants).
  *
  * @module TradingStrategyService
  */
@@ -32,10 +36,11 @@ import type { PublishedStrategySummary } from "@t3tools/trading-contracts/tools"
 
 export interface TradingStrategyServiceShape {
   /**
-   * Publish a momentum strategy under optimistic locking.
+   * Publish (revise) the mission's plan under optimistic locking.
    *
-   * A stale expected version is rejected rather than silently overwriting
-   * current state; the rejection carries the version the server actually holds.
+   * A stale expected mission version is rejected rather than silently
+   * overwriting current state; the rejection carries the version the server
+   * actually holds. Watches survive the revision — nothing is superseded.
    */
   readonly publishMomentumStrategy: (
     input: TradingPublishPlanInput,
@@ -46,25 +51,25 @@ export interface TradingStrategyServiceShape {
   ) => Effect.Effect<Option.Option<TradingPlanState>, PersistenceSqlError>;
 
   /**
-   * Every persisted watch for a mission, newest first — including the
-   * superseded ones, so a reader can see what the previous strategy version
-   * was waiting on.
+   * Every persisted watch for a mission, newest first. Publishing no longer
+   * touches them (plan 29 step 4.2), so this is simply the watch registry's
+   * read side.
    */
   readonly listWatches: (
     missionId: string,
   ) => Effect.Effect<ReadonlyArray<PersistedWatch>, PersistenceSqlError>;
 
   /**
-   * Every strategy version the mission has published, newest first.
+   * Every plan the mission has published, newest first.
    *
    * `getCurrentStrategy` answers what the mission believes now. This answers
    * what it has believed — which is what a harness needs to tell "the thesis
    * changed" from "the thesis has changed four times in an hour", and to see
    * the targets it set before this one.
    *
-   * A version whose stored JSON no longer decodes is skipped rather than
-   * failing the read: one unreadable historical row should not cost the caller
-   * the whole history.
+   * A row whose stored JSON no longer decodes is skipped rather than failing
+   * the read: one unreadable historical row should not cost the caller the
+   * whole history.
    */
   readonly listStrategyVersions: (
     missionId: string,
@@ -89,7 +94,6 @@ const decodeMissionStatus = Schema.decodeUnknownSync(TradingMissionStatus);
 interface WatchRow {
   readonly watch_id: string;
   readonly mission_id: string;
-  readonly strategy_version: number;
   readonly watch_json: string;
   readonly status: string;
   readonly armed_reason: string | null;
@@ -98,15 +102,15 @@ interface WatchRow {
 }
 
 /**
- * One published version as its history summary, or nothing.
+ * One published plan as its history summary, or nothing.
  *
  * The full `TradingPlanState` is mostly prose; a history of ten of them would
  * crowd out the mission snapshot it rides in. This keeps the skeleton — what
  * was intended, what was targeted, why — and drops the rest.
  *
- * A row that no longer decodes returns `[]`: strategies published before a
- * field became required still sit in this table, and a history is a nicety
- * that must never take a mission read down with it.
+ * A row that no longer decodes returns `[]`: plans published before a field
+ * became required still sit in this table, and a history is a nicety that must
+ * never take a mission read down with it.
  */
 const toStrategySummary = (row: {
   readonly version: number;
@@ -141,11 +145,11 @@ const makeTradingStrategyService = Effect.gen(function* () {
   const getCurrentStrategy: TradingStrategyServiceShape["getCurrentStrategy"] = (missionId) =>
     Effect.gen(function* () {
       const rows = yield* sql<{ readonly strategy_json: string }>`
-        SELECT s.strategy_json
-        FROM momentum_strategy_versions s
-        JOIN trading_missions m
-          ON m.mission_id = s.mission_id AND m.strategy_version = s.version
-        WHERE s.mission_id = ${missionId}
+        SELECT strategy_json
+        FROM trading_plan_history
+        WHERE mission_id = ${missionId}
+        ORDER BY version DESC
+        LIMIT 1
       `.pipe(Effect.mapError(sqlFail("getCurrentStrategy")));
 
       const row = rows[0];
@@ -154,7 +158,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
 
   const listWatches: TradingStrategyServiceShape["listWatches"] = (missionId) =>
     sql<WatchRow>`
-      SELECT watch_id, mission_id, strategy_version, watch_json, status, armed_reason,
+      SELECT watch_id, mission_id, watch_json, status, armed_reason,
              created_at, updated_at
       FROM trading_watches
       WHERE mission_id = ${missionId}
@@ -167,7 +171,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
   const listStrategyVersions: TradingStrategyServiceShape["listStrategyVersions"] = (missionId) =>
     sql<{ readonly version: number; readonly strategy_json: string; readonly created_at: number }>`
       SELECT version, strategy_json, created_at
-      FROM momentum_strategy_versions
+      FROM trading_plan_history
       WHERE mission_id = ${missionId}
       ORDER BY version DESC
     `.pipe(
@@ -183,9 +187,9 @@ const makeTradingStrategyService = Effect.gen(function* () {
       const missionId = input.missionId as string;
       const missions = yield* sql<{
         readonly status: string;
-        readonly strategy_version: number;
+        readonly version: number;
       }>`
-        SELECT status, strategy_version FROM trading_missions
+        SELECT status, version FROM trading_missions
         WHERE mission_id = ${missionId}
       `.pipe(Effect.mapError(sqlFail("publish:readMission")));
 
@@ -199,15 +203,15 @@ const makeTradingStrategyService = Effect.gen(function* () {
         return {
           outcome: "rejected",
           reason: "mission_not_active",
-          currentVersion: mission.strategy_version,
+          currentVersion: mission.version,
         } as const;
       }
 
-      if (mission.strategy_version !== input.expectedVersion) {
+      if (mission.version !== input.expectedMissionVersion) {
         return {
           outcome: "rejected",
-          reason: "stale_strategy_version",
-          currentVersion: mission.strategy_version,
+          reason: "stale_mission_state",
+          currentVersion: mission.version,
         } as const;
       }
 
@@ -225,61 +229,61 @@ const makeTradingStrategyService = Effect.gen(function* () {
         (field) => `${field} truncated to ${PUBLISHED_PROSE_CHARS} chars`,
       );
 
-      const version = input.expectedVersion + 1;
       const now = yield* Clock.currentTimeMillis;
       const strategy: TradingPlanState = {
         ...boundedStrategy,
         updatedAt: now,
       };
 
-      yield* sql`
-        INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
-        VALUES (${missionId}, ${version}, ${encodeStrategyJson(strategy)}, ${now})
-      `.pipe(Effect.mapError(sqlFail("publish:insertStrategy")));
-
-      // §11.3: publishing a new strategy supersedes the active watches of the
-      // prior version. Only active watches can be superseded; triggered,
-      // consumed, cancelled, and expired watches keep their terminal status.
-      const superseded = yield* sql<{ readonly watch_id: string }>`
-        SELECT watch_id FROM trading_watches
-        WHERE mission_id = ${missionId}
-          AND status = 'active'
-          AND strategy_version < ${version}
-      `.pipe(Effect.mapError(sqlFail("publish:selectSuperseded")));
-
-      yield* sql`
-        UPDATE trading_watches
-        SET status = 'superseded', version = version + 1, updated_at = ${now}
-        WHERE mission_id = ${missionId}
-          AND status = 'active'
-          AND strategy_version < ${version}
-      `.pipe(Effect.mapError(sqlFail("publish:supersedeWatches")));
-
-      // §11.1 `analysing → waiting`: publishing a strategy is what ends
-      // analysis — from here the mission waits on the conditions it just
-      // armed. `analysing` has exactly one outgoing loop edge and this is the
-      // event that takes it, so pinning the source status in the CASE is the
-      // whole legality check; no other status is touched. Folded into the
-      // version bump so the status and the strategy move under one write.
-      //
-      // Without this step a mission never leaves `analysing`, and §16.3 item 1
-      // — which admits an entry only from `executing`/`position_open`, both
-      // reachable only through `waiting` — refuses every entry the harness
-      // ever requests.
-      yield* sql`
+      // The optimistic lock itself: the conditional UPDATE is atomic, so a
+      // publish that raced another mission-row write bumps nothing and is
+      // refused here. §11.1 `analysing → waiting` folds into the same write —
+      // publishing a strategy is one of the two events that end analysis (a
+      // plan existing with triggers armed is the other, see
+      // `TradingWatchService.registerWatch`); pinning the source status in the
+      // CASE is the whole legality check, and no other status is touched.
+      const bumped = yield* sql<{ readonly mission_id: string }>`
         UPDATE trading_missions
-        SET strategy_version = ${version},
-            status = CASE WHEN status = 'analysing' THEN 'waiting' ELSE status END,
+        SET status = CASE WHEN status = 'analysing' THEN 'waiting' ELSE status END,
             version = version + 1,
             updated_at = ${now}
-        WHERE mission_id = ${missionId} AND strategy_version = ${input.expectedVersion}
+        WHERE mission_id = ${missionId} AND version = ${input.expectedMissionVersion}
+        RETURNING mission_id
       `.pipe(Effect.mapError(sqlFail("publish:bumpMission")));
+
+      if (bumped.length === 0) {
+        const fresh = yield* sql<{ readonly version: number }>`
+          SELECT version FROM trading_missions WHERE mission_id = ${missionId}
+        `.pipe(Effect.mapError(sqlFail("publish:rereadMission")));
+        return {
+          outcome: "rejected",
+          reason: "stale_mission_state",
+          currentVersion: fresh[0]?.version ?? input.expectedMissionVersion,
+        } as const;
+      }
+
+      // The history append: rows keep their own per-mission counter and PK,
+      // so the journal stays ordered. Nothing gates on this table — reads of
+      // the current plan are latest-by-version, and the mission row points at
+      // nothing here.
+      const latest = yield* sql<{ readonly version: number }>`
+        SELECT MAX(version) AS version FROM trading_plan_history
+        WHERE mission_id = ${missionId}
+      `.pipe(Effect.mapError(sqlFail("publish:readLatestVersion")));
+
+      yield* sql`
+        INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
+        VALUES (${missionId}, ${(latest[0]?.version ?? 0) + 1}, ${encodeStrategyJson(strategy)}, ${now})
+      `.pipe(Effect.mapError(sqlFail("publish:insertStrategy")));
+
+      // Watches survive the revision (plan 29 step 4.2): a plan that changes
+      // its mind about a level cancels or replaces the watch itself, and a
+      // plan that keeps waiting on the same level keeps the trigger it armed.
+      // Supersede-on-publish is gone.
 
       return {
         outcome: "accepted",
         strategy,
-        strategyVersion: version,
-        supersededWatchIds: superseded.map((row) => row.watch_id),
         // Everything that was not worth refusing the publish over: any prose
         // the server clipped.
         warnings: [...proseWarnings],

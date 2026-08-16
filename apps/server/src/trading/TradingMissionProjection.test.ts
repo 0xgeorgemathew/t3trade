@@ -60,17 +60,17 @@ const seedMission = Effect.gen(function* () {
   // reason.
   yield* sql`DELETE FROM trading_harness_runs`;
   yield* sql`DELETE FROM trading_stop_adjustments`;
-  yield* sql`DELETE FROM momentum_strategy_versions`;
+  yield* sql`DELETE FROM trading_plan_history`;
   yield* sql`
     INSERT INTO projection_trading_missions (
       mission_id, thread_id, user_id, trading_account_id, instruction, market,
-      strategy_family, status, blocked_reason, authority_json, authority_version,
-      strategy_json, strategy_version, watches_json, control_json, harness_json,
+      status, blocked_reason, authority_json, authority_version,
+      strategy_json, watches_json, control_json, harness_json,
       created_at, updated_at
     ) VALUES (
       ${MISSION_ID}, ${THREAD_ID}, 'user_1', 'hyperliquid-testnet', 'trade ETH', 'ETH',
-      'momentum', 'waiting', NULL, ${encodeAuthority(pocAuthorityDefaults(1000))}, 1,
-      NULL, 0, '[]',
+      'waiting', NULL, ${encodeAuthority(pocAuthorityDefaults(1000))}, 1,
+      NULL, '[]',
       ${encodeControl({
         entriesAllowed: true,
         reentryAllowed: true,
@@ -155,7 +155,7 @@ layer("TradingMissionProjection strategy card", (it) => {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
         UPDATE projection_trading_missions
-        SET strategy_json = ${encodeStrategy(rangeReversionStrategy)}, strategy_version = 1
+        SET strategy_json = ${encodeStrategy(rangeReversionStrategy)}
         WHERE mission_id = ${MISSION_ID}
       `;
 
@@ -509,7 +509,7 @@ layer("TradingMissionProjection timeline", (it) => {
         ) VALUES ('adj_1', ${MISSION_ID}, 'ETH', 1912, 1908.5, 'trail_peak', 3000)
       `;
       yield* sql`
-        INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+        INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
         VALUES (${MISSION_ID}, 8, ${encodeStrategy(rangeReversionStrategy)}, 2000)
       `;
 

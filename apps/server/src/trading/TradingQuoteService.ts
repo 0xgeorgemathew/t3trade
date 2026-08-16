@@ -124,7 +124,6 @@ interface QuoteRow {
   readonly quote_id: string;
   readonly mission_id: string;
   readonly harness_run_id: string;
-  readonly strategy_version: number;
   readonly authority_version: number;
   readonly execution_sequence: number;
   readonly market: string;
@@ -196,10 +195,10 @@ export const makeTradingQuoteService = Effect.gen(function* () {
         json_extract(s.strategy_json, '$.target.profitUsd') AS target_profit_usd,
         json_extract(s.strategy_json, '$.target.price') AS take_profit_price,
         json_extract(s.strategy_json, '$.intent') = 'stand_aside' AS stand_aside
-      FROM momentum_strategy_versions s
-      JOIN trading_missions m
-        ON m.mission_id = s.mission_id AND m.strategy_version = s.version
+      FROM trading_plan_history s
       WHERE s.mission_id = ${missionId}
+      ORDER BY s.version DESC
+      LIMIT 1
     `.pipe(
       Effect.map((rows) => rows[0] ?? null),
       // A sizing hint is never worth the turn: an unreadable row leaves the
@@ -334,7 +333,6 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       const executionSequence = yield* allocateExecutionSequence(sql, request.missionId);
       const intent: TradingOrderIntent = {
         missionId: request.missionId,
-        strategyVersion: mission.strategyVersion,
         executionSequence,
         actionType,
         market: request.market,
@@ -357,7 +355,6 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const verdict = yield* previewOrder(intent, {
         mission: { ...mission, status: "executing" },
-        currentStrategyVersion: mission.strategyVersion,
         currentAuthorityVersion: mission.authorityVersion,
         expectedAuthorityVersion: mission.authorityVersion,
         activeHarnessRunId: harnessRunId,
@@ -486,7 +483,6 @@ export const makeTradingQuoteService = Effect.gen(function* () {
         side: request.side,
         actionType,
         urgency,
-        strategyVersion: mission.strategyVersion,
         authorityVersion: mission.authorityVersion,
         harnessRunId,
         executionSequence: intent.executionSequence,
@@ -505,14 +501,14 @@ export const makeTradingQuoteService = Effect.gen(function* () {
 
       yield* sql`
         INSERT INTO trading_entry_quotes (
-          quote_id, mission_id, harness_run_id, strategy_version, authority_version,
+          quote_id, mission_id, harness_run_id, authority_version,
           execution_sequence, market, side, action_type, order_preference,
           size, requested_size, constrained_by, limit_price, stop_price,
           planned_loss_usd, reserved_risk_usd, notional_usd, best_bid, best_ask,
           round_trip_cost_usd, quoted_at, expires_at,
           setup_kind_at_entry, setup_score_at_entry, regime_at_entry, atr_usd_at_entry
         ) VALUES (
-          ${quoteId}, ${request.missionId}, ${harnessRunId}, ${mission.strategyVersion},
+          ${quoteId}, ${request.missionId}, ${harnessRunId},
           ${mission.authorityVersion}, ${intent.executionSequence}, ${request.market},
           ${request.side}, ${actionType}, ${orderPreference},
           ${sizing.size}, ${sizing.requestedSize}, ${sizing.constrainedBy}, ${limitPrice},
@@ -643,7 +639,6 @@ export const makeTradingQuoteService = Effect.gen(function* () {
         activeHarnessRunId: row.harness_run_id,
         intent: {
           missionId: row.mission_id,
-          strategyVersion: row.strategy_version,
           executionSequence: row.execution_sequence,
           actionType: row.action_type as TradingOrderIntent["actionType"],
           market: row.market as TradingOrderIntent["market"],

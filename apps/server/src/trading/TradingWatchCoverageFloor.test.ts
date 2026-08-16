@@ -125,7 +125,7 @@ const seed = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_event_inbox`;
   yield* sql`DELETE FROM trading_watches`;
   yield* sql`DELETE FROM trading_position_snapshots`;
-  yield* sql`DELETE FROM momentum_strategy_versions`;
+  yield* sql`DELETE FROM trading_plan_history`;
 
   const missions = yield* TradingMissionService;
   yield* missions.createMission({
@@ -199,7 +199,7 @@ const publishStrategy = Effect.gen(function* () {
   const strategies = yield* TradingStrategyService;
   const published = yield* strategies.publishMomentumStrategy({
     missionId: MISSION,
-    expectedVersion: 0,
+    expectedMissionVersion: 1,
     strategy: {
       market: "ETH",
       intent: "long",

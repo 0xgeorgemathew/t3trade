@@ -130,7 +130,7 @@ export const TradingGetMissionTool = Tool.make("trading_get_mission", {
 
 export const TradingPublishPlanTool = Tool.make("trading_publish_plan", {
   description:
-    'Publish the eight-field plan this mission runs against: market, intent, entry, stop, target, invalidation, reassess, because. Declining to trade is intent "stand_aside". Derive the target off measured volatility over the intended hold. `expectedVersion`: stale is rejected; acceptance increments it and supersedes the prior version\'s watches but not its resting orders.',
+    'Publish the eight-field plan: market, intent, entry, stop, target, invalidation, reassess, because. Declining to trade is intent "stand_aside". Derive the target off measured volatility over the intended hold. `expectedMissionVersion` (from trading_get_mission); a stale publish is rejected. Revising replaces the plan in place — watches survive, so cancel or replace any trigger you no longer want.',
   parameters: TradingPublishPlanInput,
   success: TradingPublishPlanResult,
   failure: TradingToolRejectedError,
@@ -138,8 +138,8 @@ export const TradingPublishPlanTool = Tool.make("trading_publish_plan", {
 })
   .annotate(Tool.Title, "Publish trading plan")
   .annotate(Tool.Readonly, false)
-  // Publishing supersedes the prior version's watches, so it is not a
-  // repeatable no-op — but it never touches exchange state.
+  // Publishing revises the mission's state (and the plan the exchange is
+  // reconciled to), so it is not a repeatable no-op.
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);

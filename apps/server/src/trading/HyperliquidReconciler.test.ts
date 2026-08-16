@@ -54,7 +54,7 @@ const input: ReconcileInput = {
 /** Migrate the shared in-memory db, then truncate the 038 tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 61 });
+  yield* runMigrations({ toMigrationInclusive: 63 });
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM trading_orders`;
@@ -283,11 +283,11 @@ const seedMission = (createdAt: number) =>
     yield* sql`
       INSERT INTO trading_missions (
         mission_id, user_id, trading_account_id, instruction, market,
-        strategy_family, harness_json, status, control_json, authority_version,
-        strategy_version, version, created_at, updated_at
+        harness_json, status, control_json, authority_version,
+        version, created_at, updated_at
       ) VALUES (
-        ${MISSION}, 'user', 'account', 'trade', 'ETH', 'momentum', '{}',
-        'active', '{}', 1, 1, 1, ${createdAt}, ${createdAt}
+        ${MISSION}, 'user', 'account', 'trade', 'ETH', '{}',
+        'active', '{}', 1, 1, ${createdAt}, ${createdAt}
       )
     `;
   });
@@ -868,12 +868,12 @@ layer("HyperliquidReconciler", (it) => {
       // Seed a FILLED execution record + a reserved reservation tied to it.
       yield* sql`
         INSERT INTO trading_execution_records (
-          execution_id, mission_id, strategy_version, execution_sequence, action_type,
+          execution_id, mission_id, execution_sequence, action_type,
           cloid, idempotency_key, market, side, size, limit_price, time_in_force,
           reduce_only, signer_address, status, order_results_json, created_at, updated_at,
           stop_price, planned_loss_at_stop_usd
         ) VALUES (
-          ${execId}, ${MISSION}, ${1}, ${0}, ${"open"},
+          ${execId}, ${MISSION}, ${0}, ${"open"},
           ${"f".repeat(32)}, ${`idem_${execId}`}, ${"ETH"}, ${"buy"}, ${1}, ${3000},
           ${"ioc"}, ${0}, ${"0xsigner"}, ${"filled"}, ${"[]"}, ${1_000}, ${1_000},
           ${null}, ${null}
@@ -914,12 +914,12 @@ layer("HyperliquidReconciler", (it) => {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
         INSERT INTO trading_execution_records (
-          execution_id, mission_id, strategy_version, execution_sequence, action_type,
+          execution_id, mission_id, execution_sequence, action_type,
           cloid, idempotency_key, market, side, size, limit_price, time_in_force,
           reduce_only, signer_address, status, order_results_json, created_at, updated_at,
           stop_price, planned_loss_at_stop_usd
         ) VALUES (
-          ${execId}, ${MISSION}, ${1}, ${7}, ${"open"},
+          ${execId}, ${MISSION}, ${7}, ${"open"},
           ${cloid}, ${`idem_${execId}`}, ${"ETH"}, ${"buy"}, ${1}, ${3000},
           ${"ioc"}, ${0}, ${"0xsigner"}, ${"submitted"}, ${"[]"}, ${updatedAt}, ${updatedAt},
           ${null}, ${null}
@@ -1018,12 +1018,12 @@ layer("HyperliquidReconciler", (it) => {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
         INSERT INTO trading_execution_records (
-          execution_id, mission_id, strategy_version, execution_sequence, action_type,
+          execution_id, mission_id, execution_sequence, action_type,
           cloid, idempotency_key, market, side, size, limit_price, time_in_force,
           reduce_only, signer_address, status, order_results_json, created_at, updated_at,
           stop_price, planned_loss_at_stop_usd
         ) VALUES (
-          ${execId}, ${MISSION}, ${1}, ${8}, ${"open"},
+          ${execId}, ${MISSION}, ${8}, ${"open"},
           ${cloid}, ${`idem_${execId}`}, ${"ETH"}, ${"buy"}, ${1}, ${3000},
           ${"gtc"}, ${0}, ${"0xsigner"}, ${"accepted"}, ${"[]"}, ${updatedAt}, ${updatedAt},
           ${null}, ${null}

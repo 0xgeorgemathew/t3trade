@@ -923,7 +923,7 @@ function PlanDisclosure({ plan }: { readonly plan: StrategyPlan }): ReactNode {
   return (
     <details className="border-t border-border/40 px-3 py-2 text-xs sm:px-4">
       <summary className="cursor-pointer select-none text-muted-foreground">
-        View full plan · v{plan.version} · {plan.isStandDown ? "standing aside" : plan.planPhase}
+        View full plan · {plan.isStandDown ? "standing aside" : plan.planPhase}
       </summary>
       <div className="mt-2 space-y-1">
         {plan.because === null ? null : <PlanField label="Why" value={plan.because} />}

@@ -1,10 +1,9 @@
 /**
  * Deterministic client order id (cloid) - spec §15.5.
  *
- * `derive16Bytes(missionId, strategyVersion, executionSequence, actionType)`
- * produces a stable 16-byte cloid so a retry of the same action carries the
- * same cloid. Identical inputs give identical cloids; different inputs must not
- * collide.
+ * `derive16Bytes(missionId, executionSequence, actionType)` produces a stable
+ * 16-byte cloid so a retry of the same action carries the same cloid.
+ * Identical inputs give identical cloids; different inputs must not collide.
  *
  * **A cloid is a correlation id, not an idempotency key.** Hyperliquid enforces
  * cloid uniqueness only among *resting* orders, and a marketable IOC never
@@ -37,22 +36,21 @@ import { bytesToHex } from "@noble/hashes/utils";
 /** Inputs that fix a cloid. Retries reuse every field. */
 export interface CloidInput {
   readonly missionId: string;
-  readonly strategyVersion: number;
   readonly executionSequence: number;
   readonly actionType: string;
 }
 
 /**
  * The separator placed between fields before hashing. A single byte outside
- * the printable-ASCII range so a suffix of one field cannot be confused with
- * a prefix of the next (e.g. missionId "ab" + sequence "12" vs "a" + "b12").
+ * the printable-ASCII range so a suffix of one field cannot be confused with a
+ * prefix of the next (e.g. missionId "ab" + sequence "12" vs "a" + "b12").
  */
 const FIELD_SEPARATOR = new Uint8Array([0x1f]);
 
 function u32Be(n: number): Uint8Array {
-  // strategyVersion and executionSequence are non-negative integers; encode
-  // as fixed-width unsigned 32-bit big-endian so the hash is stable across
-  // runtimes and number widths.
+  // executionSequence is a non-negative integer; encode it as fixed-width
+  // unsigned 32-bit big-endian so the hash is stable across runtimes and
+  // number widths.
   const bytes = new Uint8Array(4);
   new DataView(bytes.buffer).setUint32(0, n >>> 0);
   return bytes;
@@ -71,8 +69,6 @@ function appendText(out: number[], text: string): void {
 export function deriveCloid(input: CloidInput): string {
   const acc: number[] = [];
   appendText(acc, input.missionId);
-  acc.push(...FIELD_SEPARATOR);
-  acc.push(...u32Be(input.strategyVersion));
   acc.push(...FIELD_SEPARATOR);
   acc.push(...u32Be(input.executionSequence));
   acc.push(...FIELD_SEPARATOR);

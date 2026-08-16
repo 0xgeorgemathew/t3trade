@@ -673,7 +673,6 @@ it.layer(TestLayer)("trading mission reactor", (it) => {
       // run and then advances, so a mission whose first run started is
       // analysing by the time it is projected.
       assert.equal(projected.value.status, "analysing");
-      assert.equal(projected.value.strategyVersion, 0);
       assert.equal(projected.value.strategy, null);
       // The mandate is the testnet authority defaults over the allocated capital.
       assert.equal(projected.value.authorityVersion, 1);
@@ -1144,12 +1143,12 @@ it.live(
       `;
         yield* sql`
         INSERT INTO trading_execution_records (
-          execution_id, mission_id, strategy_version, execution_sequence, action_type,
+          execution_id, mission_id, execution_sequence, action_type,
           cloid, idempotency_key, market, side, size, limit_price, time_in_force,
           reduce_only, signer_address, status, order_results_json, created_at, updated_at,
           stop_price
         ) VALUES (
-          'exec-protect', ${MISSION_ID}, 1, 1, 'open',
+          'exec-protect', ${MISSION_ID}, 1, 'open',
           '0xcloid', 'idem-protect', 'ETH', 'buy', 0.5, 3001, 'ioc',
           0, ${MASTER_ADDRESS}, 'filled', '[]', 1000, 1000, 2900
         )
@@ -1197,17 +1196,17 @@ sqliteLayer("moduleReadPlanTarget", (it) => {
         `"invalidation":[],"reassess":{"afterMinutes":90},"because":"x","updatedAt":1000}`;
 
       yield* sql`
-        INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+        INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
         VALUES ('mission-tp', 1, ${planJson("long")}, 1000)
       `;
       yield* sql`
         INSERT INTO trading_missions (
-          mission_id, user_id, trading_account_id, instruction, market, strategy_family,
-          harness_json, status, control_json, authority_version, strategy_version, version,
+          mission_id, user_id, trading_account_id, instruction, market,
+          harness_json, status, control_json, authority_version, version,
           created_at, updated_at
         ) VALUES (
-          'mission-tp', 'local', 'acct_1', 'Trade ETH', 'ETH', 'momentum',
-          '{}', 'waiting', '{}', 1, 1, 1, 1000, 1000
+          'mission-tp', 'local', 'acct_1', 'Trade ETH', 'ETH',
+          '{}', 'waiting', '{}', 1, 1, 1000, 1000
         )
       `;
 
@@ -1216,7 +1215,7 @@ sqliteLayer("moduleReadPlanTarget", (it) => {
 
       // Same target fields, standing aside: the skip, not the numbers.
       yield* sql`
-        UPDATE momentum_strategy_versions SET strategy_json = ${planJson("stand_aside")}
+        UPDATE trading_plan_history SET strategy_json = ${planJson("stand_aside")}
         WHERE mission_id = 'mission-tp' AND version = 1
       `;
       const aside = yield* moduleReadPlanTarget(TradingMissionId.make("mission-tp"));

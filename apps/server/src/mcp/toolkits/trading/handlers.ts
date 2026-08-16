@@ -194,13 +194,17 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (mission: 
   // before this one.
   const strategyHistory = yield* strategies.listStrategyVersions(mission.id).pipe(Effect.orDie);
 
+  // The optimistic-lock version a publish must quote (`expectedMissionVersion`)
+  // — the mission contract itself no longer carries a version number.
+  const missionVersion = yield* missions.getMissionVersion(mission.id).pipe(Effect.orDie);
+
   return {
     bound: true,
     mission,
     authority: mission.authority,
     authorityVersion: mission.authorityVersion,
     ...(Option.isNone(strategy) ? {} : { strategy: strategy.value }),
-    strategyVersion: mission.strategyVersion,
+    missionVersion,
     watches,
     control: mission.control,
     harness: mission.harness,
@@ -234,12 +238,7 @@ const withPeakPnl = Effect.fn("TradingToolkit.withPeakPnl")(function* (
 });
 
 const announceStrategyPublished = Effect.fn("TradingToolkit.announceStrategyPublished")(
-  function* (input: {
-    readonly threadId: string;
-    readonly missionId: string;
-    readonly strategyVersion: number;
-    readonly supersededWatchIds: ReadonlyArray<string>;
-  }) {
+  function* (input: { readonly threadId: string; readonly missionId: string }) {
     const engine = yield* OrchestrationEngineService;
     const crypto = yield* Crypto.Crypto;
     const commandId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
@@ -251,8 +250,6 @@ const announceStrategyPublished = Effect.fn("TradingToolkit.announceStrategyPubl
         commandId: CommandId.make(commandId),
         threadId: ThreadId.make(input.threadId),
         missionId: TradingMissionId.make(input.missionId),
-        strategyVersion: input.strategyVersion,
-        supersededWatchIds: input.supersededWatchIds,
         createdAt,
       })
       // The strategy is already durable; failing to announce it costs the UI a
@@ -261,7 +258,6 @@ const announceStrategyPublished = Effect.fn("TradingToolkit.announceStrategyPubl
         Effect.catchCause((cause) =>
           Effect.logWarning("could not announce a published strategy to the orchestration engine", {
             missionId: input.missionId,
-            strategyVersion: input.strategyVersion,
             cause,
           }),
         ),
@@ -634,8 +630,6 @@ const handlers = {
         yield* announceStrategyPublished({
           threadId,
           missionId: mission.id,
-          strategyVersion: published.strategyVersion,
-          supersededWatchIds: published.supersededWatchIds,
         });
         yield* announceMissionStatus({ threadId, missionId: mission.id });
       }
@@ -712,7 +706,7 @@ const handlers = {
           missionId: mission.id,
           market: input.market,
           newStopPrice: input.newStopPrice,
-          expectedVersion: input.expectedVersion,
+          expectedPlanUpdatedAt: input.expectedPlanUpdatedAt,
         })
         .pipe(Effect.orDie);
 
@@ -756,7 +750,6 @@ const handlers = {
         missionId: mission.id,
         intent: {
           missionId: mission.id,
-          strategyVersion: input.expectedVersion,
           executionSequence,
           actionType: "modify_stop",
           market: input.market,

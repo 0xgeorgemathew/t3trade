@@ -134,7 +134,7 @@ const make = Effect.gen(function* () {
       const versions = yield* sql<StrategyVersionRow>`
         SELECT version, created_at,
                json_extract(strategy_json, '$.target.profitUsd') AS target_profit_usd
-        FROM momentum_strategy_versions
+        FROM trading_plan_history
         WHERE mission_id = ${input.missionId}
         ORDER BY created_at DESC, version DESC
       `.pipe(Effect.mapError(toPersistenceSqlError("TradingTradeHistoryService.versions")));

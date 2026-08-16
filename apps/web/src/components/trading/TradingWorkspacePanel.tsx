@@ -140,14 +140,14 @@ function Strategy({ mission }: { mission: OrchestrationTradingMission }) {
     return (
       <SettingsSection title="Strategy">
         <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">
-          The harness has not published a strategy yet. It appears here as v1 once it does.
+          The harness has not published a plan yet. It appears here once it does.
         </p>
       </SettingsSection>
     );
   }
 
   return (
-    <SettingsSection title={`Plan v${mission.strategyVersion}`}>
+    <SettingsSection title="Plan">
       <Field label="Market" value={strategy.market} />
       <Field label="Intent" value={strategy.intent} />
       <Field label="Entry urgency" value={strategy.entry.urgency} />
@@ -181,9 +181,7 @@ function Watches({ mission }: { mission: OrchestrationTradingMission }) {
             className="flex items-baseline justify-between gap-4 px-3 py-1.5 sm:px-4"
           >
             <span className="text-sm text-foreground">{describeWatch(watch.watch)}</span>
-            <span className="text-xs text-muted-foreground">
-              {watch.status} · v{watch.strategyVersion}
-            </span>
+            <span className="text-xs text-muted-foreground">{watch.status}</span>
           </li>
         ))}
       </ul>

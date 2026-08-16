@@ -114,7 +114,7 @@ describe("mission strip", () => {
   const priceWatch = {
     id: "watch-1",
     missionId: "mission-1",
-    strategyVersion: 1,
+
     watch: {
       type: "price_cross" as const,
       market: "ETH" as const,
@@ -904,7 +904,8 @@ describe("deriveWakeupCard", () => {
     expect(card).not.toBeNull();
     expect(card?.causeLabel).toBe("market watch triggered");
     expect(card?.marketLabel).toBe("ETH · 3,142.5");
-    expect(card?.strategyLabel).toBe("Strategy v3");
+    // No version numbers ride the wakeup any more (plan 29 step 4.2).
+    expect(card?.strategyLabel).toBeNull();
     expect(card?.pendingEventCount).toBe(2);
     expect(card?.bootstrap).toBe(false);
     expect(card?.rawJson).toContain('"missionId": "mission_1"');
@@ -969,7 +970,7 @@ describe("deriveWakeupCard", () => {
     expect(card).not.toBeNull();
     expect(card?.causeLabel).toBe("scheduled reassessment");
     expect(card?.marketLabel).toBe("BTC · 64,517");
-    expect(card?.strategyLabel).toBe("Strategy v4");
+    expect(card?.strategyLabel).toBeNull();
     expect(card?.pendingEventCount).toBe(2);
     expect(card?.bootstrap).toBe(false);
     expect(card?.rawJson).toBe(flat);
@@ -1008,16 +1009,10 @@ describe("deriveStrategyPlan", () => {
     because: "Trend up on the 1m (directionScore positive); buy the first pullback.",
   } as const;
 
-  const mission = { strategyVersion: 3, position: null, strategy };
+  const mission = { position: null, strategy };
 
   it("returns null before a strategy has been published", () => {
-    expect(deriveStrategyPlan({ strategyVersion: 0, strategy: null })).toBeNull();
-  });
-
-  it("reads the version off the mission, not the strategy", () => {
-    // strategyVersion is the mission's mirror of the published version; the
-    // card header shows it as v{n}. The plan document carries none of its own.
-    expect(deriveStrategyPlan(mission)?.version).toBe(3);
+    expect(deriveStrategyPlan({ strategy: null })).toBeNull();
   });
 
   it("carries the narrative as the one prose field, and null when none was published", () => {
@@ -1028,7 +1023,6 @@ describe("deriveStrategyPlan", () => {
     // The schema decodes an omitted because to "" — the card must not render
     // an empty headline.
     const without = deriveStrategyPlan({
-      strategyVersion: 1,
       position: null,
       strategy: { ...strategy, because: "  " },
     })!;
@@ -1049,7 +1043,6 @@ describe("deriveStrategyPlan", () => {
   // be malformed, and the guard returns null rather than rendering it raw.
   it("ignores a trigger element that is not the decoded object shape", () => {
     const plan = deriveStrategyPlan({
-      strategyVersion: 1,
       position: null,
       strategy: {
         ...strategy,
@@ -1072,7 +1065,6 @@ describe("deriveStrategyPlan", () => {
 
   it("falls back to the method alone when no stop price is set", () => {
     const plan = deriveStrategyPlan({
-      strategyVersion: 1,
       position: null,
       strategy: { ...strategy, stop: { ...strategy.stop, price: undefined } },
     })!;
@@ -1085,7 +1077,6 @@ describe("deriveStrategyPlan", () => {
     expect(deriveStrategyPlan(mission)?.targetUsd).toBe(18.5);
     expect(
       deriveStrategyPlan({
-        strategyVersion: 1,
         position: null,
         strategy: { ...strategy, target: {} },
       })?.targetUsd,
@@ -1098,7 +1089,6 @@ describe("deriveStrategyPlan", () => {
   // on a trade that was declined.
   it("flags a stand-aside plan from its intent", () => {
     const plan = deriveStrategyPlan({
-      strategyVersion: 1,
       position: null,
       strategy: { ...strategy, intent: "stand_aside" },
     })!;
@@ -1123,7 +1113,6 @@ describe("deriveStrategyPlan", () => {
     expect(deriveStrategyPlan(mission)?.orderType).toBe("patient");
     expect(
       deriveStrategyPlan({
-        strategyVersion: 1,
         position: null,
         strategy: { ...strategy, entry: { ...strategy.entry, urgency: "now" } },
       })?.orderType,
@@ -1148,7 +1137,7 @@ describe("deriveWatchConditions", () => {
   const priceCross = {
     id: "watch-1",
     missionId: "mission-1",
-    strategyVersion: 1,
+
     watch: {
       type: "price_cross" as const,
       market: "ETH" as const,
@@ -1206,7 +1195,7 @@ describe("deriveWatchConditions", () => {
     const pnlWatch = {
       id: "watch-pnl",
       missionId: "mission-1",
-      strategyVersion: 1,
+
       watch: {
         type: "pnl_above" as const,
         market: "ETH" as const,
@@ -1230,7 +1219,7 @@ describe("deriveWatchConditions", () => {
     const reassessment = {
       id: "watch-reassess",
       missionId: "mission-1",
-      strategyVersion: 1,
+
       watch: { type: "scheduled_reassessment" as const, runAt: 1_700_000_120_000 },
       status: "active" as const,
       createdAt: 1_700_000_000_000,
@@ -1247,7 +1236,7 @@ describe("deriveWatchConditions", () => {
     const reassess = (runAt: number) => ({
       id: `watch-reassess-${runAt}`,
       missionId: "mission-1",
-      strategyVersion: 1,
+
       watch: { type: "scheduled_reassessment" as const, runAt },
       status: "active" as const,
       createdAt: 1_700_000_000_000,
@@ -1303,7 +1292,7 @@ describe("deriveChartConditions", () => {
   const persisted = <W>(id: string, watch: W, status: "active" | "triggered" = "active") => ({
     id,
     missionId: "mission-1",
-    strategyVersion: 1,
+
     watch,
     status,
     createdAt: 1_700_000_000_000,
@@ -1414,7 +1403,7 @@ describe("deriveNextReassessmentAt", () => {
   const reassessment = (id: string, runAt: number, status: "active" | "consumed" = "active") => ({
     id,
     missionId: "mission-1",
-    strategyVersion: 1,
+
     watch: { type: "scheduled_reassessment" as const, runAt },
     status,
     createdAt: 1_700_000_000_000,
@@ -1453,7 +1442,7 @@ describe("deriveChartTimeMarkers", () => {
   ) => ({
     id,
     missionId: "mission-1",
-    strategyVersion: 1,
+
     watch: { type: "scheduled_reassessment" as const, runAt },
     status: over.status ?? ("active" as const),
     createdAt: 1_700_000_000_000,
@@ -1651,7 +1640,7 @@ describe("deriveUpNextItems", () => {
   ): PersistedWatch => ({
     id,
     missionId: "mission-1",
-    strategyVersion: 1,
+
     watch: inner,
     status: "active",
     createdAt: NOW,

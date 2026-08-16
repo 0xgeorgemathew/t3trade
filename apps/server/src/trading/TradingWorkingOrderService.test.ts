@@ -202,12 +202,12 @@ const seedRecord = Effect.fn("seedRecord")(function* (input: {
   } = input;
   yield* sql`
     INSERT INTO trading_execution_records (
-      execution_id, mission_id, strategy_version, execution_sequence, action_type,
+      execution_id, mission_id, execution_sequence, action_type,
       cloid, idempotency_key, market, side, size, limit_price, time_in_force,
       reduce_only, signer_address, status, order_results_json, created_at, updated_at,
       stop_price, planned_loss_at_stop_usd
     ) VALUES (
-      ${`exec_${cloid}`}, ${MISSION}, 1, ${cloid.length}, ${actionType},
+      ${`exec_${cloid}`}, ${MISSION}, ${cloid.length}, ${actionType},
       ${cloid}, ${`idem_${cloid}`}, 'ETH', ${side}, ${size}, 2_990, 'alo',
       0, ${MASTER}, ${status}, '[]', ${NOW - ageMsAgo}, ${NOW - movedMsAgo},
       ${stopPrice}, 8

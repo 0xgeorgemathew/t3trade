@@ -122,7 +122,6 @@ export const ExecutableQuote = Schema.Struct({
   urgency: TradingUrgency,
 
   /** The versions and lease this quote was cut against; execution re-checks them. */
-  strategyVersion: Schema.Number,
   authorityVersion: Schema.Number,
   harnessRunId: TradingId,
   /** The server's next sequence for this mission. A retry reuses it; a new quote gets the next. */

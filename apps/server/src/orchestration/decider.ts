@@ -1506,8 +1506,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           missionId: command.missionId,
           threadId: command.threadId,
-          strategyVersion: command.strategyVersion,
-          supersededWatchIds: command.supersededWatchIds,
           updatedAt: command.createdAt,
         },
       };

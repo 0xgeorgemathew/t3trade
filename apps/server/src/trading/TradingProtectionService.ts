@@ -78,7 +78,6 @@ export class TradingProtectionError extends Schema.TaggedErrorClass<TradingProte
 /** What the protection path needs to know to protect one mission's position. */
 export interface ProtectionInput {
   readonly missionId: string;
-  readonly strategyVersion: number;
   /** The execution sequence whose protection this is; fixes the cloid. */
   readonly executionSequence: number;
   /** The master-wallet address (§10.6) — canonical reads use it. */
@@ -115,7 +114,6 @@ export interface ProtectionOutcome {
 /** What the take-profit reconciliation needs to know for one mission. */
 export interface TakeProfitInput {
   readonly missionId: string;
-  readonly strategyVersion: number;
   /** Varies the cloid across passes; the derived target price also does. */
   readonly executionSequence: number;
   /** The master-wallet address (§10.6) — canonical reads use it. */
@@ -268,7 +266,6 @@ interface CanonicalView {
 function protectionCloid(input: ProtectionInput, attempt: number): string {
   return deriveCloid({
     missionId: input.missionId,
-    strategyVersion: input.strategyVersion,
     executionSequence: input.executionSequence,
     actionType: `protect_${attempt}`,
   });
@@ -752,7 +749,6 @@ export const makeTradingProtectionService = Effect.gen(function* () {
   const takeProfitCloid = (input: TakeProfitInput, targetPrice: number): string =>
     deriveCloid({
       missionId: input.missionId,
-      strategyVersion: input.strategyVersion,
       executionSequence: input.executionSequence,
       actionType: `take_profit_${targetPrice}`,
     });

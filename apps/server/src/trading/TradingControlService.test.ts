@@ -153,7 +153,7 @@ const infoLayer = Layer.succeed(
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 40 });
+  yield* runMigrations({ toMigrationInclusive: 63 });
   yield* sql`DELETE FROM trading_orders`;
   yield* sql`DELETE FROM trading_execution_records`;
 });
@@ -191,6 +191,7 @@ const runControl = <A, E>(
   );
 
 /** Insert a resting order plus the execution record that names its action. */
+let seededSequence = 0;
 const seedOrder = (
   cloid: string,
   actionType: string,
@@ -205,14 +206,16 @@ const seedOrder = (
         remaining_size, reduce_only, observed_at
       ) VALUES (${MISSION}, ${cloid}, 1, 'ETH', 'buy', 3000, 0.5, ${reduceOnly}, 0)
     `;
+    // One sequence per row: (mission, sequence) is unique since migration 053.
+    const executionSequence = seededSequence++;
     yield* sql`
       INSERT INTO trading_execution_records (
-        execution_id, mission_id, strategy_version, execution_sequence, action_type,
+        execution_id, mission_id, execution_sequence, action_type,
         cloid, idempotency_key, market, side, size, limit_price, time_in_force,
         reduce_only, signer_address, status, order_results_json, created_at, updated_at,
         stop_price
       ) VALUES (
-        ${`exec_${cloid}`}, ${MISSION}, 1, 0, ${actionType}, ${cloid}, ${`idem_${cloid}`},
+        ${`exec_${cloid}`}, ${MISSION}, ${executionSequence}, ${actionType}, ${cloid}, ${`idem_${cloid}`},
         'ETH', 'buy', 0.5, 3000, 'gtc', ${reduceOnly}, '0xsigner', 'accepted', '[]', 0, 0,
         ${stopPrice}
       )

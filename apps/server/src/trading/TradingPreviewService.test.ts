@@ -10,7 +10,6 @@ import { previewOrder, type PreviewContext } from "./TradingPreviewService.ts";
 /** A well-formed intent that clears every check. */
 const goodIntent = (overrides: Partial<TradingOrderIntent> = {}): TradingOrderIntent => ({
   missionId: "mission_1",
-  strategyVersion: 1,
   executionSequence: 0,
   actionType: "open",
   market: "ETH",
@@ -30,7 +29,6 @@ const goodMission = (overrides: Partial<TradingMission> = {}): TradingMission =>
     tradingAccountId: "acct_1",
     instruction: "trade eth",
     market: "ETH",
-    strategyFamily: "momentum",
     harness: {
       provider: "claude",
       providerInstanceId: "claude",
@@ -62,7 +60,6 @@ const goodMission = (overrides: Partial<TradingMission> = {}): TradingMission =>
     blockedReason: undefined,
     control: { entriesAllowed: true, reentryAllowed: true, pauseAfterPositionClose: false },
     authorityVersion: 1,
-    strategyVersion: 1,
     createdAt: "2026-07-31T00:00:00Z",
     updatedAt: "2026-07-31T00:00:00Z",
     ...overrides,
@@ -78,7 +75,6 @@ const freshBbo = (now: number): MarketBestBidOffer => ({
 
 const goodCtx = (now: number, overrides: Partial<PreviewContext> = {}): PreviewContext => ({
   mission: goodMission(),
-  currentStrategyVersion: 1,
   currentAuthorityVersion: 1,
   expectedAuthorityVersion: 1,
   activeHarnessRunId: "run_1",
@@ -172,13 +168,6 @@ describe("previewOrder — §16.3 checklist", () => {
   // obeying its own bookkeeping, not whether the order was correct, and the
   // entry preview now admits them. The exit path keeps its own copy of the
   // market row.
-
-  it.effect("retired item 3: admits an entry whose strategy version is stale", () =>
-    Effect.gen(function* () {
-      const preview = yield* previewOrder(goodIntent({ strategyVersion: 2 }), goodCtx(now));
-      expect(preview.intent.strategyVersion).toBe(2);
-    }),
-  );
 
   it.effect("retired item 4: admits an entry whose authority version went stale", () =>
     Effect.gen(function* () {

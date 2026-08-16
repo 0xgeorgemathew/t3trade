@@ -128,21 +128,16 @@ export const WatchArmedReason = Schema.Literals([
 export type WatchArmedReason = typeof WatchArmedReason.Type;
 
 /**
- * A watch as persisted, bound to the strategy version that registered it -
- * spec §12.1.
+ * A watch as persisted - spec §12.1.
  *
- * `watch` carries the published `MarketWatch` union verbatim; `strategyVersion`
- * is what makes a watch supersedable when the harness publishes v(n+1).
- *
- * Version 0 means the watch was armed before the first strategy publish. It is
- * not a degenerate case: like any other watch, the publish of v1 supersedes it.
- * Allowing 0 here is what lets `trading_register_watch` succeed for a mission
- * whose bootstrap turn registers coverage before it has published anything.
+ * `watch` carries the published `MarketWatch` union verbatim. A watch binds
+ * its mission, not a plan revision (plan 29 step 4.2): publishing a revised
+ * plan no longer supersedes anything, so a trigger armed under the previous
+ * read keeps working unless the model cancels or replaces it itself.
  */
 export const PersistedWatch = Schema.Struct({
   id: TradingId,
   missionId: TradingId,
-  strategyVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   watch: MarketWatch,
   status: PersistedWatchStatus,
   armedReason: Schema.optional(WatchArmedReason),

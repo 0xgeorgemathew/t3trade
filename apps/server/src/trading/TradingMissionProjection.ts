@@ -105,7 +105,6 @@ class UndecodableStrategyError extends Data.TaggedError("UndecodableStrategyErro
 const readStrategy = (row: {
   readonly mission_id: string;
   readonly strategy_json: string | null;
-  readonly strategy_version: number;
 }): Effect.Effect<TradingPlanState | null> => {
   const strategyJson = row.strategy_json;
   if (strategyJson === null) {
@@ -116,14 +115,12 @@ const readStrategy = (row: {
     catch: (cause) => new UndecodableStrategyError({ cause }),
   }).pipe(
     Effect.catch(({ cause }) => {
-      const key = `${row.mission_id}:${row.strategy_version}`;
-      if (loggedUndecodableStrategies.has(key)) {
+      if (loggedUndecodableStrategies.has(row.mission_id)) {
         return Effect.succeed(null);
       }
-      loggedUndecodableStrategies.add(key);
+      loggedUndecodableStrategies.add(row.mission_id);
       return Effect.logWarning("trading mission projection could not decode a persisted strategy", {
         missionId: row.mission_id,
-        strategyVersion: row.strategy_version,
         cause,
       }).pipe(Effect.as(null));
     }),
@@ -137,13 +134,11 @@ interface ProjectionRow {
   readonly trading_account_id: string;
   readonly instruction: string;
   readonly market: string;
-  readonly strategy_family: string;
   readonly status: string;
   readonly blocked_reason: string | null;
   readonly authority_json: string;
   readonly authority_version: number;
   readonly strategy_json: string | null;
-  readonly strategy_version: number;
   readonly watches_json: string;
   readonly control_json: string;
   readonly harness_json: string;
@@ -349,13 +344,11 @@ const toMission = (
     tradingAccountId: row.trading_account_id,
     instruction: row.instruction,
     market: row.market,
-    strategyFamily: row.strategy_family,
     status: decodeStatus(row.status),
     blockedReason: row.blocked_reason === null ? null : decodeBlockedReason(row.blocked_reason),
     authority: decodeAuthorityJson(row.authority_json),
     authorityVersion: row.authority_version,
     strategy,
-    strategyVersion: row.strategy_version,
     watches: decodeWatchesJson(row.watches_json),
     control: decodeControlJson(row.control_json),
     harness: decodeHarnessJson(row.harness_json),
@@ -434,13 +427,11 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         readonly trading_account_id: string;
         readonly instruction: string;
         readonly market: string;
-        readonly strategy_family: string;
         readonly harness_json: string;
         readonly status: string;
         readonly blocked_reason: string | null;
         readonly control_json: string;
         readonly authority_version: number;
-        readonly strategy_version: number;
         readonly created_at: number;
         readonly updated_at: number;
       }>`
@@ -461,14 +452,15 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       `.pipe(Effect.mapError(sqlFail("refresh:authority")));
 
       const strategies = yield* sql<{ readonly strategy_json: string }>`
-        SELECT strategy_json FROM momentum_strategy_versions
-        WHERE mission_id = ${input.missionId} AND version = ${mission.strategy_version}
+        SELECT strategy_json FROM trading_plan_history
+        WHERE mission_id = ${input.missionId}
+        ORDER BY version DESC
+        LIMIT 1
       `.pipe(Effect.mapError(sqlFail("refresh:strategy")));
 
       const watchRows = yield* sql<{
         readonly watch_id: string;
         readonly mission_id: string;
-        readonly strategy_version: number;
         readonly watch_json: string;
         readonly status: string;
         readonly armed_reason: string | null;
@@ -477,7 +469,7 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         readonly last_observed_value: number | null;
         readonly last_evaluated_at: number | null;
       }>`
-        SELECT watch_id, mission_id, strategy_version, watch_json, status, armed_reason,
+        SELECT watch_id, mission_id, watch_json, status, armed_reason,
                created_at, updated_at, last_observed_value, last_evaluated_at
         FROM trading_watches
         WHERE mission_id = ${input.missionId}
@@ -498,7 +490,6 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       const watches = watchRows.map((row) => ({
         id: row.watch_id,
         missionId: row.mission_id,
-        strategyVersion: row.strategy_version,
         watch: decodeMarketWatchJson(row.watch_json),
         status: decodeWatchStatus(row.status),
         // The web's provenance chips ("auto", "target", "stop") read this; a
@@ -519,8 +510,8 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       yield* sql`
         INSERT INTO projection_trading_missions (
           mission_id, thread_id, user_id, trading_account_id, instruction, market,
-          strategy_family, status, blocked_reason, authority_json, authority_version,
-          strategy_json, strategy_version, watches_json, control_json, harness_json,
+          status, blocked_reason, authority_json, authority_version,
+          strategy_json, watches_json, control_json, harness_json,
           created_at, updated_at
         ) VALUES (
           ${mission.mission_id},
@@ -529,13 +520,11 @@ const makeTradingMissionProjection = Effect.gen(function* () {
           ${mission.trading_account_id},
           ${mission.instruction},
           ${mission.market},
-          ${mission.strategy_family},
           ${mission.status},
           ${mission.blocked_reason},
           ${authorityJson},
           ${mission.authority_version},
           ${strategies[0]?.strategy_json ?? null},
-          ${mission.strategy_version},
           ${encodeWatchesJson(watches)},
           ${mission.control_json},
           ${mission.harness_json},
@@ -549,7 +538,6 @@ const makeTradingMissionProjection = Effect.gen(function* () {
           authority_json = excluded.authority_json,
           authority_version = excluded.authority_version,
           strategy_json = excluded.strategy_json,
-          strategy_version = excluded.strategy_version,
           watches_json = excluded.watches_json,
           control_json = excluded.control_json,
           harness_json = excluded.harness_json,
@@ -654,7 +642,7 @@ const makeTradingMissionProjection = Effect.gen(function* () {
 
       const publishes = yield* sql<StrategyVersionRow>`
         SELECT version, created_at
-        FROM momentum_strategy_versions WHERE mission_id = ${missionId}
+        FROM trading_plan_history WHERE mission_id = ${missionId}
         ORDER BY created_at DESC LIMIT ${MISSION_TIMELINE_LIMIT}
       `.pipe(Effect.mapError(sqlFail("timeline:publishes")));
 

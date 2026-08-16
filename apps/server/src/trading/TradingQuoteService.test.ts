@@ -104,7 +104,7 @@ const harness: TradingHarnessBinding = {
 const seed = (options?: { readonly withOpenRun?: boolean }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 60 });
+    yield* runMigrations({ toMigrationInclusive: 63 });
     yield* sql`DELETE FROM trading_missions`;
     yield* sql`DELETE FROM trading_authority_versions`;
     yield* sql`DELETE FROM trading_harness_runs`;
@@ -132,8 +132,8 @@ const seed = (options?: { readonly withOpenRun?: boolean }) =>
       allocatedCapitalUsd: 1_000,
       harness,
     });
-    // A quote runs the real preview, which requires a published strategy.
-    yield* sql`UPDATE trading_missions SET strategy_version = 1, status = 'waiting' WHERE mission_id = 'mission_1'`;
+    // A quote runs the real preview, which requires a live mission.
+    yield* sql`UPDATE trading_missions SET status = 'waiting' WHERE mission_id = 'mission_1'`;
 
     if (options?.withOpenRun !== false) {
       yield* sql`
@@ -166,7 +166,6 @@ layer("TradingQuoteService", (it) => {
       const quote = result.quote;
 
       // Nothing here was supplied by the caller.
-      assert.strictEqual(quote.strategyVersion, 1);
       assert.strictEqual(quote.harnessRunId, "run_1");
       assert.strictEqual(quote.executionSequence, 0);
       assert.strictEqual(quote.size, 0.05);
@@ -396,7 +395,7 @@ layer("TradingQuoteService", (it) => {
         `"stop":{"method":"swing low"},"target":{"profitUsd":50,"price":2100.5},` +
         `"invalidation":[],"reassess":{"afterMinutes":90},"because":"x","updatedAt":1000}`;
       yield* sql`
-        INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+        INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
         VALUES ('mission_1', 1, ${planJson("long")}, 1000)
       `;
 
@@ -404,7 +403,7 @@ layer("TradingQuoteService", (it) => {
       assert.strictEqual(lifted.outcome, "quoted");
 
       yield* sql`
-        UPDATE momentum_strategy_versions
+        UPDATE trading_plan_history
         SET strategy_json = ${planJson("stand_aside")}
         WHERE mission_id = 'mission_1' AND version = 1
       `;

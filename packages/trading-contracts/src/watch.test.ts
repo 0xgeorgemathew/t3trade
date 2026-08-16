@@ -30,7 +30,6 @@ const armed = (
 ): PersistedWatch => ({
   id: `watch_${JSON.stringify(watch).length}_${status}`,
   missionId: "mission_1",
-  strategyVersion: 1,
   watch,
   status,
   createdAt: NOW,

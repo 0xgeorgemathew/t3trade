@@ -275,7 +275,7 @@ const layer = it.layer(TradingExecutionGuardLive.pipe(Layer.provideMerge(coreLay
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 61 });
+  yield* runMigrations({ toMigrationInclusive: 63 });
   yield* sql`DELETE FROM trading_execution_records`;
   yield* sql`DELETE FROM trading_risk_reservations`;
   yield* sql`DELETE FROM trading_fills`;
@@ -479,11 +479,11 @@ layer("TradingExecutionReactorLoop (D1 keystone)", (it) => {
         const cloid = "b".repeat(32);
         yield* sql`
           INSERT INTO trading_execution_records (
-            execution_id, mission_id, strategy_version, execution_sequence, action_type,
+            execution_id, mission_id, execution_sequence, action_type,
             cloid, idempotency_key, market, side, size, limit_price, time_in_force,
             reduce_only, signer_address, status, order_results_json, created_at, updated_at
           ) VALUES (
-            'exec_resting', ${MISSION}, 1, 0, 'open',
+            'exec_resting', ${MISSION}, 0, 'open',
             ${cloid}, 'idem_resting', 'ETH', 'buy', 0.5, 3001, 'ioc',
             0, ${SIGNER_ADDR}, 'accepted', '[]', 1000, 1000
           )
@@ -551,11 +551,11 @@ layer("TradingExecutionReactorLoop (D1 keystone)", (it) => {
         // A resting increasing order (action_type 'open' — NOT in the permitted set).
         yield* sql`
           INSERT INTO trading_execution_records (
-            execution_id, mission_id, strategy_version, execution_sequence, action_type,
+            execution_id, mission_id, execution_sequence, action_type,
             cloid, idempotency_key, market, side, size, limit_price, time_in_force,
             reduce_only, signer_address, status, order_results_json, created_at, updated_at
           ) VALUES
-            ('exec_inc', ${MISSION}, 1, 10, 'open',
+            ('exec_inc', ${MISSION}, 10, 'open',
              ${incCloidBare}, 'idem_inc', 'ETH', 'buy', 0.5, 3001, 'ioc',
              0, ${SIGNER_ADDR}, 'accepted', '[]', 1000, 1000)
         `;
@@ -566,11 +566,11 @@ layer("TradingExecutionReactorLoop (D1 keystone)", (it) => {
         // A resting reduce order (action_type 'reduce' — IS permitted, must NOT be cancelled).
         yield* sql`
           INSERT INTO trading_execution_records (
-            execution_id, mission_id, strategy_version, execution_sequence, action_type,
+            execution_id, mission_id, execution_sequence, action_type,
             cloid, idempotency_key, market, side, size, limit_price, time_in_force,
             reduce_only, signer_address, status, order_results_json, created_at, updated_at
           ) VALUES
-            ('exec_red', ${MISSION}, 1, 11, 'reduce',
+            ('exec_red', ${MISSION}, 11, 'reduce',
              ${redCloidBare}, 'idem_red', 'ETH', 'sell', 0.2, 3000, 'ioc',
              1, ${SIGNER_ADDR}, 'accepted', '[]', 1000, 1000)
         `;
@@ -620,11 +620,11 @@ layer("TradingExecutionReactorLoop (D1 keystone)", (it) => {
         const badCloid = "f".repeat(32);
         yield* sql`
           INSERT INTO trading_execution_records (
-            execution_id, mission_id, strategy_version, execution_sequence, action_type,
+            execution_id, mission_id, execution_sequence, action_type,
             cloid, idempotency_key, market, side, size, limit_price, time_in_force,
             reduce_only, signer_address, status, order_results_json, created_at, updated_at
           ) VALUES
-            ('exec_bad', ${MISSION}, 1, 20, 'open',
+            ('exec_bad', ${MISSION}, 20, 'open',
              ${badCloid}, 'idem_bad', 'NOPE', 'buy', 0.5, 3001, 'ioc',
              0, ${SIGNER_ADDR}, 'accepted', '[]', 1000, 1000)
         `;

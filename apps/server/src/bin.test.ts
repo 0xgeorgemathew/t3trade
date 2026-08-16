@@ -182,15 +182,15 @@ const seedSessionReportDatabase = (databasePath: string) =>
     yield* sql`DELETE FROM trading_entry_quotes`;
     yield* sql`DELETE FROM trading_closed_trades`;
     yield* sql`DELETE FROM trading_harness_runs`;
-    yield* sql`DELETE FROM momentum_strategy_versions`;
+    yield* sql`DELETE FROM trading_plan_history`;
     yield* sql`DELETE FROM trading_missions`;
     yield* sql`
       INSERT INTO trading_missions (
-        mission_id, user_id, trading_account_id, instruction, market, strategy_family,
-        harness_json, status, control_json, authority_version, strategy_version, version,
+        mission_id, user_id, trading_account_id, instruction, market,
+        harness_json, status, control_json, authority_version, version,
         created_at, updated_at
-      ) VALUES ('mission_cli', 'local', 'acct_1', 'Trade ETH', 'ETH', 'momentum',
-        '{}', 'waiting', '{}', 3, 1, 1, 0, ${10 * 60_000})
+      ) VALUES ('mission_cli', 'local', 'acct_1', 'Trade ETH', 'ETH',
+        '{}', 'waiting', '{}', 3, 1, 0, ${10 * 60_000})
     `;
     yield* sql`
       INSERT INTO trading_harness_runs (
@@ -200,7 +200,7 @@ const seedSessionReportDatabase = (databasePath: string) =>
         'entered', NULL, 1, 1)
     `;
     yield* sql`
-      INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+      INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
       VALUES ('mission_cli', 1, '{}', 1000)
     `;
     // 5 net on 2000 notional is the 25 bps headline; no quote was recorded, so

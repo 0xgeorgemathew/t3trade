@@ -140,13 +140,18 @@ export const buildClosedTradeReview = (input: {
       ORDER BY consumed_at DESC
       LIMIT 1
     `;
+    // The plan in force when the position closed — the newest history row the
+    // close did not outlive. The mission row no longer points at a plan (plan
+    // 29 step 4.2), so "in force" is read from the journal, not a pointer. The
+    // json path is the position-centric document's (`target.profitUsd`).
     const strategies = yield* sql<StrategyRow>`
-      SELECT v.version AS strategy_version,
-             json_extract(v.strategy_json, '$.protection.targetProfitUsd') AS target_profit_usd
-      FROM momentum_strategy_versions v
-      JOIN trading_missions m
-        ON m.mission_id = v.mission_id AND m.strategy_version = v.version
-      WHERE v.mission_id = ${input.missionId}
+      SELECT version AS strategy_version,
+             json_extract(strategy_json, '$.target.profitUsd') AS target_profit_usd
+      FROM trading_plan_history
+      WHERE mission_id = ${input.missionId}
+        AND created_at <= ${input.closedAt}
+      ORDER BY version DESC
+      LIMIT 1
     `;
 
     const realizedPnlUsd = totals[0]?.realized_pnl ?? 0;

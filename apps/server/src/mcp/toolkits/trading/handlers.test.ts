@@ -127,11 +127,8 @@ const withMcpServer = <A, E>(
       args: unknown,
     ) => Effect.Effect<{ readonly result?: any; readonly error?: any }, never, never>;
     readonly missions: TradingMissionService["Service"];
-    /** Register one active watch against `strategyVersion`, as a watch tool would. */
-    readonly seedActiveWatch: (
-      watchId: string,
-      strategyVersion: number,
-    ) => Effect.Effect<void, never, never>;
+    /** Register one active watch, as a watch tool would. */
+    readonly seedActiveWatch: (watchId: string) => Effect.Effect<void, never, never>;
     /** Record one reconciled fill, as the reconciler would. */
     readonly seedFill: (input: {
       readonly fillId: string;
@@ -150,13 +147,13 @@ const withMcpServer = <A, E>(
       const registry = Context.get(built, McpSessionRegistry.McpSessionRegistry);
       const missions = Context.get(built, TradingMissionService);
       const sql = Context.get(built, SqlClient.SqlClient);
-      const seedActiveWatch = (watchId: string, strategyVersion: number) =>
+      const seedActiveWatch = (watchId: string) =>
         sql`
           INSERT INTO trading_watches (
-            watch_id, mission_id, strategy_version, watch_json, status, version,
+            watch_id, mission_id, watch_json, status, version,
             created_at, updated_at
           ) VALUES (
-            ${watchId}, ${MISSION_ID}, ${strategyVersion},
+            ${watchId}, ${MISSION_ID},
             '{"type":"price_cross","market":"ETH","priceSource":"mark","direction":"above","price":3200}',
             'active', 1, 1, 1
           )
@@ -179,7 +176,7 @@ const withMcpServer = <A, E>(
         `.pipe(Effect.asVoid, Effect.orDie);
       const httpClient = yield* HttpClient.HttpClient;
 
-      yield* runMigrations({ toMigrationInclusive: 60 }).pipe(Effect.provide(built), Effect.orDie);
+      yield* runMigrations({ toMigrationInclusive: 63 }).pipe(Effect.provide(built), Effect.orDie);
       yield* missions
         .createMission({
           missionId: MISSION_ID,
@@ -252,7 +249,7 @@ it.effect("serves trading_get_mission and a versioned publish over the real /mcp
       const before = initial.result.structuredContent;
       assert.equal(before.mission.id, MISSION_ID);
       assert.equal(before.mission.status, "initializing");
-      assert.equal(before.strategyVersion, 0);
+      assert.equal(before.missionVersion, 1);
       assert.equal(before.strategy, undefined);
       assert.equal(before.authorityVersion, 1);
       assert.equal(before.authority.allocatedCapitalUsd, 1_000);
@@ -261,19 +258,17 @@ it.effect("serves trading_get_mission and a versioned publish over the real /mcp
 
       const published = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
         missionId: MISSION_ID,
-        expectedVersion: 0,
+        expectedMissionVersion: 1,
         strategy: strategyBody("overnight range break"),
       });
       assert.equal(published.result.isError, false);
       assert.equal(published.result.structuredContent.outcome, "accepted");
-      assert.equal(published.result.structuredContent.strategyVersion, 1);
       assert.equal(published.result.structuredContent.strategy.intent, "long");
-      assert.deepStrictEqual(published.result.structuredContent.supersededWatchIds, []);
 
       const after = yield* callTool(BOUND_THREAD, "trading_get_mission", {
         missionId: MISSION_ID,
       });
-      assert.equal(after.result.structuredContent.strategyVersion, 1);
+      assert.equal(after.result.structuredContent.missionVersion, 2);
       assert.equal(after.result.structuredContent.strategy.because, "overnight range break");
 
       // The accepted publish was announced on the orchestration engine, which
@@ -288,64 +283,65 @@ it.effect("serves trading_get_mission and a versioned publish over the real /mcp
   ),
 );
 
-it.effect("rejects a stale expectedVersion over MCP and leaves v(n) intact", () =>
+it.effect("rejects a stale expectedMissionVersion over MCP and leaves the plan intact", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
       yield* callTool(BOUND_THREAD, "trading_publish_plan", {
         missionId: MISSION_ID,
-        expectedVersion: 0,
+        expectedMissionVersion: 1,
         strategy: strategyBody("v1"),
       });
 
       const stale = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
         missionId: MISSION_ID,
-        expectedVersion: 0,
+        // The publish above bumped the mission row's version to 2.
+        expectedMissionVersion: 1,
         strategy: strategyBody("v2 attempt from a stale reader"),
       });
       assert.equal(stale.result.isError, false);
       assert.deepStrictEqual(stale.result.structuredContent, {
         outcome: "rejected",
-        reason: "stale_strategy_version",
-        currentVersion: 1,
+        reason: "stale_mission_state",
+        currentVersion: 2,
       });
 
       // v1 survived the rejected publish untouched.
       const current = yield* callTool(BOUND_THREAD, "trading_get_mission", {
         missionId: MISSION_ID,
       });
-      assert.equal(current.result.structuredContent.strategyVersion, 1);
+      assert.equal(current.result.structuredContent.missionVersion, 2);
       assert.equal(current.result.structuredContent.strategy.because, "v1");
     }),
   ),
 );
 
-it.effect("supersedes the prior version's active watches on an accepted publish", () =>
+it.effect("keeps the prior version's active watches working across an accepted publish", () =>
   withMcpServer(({ callTool, seedActiveWatch }) =>
     Effect.gen(function* () {
       yield* callTool(BOUND_THREAD, "trading_publish_plan", {
         missionId: MISSION_ID,
-        expectedVersion: 0,
+        expectedMissionVersion: 1,
         strategy: strategyBody("v1"),
       });
 
-      yield* seedActiveWatch("watch_v1_active", 1);
+      yield* seedActiveWatch("watch_v1_active");
 
       const republished = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
         missionId: MISSION_ID,
-        expectedVersion: 1,
+        expectedMissionVersion: 2,
         strategy: strategyBody("v2"),
       });
       assert.equal(republished.result.structuredContent.outcome, "accepted");
-      assert.deepStrictEqual(republished.result.structuredContent.supersededWatchIds, [
-        "watch_v1_active",
-      ]);
 
+      // Plan 29 step 4.2: revising the plan does not touch the watches. The
+      // trigger armed under v1 keeps working until the model itself cancels
+      // or replaces it.
       const current = yield* callTool(BOUND_THREAD, "trading_get_mission", {
         missionId: MISSION_ID,
       });
       const watches = current.result.structuredContent.watches;
       assert.equal(watches.length, 1);
-      assert.equal(watches[0].status, "superseded");
+      assert.equal(watches[0].status, "active");
     }),
   ),
 );
@@ -383,7 +379,7 @@ it.effect("keeps write tools closed on an unbound thread", () =>
     Effect.gen(function* () {
       const published = yield* callTool(UNBOUND_THREAD, "trading_publish_plan", {
         missionId: MISSION_ID,
-        expectedVersion: 0,
+        expectedMissionVersion: 1,
         strategy: strategyBody("v1"),
       });
       assert.equal(published.result.isError, true);
@@ -422,13 +418,12 @@ it.effect("still refuses a second active mission for the same user", () =>
   ),
 );
 
-it.effect("registers a watch before the first strategy publish with strategyVersion 0", () =>
+it.effect("registers a watch before the first plan is published", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
-      // The mission was seeded with no published strategy, so its row still
-      // carries strategy_version = 0. A watch registered now must persist,
-      // result-encode, and announce — none of those steps may reject on the
-      // version being below 1.
+      // The mission was seeded with no published plan. A watch registered now
+      // must persist, result-encode, and announce — watches bind the mission,
+      // not a plan (plan 29 step 4.2), so there is nothing to be below.
       const registered = yield* callTool(BOUND_THREAD, "trading_register_watch", {
         missionId: MISSION_ID,
         watch: {
@@ -443,7 +438,6 @@ it.effect("registers a watch before the first strategy publish with strategyVers
       const registeredWatch = registered.result.structuredContent.watch;
       // Nothing was named to replace, so nothing was.
       assert.equal(registered.result.structuredContent.replaced, undefined);
-      assert.equal(registeredWatch.strategyVersion, 0);
       assert.equal(registeredWatch.status, "active");
       assert.equal(registeredWatch.watch.type, "price_cross");
 
@@ -453,7 +447,6 @@ it.effect("registers a watch before the first strategy publish with strategyVers
       assert.equal(listed.result.isError, false);
       const watches = listed.result.structuredContent;
       assert.equal(watches.length, 1);
-      assert.equal(watches[0].strategyVersion, 0);
       assert.equal(watches[0].id, registeredWatch.id);
 
       // The announce path succeeded rather than hitting its
@@ -545,19 +538,17 @@ it.effect("resolves an omitted missionId to the bound mission for a read tool", 
 it.effect("resolves an omitted missionId to the bound mission for a write tool", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
-      // A publish with no `missionId` reaches the bound mission and increments
-      // its strategy version, just as a publish that named it would.
+      // A publish with no `missionId` reaches the bound mission and revises
+      // its plan, just as a publish that named it would.
       const published = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
-        expectedVersion: 0,
+        expectedMissionVersion: 1,
         strategy: strategyBody("no missionId supplied"),
       });
       assert.equal(published.result.isError, false);
       assert.equal(published.result.structuredContent.outcome, "accepted");
-      assert.equal(published.result.structuredContent.strategyVersion, 1);
 
-      // The bound mission now carries the published strategy.
+      // The bound mission now carries the published plan.
       const after = yield* callTool(BOUND_THREAD, "trading_get_mission", {});
-      assert.equal(after.result.structuredContent.strategyVersion, 1);
       assert.equal(after.result.structuredContent.strategy.because, "no missionId supplied");
     }),
   ),
@@ -597,7 +588,7 @@ it.effect("decodes a prose-string entry trigger and round-trips it as the object
       };
       const published = yield* callTool(BOUND_THREAD, "trading_publish_plan", {
         missionId: MISSION_ID,
-        expectedVersion: 0,
+        expectedMissionVersion: 1,
         strategy: strategyBodyWithProseTrigger,
       });
       assert.equal(published.result.isError, false);

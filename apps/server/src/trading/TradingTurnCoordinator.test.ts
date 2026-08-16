@@ -95,13 +95,13 @@ const harness: TradingHarnessBinding = {
 
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 60 });
+  yield* runMigrations({ toMigrationInclusive: 63 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_harness_runs`;
   yield* sql`DELETE FROM trading_event_inbox`;
   yield* sql`DELETE FROM trading_watches`;
-  yield* sql`DELETE FROM momentum_strategy_versions`;
+  yield* sql`DELETE FROM trading_plan_history`;
   composeFails = false;
   dispatchedTexts.length = 0;
 });
@@ -133,7 +133,7 @@ const seedMission = Effect.gen(function* () {
   const strategies = yield* TradingStrategyService;
   const published = yield* strategies.publishMomentumStrategy({
     missionId: "mission_1",
-    expectedVersion: 0,
+    expectedMissionVersion: 1,
     strategy: {
       market: "ETH",
       intent: "long",
@@ -578,7 +578,7 @@ it.live("releases the lease and consumes claimed inbox events when the turn ends
     );
 
     yield* Effect.gen(function* () {
-      yield* runMigrations({ toMigrationInclusive: 60 });
+      yield* runMigrations({ toMigrationInclusive: 63 });
       const missions = yield* TradingMissionService;
       yield* missions.createMission({
         missionId: "mission_1",

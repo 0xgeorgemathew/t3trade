@@ -108,7 +108,7 @@ export interface WakeupCard {
   readonly bootstrap: boolean;
   /** "ETH · 3,142.50" while a snapshot is present; null on the bootstrap. */
   readonly marketLabel: string | null;
-  /** "Strategy v3" once a strategy exists; null on the bootstrap. */
+  /** Reserved for a future plan label; null until then (no version numbers — plan 29 step 4.2). */
   readonly strategyLabel: string | null;
   /** How many coalesced inbox events the run was started with. */
   readonly pendingEventCount: number;
@@ -154,9 +154,6 @@ function deriveFlatWakeupCard(text: string): WakeupCard | null {
   const markPriceRaw = pairValue("markPrice");
   const markPrice = markPriceRaw === null ? null : readNumber(Number(markPriceRaw));
 
-  const strategyBody = sectionBody("activeStrategy");
-  const versionRaw = strategyBody?.match(/(?:^|\s)version=(\d+)/)?.[1] ?? null;
-
   const eventsBody = sectionBody("pendingEvents");
   const pendingEventCount =
     eventsBody === null ? 0 : (eventsBody.match(/^\s*\[\d+\]/gm) ?? []).length;
@@ -170,7 +167,7 @@ function deriveFlatWakeupCard(text: string): WakeupCard | null {
         : markPrice === null
           ? marketName
           : `${marketName} · ${formatPrice(markPrice)}`,
-    strategyLabel: versionRaw === null ? null : `Strategy v${versionRaw}`,
+    strategyLabel: null,
     pendingEventCount,
     rawJson: text,
   };
@@ -207,12 +204,6 @@ export function deriveWakeupCard(text: string): WakeupCard | null {
   const marketName = marketFields === null ? null : readString(marketFields["market"]);
   const markPrice = marketFields === null ? null : readNumber(marketFields["markPrice"]);
 
-  const strategy = payload["activeStrategy"];
-  const strategyVersion =
-    typeof strategy === "object" && strategy !== null
-      ? readNumber((strategy as Record<string, unknown>)["version"])
-      : null;
-
   const pendingEvents = payload["pendingEvents"];
 
   return {
@@ -224,7 +215,7 @@ export function deriveWakeupCard(text: string): WakeupCard | null {
         : markPrice === null
           ? marketName
           : `${marketName} · ${formatPrice(markPrice)}`,
-    strategyLabel: strategyVersion === null ? null : `Strategy v${strategyVersion}`,
+    strategyLabel: null,
     pendingEventCount: Array.isArray(pendingEvents) ? pendingEvents.length : 0,
     rawJson: JSON.stringify(parsed, null, 2),
   };
@@ -1043,8 +1034,6 @@ export function deriveReviewMarkers(
  * logic of its own. Null when no strategy has been published yet.
  */
 export interface StrategyPlan {
-  /** `mission.strategyVersion` — the version the harness published. */
-  readonly version: number;
   /**
    * The narrative: setup, indicators, regime, and the plan in plain terms, in
    * one field. Null when the harness published none (decodes as "").
@@ -1104,7 +1093,6 @@ function readConditionDescription(condition: unknown): string | null {
  * future field the schema gains still renders rather than failing the build.
  */
 export function deriveStrategyPlan(mission: {
-  readonly strategyVersion: number;
   /** The mission's position snapshot; absent or flat means the plan is waiting. */
   readonly position?: { readonly size: number } | null;
   readonly strategy: {
@@ -1146,7 +1134,6 @@ export function deriveStrategyPlan(mission: {
   const because = strategy.because?.trim() ?? "";
 
   return {
-    version: mission.strategyVersion,
     because: because === "" ? null : because,
     entryTriggers,
     orderType:

@@ -320,7 +320,7 @@ describe("coerceToolArguments", () => {
 
     it("coerces through a $ref'd trigger and leaves a prose trigger a string", () => {
       const coerced = coerceToolArguments(schemaFor("trading_publish_plan"), {
-        expectedVersion: "0",
+        expectedMissionVersion: "1",
         strategy: {
           stop: { method: "fixed", price: "1800" },
           target: { profitUsd: "25" },
@@ -332,7 +332,7 @@ describe("coerceToolArguments", () => {
           },
         },
       }) as {
-        expectedVersion: unknown;
+        expectedMissionVersion: unknown;
         strategy: {
           stop: Record<string, unknown>;
           target: Record<string, unknown>;
@@ -340,7 +340,7 @@ describe("coerceToolArguments", () => {
         };
       };
 
-      expect(coerced.expectedVersion).toBe(0);
+      expect(coerced.expectedMissionVersion).toBe(1);
       expect(coerced.strategy.stop).toEqual({ method: "fixed", price: 1800 });
       expect(coerced.strategy.target).toEqual({ profitUsd: 25 });
       expect(coerced.strategy.entry.triggers).toEqual([

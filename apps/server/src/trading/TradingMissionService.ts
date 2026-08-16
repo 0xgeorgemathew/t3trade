@@ -253,13 +253,11 @@ interface MissionRow {
   readonly trading_account_id: string;
   readonly instruction: string;
   readonly market: string;
-  readonly strategy_family: string;
   readonly harness_json: string;
   readonly status: string;
   readonly blocked_reason: string | null;
   readonly control_json: string;
   readonly authority_version: number;
-  readonly strategy_version: number;
   readonly version: number;
   readonly last_harness_run_id: string | null;
   readonly created_at: number;
@@ -293,7 +291,6 @@ const toMission = (row: MissionRow, authorityJson: string): TradingMission => ({
   // Rows written before the market column carried a real choice all say "ETH";
   // anything unrecognised falls back rather than failing the whole hydrate.
   market: row.market === "BTC" ? "BTC" : "ETH",
-  strategyFamily: "momentum",
   harness: decodeHarnessJson(row.harness_json),
   authority: decodeAuthorityJson(authorityJson),
   status: decodeStatus(row.status),
@@ -301,7 +298,6 @@ const toMission = (row: MissionRow, authorityJson: string): TradingMission => ({
     ? {}
     : { blockedReason: decodeBlockedReason(row.blocked_reason) }),
   control: decodeControlJson(row.control_json),
-  strategyVersion: row.strategy_version,
   authorityVersion: row.authority_version,
   ...(row.last_harness_run_id === null ? {} : { lastHarnessRunId: row.last_harness_run_id }),
   createdAt: row.created_at,
@@ -498,14 +494,14 @@ const makeTradingMissionService = Effect.gen(function* () {
       yield* sql`
         INSERT INTO trading_missions (
           mission_id, user_id, trading_account_id, instruction, market,
-          strategy_family, harness_json, status, blocked_reason, control_json,
-          authority_version, strategy_version, version, last_harness_run_id,
+          harness_json, status, blocked_reason, control_json,
+          authority_version, version, last_harness_run_id,
           created_at, updated_at
         ) VALUES (
           ${input.missionId}, ${input.userId}, ${input.tradingAccountId},
-          ${input.instruction}, ${input.market ?? "ETH"}, 'momentum',
+          ${input.instruction}, ${input.market ?? "ETH"},
           ${encodeHarnessJson(input.harness)}, 'initializing', NULL,
-          ${encodeControlJson(control)}, 1, 0, 1, NULL, ${now}, ${now}
+          ${encodeControlJson(control)}, 1, 1, NULL, ${now}, ${now}
         )
       `.pipe(Effect.mapError(sqlFail("createMission:mission")));
 
@@ -614,7 +610,7 @@ const makeTradingMissionService = Effect.gen(function* () {
           yield* sql`DELETE FROM trading_account_snapshots WHERE mission_id = ${missionId}`;
           yield* sql`DELETE FROM trading_account_observations WHERE mission_id = ${missionId}`;
           yield* sql`DELETE FROM trading_authority_versions WHERE mission_id = ${missionId}`;
-          yield* sql`DELETE FROM momentum_strategy_versions WHERE mission_id = ${missionId}`;
+          yield* sql`DELETE FROM trading_plan_history WHERE mission_id = ${missionId}`;
           yield* sql`DELETE FROM projection_trading_missions WHERE mission_id = ${missionId}`;
           yield* sql`DELETE FROM trading_missions WHERE mission_id = ${missionId}`;
         }),

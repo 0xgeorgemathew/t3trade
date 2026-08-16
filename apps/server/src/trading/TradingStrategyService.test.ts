@@ -46,10 +46,10 @@ const bodyWithoutBecause = (because: string): PublishTradingPlanBody => {
 
 const setup = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 47 });
+  yield* runMigrations({ toMigrationInclusive: 63 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
-  yield* sql`DELETE FROM momentum_strategy_versions`;
+  yield* sql`DELETE FROM trading_plan_history`;
   yield* sql`DELETE FROM trading_watches`;
 
   const missions = yield* TradingMissionService;
@@ -68,19 +68,21 @@ const setup = Effect.gen(function* () {
   });
 });
 
-const insertWatch = (input: {
-  readonly watchId: string;
-  readonly strategyVersion: number;
-  readonly status: string;
-}) =>
+/** The mission row's optimistic-lock version — what a publish must quote. */
+const missionVersion = Effect.gen(function* () {
+  const missions = yield* TradingMissionService;
+  return yield* missions.getMissionVersion("mission_1");
+});
+
+const insertWatch = (input: { readonly watchId: string; readonly status: string }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
       INSERT INTO trading_watches (
-        watch_id, mission_id, strategy_version, watch_json, status, version,
+        watch_id, mission_id, watch_json, status, version,
         created_at, updated_at
       ) VALUES (
-        ${input.watchId}, 'mission_1', ${input.strategyVersion},
+        ${input.watchId}, 'mission_1',
         '{"type":"position_update","market":"ETH"}', ${input.status}, 1,
         1753000000000, 1753000000000
       )
@@ -97,78 +99,115 @@ const watchStatus = (watchId: string) =>
   });
 
 layer("trading_publish_plan (§14.3)", (it) => {
-  it.effect("accepts the first publish at expected version 0 and assigns version 1", () =>
+  it.effect("accepts the first publish and appends the first history row", () =>
     Effect.gen(function* () {
       yield* setup;
       const strategies = yield* TradingStrategyService;
 
       const result = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
-        expectedVersion: 0,
-        strategy: body("v1: breakout thesis"),
+        expectedMissionVersion: 1,
+        strategy: body("first thesis: breakout"),
       });
 
       assert.equal(result.outcome, "accepted");
       if (result.outcome === "accepted") {
-        assert.equal(result.strategyVersion, 1);
         assert.equal(result.strategy.intent, "long");
-        assert.equal(result.strategy.because, "v1: breakout thesis");
-        // The document carries no version of its own; the row does.
+        assert.equal(result.strategy.because, "first thesis: breakout");
+        // The document carries no version of its own; the history row does.
         assert.equal("version" in result.strategy, false);
         // The server stamps updatedAt from the clock; the harness never sends it.
         assert.equal(typeof result.strategy.updatedAt, "number");
       }
 
-      const missions = yield* TradingMissionService;
-      const mission = yield* missions.getMission("mission_1");
-      assert.equal(mission.strategyVersion, 1);
+      const current = yield* strategies.getCurrentStrategy("mission_1");
+      assert.ok(Option.isSome(current));
+      assert.equal(Option.getOrThrow(current).because, "first thesis: breakout");
     }),
   );
 
-  it.effect("increments the version on each accepted publish", () =>
+  it.effect("bumps the mission row's optimistic-lock version on acceptance", () =>
     Effect.gen(function* () {
       yield* setup;
       const strategies = yield* TradingStrategyService;
 
-      for (const expectedVersion of [0, 1, 2]) {
-        const result = yield* strategies.publishMomentumStrategy({
-          missionId: "mission_1",
-          expectedVersion,
-          strategy: body(`v${expectedVersion + 1} thesis`),
-        });
-        assert.equal(result.outcome, "accepted");
-        if (result.outcome === "accepted") {
-          assert.equal(result.strategyVersion, expectedVersion + 1);
-        }
-      }
+      assert.equal(yield* missionVersion, 1);
+      yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedMissionVersion: 1,
+        strategy: body("v1 thesis"),
+      });
+      assert.equal(yield* missionVersion, 2);
+
+      // The revision goes through on the fresh version, and bumps it again.
+      const second = yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedMissionVersion: 2,
+        strategy: body("v2 thesis"),
+      });
+      assert.equal(second.outcome, "accepted");
+      assert.equal(yield* missionVersion, 3);
 
       const current = yield* strategies.getCurrentStrategy("mission_1");
-      assert.ok(Option.isSome(current));
-      assert.equal(Option.getOrThrow(current).because, "v3 thesis");
+      assert.equal(Option.getOrThrow(current).because, "v2 thesis");
     }),
   );
 
-  it.effect("rejects a stale expected version without overwriting current state", () =>
+  // THE headline test of plan 29 step 4.2: a revision revises the plan in
+  // place, and the triggers armed under the previous read keep working. The
+  // model cancels or replaces what it no longer wants; the publish does not
+  // decide that for it.
+  it.effect("watches survive a plan revision", () =>
     Effect.gen(function* () {
       yield* setup;
       const strategies = yield* TradingStrategyService;
 
       yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
-        expectedVersion: 0,
+        expectedMissionVersion: 1,
+        strategy: body("v1"),
+      });
+
+      yield* insertWatch({ watchId: "watch_active", status: "active" });
+      yield* insertWatch({ watchId: "watch_triggered", status: "triggered" });
+      yield* insertWatch({ watchId: "watch_cancelled", status: "cancelled" });
+
+      const result = yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedMissionVersion: 2,
+        strategy: body("v2"),
+      });
+
+      assert.equal(result.outcome, "accepted");
+      assert.equal(yield* watchStatus("watch_active"), "active");
+      assert.equal(yield* watchStatus("watch_triggered"), "triggered");
+      assert.equal(yield* watchStatus("watch_cancelled"), "cancelled");
+    }),
+  );
+
+  it.effect("rejects a stale mission version without overwriting current state", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const strategies = yield* TradingStrategyService;
+
+      yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedMissionVersion: 1,
         strategy: body("v1 thesis"),
       });
 
       const stale = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
-        expectedVersion: 0,
+        // The publish above bumped the row to 2; quoting the version read
+        // before it is the stale case.
+        expectedMissionVersion: 1,
         strategy: body("stale overwrite"),
       });
 
       assert.equal(stale.outcome, "rejected");
       if (stale.outcome === "rejected") {
-        assert.equal(stale.reason, "stale_strategy_version");
-        assert.equal(stale.currentVersion, 1);
+        assert.equal(stale.reason, "stale_mission_state");
+        assert.equal(stale.currentVersion, 2);
       }
 
       // The accepted v1 still stands.
@@ -184,95 +223,15 @@ layer("trading_publish_plan (§14.3)", (it) => {
 
       const ahead = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
-        expectedVersion: 7,
+        expectedMissionVersion: 7,
         strategy: body("from the future"),
       });
 
       assert.equal(ahead.outcome, "rejected");
       if (ahead.outcome === "rejected") {
-        assert.equal(ahead.reason, "stale_strategy_version");
-        assert.equal(ahead.currentVersion, 0);
+        assert.equal(ahead.reason, "stale_mission_state");
+        assert.equal(ahead.currentVersion, 1);
       }
-    }),
-  );
-
-  it.effect("supersedes active watches bound to the prior version", () =>
-    Effect.gen(function* () {
-      yield* setup;
-      const strategies = yield* TradingStrategyService;
-
-      yield* strategies.publishMomentumStrategy({
-        missionId: "mission_1",
-        expectedVersion: 0,
-        strategy: body("v1"),
-      });
-
-      yield* insertWatch({ watchId: "watch_v1", strategyVersion: 1, status: "active" });
-
-      const result = yield* strategies.publishMomentumStrategy({
-        missionId: "mission_1",
-        expectedVersion: 1,
-        strategy: body("v2"),
-      });
-
-      assert.equal(result.outcome, "accepted");
-      if (result.outcome === "accepted") {
-        assert.deepStrictEqual([...result.supersededWatchIds], ["watch_v1"]);
-      }
-      assert.equal(yield* watchStatus("watch_v1"), "superseded");
-    }),
-  );
-
-  it.effect("leaves non-active watches in their existing status", () =>
-    Effect.gen(function* () {
-      yield* setup;
-      const strategies = yield* TradingStrategyService;
-
-      yield* strategies.publishMomentumStrategy({
-        missionId: "mission_1",
-        expectedVersion: 0,
-        strategy: body("v1"),
-      });
-
-      yield* insertWatch({ watchId: "watch_triggered", strategyVersion: 1, status: "triggered" });
-      yield* insertWatch({ watchId: "watch_consumed", strategyVersion: 1, status: "consumed" });
-      yield* insertWatch({ watchId: "watch_cancelled", strategyVersion: 1, status: "cancelled" });
-      yield* insertWatch({ watchId: "watch_active", strategyVersion: 1, status: "active" });
-
-      const result = yield* strategies.publishMomentumStrategy({
-        missionId: "mission_1",
-        expectedVersion: 1,
-        strategy: body("v2"),
-      });
-
-      if (result.outcome === "accepted") {
-        assert.deepStrictEqual([...result.supersededWatchIds], ["watch_active"]);
-      }
-      assert.equal(yield* watchStatus("watch_triggered"), "triggered");
-      assert.equal(yield* watchStatus("watch_consumed"), "consumed");
-      assert.equal(yield* watchStatus("watch_cancelled"), "cancelled");
-      assert.equal(yield* watchStatus("watch_active"), "superseded");
-    }),
-  );
-
-  it.effect("does not supersede watches already bound to the new version", () =>
-    Effect.gen(function* () {
-      yield* setup;
-      const strategies = yield* TradingStrategyService;
-
-      // A watch registered against version 2 must survive the publish of 2.
-      yield* insertWatch({ watchId: "watch_v2", strategyVersion: 2, status: "active" });
-
-      const result = yield* strategies.publishMomentumStrategy({
-        missionId: "mission_1",
-        expectedVersion: 0,
-        strategy: body("v1"),
-      });
-
-      if (result.outcome === "accepted") {
-        assert.deepStrictEqual([...result.supersededWatchIds], []);
-      }
-      assert.equal(yield* watchStatus("watch_v2"), "active");
     }),
   );
 
@@ -286,7 +245,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
 
       const result = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
-        expectedVersion: 0,
+        expectedMissionVersion: 2,
         strategy: body("after revoke"),
       });
 
@@ -305,7 +264,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       const result = yield* Effect.result(
         strategies.publishMomentumStrategy({
           missionId: "nope",
-          expectedVersion: 0,
+          expectedMissionVersion: 1,
           strategy: body("orphan"),
         }),
       );
@@ -324,6 +283,30 @@ layer("trading_publish_plan (§14.3)", (it) => {
 
       const current = yield* strategies.getCurrentStrategy("mission_1");
       assert.ok(Option.isNone(current));
+    }),
+  );
+
+  it.effect("moves the mission out of analysing on publish", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const missions = yield* TradingMissionService;
+      const strategies = yield* TradingStrategyService;
+
+      // The reactor's first-run advance leaves a fresh mission in analysing.
+      yield* missions.transition({
+        missionId: "mission_1",
+        to: "analysing",
+        expectedVersion: yield* missionVersion,
+      });
+
+      yield* strategies.publishMomentumStrategy({
+        missionId: "mission_1",
+        expectedMissionVersion: yield* missionVersion,
+        strategy: body("done analysing"),
+      });
+
+      const mission = yield* missions.getMission("mission_1");
+      assert.equal(mission.status, "waiting");
     }),
   );
 
@@ -351,7 +334,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
 
       const short = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
-        expectedVersion: 0,
+        expectedMissionVersion: 1,
         strategy: {
           ...body("fading the extended leg"),
           intent: "short",
@@ -361,7 +344,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
 
       const aside = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
-        expectedVersion: 1,
+        expectedMissionVersion: yield* missionVersion,
         strategy: {
           ...withTarget("costs exceed the move on offer", {}),
           intent: "stand_aside",
@@ -390,7 +373,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
 
       const result = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
-        expectedVersion: 0,
+        expectedMissionVersion: 1,
         strategy: withTarget("no derivation beside the rung", { profitUsd: 90 }),
       });
 
@@ -412,7 +395,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
 
       const result = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
-        expectedVersion: 0,
+        expectedMissionVersion: 1,
         strategy: withTarget("too small for the round trip", { profitUsd: 1.7 }),
       });
 
@@ -430,7 +413,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
 
       const result = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
-        expectedVersion: 0,
+        expectedMissionVersion: 1,
         strategy: body("justified"),
       });
 
@@ -452,7 +435,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       const verbose = body("verbose");
       const result = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
-        expectedVersion: 0,
+        expectedMissionVersion: 1,
         strategy: {
           ...verbose,
           because: "b".repeat(5_000),
@@ -487,7 +470,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
 
       const result = yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
-        expectedVersion: 0,
+        expectedMissionVersion: 1,
         strategy: bodyWithoutBecause("lenient"),
       });
 
@@ -501,19 +484,19 @@ layer("trading_publish_plan (§14.3)", (it) => {
   // `getCurrentStrategy` answers what the mission believes now. A harness that
   // has republished three times could not see what it believed before, which is
   // what "was the last target the right rung?" needs.
-  it.effect("publishes every version it has ever published, newest first", () =>
+  it.effect("publishes every plan it has ever published, newest first", () =>
     Effect.gen(function* () {
       yield* setup;
       const strategies = yield* TradingStrategyService;
 
       yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
-        expectedVersion: 0,
+        expectedMissionVersion: 1,
         strategy: body("first thesis"),
       });
       yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
-        expectedVersion: 1,
+        expectedMissionVersion: yield* missionVersion,
         strategy: body("second thesis"),
       });
 
@@ -529,13 +512,13 @@ layer("trading_publish_plan (§14.3)", (it) => {
     }),
   );
 
-  it.effect("skips a version whose stored JSON no longer decodes", () =>
+  it.effect("skips a plan whose stored JSON no longer decodes", () =>
     Effect.gen(function* () {
       yield* setup;
       const strategies = yield* TradingStrategyService;
       yield* strategies.publishMomentumStrategy({
         missionId: "mission_1",
-        expectedVersion: 0,
+        expectedMissionVersion: 1,
         strategy: body("readable"),
       });
 
@@ -543,7 +526,7 @@ layer("trading_publish_plan (§14.3)", (it) => {
       // table. One unreadable row should cost that row, not the history.
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
-        INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+        INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
         VALUES ('mission_1', 2, '{"legacy":true}', 9999)
       `;
 

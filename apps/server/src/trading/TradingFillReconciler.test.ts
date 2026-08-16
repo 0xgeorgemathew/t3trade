@@ -96,11 +96,11 @@ const insertStrandedExecution = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
     INSERT INTO trading_execution_records (
-      execution_id, mission_id, strategy_version, execution_sequence, action_type,
+      execution_id, mission_id, execution_sequence, action_type,
       cloid, idempotency_key, market, side, size, limit_price, time_in_force,
       reduce_only, signer_address, status, order_results_json, created_at, updated_at
     ) VALUES (
-      'exec-stranded', 'mission_1', 1, 0, 'open',
+      'exec-stranded', 'mission_1', 0, 'open',
       '0xcloid', 'idem-stranded', 'ETH', 'buy', 0.5, 3001, 'ioc',
       0, ${MASTER}, 'accepted', '[]', 0, 0
     )
@@ -168,7 +168,7 @@ layer("TradingFillReconciler", (it) => {
 it.effect("leaves a flat mission with nothing outstanding alone", () =>
   Effect.gen(function* () {
     reconcileCount = 0;
-    yield* runMigrations({ toMigrationInclusive: 44 });
+    yield* runMigrations({ toMigrationInclusive: 63 });
     const reconcilers = yield* TradingFillReconciler;
 
     const scope = yield* Scope.make("sequential");
@@ -185,7 +185,7 @@ it.effect("leaves a flat mission with nothing outstanding alone", () =>
 it.effect("settles a stranded execution record on a flat mission", () =>
   Effect.gen(function* () {
     reconcileCount = 0;
-    yield* runMigrations({ toMigrationInclusive: 44 });
+    yield* runMigrations({ toMigrationInclusive: 63 });
     yield* insertStrandedExecution;
     const reconcilers = yield* TradingFillReconciler;
 
@@ -211,7 +211,7 @@ it.effect("wakes the mission when a reconcile reports an external change", () =>
     reconcileCount = 0;
     requestedCauses.length = 0;
     nextExternalChanges = [{ kind: "external_close", summary: "external_close: 2 → 0" }];
-    yield* runMigrations({ toMigrationInclusive: 44 });
+    yield* runMigrations({ toMigrationInclusive: 63 });
     const reconcilers = yield* TradingFillReconciler;
 
     const scope = yield* Scope.make("sequential");
@@ -232,7 +232,7 @@ it.effect("wakes nobody when the pass found nothing external", () =>
   Effect.gen(function* () {
     reconcileCount = 0;
     requestedCauses.length = 0;
-    yield* runMigrations({ toMigrationInclusive: 44 });
+    yield* runMigrations({ toMigrationInclusive: 63 });
     const reconcilers = yield* TradingFillReconciler;
 
     const scope = yield* Scope.make("sequential");
@@ -256,7 +256,7 @@ it.effect("wakes nobody when the pass found nothing external", () =>
 it.effect("still reconciles a flat exchange while T3's tables believe it holds a position", () =>
   Effect.gen(function* () {
     reconcileCount = 0;
-    yield* runMigrations({ toMigrationInclusive: 44 });
+    yield* runMigrations({ toMigrationInclusive: 63 });
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
       INSERT INTO trading_position_snapshots (

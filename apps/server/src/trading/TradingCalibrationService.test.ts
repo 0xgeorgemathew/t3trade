@@ -34,9 +34,9 @@ const MISSION = "mission_calibration";
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   // 60 adds the stop-placement columns the read now selects.
-  yield* runMigrations({ toMigrationInclusive: 60 });
+  yield* runMigrations({ toMigrationInclusive: 63 });
   yield* sql`DELETE FROM trading_closed_trades`;
-  yield* sql`DELETE FROM momentum_strategy_versions`;
+  yield* sql`DELETE FROM trading_plan_history`;
   yield* sql`DELETE FROM trading_missions`;
 });
 
@@ -47,11 +47,11 @@ const insertMission = (missionId: string, tradingAccountId: string) =>
     yield* sql`
       INSERT INTO trading_missions (
         mission_id, user_id, trading_account_id, instruction, market,
-        strategy_family, harness_json, status, control_json,
-        authority_version, strategy_version, version, created_at, updated_at
+        harness_json, status, control_json,
+        authority_version, version, created_at, updated_at
       ) VALUES (
         ${missionId}, ${`${missionId}_user`}, ${tradingAccountId}, 'trade', 'ETH',
-        'momentum', '{"threadId":"t"}', 'revoked', '{}', 1, 0, 1, 0, 0
+        '{"threadId":"t"}', 'revoked', '{}', 1, 1, 0, 0
       )
     `;
   });
@@ -64,7 +64,7 @@ const insertStrategy = (version: number, targetProfitUsd: number) =>
     // column, so the row only has to carry that.
     const json = `{"target":{"profitUsd":${targetProfitUsd}}}`;
     yield* sql`
-      INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+      INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
       VALUES (${MISSION}, ${version}, ${json}, ${version * 1_000})
     `;
   });

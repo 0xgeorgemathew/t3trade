@@ -681,14 +681,12 @@ it.live(
                   const missions = yield* TradingMissionService;
                   assert.equal((yield* missions.getMission(MISSION_ID)).status, "analysing");
 
-                  // Publish a momentum strategy so the mission's strategyVersion is
-                  // 1 (the §16.3 preview rejects an intent whose strategyVersion
-                  // does not match the mission's current published version). The
-                  // body is the canonical ETH test vector from contracts.test.ts.
+                  // Publish a plan so the mission is working one. The body is
+                  // the canonical ETH test vector from contracts.test.ts.
                   const strategies = yield* TradingStrategyService;
                   const published = yield* strategies.publishMomentumStrategy({
                     missionId: MISSION_ID,
-                    expectedVersion: 0,
+                    expectedMissionVersion: yield* missions.getMissionVersion(MISSION_ID),
                     strategy: {
                       market: "ETH",
                       intent: "long",
@@ -741,7 +739,6 @@ it.live(
                     missionId: MISSION_ID,
                     intent: {
                       missionId: MISSION_ID,
-                      strategyVersion: 1,
                       executionSequence: 0,
                       actionType: "open",
                       market: "ETH",

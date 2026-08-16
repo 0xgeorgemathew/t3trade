@@ -218,7 +218,6 @@ export const mapOrder = (
 
     const cloid = deriveCloid({
       missionId: intent.missionId,
-      strategyVersion: intent.strategyVersion,
       executionSequence: intent.executionSequence,
       actionType: intent.actionType,
     });

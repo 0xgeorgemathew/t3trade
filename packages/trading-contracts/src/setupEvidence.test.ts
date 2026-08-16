@@ -212,7 +212,6 @@ const watchAt = (input: {
 }): PersistedWatch => ({
   id: `watch_${input.type}_${input.price}`,
   missionId: "mission_1",
-  strategyVersion: 1,
   status: "active",
   createdAt: 1_000,
   updatedAt: 1_000,

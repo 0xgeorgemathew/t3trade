@@ -44,7 +44,7 @@ const layer = it.layer(
  */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 40 });
+  yield* runMigrations({ toMigrationInclusive: 63 });
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM trading_risk_reservations`;
@@ -82,11 +82,11 @@ layer("TradingBudgetReader — stop-aware open-position risk", (it) => {
       // The mission's latest execution record carries the stop (Task 1 column).
       yield* sql`
         INSERT INTO trading_execution_records
-          (execution_id, mission_id, strategy_version, execution_sequence, action_type, cloid,
+          (execution_id, mission_id, execution_sequence, action_type, cloid,
            idempotency_key, market, side, size, limit_price, time_in_force, reduce_only,
            signer_address, status, order_results_json, created_at, updated_at, stop_price)
         VALUES
-          ('exec_1', 'mission_1', 0, 1, 'open', 'cloid_1',
+          ('exec_1', 'mission_1', 1, 'open', 'cloid_1',
            'idem_1', 'ETH', 'buy', 2, 3000, 'ioc', 0,
            '0xsigner', 'placed', '{}', 1_700_000_000_000, 1_700_000_000_000, 2900)
       `;
@@ -131,11 +131,11 @@ layer("TradingBudgetReader — stop-aware open-position risk", (it) => {
       // LEFT JOIN must not fabricate a stop.
       yield* sql`
         INSERT INTO trading_execution_records
-          (execution_id, mission_id, strategy_version, execution_sequence, action_type, cloid,
+          (execution_id, mission_id, execution_sequence, action_type, cloid,
            idempotency_key, market, side, size, limit_price, time_in_force, reduce_only,
            signer_address, status, order_results_json, created_at, updated_at)
         VALUES
-          ('exec_1', 'mission_1', 0, 1, 'cancel', 'cloid_1',
+          ('exec_1', 'mission_1', 1, 'cancel', 'cloid_1',
            'idem_1', 'ETH', 'buy', 1, 3000, 'ioc', 0,
            '0xsigner', 'placed', '{}', 1_700_000_000_000, 1_700_000_000_000)
       `;
@@ -181,11 +181,11 @@ layer("TradingBudgetReader — stop-aware open-position risk", (it) => {
       `;
       yield* sql`
         INSERT INTO trading_execution_records
-          (execution_id, mission_id, strategy_version, execution_sequence, action_type, cloid,
+          (execution_id, mission_id, execution_sequence, action_type, cloid,
            idempotency_key, market, side, size, limit_price, time_in_force, reduce_only,
            signer_address, status, order_results_json, created_at, updated_at, stop_price)
         VALUES
-          ('exec_1', 'mission_1', 0, 1, 'open', 'cloid_1',
+          ('exec_1', 'mission_1', 1, 'open', 'cloid_1',
            'idem_1', 'ETH', 'sell', 2, 3000, 'ioc', 0,
            '0xsigner', 'placed', '{}', 1_700_000_000_000, 1_700_000_000_000, 3100)
       `;
@@ -218,14 +218,14 @@ layer("TradingBudgetReader — stop-aware open-position risk", (it) => {
         // preview time.
         yield* sql`
         INSERT INTO trading_execution_records
-          (execution_id, mission_id, strategy_version, execution_sequence, action_type, cloid,
+          (execution_id, mission_id, execution_sequence, action_type, cloid,
            idempotency_key, market, side, size, limit_price, time_in_force, reduce_only,
            signer_address, status, order_results_json, created_at, updated_at)
         VALUES
-          ('exec_1', 'mission_1', 0, 1, 'open', 'cloid_1',
+          ('exec_1', 'mission_1', 1, 'open', 'cloid_1',
            'idem_1', 'ETH', 'buy', 1, 3000, 'ioc', 0,
            '0xsigner', 'placed', '{}', 1, 2),
-          ('exec_2', 'mission_1', 0, 2, 'open', 'cloid_2',
+          ('exec_2', 'mission_1', 2, 'open', 'cloid_2',
            'idem_2', 'ETH', 'buy', 1, 3000, 'ioc', 0,
            '0xsigner', 'placed', '{}', 1, 2)
       `;
@@ -266,11 +266,11 @@ layer("TradingBudgetReader — stop-aware open-position risk", (it) => {
       // A stop record so the reader is exercising the full openPositions path.
       yield* sql`
         INSERT INTO trading_execution_records
-          (execution_id, mission_id, strategy_version, execution_sequence, action_type, cloid,
+          (execution_id, mission_id, execution_sequence, action_type, cloid,
            idempotency_key, market, side, size, limit_price, time_in_force, reduce_only,
            signer_address, status, order_results_json, created_at, updated_at, stop_price)
         VALUES
-          ('exec_1', 'mission_1', 0, 1, 'open', 'cloid_1',
+          ('exec_1', 'mission_1', 1, 'open', 'cloid_1',
            'idem_1', 'ETH', 'buy', 3, 2000, 'ioc', 0,
            '0xsigner', 'placed', '{}', 1, 2, 1900)
       `;

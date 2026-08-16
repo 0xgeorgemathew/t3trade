@@ -54,8 +54,8 @@ const MISSION_SCOPED_ROWS: ReadonlyArray<{
 }> = [
   {
     table: "trading_watches",
-    columns: "watch_id, strategy_version, watch_json, status, version, created_at, updated_at",
-    values: '\'w1\', 1, \'{"type":"position_update","market":"ETH"}\', \'active\', 1, 0, 0',
+    columns: "watch_id, watch_json, status, version, created_at, updated_at",
+    values: '\'w1\', \'{"type":"position_update","market":"ETH"}\', \'active\', 1, 0, 0',
   },
   {
     table: "trading_harness_runs",
@@ -70,9 +70,9 @@ const MISSION_SCOPED_ROWS: ReadonlyArray<{
   {
     table: "trading_execution_records",
     columns:
-      "execution_id, strategy_version, execution_sequence, action_type, cloid, idempotency_key, market, side, size, limit_price, time_in_force, reduce_only, signer_address, status, order_results_json, created_at, updated_at",
+      "execution_id, execution_sequence, action_type, cloid, idempotency_key, market, side, size, limit_price, time_in_force, reduce_only, signer_address, status, order_results_json, created_at, updated_at",
     values:
-      "'x1', 1, 1, 'entry', 'c1', 'i1', 'ETH', 'buy', 1, 100, 'Ioc', 0, '0xabc', 'settled', '[]', 0, 0",
+      "'x1', 1, 'entry', 'c1', 'i1', 'ETH', 'buy', 1, 100, 'Ioc', 0, '0xabc', 'settled', '[]', 0, 0",
   },
   {
     table: "trading_orders",
@@ -114,7 +114,7 @@ const MISSION_SCOPED_ROWS: ReadonlyArray<{
     values: "1000, 0",
   },
   {
-    table: "momentum_strategy_versions",
+    table: "trading_plan_history",
     columns: "version, strategy_json, created_at",
     values: "1, '{}', 0",
   },
@@ -130,10 +130,8 @@ layer("TradingMissionService", (it) => {
 
       assert.equal(mission.id, "mission_1");
       assert.equal(mission.market, "ETH");
-      assert.equal(mission.strategyFamily, "momentum");
       assert.equal(mission.status, "initializing");
       assert.equal(mission.authorityVersion, 1);
-      assert.equal(mission.strategyVersion, 0);
       assert.equal(mission.authority.allocatedCapitalUsd, 1_000);
       // The testnet preset, not the spec's $1,000 worked example: 8x capital
       // gross, 20x leverage ceiling. See `testnetAuthorityDefaults`.
@@ -187,11 +185,11 @@ layer("TradingMissionService", (it) => {
       const smuggled = yield* Effect.result(sql`
         INSERT INTO trading_missions (
           mission_id, user_id, trading_account_id, instruction, market,
-          strategy_family, harness_json, status, control_json,
-          authority_version, strategy_version, version, created_at, updated_at
+          harness_json, status, control_json,
+          authority_version, version, created_at, updated_at
         ) VALUES (
           'mission_smuggled', 'user_1', 'acct_1', 'Trade ETH momentum', 'ETH',
-          'momentum', '{}', 'waiting', '{}', 1, 0, 1, 0, 0
+          '{}', 'waiting', '{}', 1, 1, 0, 0
         )
       `);
 

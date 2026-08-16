@@ -129,7 +129,6 @@ export const makeTradingExitService = Effect.gen(function* () {
       const executionSequence = yield* allocateExecutionSequence(sql, request.missionId);
       const shared = {
         missionId: request.missionId,
-        strategyVersion: mission.strategyVersion,
         executionSequence,
         market: market as TradingOrderIntent["market"],
         reduceOnly: true,

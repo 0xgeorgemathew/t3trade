@@ -115,11 +115,11 @@ const insertRecord = (status: string, actionType = "open") =>
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
       INSERT INTO trading_execution_records (
-        execution_id, mission_id, strategy_version, execution_sequence, action_type,
+        execution_id, mission_id, execution_sequence, action_type,
         cloid, idempotency_key, market, side, size, limit_price, time_in_force,
         reduce_only, signer_address, status, order_results_json, created_at, updated_at
       ) VALUES (
-        'exec-1', ${MISSION_ID}, 1, 0, ${actionType},
+        'exec-1', ${MISSION_ID}, 0, ${actionType},
         '0xcloid', ${`idem-${status}`}, 'ETH', 'buy', 0.5, 3001, 'ioc',
         0, '0x00000000000000000000000000000000000000ff', ${status},
         '[{"status":"filled"}]', 1000, 1000

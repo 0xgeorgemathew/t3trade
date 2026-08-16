@@ -272,12 +272,12 @@ function persistExecutionRecord(
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
       INSERT INTO trading_execution_records (
-        execution_id, mission_id, strategy_version, execution_sequence, action_type,
+        execution_id, mission_id, execution_sequence, action_type,
         cloid, idempotency_key, market, side, size, limit_price, time_in_force,
         reduce_only, signer_address, status, order_results_json, created_at, updated_at,
         stop_price, planned_loss_at_stop_usd
       ) VALUES (
-        ${record.executionId}, ${record.missionId}, ${record.strategyVersion},
+        ${record.executionId}, ${record.missionId},
         ${record.executionSequence}, ${record.actionType}, ${record.cloid},
         ${record.idempotencyKey}, ${record.market}, ${record.side}, ${record.size},
         ${record.limitPrice}, ${record.timeInForce}, ${record.reduceOnly ? 1 : 0},
@@ -516,7 +516,6 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
         ? yield* mapProtectiveStop({
             cloid: deriveCloid({
               missionId: intent.missionId,
-              strategyVersion: intent.strategyVersion,
               executionSequence: intent.executionSequence,
               actionType: `${intent.actionType}${PROTECTION_CLOID_SUFFIX}`,
             }),
@@ -544,7 +543,6 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
     const record: TradingExecutionRecord = {
       executionId: newExecutionId,
       missionId: intent.missionId,
-      strategyVersion: intent.strategyVersion,
       executionSequence: intent.executionSequence,
       actionType: intent.actionType,
       cloid: wireOrder.cloid,
@@ -1005,7 +1003,6 @@ export const makeHyperliquidExecutionService = Effect.gen(function* () {
 
       const cloid = deriveCloid({
         missionId: input.missionId,
-        strategyVersion: 0,
         executionSequence: input.attempt,
         actionType: "reduce_only_exit",
       });

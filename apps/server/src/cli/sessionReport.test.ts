@@ -20,12 +20,12 @@ const insertMission = (missionId: string, updatedAt: number) =>
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
     INSERT INTO trading_missions (
-      mission_id, user_id, trading_account_id, instruction, market, strategy_family,
-      harness_json, status, control_json, authority_version, strategy_version, version,
+      mission_id, user_id, trading_account_id, instruction, market,
+      harness_json, status, control_json, authority_version, version,
       created_at, updated_at
     ) VALUES (
-      ${missionId}, 'local', 'acct_1', 'Trade ETH', 'ETH', 'momentum',
-      '{}', 'analysing', '{}', 3, 1, 1, 0, ${updatedAt}
+      ${missionId}, 'local', 'acct_1', 'Trade ETH', 'ETH',
+      '{}', 'analysing', '{}', 3, 1, 0, ${updatedAt}
     )
   `;
   });
@@ -44,7 +44,7 @@ const seedSession = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_entry_quotes`;
   yield* sql`DELETE FROM trading_closed_trades`;
   yield* sql`DELETE FROM trading_harness_runs`;
-  yield* sql`DELETE FROM momentum_strategy_versions`;
+  yield* sql`DELETE FROM trading_plan_history`;
   yield* sql`DELETE FROM trading_missions`;
 
   // The mission lived 100 minutes and held positions for 50 of them.
@@ -66,21 +66,21 @@ const seedSession = Effect.gen(function* () {
   `;
 
   yield* sql`
-    INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+    INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
     VALUES (${MISSION}, 1, '{}', 1000)
   `;
 
   yield* sql`
     INSERT INTO trading_entry_quotes (
-      quote_id, mission_id, harness_run_id, strategy_version, authority_version,
+      quote_id, mission_id, harness_run_id, authority_version,
       execution_sequence, market, side, action_type, order_preference, size,
       requested_size, constrained_by, limit_price, stop_price, planned_loss_usd,
       reserved_risk_usd, notional_usd, best_bid, best_ask, round_trip_cost_usd,
       quoted_at, expires_at, consumed_at
     ) VALUES
-      ('quote_a', ${MISSION}, 'run_3', 1, 3, 1, 'ETH', 'buy', 'open', 'taker',
+      ('quote_a', ${MISSION}, 'run_3', 3, 1, 'ETH', 'buy', 'open', 'taker',
         2, 2, 'none', 3001, 2990, 20, 20, 6000, 2999, 3001, 5, 500, 60000, 1000),
-      ('quote_b', ${MISSION}, 'run_3', 1, 3, 2, 'ETH', 'sell', 'open', 'taker',
+      ('quote_b', ${MISSION}, 'run_3', 3, 2, 'ETH', 'sell', 'open', 'taker',
         3, 3, 'none', 100, 95, 15, 15, 300, 100.4, 100.6, 2, 2399000, 2500000, 2400000)
   `;
 
@@ -119,7 +119,7 @@ const seedEmptySession = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_entry_quotes`;
   yield* sql`DELETE FROM trading_closed_trades`;
   yield* sql`DELETE FROM trading_harness_runs`;
-  yield* sql`DELETE FROM momentum_strategy_versions`;
+  yield* sql`DELETE FROM trading_plan_history`;
   yield* sql`DELETE FROM trading_missions`;
 
   yield* insertMission(EMPTY_MISSION, 1000);
@@ -133,7 +133,7 @@ const seedOldFillSession = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_entry_quotes`;
   yield* sql`DELETE FROM trading_closed_trades`;
   yield* sql`DELETE FROM trading_harness_runs`;
-  yield* sql`DELETE FROM momentum_strategy_versions`;
+  yield* sql`DELETE FROM trading_plan_history`;
   yield* sql`DELETE FROM trading_missions`;
 
   yield* insertMission(OLD_FILLS_MISSION, 1000);

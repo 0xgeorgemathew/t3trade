@@ -68,7 +68,8 @@ export interface TradingStopAdjustmentServiceShape {
     readonly missionId: string;
     readonly market: TradingMarket;
     readonly newStopPrice: number;
-    readonly expectedVersion: number;
+    /** The `updatedAt` of the plan the caller last read; stale is refused. */
+    readonly expectedPlanUpdatedAt: number;
   }) => Effect.Effect<StopAdjustmentDecision, PersistenceSqlError>;
 
   /** Record an adjustment the exchange confirmed. */
@@ -118,15 +119,19 @@ const make = Effect.gen(function* () {
       }
 
       const mission = yield* missions.getMission(input.missionId).pipe(Effect.orDie);
-      if (mission.strategyVersion !== input.expectedVersion) {
+      const strategy = yield* strategies.getCurrentStrategy(input.missionId).pipe(Effect.orDie);
+      // The staleness guard, re-keyed onto the plan's own `updatedAt` (plan 29
+      // step 4.2): a stop asked against a plan the server has since revised is
+      // refused, because the revision may itself have moved the stop. A
+      // position with no plan at all has nothing to be stale against.
+      if (Option.isSome(strategy) && strategy.value.updatedAt !== input.expectedPlanUpdatedAt) {
         return refuse(
-          "stale_strategy_version",
-          `the current strategy version is ${mission.strategyVersion}`,
+          "stale_plan",
+          `the plan was revised at ${strategy.value.updatedAt}; re-read it before moving the stop`,
           noStop,
         );
       }
 
-      const strategy = yield* strategies.getCurrentStrategy(input.missionId).pipe(Effect.orDie);
       // The mission's runtime timeframe — the interval the mandate names, else
       // 1m. The plan stopped publishing its own `timeframes[0]` (plan 29 step
       // 4.1), so the mission is the source, same as the wakeup composer.

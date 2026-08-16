@@ -40,14 +40,14 @@ const candleCloseWatch: MarketWatch = {
 /** Shared in-memory database; each test migrates then truncates the trading tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 60 });
+  yield* runMigrations({ toMigrationInclusive: 63 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
-  yield* sql`DELETE FROM momentum_strategy_versions`;
+  yield* sql`DELETE FROM trading_plan_history`;
 });
 
-/** Create a mission and publish strategy v1 so a watch can bind to it. */
+/** Create a mission and publish a plan, so the mission is live and working. */
 const seedMission = Effect.gen(function* () {
   const missions = yield* TradingMissionService;
   yield* missions.createMission({
@@ -61,7 +61,7 @@ const seedMission = Effect.gen(function* () {
   const strategies = yield* TradingStrategyService;
   const published = yield* strategies.publishMomentumStrategy({
     missionId: "mission_1",
-    expectedVersion: 0,
+    expectedMissionVersion: 1,
     strategy: {
       market: "ETH",
       intent: "long",
@@ -79,7 +79,7 @@ const seedMission = Effect.gen(function* () {
 });
 
 layer("TradingWatchService", (it) => {
-  it.effect("registers a watch bound to the current strategy version", () =>
+  it.effect("registers a watch bound to the mission, not to any plan revision", () =>
     Effect.gen(function* () {
       yield* migrated;
       yield* seedMission;
@@ -91,7 +91,6 @@ layer("TradingWatchService", (it) => {
       });
 
       assert.equal(watch.missionId, "mission_1");
-      assert.equal(watch.strategyVersion, 1);
       assert.equal(watch.status, "active");
       assert.deepStrictEqual(watch.watch, candleCloseWatch);
       assert.equal(replaced, undefined);

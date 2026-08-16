@@ -218,7 +218,6 @@ export const OrchestrationTradingMission = Schema.Struct({
   tradingAccountId: TrimmedNonEmptyString,
   instruction: TrimmedNonEmptyString,
   market: TrimmedNonEmptyString,
-  strategyFamily: TrimmedNonEmptyString,
 
   status: TradingMissionStatus,
   blockedReason: Schema.NullOr(TradingMissionBlockedReason),
@@ -227,7 +226,6 @@ export const OrchestrationTradingMission = Schema.Struct({
   authorityVersion: NonNegativeInt,
 
   strategy: Schema.NullOr(TradingPlanState),
-  strategyVersion: NonNegativeInt,
 
   watches: Schema.Array(PersistedWatch),
 
@@ -379,8 +377,6 @@ export const TradingMissionStrategyPublishedCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   missionId: TradingMissionId,
-  strategyVersion: NonNegativeInt,
-  supersededWatchIds: Schema.Array(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
 
@@ -564,8 +560,6 @@ export const TradingMissionStatusChangedPayload = Schema.Struct({
 export const TradingMissionStrategyPublishedPayload = Schema.Struct({
   missionId: TradingMissionId,
   threadId: ThreadId,
-  strategyVersion: NonNegativeInt,
-  supersededWatchIds: Schema.Array(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
 });
 

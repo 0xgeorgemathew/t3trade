@@ -98,12 +98,6 @@ export interface PendingExecution {
 export interface PreviewContext {
   readonly mission: TradingMission;
   /**
-   * The harness run's published strategy version. No preview item reads this
-   * since plan-29 §3.3 retired `strategy_version_current`; it is carried for
-   * the Phase 5 cleanup rather than re-widened into a gate.
-   */
-  readonly currentStrategyVersion: number;
-  /**
    * The authority version the mission currently holds. No preview item reads
    * this since plan-29 §3.3 retired `authority_version_current`.
    */

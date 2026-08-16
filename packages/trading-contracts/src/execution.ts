@@ -75,9 +75,9 @@ export type TradingExecutionActionType = typeof TradingExecutionActionType.Type;
 /**
  * The deterministic client order id (§15.5).
  *
- * `derive16Bytes(missionId, strategyVersion, executionSequence, actionType)`
- * — SHA-256 of the concatenated inputs, truncated to the first 16 bytes,
- * hex-encoded as a `0x`-prefixed 34-character string.
+ * `derive16Bytes(missionId, executionSequence, actionType)` — SHA-256 of the
+ * concatenated inputs, truncated to the first 16 bytes, hex-encoded as a
+ * `0x`-prefixed 34-character string.
  *
  * The `0x` prefix is the Hyperliquid wire convention (the exchange validates
  * `len(cloid[2:]) == 32`). An unprefixed cloid is accepted on submission and
@@ -116,7 +116,6 @@ export type TradingStopInfo = typeof TradingStopInfo.Type;
  */
 export const TradingOrderIntent = Schema.Struct({
   missionId: TradingId,
-  strategyVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(1)),
   /** Per-mission counter; retries reuse the same value to reuse the cloid. */
   executionSequence: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   actionType: TradingExecutionActionType,
@@ -283,7 +282,6 @@ export type TradingOrderResult = typeof TradingOrderResult.Type;
 export const TradingExecutionRecord = Schema.Struct({
   executionId: TradingId,
   missionId: TradingId,
-  strategyVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(1)),
   executionSequence: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   actionType: TradingExecutionActionType,
 

@@ -180,14 +180,20 @@ export const TradingBoundMissionResult = Schema.Struct({
   authority: TradingAuthority,
   authorityVersion: Schema.Number,
   strategy: Schema.optional(TradingPlanState),
-  strategyVersion: Schema.Number,
+  /**
+   * The mission row's optimistic-lock version (plan 29 step 4.2). Publishing
+   * a plan refuses a stale `expectedMissionVersion`, and this is the number
+   * the harness compares against — the mission no longer carries a
+   * strategy-version counter of its own.
+   */
+  missionVersion: Schema.Number,
   watches: Schema.Array(PersistedWatch),
   control: TradingMissionControl,
   harness: TradingHarnessBinding,
   /** Executions written but not yet answered — what a lock rejection means. */
   pendingExecutions: Schema.Array(TradingPendingExecution),
   /**
-   * Every strategy version this mission has published, newest first.
+   * Every plan this mission has published, newest first.
    *
    * `strategy` above is only the current one. Without the rest, a harness that
    * has republished three times cannot see what it previously believed, what it
@@ -230,8 +236,8 @@ export type TradingGetMissionResult = typeof TradingGetMissionResult.Type;
  * `stop`, `target`, `invalidation`, `reassess`, `because`.
  *
  * `updatedAt` is assigned by the server on acceptance, so the harness does not
- * supply it. The accepted plan's identity in `momentum_strategy_versions` is
- * the row itself; the document carries no version number.
+ * supply it. The accepted plan's identity in `trading_plan_history` is the
+ * row itself; the document carries no version number.
  */
 export const PublishTradingPlanBody = Schema.Struct(tradingPlanAuthoredFields);
 export type PublishTradingPlanBody = typeof PublishTradingPlanBody.Type;
@@ -239,14 +245,20 @@ export type PublishTradingPlanBody = typeof PublishTradingPlanBody.Type;
 export const TradingPublishPlanInput = Schema.Struct({
   /** Optional — omit to act on the mission this session is bound to. */
   missionId: Schema.optional(TradingId),
-  /** The strategy version the harness believes is current. 0 before any publish. */
-  expectedVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  /**
+   * The mission row's optimistic-lock version as the harness last read it
+   * (`trading_get_mission` returns it as `missionVersion`). A publish against
+   * a mission that has moved on is refused — plan 29 step 4.2 re-keyed this
+   * guard from the retired strategy-version counter onto the mission row's
+   * own version, keeping the strength without the version semantics.
+   */
+  expectedMissionVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   strategy: PublishTradingPlanBody,
 });
 export type TradingPublishPlanInput = typeof TradingPublishPlanInput.Type;
 
 export const PublishTradingPlanRejection = Schema.Literals([
-  "stale_strategy_version",
+  "stale_mission_state",
   "mission_not_active",
 ]);
 export type PublishTradingPlanRejection = typeof PublishTradingPlanRejection.Type;
@@ -255,9 +267,6 @@ export const TradingPublishPlanResult = Schema.Union([
   Schema.Struct({
     outcome: Schema.Literal("accepted"),
     strategy: TradingPlanState,
-    strategyVersion: Schema.Number,
-    /** Watches bound to the prior version, marked superseded by this publish. */
-    supersededWatchIds: Schema.Array(TradingId),
     /**
      * Things wrong with the published strategy that did not stop the publish —
      * today, prose the server clipped to its published bound.
@@ -270,7 +279,7 @@ export const TradingPublishPlanResult = Schema.Union([
   Schema.Struct({
     outcome: Schema.Literal("rejected"),
     reason: PublishTradingPlanRejection,
-    /** The version the server actually holds, so the harness can retry. */
+    /** The mission version the server actually holds, so the harness can retry. */
     currentVersion: Schema.Number,
     /** What specifically was wrong, when the reason alone does not say. */
     detail: Schema.optional(Schema.String),
@@ -462,7 +471,8 @@ export type TradingExecuteResult = TradingRequestEntryResult;
 export const TradingAdjustStopRefusalContext = Schema.Literals([
   "no_position",
   "no_resting_stop",
-  "stale_strategy_version",
+  /** The plan has been revised since the harness last read it. */
+  "stale_plan",
   "market_data_unavailable",
   /** The policy passed but the exchange replacement did not confirm. */
   "replacement_failed",
@@ -483,8 +493,13 @@ export const TradingAdjustStopInput = Schema.Struct({
   market: TradingMarket,
   newStopPrice: Price,
   justification: StopAdjustmentJustification,
-  /** The strategy version the harness believes is current; stale is rejected. */
-  expectedVersion: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  /**
+   * The `updatedAt` of the plan the harness last read (plan 29 step 4.2
+   * re-keyed this staleness guard off the retired strategy-version counter).
+   * A move asked against a plan the server has since revised is refused — the
+   * revision may itself have moved the stop.
+   */
+  expectedPlanUpdatedAt: UnixMillis,
   // Execution identity is allocated from current server state after the
   // adjustment policy accepts; the harness supplies none of it.
 });

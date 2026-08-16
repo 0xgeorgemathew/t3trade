@@ -37,25 +37,24 @@ const harnessJson = JSON.stringify({
 const seed = (input?: { readonly plan?: Record<string, unknown> }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 60 });
+    yield* runMigrations({ toMigrationInclusive: 63 });
     yield* sql`DELETE FROM trading_missions`;
     yield* sql`DELETE FROM trading_harness_runs`;
-    yield* sql`DELETE FROM momentum_strategy_versions`;
+    yield* sql`DELETE FROM trading_plan_history`;
 
-    const strategyVersion = input?.plan === undefined ? 0 : 1;
     yield* sql`
       INSERT INTO trading_missions (
-        mission_id, user_id, trading_account_id, instruction, market, strategy_family,
-        harness_json, status, control_json, authority_version, strategy_version, version,
+        mission_id, user_id, trading_account_id, instruction, market,
+        harness_json, status, control_json, authority_version, version,
         created_at, updated_at
       ) VALUES (
-        ${MISSION}, 'local', 'acct_1', 'Trade ETH', 'ETH', 'momentum',
-        ${harnessJson}, 'analysing', '{}', 3, ${strategyVersion}, 1, 1000, 1000
+        ${MISSION}, 'local', 'acct_1', 'Trade ETH', 'ETH',
+        ${harnessJson}, 'analysing', '{}', 3, 1, 1000, 1000
       )
     `;
     if (input?.plan !== undefined) {
       yield* sql`
-        INSERT INTO momentum_strategy_versions (mission_id, version, strategy_json, created_at)
+        INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
         VALUES (${MISSION}, 1, ${JSON.stringify(input.plan)}, 1000)
       `;
     }

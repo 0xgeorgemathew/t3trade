@@ -185,7 +185,6 @@ const flatten = (market: EthMarket, address: string, privateKey: Uint8Array) =>
             t: { limit: { tif: "Ioc" } },
             c: deriveCloid({
               missionId: MISSION,
-              strategyVersion: 0,
               executionSequence: 999,
               actionType: `flatten_${stamp}`,
             }),
@@ -224,7 +223,6 @@ describeLive("§17.6 protective-order testnet evidence", () => {
         // stop is live on the exchange as a reduce-only trigger.
         const entryCloid = deriveCloid({
           missionId: MISSION,
-          strategyVersion: 1,
           executionSequence: 1,
           actionType: "open",
         });
@@ -232,7 +230,6 @@ describeLive("§17.6 protective-order testnet evidence", () => {
         const linkedStop = yield* mapProtectiveStop({
           cloid: deriveCloid({
             missionId: MISSION,
-            strategyVersion: 1,
             executionSequence: 1,
             actionType: "open_protect",
           }),
@@ -291,7 +288,6 @@ describeLive("§17.6 protective-order testnet evidence", () => {
         // the OLD fixed-size trigger did not resize itself (§17.4).
         const scaleCloid = deriveCloid({
           missionId: MISSION,
-          strategyVersion: 1,
           executionSequence: 2,
           actionType: "scale_in",
         });
@@ -315,7 +311,6 @@ describeLive("§17.6 protective-order testnet evidence", () => {
         // Place the replacement sized to the NEW canonical position and confirm.
         const replacementCloid = deriveCloid({
           missionId: MISSION,
-          strategyVersion: 1,
           executionSequence: 2,
           actionType: "protect_0",
         });
@@ -355,7 +350,6 @@ describeLive("§17.6 protective-order testnet evidence", () => {
                 "buy",
                 deriveCloid({
                   missionId: MISSION,
-                  strategyVersion: 1,
                   executionSequence: 3,
                   actionType: "mixed_ok",
                 }),
@@ -366,7 +360,6 @@ describeLive("§17.6 protective-order testnet evidence", () => {
                   "buy",
                   deriveCloid({
                     missionId: MISSION,
-                    strategyVersion: 1,
                     executionSequence: 3,
                     actionType: "mixed_bad",
                   }),
@@ -423,7 +416,6 @@ describeLive("§17.6 protective-order testnet evidence", () => {
                 t: { limit: { tif: "Gtc" } },
                 c: deriveCloid({
                   missionId: MISSION,
-                  strategyVersion: 1,
                   executionSequence: 4,
                   actionType: "oversized_resting",
                 }),
@@ -458,7 +450,6 @@ describeLive("§17.6 protective-order testnet evidence", () => {
         // which is the state a partial fill also passes through.
         const restingCloid = deriveCloid({
           missionId: MISSION,
-          strategyVersion: 1,
           executionSequence: 5,
           actionType: "resting",
         });
@@ -473,7 +464,6 @@ describeLive("§17.6 protective-order testnet evidence", () => {
         const restingStop = yield* mapProtectiveStop({
           cloid: deriveCloid({
             missionId: MISSION,
-            strategyVersion: 1,
             executionSequence: 5,
             actionType: "resting_protect",
           }),

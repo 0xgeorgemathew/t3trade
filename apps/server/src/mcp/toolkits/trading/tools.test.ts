@@ -101,22 +101,20 @@ it("advertises only the server-owned quote form for execution", () => {
   expect(schema.required).toContain("quoteId");
 });
 
-// The publish description states the publish contract (versioning, what a
-// publish touches and does not, where the target comes from), not the doctrine
-// — those live in the playbook.
+// The publish description states the publish contract (optimistic
+// concurrency, what a publish touches and does not, where the target comes
+// from), not the doctrine — those live in the playbook.
 it("publish description states the publish contract, not the methodology", () => {
   const publish = TradingToolkit.tools[TRADING_PUBLISH_PLAN_TOOL].description ?? "";
 
-  // Optimistic concurrency on expectedVersion.
-  expect(publish).toContain("expectedVersion");
-  // A publish supersedes the prior version's watches.
-  expect(publish).toContain("supersede");
+  // Optimistic concurrency on the mission row's version.
+  expect(publish).toContain("expectedMissionVersion");
+  // A publish revises the plan in place; watches survive it (plan 29 step 4.2).
+  expect(publish).toContain("watches survive");
   // The target is derived off measured volatility; nothing grades it (plan 29
   // step 3.2 took the basis ceremony out).
   expect(publish).toContain("measured volatility");
   expect(publish).not.toContain("targetProfitBasis");
-  // But never the resting orders — that division of labor is the contract.
-  expect(publish).toContain("resting orders");
   // How the harness records that no viable target exists: the explicit
   // no-position intent (plan 29 step 4.1).
   expect(publish).toContain("stand_aside");

@@ -342,7 +342,6 @@ export const makeTradingControlService = Effect.gen(function* () {
       const outcome = yield* protection
         .cancelEntriesWithProtection({
           missionId: input.missionId,
-          strategyVersion: 1,
           executionSequence: 0,
           masterAddress: input.masterAddress,
           market: input.market,
