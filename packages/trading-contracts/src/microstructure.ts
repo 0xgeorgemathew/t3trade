@@ -15,7 +15,8 @@
 import { Schema } from "effect";
 
 import type { MarketCandle, OrderBook } from "./market.ts";
-import { UsdAmount } from "./primitives.ts";
+import { Price, UsdAmount } from "./primitives.ts";
+import { realizedVolatilityPercent } from "./volatility.ts";
 
 /**
  * How many levels a side the imbalance is measured over.
@@ -173,6 +174,57 @@ export const PositioningReading = Schema.Struct({
 export type PositioningReading = typeof PositioningReading.Type;
 
 /**
+ * The short window the vol ratio measures against the long one.
+ *
+ * Twenty bars — the horizon a trade is actually held over on the runtime
+ * timeframe. The ratio is only meaningful if the numerator is the volatility
+ * the position will experience, not an average over an hour of it.
+ */
+export const VOL_RATIO_SHORT_BARS = 20;
+
+/**
+ * Realized volatility over the last twenty bars against the whole window.
+ *
+ * The single number worth reading before deciding whether to trade at all. The
+ * cost of a round trip is fixed and known; what has to clear it is the move,
+ * and the move available over a holding period is what volatility measures.
+ * Above 1 the market is moving faster than it has been and the same stop
+ * distance buys less time; below 1 it is compressing, and a target set off the
+ * window's own history will not be reached inside the hold.
+ *
+ * It is a ratio and not a verdict: nothing here says "do not trade". It says
+ * how the next twenty bars are likely to differ from the last hundred and
+ * twenty, and the plan's own arithmetic against `costContext` decides the rest.
+ */
+export const VolatilityRatio = Schema.Struct({
+  /** Short-window realized vol over long-window realized vol. */
+  ratio: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** Realized volatility per bar over the short window, as a percent. */
+  shortPercent: Schema.Number,
+  /** The same over the whole window. */
+  longPercent: Schema.Number,
+  shortBars: Schema.Number.check(Schema.isGreaterThan(0)),
+  longBars: Schema.Number.check(Schema.isGreaterThan(0)),
+});
+export type VolatilityRatio = typeof VolatilityRatio.Type;
+
+/**
+ * Where the mark sits against the window's volume-weighted average price.
+ *
+ * VWAP is where the volume actually traded, which makes it the level both
+ * sides treat as fair. Distance from it in basis points says how stretched the
+ * current price is from that agreement — and, read beside the cost line, how
+ * much of a reversion to it a round trip would eat.
+ */
+export const VwapReading = Schema.Struct({
+  priceUsd: Price,
+  /** Mark less VWAP over VWAP, in basis points. Positive is above. */
+  distanceBps: Schema.Number,
+  bars: Schema.Number.check(Schema.isGreaterThan(0)),
+});
+export type VwapReading = typeof VwapReading.Type;
+
+/**
  * Everything the book and the tape say, as readings.
  *
  * Every field is optional and independently derived: one unreadable input never
@@ -183,6 +235,8 @@ export const MarketMicrostructure = Schema.Struct({
   aggressorFlow: Schema.optional(AggressorFlow),
   liquidity: Schema.optional(LiquidityReading),
   positioning: Schema.optional(PositioningReading),
+  volatilityRatio: Schema.optional(VolatilityRatio),
+  vwap: Schema.optional(VwapReading),
 });
 export type MarketMicrostructure = typeof MarketMicrostructure.Type;
 
@@ -340,6 +394,65 @@ export const readPositioning = (input: {
 };
 
 /**
+ * Measure realized volatility over a short window against the whole one.
+ *
+ * Returns `null` when either window is too short to have a standard deviation,
+ * or when the long window's is zero — a ratio against zero is not a large
+ * number, it is an absent measurement, and reporting it as `Infinity` would be
+ * a reading the model would act on.
+ */
+export const readVolatilityRatio = (
+  candles: ReadonlyArray<MarketCandle>,
+  shortBars: number = VOL_RATIO_SHORT_BARS,
+): VolatilityRatio | null => {
+  // Three closes is the floor: two returns, which is the least a standard
+  // deviation is defined over.
+  if (candles.length < 3 || shortBars < 3 || candles.length <= shortBars) return null;
+  const shortWindow = candles.slice(-shortBars);
+  const longPercent = realizedVolatilityPercent(candles);
+  const shortPercent = realizedVolatilityPercent(shortWindow);
+  if (longPercent <= 0) return null;
+  return {
+    ratio: shortPercent / longPercent,
+    shortPercent,
+    longPercent,
+    shortBars: shortWindow.length,
+    longBars: candles.length,
+  };
+};
+
+/**
+ * Volume-weighted average price over the window, and how far the mark is off it.
+ *
+ * Each bar contributes its typical price — the mean of high, low and close —
+ * weighted by its volume. Returns `null` for a window with no volume: an
+ * unweighted average of prices is not a VWAP, and returning one under that name
+ * would be worse than returning nothing.
+ */
+export const readVwap = (
+  candles: ReadonlyArray<MarketCandle>,
+  markPrice: number,
+): VwapReading | null => {
+  let volume = 0;
+  let weighted = 0;
+  let bars = 0;
+  for (const candle of candles) {
+    if (candle.volume <= 0) continue;
+    volume += candle.volume;
+    weighted += ((candle.high + candle.low + candle.close) / 3) * candle.volume;
+    bars += 1;
+  }
+  if (volume <= 0 || bars === 0) return null;
+  const priceUsd = weighted / volume;
+  if (priceUsd <= 0) return null;
+  return {
+    priceUsd,
+    distanceBps: ((markPrice - priceUsd) / priceUsd) * 10_000,
+    bars,
+  };
+};
+
+/**
  * Every reading, from the inputs one observation already holds.
  *
  * Kept as one entry point so the `trading_look` path and the wake path build
@@ -368,6 +481,8 @@ export const readMicrostructure = (input: {
           observedAt: input.observedAt,
           previous: input.previousSample,
         });
+  const volatilityRatio = readVolatilityRatio(input.candles);
+  const vwap = readVwap(input.candles, input.markPrice);
   const positioning = readPositioning({
     markPrice: input.markPrice,
     openInterest: input.openInterest,
@@ -378,7 +493,9 @@ export const readMicrostructure = (input: {
     bookImbalance === null &&
     aggressorFlow === null &&
     liquidity === null &&
-    positioning === null
+    positioning === null &&
+    volatilityRatio === null &&
+    vwap === null
   ) {
     return null;
   }
@@ -387,6 +504,8 @@ export const readMicrostructure = (input: {
     ...(aggressorFlow === null ? {} : { aggressorFlow }),
     ...(liquidity === null ? {} : { liquidity }),
     ...(positioning === null ? {} : { positioning }),
+    ...(volatilityRatio === null ? {} : { volatilityRatio }),
+    ...(vwap === null ? {} : { vwap }),
   };
 };
 

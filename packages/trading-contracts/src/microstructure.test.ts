@@ -8,6 +8,9 @@ import {
   readBookImbalance,
   readLiquidity,
   readPositioning,
+  readVolatilityRatio,
+  readVwap,
+  VOL_RATIO_SHORT_BARS,
   readMicrostructure,
   sampleFromObservation,
   type MarketSample,
@@ -297,6 +300,94 @@ describe("readPositioning", () => {
     assert.isNull(
       readPositioning({ markPrice: 102, openInterest: 1_100, observedAt: 40_000, previous }),
     );
+  });
+});
+
+describe("readVolatilityRatio", () => {
+  /** A window whose closes step by `step`, so its realized vol is knowable. */
+  const stepped = (count: number, step: number): ReadonlyArray<MarketCandle> =>
+    Array.from({ length: count }, (_unused, index) =>
+      bar({
+        low: 100 + index * step,
+        high: 100 + index * step,
+        close: 100 + (index % 2 === 0 ? step : 0),
+        volume: 1,
+      }),
+    );
+
+  it("reads above 1 when the recent bars move more than the window did", () => {
+    const calm = Array.from({ length: 100 }, (_unused, index) =>
+      bar({ low: 100, high: 100.1, close: index % 2 === 0 ? 100 : 100.05, volume: 1 }),
+    );
+    const wild = Array.from({ length: 20 }, (_unused, index) =>
+      bar({ low: 90, high: 110, close: index % 2 === 0 ? 90 : 110, volume: 1 }),
+    );
+    const reading = readVolatilityRatio([...calm, ...wild]);
+    assert.isAbove(reading?.ratio ?? 0, 1);
+    assert.strictEqual(reading?.shortBars, VOL_RATIO_SHORT_BARS);
+    assert.strictEqual(reading?.longBars, 120);
+  });
+
+  it("reads below 1 when the recent bars have gone quiet", () => {
+    const wild = Array.from({ length: 100 }, (_unused, index) =>
+      bar({ low: 90, high: 110, close: index % 2 === 0 ? 90 : 110, volume: 1 }),
+    );
+    const calm = Array.from({ length: 20 }, () =>
+      bar({ low: 100, high: 100, close: 100, volume: 1 }),
+    );
+    const reading = readVolatilityRatio([...wild, ...calm]);
+    assert.isBelow(reading?.ratio ?? 2, 1);
+  });
+
+  it("reports nothing rather than infinity when the window never moved", () => {
+    const flat = Array.from({ length: 60 }, () =>
+      bar({ low: 100, high: 100, close: 100, volume: 1 }),
+    );
+    assert.isNull(readVolatilityRatio(flat));
+  });
+
+  it("reports nothing for a window too short to hold both measurements", () => {
+    assert.isNull(readVolatilityRatio(stepped(2, 1)));
+    assert.isNull(readVolatilityRatio(stepped(20, 1)));
+  });
+});
+
+describe("readVwap", () => {
+  it("weights each bar's typical price by its volume", () => {
+    // One heavy bar at a typical price of 100, one light one at 200.
+    const reading = readVwap(
+      [
+        bar({ low: 100, high: 100, close: 100, volume: 9 }),
+        bar({ low: 200, high: 200, close: 200, volume: 1 }),
+      ],
+      110,
+    );
+    assert.closeTo(reading?.priceUsd ?? 0, 110, 1e-9);
+    assert.closeTo(reading?.distanceBps ?? 1, 0, 1e-9);
+    assert.strictEqual(reading?.bars, 2);
+  });
+
+  it("measures how far the mark is stretched off it", () => {
+    const reading = readVwap([bar({ low: 100, high: 100, close: 100, volume: 5 })], 101);
+    // A percent above is a hundred basis points above.
+    assert.closeTo(reading?.distanceBps ?? 0, 100, 1e-9);
+  });
+
+  it("counts only bars that actually traded", () => {
+    const reading = readVwap(
+      [
+        bar({ low: 100, high: 100, close: 100, volume: 5 }),
+        bar({ low: 500, high: 500, close: 500, volume: 0 }),
+      ],
+      100,
+    );
+    assert.closeTo(reading?.priceUsd ?? 0, 100, 1e-9);
+    assert.strictEqual(reading?.bars, 1);
+  });
+
+  it("reports nothing rather than an unweighted average", () => {
+    assert.isNull(readVwap([bar({ low: 100, high: 100, close: 100, volume: 0 })], 100));
+    assert.isNull(readVwap([], 100));
   });
 });
 

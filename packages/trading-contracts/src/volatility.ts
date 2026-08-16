@@ -184,8 +184,15 @@ const averageTrueRange = (candles: ReadonlyArray<MarketCandle>): number => {
   return window.reduce((sum, range) => sum + range, 0) / window.length;
 };
 
-/** Standard deviation of bar-to-bar log returns, as a percent. */
-const realizedVolatilityPercent = (candles: ReadonlyArray<MarketCandle>): number => {
+/**
+ * Standard deviation of bar-to-bar log returns, as a percent.
+ *
+ * Exported because the short/long vol ratio (plan 29 step 7.5) is this same
+ * measurement taken over two windows. A second implementation of it would be a
+ * second definition of "how much does this move", and the ratio between two
+ * different definitions is not a ratio of anything.
+ */
+export const realizedVolatilityPercent = (candles: ReadonlyArray<MarketCandle>): number => {
   const returns: Array<number> = [];
   for (let i = 1; i < candles.length; i++) {
     const close = candles[i]?.close;
