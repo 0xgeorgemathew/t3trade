@@ -41,6 +41,12 @@ const px = (value: number) =>
   value.toLocaleString("en-US", { maximumFractionDigits: 2 });
 const rr = reward / risk;
 
+/* The drawdown the position has to survive on the way to the target. It comes
+   within six dollars of the stop without touching it, which is the whole
+   argument for putting the stop on the exchange in the first place. */
+const DIP_PRICE = 1880.4;
+const dipPnl = (DIP_PRICE - MISSION.entry) * MISSION.size; // -6.84
+
 const CANDLE_COUNT = 48;
 const BREAK_INDEX = 33;
 
@@ -81,16 +87,18 @@ function missionSeries() {
 
 const candles = missionSeries();
 
-/* The domain covers the action, not the target. At 1,907 the target is far
-   above every candle, and including it flattened the whole run into the
-   bottom third. It gets a rail along the top edge and the reward strip
-   underneath instead. */
+/* The domain reaches the target, so the whole arc fits in one frame: a tight
+   range along the bottom, the break out of it, and a run that climbs most of
+   the height. The recorded candles hold the left of the plot and the plan
+   that follows them holds the right. */
 const CHART_W = 900;
-const CHART_H = 500;
-const P_MIN = 1874.0;
-const P_MAX = 1890.6;
+const CHART_H = 520;
+const P_MIN = 1873.4;
+const P_MAX = 1909.6;
 const GUTTER = 104; // right-hand room for the level labels
-const SLOT = (CHART_W - GUTTER) / CANDLE_COUNT;
+const PLOT_W = CHART_W - GUTTER;
+const CANDLE_W = PLOT_W * 0.68;
+const SLOT = CANDLE_W / CANDLE_COUNT;
 const yOf = (price: number) => CHART_H - ((price - P_MIN) / (P_MAX - P_MIN)) * CHART_H;
 const xOf = (index: number) => index * SLOT + SLOT / 2;
 
@@ -99,17 +107,43 @@ const runPath = candles
   .map((candle, index) => `${index === 0 ? "M" : "L"}${xOf(BREAK_INDEX + index).toFixed(1)} ${yOf(candle.close).toFixed(1)}`)
   .join(" ");
 
+/* Where the record stops and the plan starts. The mark is the last price the
+   exchange actually reported; everything to its right is what the target and
+   the stop commit the mission to, drawn dashed and labelled as a plan. */
+/* The low sits at t = 0.5 so the wipe uncovers it on the same scroll step the
+   PnL reel bottoms out. The number and the line hit their worst point
+   together, which is the whole reason the drawdown is here. */
+const PLAN: [number, number][] = [
+  [0.0, MISSION.mark],
+  [0.14, 1886.1],
+  [0.3, 1884.3],
+  [0.5, DIP_PRICE],
+  [0.62, 1885.2],
+  [0.72, 1890.4],
+  [0.83, 1896.8],
+  [0.92, 1902.3],
+  [1.0, MISSION.target],
+];
+const planX = (t: number) => CANDLE_W + (PLOT_W - CANDLE_W) * t;
+const planPath = PLAN.map(([t, price], index) =>
+  `${index === 0 ? "M" : "L"}${planX(t).toFixed(1)} ${yOf(price).toFixed(1)}`,
+).join(" ");
+const DIP_X = planX(0.4);
+const TARGET_X = planX(1);
+
 /* Seven beats share one timeline. Each owns a slice of the pinned scroll, and
    the chart annotation, the console row, and the rail step that belong to a
    beat all animate over the same slice. */
 const BEATS = [
   { at: 2, label: "Mandate", note: "Trade ETH. Long only, 20x ceiling, capped loss in USD." },
-  { at: 12, label: "Waiting", note: "Price is inside the range. The agent takes no entry." },
-  { at: 26, label: "Watch armed", note: `Resume this thread when ETH mark crosses ${px(MISSION.trigger)}.` },
-  { at: 40, label: "Watch fires", note: "The thread wakes with fresh account, book, and budget data." },
-  { at: 52, label: "17 checks", note: "Every check passes, so T3 Trade signs the order locally." },
-  { at: 64, label: "Protected", note: `A reduce-only stop rests at ${px(MISSION.stop)} on the exchange.` },
-  { at: 78, label: "Running", note: `${usd(open)} open, ${toTarget.toFixed(0)}% of the way to ${px(MISSION.target)}.` },
+  { at: 11, label: "Waiting", note: "Price coils inside the range. The agent takes no entry." },
+  { at: 21, label: "Watch armed", note: `Sleep until the ETH mark crosses ${px(MISSION.trigger)}.` },
+  { at: 32, label: "Watch fires", note: "The thread wakes with fresh account, book, and budget data." },
+  { at: 42, label: "17 checks", note: "Every check passes, so T3 Trade signs the order locally." },
+  { at: 52, label: "Protected", note: `A reduce-only stop rests at ${px(MISSION.stop)} before the fill counts.` },
+  { at: 63, label: "Running", note: `Filled at ${px(MISSION.entry)}. The mark reaches ${px(MISSION.mark)}, ${usd(open)} open.` },
+  { at: 76, label: "Drawdown", note: `Price falls to ${px(DIP_PRICE)}, ${usd(dipPnl)}. The stop holds and nothing is sold.` },
+  { at: 86, label: "Target", note: `${px(MISSION.target)} prints. The plan closes the position at ${usd(reward)}.` },
 ];
 
 /* Beats carry their slice as two custom properties. The pinned desktop
@@ -117,14 +151,45 @@ const BEATS = [
    maps the same numbers onto `cover`, so one set of timings drives both. */
 const span = (from: number, to: number) => `--from:${from}%;--to:${to}%`;
 
-/* The open-PnL readout counts on the same timeline as the run. */
-const PNL_STEPS = 16;
-const pnlReel = Array.from({ length: PNL_STEPS + 1 }, (_, step) => usd((open * step) / PNL_STEPS));
+/* The PnL walks the whole arc on one reel: up to the open figure, down
+   through the drawdown, then out to the target. Each stop on the reel carries
+   its own colour, so the number goes red when the position is under water
+   without any extra machinery. */
+const ramp = (from: number, to: number, steps: number) =>
+  Array.from({ length: steps }, (_, step) => from + ((to - from) * (step + 1)) / steps);
 
+const RUN_STEPS = 10;
+const DIP_STEPS = 8;
+const TARGET_STEPS = 14;
+const PNL_STEPS = RUN_STEPS + DIP_STEPS + TARGET_STEPS; // 32
+
+const pnlArc = [
+  0,
+  ...ramp(0, open, RUN_STEPS),
+  ...ramp(open, dipPnl, DIP_STEPS),
+  ...ramp(dipPnl, reward, TARGET_STEPS),
+];
+
+/* Progress toward the target, floored at zero. Below the entry there is no
+   progress to report, and a negative percentage reads as a bug. */
+const pctArc = pnlArc.map((value) => Math.max(0, Math.round((value / reward) * 100)));
+
+/* The mark the PnL implies, so the readout never claims a price and a profit
+   that disagree. Step zero is the fill and the last step is the target. */
+const markArc = pnlArc.map((value) => px(MISSION.entry + value / MISSION.size));
+
+/* The three phase boundaries as a share of the reel, so the bar underneath
+   can bend at the same places the number does. */
+const RUN_MARK = ((RUN_STEPS / PNL_STEPS) * 100).toFixed(2);
+const DIP_MARK = (((RUN_STEPS + DIP_STEPS) / PNL_STEPS) * 100).toFixed(2);
+
+/* Each watch is armed on the beat the agent registers it and met on the beat
+   the market satisfies it. The second one never fires, which is the point:
+   the drawdown bottoms out above it and nothing wakes the thread. */
 const armedWatches = [
-  { label: `ETH mark crosses above ${px(MISSION.trigger)}`, value: px(MISSION.mark), metAt: 40 },
-  { label: `ETH 15m candle closes below ${px(MISSION.wake)}`, value: "waiting", metAt: null },
-  { label: `ETH unrealised PnL reaches ${usd(reward)}`, value: "waiting", metAt: null },
+  { label: `ETH mark crosses above ${px(MISSION.trigger)}`, armedAt: 21, metAt: 32 },
+  { label: `ETH 15m candle closes below ${px(MISSION.wake)}`, armedAt: 59, metAt: null },
+  { label: `ETH unrealised PnL reaches ${usd(reward)}`, armedAt: 60, metAt: 92 },
 ];
 
 /* Six of the seventeen, named the way the preview tool names them. */
@@ -263,23 +328,50 @@ const harnesses = [
               <svg viewBox={`0 0 ${CHART_W} ${CHART_H}`} class="chart-svg" role="img"
                 aria-label={`Price chart of the ETH mission: a range, a break above ${px(MISSION.trigger)}, an entry at ${px(MISSION.entry)}, a stop at ${px(MISSION.stop)}, and a target at ${px(MISSION.target)}.`}>
 
-                <!-- The band the stop is defending. Everything inside it is
-                     the money at risk, and nothing below it is reachable
-                     while the stop rests on the exchange. -->
+                <!-- A price grid, so the room above the range reads as
+                     distance rather than empty canvas. -->
+                {[1880, 1890, 1900].map((price, index) => (
+                  <g class="grid" style={`${span(1 + index, 6 + index)}`}>
+                    <line x1="0" x2={CHART_W} y1={yOf(price)} y2={yOf(price)} />
+                    <text x={CHART_W - 6} text-anchor="end" y={yOf(price) - 5}>{price}</text>
+                  </g>
+                ))}
+
+                <!-- The target is part of the mandate, so it is on the chart
+                     from the first beat. Everything between it and the range
+                     is the distance this mission exists to cover. -->
+                <g class="level level--target" style={`${span(4, 10)}`}>
+                  <line x1="0" x2={CHART_W} y1={yOf(MISSION.target)} y2={yOf(MISSION.target)} />
+                  <text x="8" y={yOf(MISSION.target) - 9}>target {px(MISSION.target)}</text>
+                </g>
+
+                <!-- The two bands the order is signed between, each drawn on
+                     the beat that commits to it. Below the entry is the money
+                     the stop is defending; above it is what the target pays. -->
                 <rect class="zone zone--risk" x="0" width={CHART_W}
                   y={yOf(MISSION.entry)} height={yOf(MISSION.stop) - yOf(MISSION.entry)}
-                  style={`${span(62, 74)}`} />
+                  style={`${span(53, 60)}`} />
+                <rect class="zone zone--reward" x="0" width={CHART_W}
+                  y={yOf(MISSION.target)} height={yOf(MISSION.entry) - yOf(MISSION.target)}
+                  style={`${span(58, 66)}`} />
 
                 {candles.map((candle, index) => {
                   const x = xOf(index);
                   const top = yOf(Math.max(candle.open, candle.close));
                   const bottom = yOf(Math.min(candle.open, candle.close));
-                  /* Range candles print through the wait, run candles through
-                     the run, so the chart keeps pace with the story. */
-                  const from = index < BREAK_INDEX ? 3 + index * 1.05 : 64 + (index - BREAK_INDEX) * 1.9;
+                  /* Three phases, so the chart never shows a candle before the
+                     story has reached it: the range prints through the wait,
+                     the break candle prints alone on the beat the watch fires,
+                     and the rest hold until the order is signed and protected.
+                     The pause between them is the agent working. */
+                  const from = index < BREAK_INDEX
+                    ? 2 + index * 0.5
+                    : index === BREAK_INDEX
+                      ? 32
+                      : 56 + (index - BREAK_INDEX - 1) * 0.9;
                   return (
                     <g class={`candle ${candle.up ? "candle--up" : "candle--down"}`}
-                      style={`${span(from, from + 7)}; transform-origin: ${x.toFixed(1)}px ${bottom.toFixed(1)}px`}>
+                      style={`${span(from, from + 5)}; transform-origin: ${x.toFixed(1)}px ${bottom.toFixed(1)}px`}>
                       <line class="candle-wick" x1={x} x2={x} y1={yOf(candle.high)} y2={yOf(candle.low)} />
                       <rect class="candle-body" x={x - SLOT * 0.32} width={SLOT * 0.64}
                         y={top} height={Math.max(1.4, bottom - top)} />
@@ -288,45 +380,78 @@ const harnesses = [
                 })}
 
                 <!-- Levels, each drawn on the beat that creates it. -->
-                <g class="level level--trigger" style={`${span(24, 34)}`}>
+                <g class="level level--trigger" style={`${span(21, 28)}`}>
                   <line x1="0" x2={CHART_W} y1={yOf(MISSION.trigger)} y2={yOf(MISSION.trigger)} />
                   <text x="8" y={yOf(MISSION.trigger) - 8}>watch · mark crosses {px(MISSION.trigger)}</text>
                 </g>
 
-                <g class="level level--entry" style={`${span(48, 58)}`}>
+                <g class="level level--entry" style={`${span(45, 52)}`}>
                   <line x1="0" x2={CHART_W} y1={yOf(MISSION.entry)} y2={yOf(MISSION.entry)} />
                   <text x={CHART_W - 8} text-anchor="end" y={yOf(MISSION.entry) - 8}>entry {px(MISSION.entry)}</text>
                 </g>
 
-                <g class="level level--stop" style={`${span(62, 72)}`}>
+                <g class="level level--stop" style={`${span(52, 59)}`}>
                   <line x1="0" x2={CHART_W} y1={yOf(MISSION.stop)} y2={yOf(MISSION.stop)} />
                   <text x="8" y={yOf(MISSION.stop) + 18}>stop {px(MISSION.stop)} · risks {usd(-risk)}</text>
                 </g>
 
+                <!-- Once the size is signed the target has a dollar value, so
+                     it gets one. -->
+                <text class="target-pays" x="8" y={yOf(MISSION.target) + 17}
+                  style={`${span(58, 65)}`}>pays {usd(reward)} at this size</text>
+
                 <!-- The second watch is only armed once there is a position
                      to defend, so it draws after the stop. -->
-                <g class="level level--wake" style={`${span(68, 78)}`}>
+                <g class="level level--wake" style={`${span(59, 66)}`}>
                   <line x1="0" x2={CHART_W} y1={yOf(MISSION.wake)} y2={yOf(MISSION.wake)} />
                   <text x={CHART_W - 8} text-anchor="end" y={yOf(MISSION.wake) + 16}>wake @ {px(MISSION.wake)}</text>
                 </g>
 
-                <!-- The target sits well above this window, so it rides the
-                     top edge with the distance still to run. -->
-                <g class="level level--target" style={`${span(56, 68)}`}>
-                  <line x1="0" x2={CHART_W} y1="1" y2="1" />
-                  <text x="8" y="18">target {px(MISSION.target)} · {usd(reward)} · {(reward - open).toFixed(2)} away</text>
-                </g>
-
-                <!-- The break candle pulses when the watch fires. -->
+                <!-- The break candle pulses on the beat the watch fires. -->
                 <circle class="fire-ping" cx={xOf(BREAK_INDEX)} cy={yOf(MISSION.trigger)} r="7"
-                  style={`${span(36, 48)}`} />
+                  style={`${span(32, 40)}`} />
                 <circle class="fire-dot" cx={xOf(BREAK_INDEX)} cy={yOf(MISSION.trigger)} r="3.5"
-                  style={`${span(34, 42)}`} />
+                  style={`${span(32, 38)}`} />
 
-                <path class="chart-run" d={runPath} pathLength="1" style={`${span(66, 96)}`} />
+                <path class="chart-run" d={runPath} pathLength="1" style={`${span(57, 70)}`} />
 
                 <circle class="mark-dot" r="4.5" cx={xOf(CANDLE_COUNT - 1)} cy={yOf(MISSION.mark)}
-                  style={`${span(88, 96)}`} />
+                  style={`${span(66, 70)}`} />
+
+                <!-- Everything right of the mark is the plan, not the record.
+                     It is dashed for that reason, and it is revealed rather
+                     than drawn so the dashes survive. -->
+                <g class="plan" style={`${span(68, 92)}`}>
+                  <path class="plan-path" d={planPath} />
+                </g>
+
+                <!-- The drawdown. The position goes under water, comes within
+                     six dollars of the stop, and the stop is never touched. -->
+                <g class="dip" style={`${span(76, 80)}`}>
+                  <circle class="dip-dot" cx={DIP_X} cy={yOf(DIP_PRICE)} r="4" />
+                  <line class="dip-drop" x1={DIP_X} x2={DIP_X}
+                    y1={yOf(DIP_PRICE)} y2={yOf(MISSION.stop)} />
+                  <text class="dip-label" x={DIP_X - 9} text-anchor="end" y={yOf(DIP_PRICE) + 5}>
+                    {usd(dipPnl)}
+                  </text>
+                </g>
+
+                <!-- The stop flares at the low, because that is the moment it
+                     is the only thing between the position and the budget. -->
+                <line class="stop-hold" x1="0" x2={CHART_W}
+                  y1={yOf(MISSION.stop)} y2={yOf(MISSION.stop)} style={`${span(77, 84)}`} />
+                <text class="stop-hold-label" x={DIP_X + 10} y={yOf(MISSION.stop) - 9}
+                  style={`${span(78, 83)}`}>stop holds</text>
+
+                <!-- The target prints. -->
+                <g class="target-hit" style={`${span(91, 96)}`}>
+                  <circle class="target-ping" cx={TARGET_X} cy={yOf(MISSION.target)} r="13" />
+                  <circle class="target-dot" cx={TARGET_X} cy={yOf(MISSION.target)} r="11" />
+                  <g class="target-check" style={`${span(92, 96)}`}
+                    transform={`translate(${(TARGET_X - 11).toFixed(1)} ${(yOf(MISSION.target) - 11).toFixed(1)}) scale(1.375)`}>
+                    <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
+                  </g>
+                </g>
               </svg>
 
               <!-- What the two levels are actually worth, to scale. Both bars
@@ -335,21 +460,21 @@ const harnesses = [
                    target opens the upside. -->
               <figcaption class="rr">
                 <span class="rr-bar">
-                  <span class="rr-seg rr-seg--risk" style={`flex: ${risk}; ${span(62, 72)}`}>
+                  <span class="rr-seg rr-seg--risk" style={`flex: ${risk}; ${span(53, 59)}`}>
                     <span class="rr-cap">stop</span>
                     <span class="rr-val">{usd(-risk)}</span>
                   </span>
-                  <span class="rr-seg rr-seg--reward" style={`flex: ${reward}; ${span(72, 84)}`}>
+                  <span class="rr-seg rr-seg--reward" style={`flex: ${reward}; ${span(58, 65)}`}>
                     <span class="rr-cap">target</span>
                     <span class="rr-val">{usd(reward)}</span>
                   </span>
                 </span>
                 <span class="rr-note">
-                  <svg class="tick" style={`${span(84, 90)}`} viewBox="0 0 16 16" aria-hidden="true">
+                  <svg class="tick" style={`${span(65, 69)}`} viewBox="0 0 16 16" aria-hidden="true">
                     <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
                   </svg>
-                  <span><strong>{rr.toFixed(1)}:1</strong> planned. The stop caps the left side
-                  before the order is signed.</span>
+                  <span><strong>{rr.toFixed(1)}:1</strong> planned. Both sides are fixed before
+                  the order is signed, so neither one moves later.</span>
                 </span>
               </figcaption>
             </figure>
@@ -360,36 +485,52 @@ const harnesses = [
                 <span class="tag tag--market">{MISSION.market}</span>
                 <span class="tag">{MISSION.leverage}</span>
                 <span class="tag">{MISSION.side}</span>
-                <span class="readout-pnl">
-                  <span class="pnl-window"><span class="pnl-reel" style={`${span(76, 94)}`}>
-                    {pnlReel.map((value) => <span>{value}</span>)}
+                <!-- One reel walks the whole arc, and the container flashes
+                     on the step that lands the target. -->
+                <span class="readout-pnl" style={`${span(90, 96)}`}>
+                  <span class="pnl-window"><span class="pnl-reel" style={`${span(63, 92)}`}>
+                    {pnlArc.map((value) => (
+                      <span class={value < 0 ? "pnl-step pnl-step--down" : "pnl-step"}>{usd(value)}</span>
+                    ))}
                   </span></span>
+                  <svg class="tick pnl-tick" style={`${span(92, 96)}`} viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
+                  </svg>
                 </span>
               </div>
 
-              <div class="readout-progress" style={`${span(74, 92)}`}>
-                <span class="progress-track"><span class="progress-fill" style={`${span(76, 94)}`}></span></span>
-                <span class="progress-label">{toTarget.toFixed(0)}% to target</span>
+              <div class="readout-progress" style={`${span(61, 66)}`}>
+                <span class="progress-track"><span class="progress-fill" style={`${span(63, 92)}`}></span></span>
+                <span class="progress-label">
+                  <span class="pnl-window"><span class="pct-reel" style={`${span(63, 92)}`}>
+                    {pctArc.map((value) => <span class="pnl-step">{value}%</span>)}
+                  </span></span>
+                  <span>to target</span>
+                </span>
               </div>
 
               <dl class="readout-grid">
                 {[
-                  { term: "Size", value: MISSION.size.toFixed(4), at: 50, ok: false },
-                  { term: "Entry", value: px(MISSION.entry), at: 52, ok: true },
-                  { term: "Mark", value: px(MISSION.mark), at: 78, ok: false },
-                  { term: "Stop", value: px(MISSION.stop), at: 64, ok: true },
-                  { term: "Liq", value: px(MISSION.liquidation), at: 66, ok: false },
-                  { term: "Margin", value: `$${MISSION.margin}`, at: 54, ok: false },
+                  { term: "Size", value: MISSION.size.toFixed(4), at: 46, ok: false },
+                  { term: "Entry", value: px(MISSION.entry), at: 46, ok: true },
+                  { term: "Mark", value: null, at: 63, ok: false },
+                  { term: "Stop", value: px(MISSION.stop), at: 53, ok: true },
+                  { term: "Liq", value: px(MISSION.liquidation), at: 55, ok: false },
+                  { term: "Margin", value: `$${MISSION.margin}`, at: 48, ok: false },
                 ].map((row) => (
                   <div class="readout-row" style={`${span(row.at, row.at + 8)}`}>
                     <dt>{row.term}</dt>
                     <dd>
                       {row.ok && (
-                        <svg class="tick" style={`${span(row.at + 4, row.at + 10)}`} viewBox="0 0 16 16" aria-hidden="true">
+                        <svg class="tick" style={`${span(row.at + 3, row.at + 7)}`} viewBox="0 0 16 16" aria-hidden="true">
                           <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
                         </svg>
                       )}
-                      {row.value}
+                      {row.value ?? (
+                        <span class="pnl-window"><span class="mark-reel" style={`${span(63, 92)}`}>
+                          {markArc.map((value) => <span class="pnl-step">{value}</span>)}
+                        </span></span>
+                      )}
                     </dd>
                   </div>
                 ))}
@@ -397,16 +538,23 @@ const harnesses = [
 
               <div class="readout-armed">
                 <span class="readout-legend">Armed watches</span>
-                {armedWatches.map((watch, index) => (
+                {armedWatches.map((watch) => (
                   <div class={`armed-row ${watch.metAt ? "armed-row--met" : ""}`}
-                    style={`${span(26 + index * 3, 36 + index * 3)}`}>
+                    style={`${span(watch.armedAt, watch.armedAt + 6)}`}>
                     <span class="armed-label">{watch.label}</span>
+                    {/* A watch reads `waiting` until the market satisfies it,
+                        then the two states cross over on that beat. */}
                     {watch.metAt ? (
-                      <span class="armed-state" style={`${span(watch.metAt, watch.metAt + 8)}`}>
-                        <svg class="tick" style={`${span(watch.metAt, watch.metAt + 6)}`} viewBox="0 0 16 16" aria-hidden="true">
-                          <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
-                        </svg>
-                        met
+                      <span class="armed-swap">
+                        <span class="armed-state armed-state--wait"
+                          style={`${span(watch.metAt, watch.metAt + 4)}`}>waiting</span>
+                        <span class="armed-state armed-state--met"
+                          style={`${span(watch.metAt, watch.metAt + 5)}`}>
+                          <svg class="tick" style={`${span(watch.metAt + 1, watch.metAt + 5)}`} viewBox="0 0 16 16" aria-hidden="true">
+                            <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
+                          </svg>
+                          met
+                        </span>
                       </span>
                     ) : (
                       <span class="armed-state">waiting</span>
@@ -419,15 +567,15 @@ const harnesses = [
 
           <!-- The payoff. Every rule the page has been describing held, so it
                says so once, plainly, at the end of the run. -->
-          <div class="console-success" style={`${span(84, 92)}`}>
-            <svg class="tick tick--lg" style={`${span(85, 91)}`} viewBox="0 0 16 16" aria-hidden="true">
+          <div class="console-success" style={`${span(93, 98)}`}>
+            <svg class="tick tick--lg" style={`${span(94, 98)}`} viewBox="0 0 16 16" aria-hidden="true">
               <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
             </svg>
-            <span class="success-head">Mission running clean</span>
+            <span class="success-head">Target hit at {px(MISSION.target)}</span>
             <span class="success-facts">
-              <span>Stop resting at {px(MISSION.stop)}</span>
-              <span>Loss budget untouched</span>
-              <span>{usd(open)} open</span>
+              <span>{usd(reward)} on the plan</span>
+              <span>Stop never touched</span>
+              <span>{rr.toFixed(1)}:1 as planned</span>
             </span>
           </div>
 
@@ -435,10 +583,10 @@ const harnesses = [
                tick on every beat already behind you. -->
           <ol class="beat-rail">
             {BEATS.map((beat) => (
-              <li class="beat" style={`${span(beat.at, beat.at + 10)}`}>
+              <li class="beat" style={`${span(beat.at, beat.at + 6)}`}>
                 <span class="beat-head">
                   <span class="beat-label">{beat.label}</span>
-                  <svg class="tick beat-tick" style={`${span(beat.at + 7, beat.at + 13)}`} viewBox="0 0 16 16" aria-hidden="true">
+                  <svg class="tick beat-tick" style={`${span(beat.at + 5, beat.at + 9)}`} viewBox="0 0 16 16" aria-hidden="true">
                     <path d="M3.4 8.5 6.6 11.6 12.6 4.8" pathLength="1" />
                   </svg>
                 </span>
@@ -1215,12 +1363,90 @@ const harnesses = [
   .chart-svg {
     width: 100%;
     height: auto;
-    aspect-ratio: 900 / 500;
+    aspect-ratio: 900 / 520;
     display: block;
   }
 
   .zone { opacity: 1; }
-  .zone--risk { fill: color-mix(in srgb, var(--loss) 6%, transparent); }
+  .zone--risk { fill: color-mix(in srgb, var(--loss) 7%, transparent); }
+  .zone--reward { fill: color-mix(in srgb, var(--accent) 5%, transparent); }
+
+  /* ── The plan, right of the mark ──────────────────────────── */
+  /* Dashed, because none of it has printed yet. It is revealed by a wipe
+     rather than drawn by a dash offset, which would eat the dashes. */
+  .plan {
+    clip-path: inset(0);
+  }
+
+  .plan-path {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 2;
+    stroke-dasharray: 7 6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 0.85;
+  }
+
+  .dip-dot { fill: var(--loss); }
+
+  .dip-drop {
+    stroke: var(--loss);
+    stroke-width: 1;
+    stroke-dasharray: 3 4;
+    opacity: 0.5;
+  }
+
+  .dip-label {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    fill: var(--loss);
+    stroke: #0a0a0c;
+    stroke-width: 4;
+    paint-order: stroke fill;
+  }
+
+  .stop-hold {
+    stroke: var(--loss);
+    stroke-width: 2.5;
+    opacity: 0;
+  }
+
+  .stop-hold-label {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    fill: var(--loss);
+    stroke: #0a0a0c;
+    stroke-width: 4;
+    paint-order: stroke fill;
+    opacity: 1;
+  }
+
+  /* ── The target prints ────────────────────────────────────── */
+  .target-dot {
+    fill: var(--ok);
+    stroke: #0a0a0c;
+    stroke-width: 2;
+  }
+
+  .target-ping {
+    fill: none;
+    stroke: var(--ok);
+    stroke-width: 1.6;
+    opacity: 0;
+  }
+
+  .target-check path {
+    fill: none;
+    stroke: #06120c;
+    stroke-width: 2.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+  }
 
   /* ── Risk and reward, to scale ────────────────────────────── */
   .rr {
@@ -1347,6 +1573,28 @@ const harnesses = [
     paint-order: stroke fill;
   }
 
+  .grid line {
+    stroke: rgba(255, 255, 255, 0.05);
+    stroke-width: 1;
+  }
+
+  .grid text {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    fill: var(--fg-faint);
+    opacity: 0.55;
+  }
+
+  .target-pays {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    fill: var(--accent);
+    stroke: #0a0a0c;
+    stroke-width: 3.5;
+    paint-order: stroke fill;
+  }
+
   .level--entry { color: var(--fg-muted); }
   .level--entry line { stroke: var(--fg-faint); stroke-dasharray: none; }
   .level--stop { color: var(--loss); }
@@ -1403,12 +1651,21 @@ const harnesses = [
   }
 
   .readout-pnl {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     margin-left: auto;
     font-family: var(--font-mono);
     font-size: 19px;
     font-variant-numeric: tabular-nums;
     color: var(--ok);
     letter-spacing: -0.01em;
+    transform-origin: 100% 50%;
+  }
+
+  .pnl-tick {
+    width: 15px;
+    height: 15px;
   }
 
   .pnl-window {
@@ -1417,19 +1674,27 @@ const harnesses = [
     overflow: hidden;
   }
 
-  /* Rests on the final figure so a browser without scroll timelines shows the
-     number rather than a zero it will never count up from. */
-  .pnl-reel {
+  /* Both reels rest on their final stop, so a browser without scroll
+     timelines shows the figure the run ends on rather than a zero it will
+     never count up from. */
+  .pnl-reel,
+  .pct-reel,
+  .mark-reel {
     display: block;
-    transform: translateY(calc(-16 * 1.3em));
+    transform: translateY(calc(-32 * 1.3em));
   }
 
-  .pnl-reel span {
+  .pnl-step {
     display: block;
     height: 1.3em;
     line-height: 1.3em;
     text-align: right;
+    color: var(--ok);
   }
+
+  /* The reel carries its own colour per stop, so the number turns red through
+     the drawdown without a second animation. */
+  .pnl-step--down { color: var(--loss); }
 
   .readout-progress {
     display: flex;
@@ -1448,18 +1713,25 @@ const harnesses = [
   .progress-fill {
     display: block;
     height: 100%;
-    width: 22.4%;
+    width: 100%;
     border-radius: 999px;
     background: var(--accent);
     transform-origin: 0 50%;
   }
 
   .progress-label {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
     font-family: var(--font-mono);
     font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
     color: var(--fg-dim);
     white-space: nowrap;
   }
+
+  .progress-label .pnl-window { height: 1.3em; }
+  .progress-label .pnl-step { color: inherit; }
 
   .readout-grid {
     display: grid;
@@ -1487,6 +1759,9 @@ const harnesses = [
     text-transform: uppercase;
     color: var(--fg-faint);
   }
+
+  .readout-row dd .pnl-window { height: 1.3em; }
+  .readout-row dd .pnl-step { color: inherit; text-align: right; }
 
   .readout-row dd {
     display: flex;
@@ -1537,7 +1812,23 @@ const harnesses = [
     flex-shrink: 0;
   }
 
-  .armed-row--met .armed-state { color: var(--ok); }
+  /* The two states occupy the same cell so the row never reflows when one
+     replaces the other. */
+  .armed-swap {
+    position: relative;
+    display: grid;
+    flex-shrink: 0;
+  }
+
+  .armed-swap .armed-state {
+    grid-area: 1 / 1;
+    justify-content: flex-end;
+  }
+
+  /* Resting on the met state, so a browser without scroll timelines shows
+     the outcome rather than a wait that never resolves. */
+  .armed-state--met { color: var(--ok); }
+  .armed-state--wait { opacity: 0; }
 
   /* ── The run came out clean ───────────────────────────────── */
   .console-success {
@@ -1576,7 +1867,7 @@ const harnesses = [
   .beat-rail {
     list-style: none;
     display: grid;
-    grid-template-columns: repeat(7, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 1px;
     margin-top: 12px;
     background: var(--border);
@@ -1586,7 +1877,7 @@ const harnesses = [
   }
 
   .beat {
-    padding: 11px 13px 12px;
+    padding: 9px 12px 10px;
     background: rgba(9, 9, 11, 0.9);
     border-top: 2px solid transparent;
     display: flex;
@@ -1615,8 +1906,8 @@ const harnesses = [
   }
 
   .beat-note {
-    font-size: 12px;
-    line-height: 1.4;
+    font-size: 11.5px;
+    line-height: 1.36;
     color: var(--fg-faint);
   }
 
@@ -2191,17 +2482,31 @@ const harnesses = [
 
       .candle,
       .zone,
+      .grid,
       .level,
+      .target-pays,
       .fire-dot,
       .fire-ping,
       .mark-dot,
       .chart-run,
+      .plan,
+      .dip,
+      .stop-hold,
+      .stop-hold-label,
+      .target-hit,
+      .target-ping,
+      .target-check path,
       .pnl-reel,
+      .pct-reel,
+      .mark-reel,
+      .readout-pnl,
       .progress-fill,
       .readout-row,
       .readout-progress,
       .armed-row,
       .armed-state,
+      .armed-state--met,
+      .armed-state--wait,
       .rr-seg,
       .console-success,
       .beat,
@@ -2286,15 +2591,101 @@ const harnesses = [
         animation-fill-mode: both;
       }
 
-      .pnl-reel {
+      /* One reel, three phases, stepped so the digits land rather than
+         slide: up to the open figure, down through the drawdown, out to
+         the target. */
+      .pnl-reel,
+      .pct-reel,
+      .mark-reel {
         animation-name: pnl-count;
-        animation-timing-function: steps(16, end);
+        animation-timing-function: steps(32, end);
         animation-fill-mode: both;
       }
 
       @keyframes pnl-count {
         from { transform: translateY(0); }
-        to { transform: translateY(calc(-16 * 1.3em)); }
+        to { transform: translateY(calc(-32 * 1.3em)); }
+      }
+
+      /* The flash on the step that lands the target. It overshoots, then
+         settles into a soft glow it keeps. */
+      .readout-pnl {
+        animation-name: pnl-flash;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      @keyframes pnl-flash {
+        0% {
+          transform: scale(1);
+          filter: none;
+        }
+        45% {
+          transform: scale(1.16);
+          filter: drop-shadow(0 0 18px color-mix(in srgb, var(--ok) 75%, transparent));
+        }
+        100% {
+          transform: scale(1);
+          filter: drop-shadow(0 0 7px color-mix(in srgb, var(--ok) 30%, transparent));
+        }
+      }
+
+      /* ── The plan and its drama ─────────────────────────────
+         The plan is wiped in left to right, the drawdown arrives at the low,
+         and the stop flares at exactly the moment it is the only thing
+         holding the position. */
+      .plan {
+        animation-name: measure-up;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      .grid,
+      .target-pays,
+      .dip,
+      .target-hit {
+        animation-name: zone-in;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      .stop-hold {
+        animation-name: stop-flare;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      @keyframes stop-flare {
+        0% { opacity: 0; stroke-width: 1; }
+        40% { opacity: 1; stroke-width: 4; }
+        100% { opacity: 0.32; stroke-width: 2; }
+      }
+
+      .stop-hold-label {
+        animation-name: check-in;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      .target-ping {
+        animation-name: target-ping;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        transform-origin: center;
+        transform-box: fill-box;
+      }
+
+      @keyframes target-ping {
+        0% { opacity: 0; transform: scale(0.5); }
+        30% { opacity: 0.95; transform: scale(1.1); }
+        100% { opacity: 0; transform: scale(3.6); }
+      }
+
+      .target-check path {
+        stroke-dashoffset: 1;
+        animation-name: scrub-draw;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
       }
 
       /* The two figures are measured outward from the entry divider, in the
@@ -2346,26 +2737,38 @@ const harnesses = [
         }
       }
 
+      /* The bar bends where the number does. The two stops are RUN_STEPS and
+         RUN_STEPS + DIP_STEPS as a share of PNL_STEPS in the frontmatter
+         (10/32 and 18/32), and the first value is the open PnL as a share of
+         the reward. Retiming the reel means retiming these. */
       .progress-fill {
-        animation-name: bar-fill;
+        animation-name: progress-arc;
         animation-timing-function: linear;
         animation-fill-mode: both;
       }
 
-      @keyframes bar-fill {
-        from { transform: scaleX(0); }
-        to { transform: scaleX(1); }
+      @keyframes progress-arc {
+        0% { transform: scaleX(0); }
+        31.25% { transform: scaleX(0.224); }
+        56.25% { transform: scaleX(0); }
+        100% { transform: scaleX(1); }
       }
 
-      .armed-row--met .armed-state {
-        animation-name: state-met;
+      .armed-state--met {
+        animation-name: zone-in;
         animation-timing-function: linear;
         animation-fill-mode: both;
       }
 
-      @keyframes state-met {
-        from { color: var(--fg-faint); }
-        to { color: var(--ok); }
+      .armed-state--wait {
+        animation-name: state-cleared;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+
+      @keyframes state-cleared {
+        from { opacity: 1; }
+        to { opacity: 0; }
       }
 
       /* The rail step for the current beat lifts out of the row. */
@@ -2455,16 +2858,11 @@ const harnesses = [
   }
 
   /* ── Responsive ───────────────────────────────────────────── */
-  @media (max-width: 1080px) {
-    .checks-inner,
-    .arming-inner {
-      grid-template-columns: 1fr;
-      gap: 44px;
-    }
-
-    /* Pinning a console this tall costs more than a small screen has. It
-       becomes a normal block, and every beat re-times onto `cover` so the
-       same slices now play as the section passes up the screen. */
+  /* Pinning only works while the console fits the viewport it is pinned to.
+     Too narrow or too short and it becomes a normal block, with every beat
+     re-timed onto `cover` so the same slices play as the section passes up
+     the screen instead. */
+  @media (max-width: 1080px), (max-height: 860px) {
     .mission-scroller {
       min-height: 0;
       margin-top: 32px;
@@ -2478,36 +2876,53 @@ const harnesses = [
 
     .candle,
     .zone,
+    .grid,
     .level,
+    .target-pays,
     .fire-dot,
     .fire-ping,
     .mark-dot,
     .chart-run,
+    .plan,
+    .dip,
+    .stop-hold,
+    .stop-hold-label,
+    .target-hit,
+    .target-ping,
+    .target-check path,
     .pnl-reel,
+    .pct-reel,
+    .mark-reel,
+    .readout-pnl,
     .progress-fill,
     .readout-row,
     .readout-progress,
     .armed-row,
     .armed-state,
+    .armed-state--met,
+    .armed-state--wait,
     .rr-seg,
     .console-success,
     .beat,
     .mission-sticky .tick path {
       animation-range: cover var(--from) cover var(--to);
     }
+  }
+
+  @media (max-width: 1080px) {
+    .checks-inner,
+    .arming-inner {
+      grid-template-columns: 1fr;
+      gap: 44px;
+    }
 
     .console {
       grid-template-columns: 1fr;
     }
 
+    /* Nine beats divide evenly by three at every width they are shown at. */
     .beat-rail {
-      grid-template-columns: 1fr 1fr;
-    }
-
-    /* Seven beats in two columns leaves the last row half empty, so the
-       final beat takes the whole row. */
-    .beat:last-child {
-      grid-column: 1 / -1;
+      grid-template-columns: 1fr 1fr 1fr;
     }
 
     .mission-notes {
@@ -2541,6 +2956,10 @@ const harnesses = [
        in user units to stay readable at that scale. */
     .level text { font-size: 21px; stroke-width: 6; }
     .level line { stroke-dasharray: 7 7; }
+    .grid text { font-size: 19px; }
+    .dip-label,
+    .stop-hold-label,
+    .target-pays { font-size: 20px; stroke-width: 6; }
 
     .harness-grid {
       grid-template-columns: 1fr 1fr;
@@ -2575,8 +2994,13 @@ const harnesses = [
     }
 
     .checks-sticky {
-      padding: 76px 0;
+      padding: 60px 0 76px;
     }
+
+    /* Three columns of beat is too narrow to read on a phone. Two, with the
+       last one taking the leftover half-row. */
+    .beat-rail { grid-template-columns: 1fr 1fr; }
+    .beat:last-child { grid-column: 1 / -1; }
 
     /* The band fades in partway through the scroll, so at phone widths it
        stays one line. A wrapped one reserves a tall gap that reads as a hole
