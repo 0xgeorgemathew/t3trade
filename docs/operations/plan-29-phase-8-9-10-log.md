@@ -251,3 +251,57 @@ the keying test, not a filmstrip. If you want to see it move, run the harness
 and watch the third panel.
 
 **Found broken, not mine.** Nothing new.
+
+---
+
+## Pre-8.4 — The journal's `author` column — `0b4cddfe9`
+
+**What changed.** Migration 067 (the free one; 068 is the market samples) adds
+`trading_journal.author`, `TEXT NOT NULL DEFAULT 'model'`. Every row that
+predates it is the model's — nothing but `trading_journal` has ever written
+this table and its only caller is the tool — so the backfill _is_ the default
+and there is no row whose author has to be guessed. I made it NOT NULL rather
+than nullable on purpose: a nullable column makes "unknown author" a third
+state, which means nothing and which every reader would have to handle forever.
+
+`TradingJournalEntry` carries `author: "user" | "model"`, required rather than
+decoded-with-a-default, because an entry is only ever built from a row and the
+column cannot be absent from a row. The service takes an optional `author` and
+defaults it to `model`. `TradingJournalInput` does **not** gain the field: the
+model cannot sign its own notes. A model that could write `author: "user"`
+could manufacture an instruction it was never given, and the journal is read
+back into its own context on every turn.
+
+`TradingMissionTimelineEntry` gained an optional `author` too, and the
+projection query selects it. That is where 8.4's "the user's drag is journaled
+with `author: user`, and the model is told on its next wake" actually becomes
+visible — the timeline is where a session is read back, and two identical grey
+lines would say the model decided something it did not.
+
+**What I found broken, and fixed rather than logged.** The MCP endpoint test
+ran `runMigrations({ toMigrationInclusive: 66 })`. With 067 landed, the column
+was missing from that test's schema and **every one of the thirteen tool tests
+failed at once** — including tools that have nothing to do with the journal —
+because the journal read rides every tool result. The failure named none of
+this: thirteen assertions of `isError === false` getting `true`. I unpinned the
+migration so the endpoint test runs the schema it actually serves, which is
+what stops the next migration doing the same thing. That took a while to find
+and it is the kind of trap worth knowing about: a pinned schema in an
+integration test is a silent withholding of columns.
+
+**Decisions you might have made differently.** Unpinning rather than bumping to 67. A pin is defensible if it deliberately proves the toolkit works against an
+older schema, but there was no comment saying so and the pin was already three
+migrations behind. If it was load-bearing for you, bump it to a pin again and
+say why in a comment.
+
+**Numbers.** `pnpm typecheck` 0 errors. Server trading + mcp + persistence +
+provider + cli + `trading-contracts` + web trading: 1,913 passed / 9 skipped /
+0 failed (156 files). `trading-contracts` alone 428. Three new tests: two on
+the migration (old rows read as `model`; an explicit `user` and a defaulted
+insert coexist) and one asserting the tool stamps `model` on the model's own
+note. One existing fixture updated —
+`contracts.test.ts`'s `trading_look` journal entry now carries its author.
+`pnpm lint` 35 warnings, same 2 pre-existing errors.
+
+**Verified in the browser.** Nothing rendered changed; the column has no UI
+until 8.4 writes to it.
