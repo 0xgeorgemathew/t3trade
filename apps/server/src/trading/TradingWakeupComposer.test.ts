@@ -443,7 +443,8 @@ layer("TradingWakeupComposer", (it) => {
       // has already been handed back, and moving the stop off the entry.
       assert.include(review, "positionCosts");
       assert.include(review, "drawdownFromPeakUsd");
-      assert.include(review, "pnl_giveback");
+      // Plan 29 step 6.3: the brief names the condition the model can write.
+      assert.include(review, "giveback");
     }),
   );
 

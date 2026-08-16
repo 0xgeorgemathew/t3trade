@@ -346,9 +346,39 @@ The evidence the quote row carried — the book, the stop, the plan-27 C1 setup
 snapshot — moved to `trading_entry_context`, keyed by the mission-local
 execution sequence, before the table went.
 
-### Step 6.3 — `watch(condition)`
+### Step 6.3 — `watch(condition)` — LANDED
 
-One predicate union replacing seven watch types.
+One predicate union replacing the eight watch types the model had to choose
+between. `WatchCondition` is five kinds — `price`, `pnl`, `giveback`, `fill`,
+`time` — and `trading_watch` is the one tool that arms one. `MarketWatch`
+survives as the persisted and evaluated encoding, derived by `toMarketWatch`
+and read back by `toWatchCondition`, so no row in `trading_watches` migrated
+and the evaluator, the coverage floor and the wake composer are untouched.
+
+Two defaults are applied because neither can be wrong: a level with no stated
+confirmation is a touch, and a touch with no stated source is the mark. The
+`interval` under `confirm: "close"` is refused rather than guessed — guessing
+it arms a 1h breakout on a 1m wick.
+
+A condition the server will not arm returns `outcome: "refused"` with a
+`recovery`, not a thrown error. `close_needs_interval`,
+`pnl_target_not_a_gain` and `fill_needs_order_or_market` all stand down (rules
+about the condition, so the identical call gets the identical answer); an
+ended mission reads `read_state`. `replacesWatchId` still reaches
+`registerWatch` unchanged, so the cancel and the insert stay one transaction.
+
+Carried forward from the 6.1 review: `listWatchesForRead` bounds the registry
+read that rides every `trading_look`. The cap is not recency — a watch that
+FIRED and has not been reasoned about is older than every level armed after
+it — so every `active` and `triggered` row is returned in full and only the
+settled tail is capped at ten. `listWatches` is unchanged and still unbounded
+for the evaluator, the coverage floor and the composer, none of which may miss
+an armed watch. `trading_execution_sequences` was not touched.
+
+The playbooks and the session doctrine were retranslated into the condition
+vocabulary: they no longer instruct the model in type names it cannot write.
+
+Toolkit is still 12 tools at 3,640 description chars.
 
 ### Step 6.4 — `journal(note?)`
 

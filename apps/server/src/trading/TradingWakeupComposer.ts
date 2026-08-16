@@ -987,7 +987,7 @@ const make = Effect.gen(function* () {
       const positionReview =
         position.size === 0
           ? undefined
-          : `${staleNote}HOLDING — spend this turn on the position. Bank-or-extend against positionCosts (unrealisedPnl minus the remaining exit cost is what banking is worth) and preferredTargetUsd; check drawdownFromPeakUsd against peakUnrealisedPnl; trail the stop (trail_peak / breakeven, or volatility_room if ATR expanded) rather than leaving it where entry put it; keep a pnl_giveback armed under the peak whenever you are in profit.`;
+          : `${staleNote}HOLDING — spend this turn on the position. Bank-or-extend against positionCosts (unrealisedPnl minus the remaining exit cost is what banking is worth) and preferredTargetUsd; check drawdownFromPeakUsd against peakUnrealisedPnl; trail the stop (trail_peak / breakeven, or volatility_room if ATR expanded) rather than leaving it where entry put it; keep a \`giveback\` condition armed under the peak whenever you are in profit.`;
 
       // The other half of the same read: a level that IS armed, with a watch
       // that cannot evaluate the confirmation the trigger declared.
