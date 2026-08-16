@@ -123,11 +123,10 @@ const seed = (options?: { readonly withOpenRun?: boolean; readonly position?: nu
     transientFailuresLeft = 0;
 
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 64 });
+    yield* runMigrations({ toMigrationInclusive: 65 });
     yield* sql`DELETE FROM trading_missions`;
     yield* sql`DELETE FROM trading_authority_versions`;
     yield* sql`DELETE FROM trading_harness_runs`;
-    yield* sql`DELETE FROM trading_entry_quotes`;
     yield* sql`DELETE FROM trading_execution_records`;
     yield* sql`DELETE FROM trading_execution_sequences`;
     yield* sql`DELETE FROM trading_accounts`;

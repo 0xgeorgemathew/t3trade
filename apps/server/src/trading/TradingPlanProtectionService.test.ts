@@ -156,7 +156,7 @@ const protectionLayer = (fake: FakeExchange) =>
 const seed = (input?: { readonly envelopeUsd?: number | null }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 64 });
+    yield* runMigrations({ toMigrationInclusive: 65 });
     yield* sql`DELETE FROM trading_position_snapshots`;
     yield* sql`DELETE FROM trading_execution_records`;
     yield* sql`

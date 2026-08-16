@@ -179,7 +179,6 @@ const seedSessionReportDatabase = (databasePath: string) =>
   Effect.gen(function* () {
     yield* runMigrations();
     const sql = yield* SqlClient.SqlClient;
-    yield* sql`DELETE FROM trading_entry_quotes`;
     yield* sql`DELETE FROM trading_closed_trades`;
     yield* sql`DELETE FROM trading_harness_runs`;
     yield* sql`DELETE FROM trading_plan_history`;
