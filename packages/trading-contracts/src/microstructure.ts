@@ -94,6 +94,59 @@ export const AggressorFlow = Schema.Struct({
 export type AggressorFlow = typeof AggressorFlow.Type;
 
 /**
+ * How far from the mid "near the touch" reaches, in basis points.
+ *
+ * Ten. Size resting further out than that will not be taken inside a holding
+ * period, so counting it would let a wall a full percent away hide the fact
+ * that the first ten bps of the book just emptied.
+ */
+export const NEAR_TOUCH_BPS = 10;
+
+/**
+ * The previous observation's market sample, for the readings that are deltas.
+ *
+ * Depth thinning and open interest moving are facts about change, and the
+ * exchange serves no history for either — so the runtime keeps the last sample
+ * and the next observation compares against it.
+ */
+export const MarketSample = Schema.Struct({
+  markPrice: Schema.Number,
+  spreadBps: Schema.optional(Schema.Number),
+  nearDepthUsd: Schema.optional(Schema.Number),
+  openInterest: Schema.optional(Schema.Number),
+  observedAt: Schema.Number,
+});
+export type MarketSample = typeof MarketSample.Type;
+
+/**
+ * What it currently costs to cross, and how much is standing near the touch.
+ *
+ * A thinning book is the reading that matters here, and it is a reading about
+ * change: depth falling while the spread widens means slippage is about to
+ * rise and the stops resting below are about to be reachable. So the current
+ * values carry their movement since the previous observation beside them, with
+ * the age of that comparison stated — a mission that has not looked in an hour
+ * is told its "change" spans an hour, rather than reading it as a minute's.
+ *
+ * The two change fields are absent on a mission's first observation, and on
+ * any observation whose predecessor could not be read. There is no zero to
+ * report: "unchanged" and "nothing to compare against" are different facts.
+ */
+export const LiquidityReading = Schema.Struct({
+  /** Ask minus bid over the mid, in basis points. */
+  spreadBps: Schema.Number,
+  /** Notional resting within `NEAR_TOUCH_BPS` of the mid, both sides, in USD. */
+  nearDepthUsd: UsdAmount,
+  /** Change in `spreadBps` since the previous observation. Positive is wider. */
+  spreadBpsChange: Schema.optional(Schema.Number),
+  /** Percent change in `nearDepthUsd` since then. Negative is thinning. */
+  depthChangePercent: Schema.optional(Schema.Number),
+  /** Seconds the comparison spans. Absent with the comparison itself. */
+  sinceSeconds: Schema.optional(Schema.Number),
+});
+export type LiquidityReading = typeof LiquidityReading.Type;
+
+/**
  * Everything the book and the tape say, as readings.
  *
  * Every field is optional and independently derived: one unreadable input never
@@ -102,6 +155,7 @@ export type AggressorFlow = typeof AggressorFlow.Type;
 export const MarketMicrostructure = Schema.Struct({
   bookImbalance: Schema.optional(BookImbalance),
   aggressorFlow: Schema.optional(AggressorFlow),
+  liquidity: Schema.optional(LiquidityReading),
 });
 export type MarketMicrostructure = typeof MarketMicrostructure.Type;
 
@@ -171,6 +225,60 @@ export const readAggressorFlow = (
   };
 };
 
+/** Notional resting within `bps` of `mid`, across both sides. */
+const nearTouchDepthUsd = (book: OrderBook, mid: number, bps: number): number => {
+  const window = (mid * bps) / 10_000;
+  let usd = 0;
+  for (const level of book.bids) {
+    if (level.price >= mid - window) usd += level.price * level.size;
+  }
+  for (const level of book.asks) {
+    if (level.price <= mid + window) usd += level.price * level.size;
+  }
+  return usd;
+};
+
+/**
+ * Measure what crossing costs and how much is standing near the touch, and say
+ * how both have moved since the previous observation.
+ *
+ * Returns `null` when the book has no two-sided top — with no bid or no ask
+ * there is no spread, and a one-sided book's "depth" is not the number this
+ * reading claims to be.
+ */
+export const readLiquidity = (input: {
+  readonly orderBook: OrderBook;
+  readonly observedAt: number;
+  readonly previous: MarketSample | null;
+}): LiquidityReading | null => {
+  const bid = input.orderBook.bestBidOffer.bidPrice;
+  const ask = input.orderBook.bestBidOffer.askPrice;
+  if (bid === undefined || ask === undefined || bid <= 0 || ask <= 0) return null;
+  const mid = (bid + ask) / 2;
+  const spreadBps = ((ask - bid) / mid) * 10_000;
+  const nearDepthUsd = nearTouchDepthUsd(input.orderBook, mid, NEAR_TOUCH_BPS);
+
+  const previous = input.previous;
+  // A comparison needs a predecessor that measured the same two things and
+  // measured them earlier. Anything else reports the current values alone.
+  if (
+    previous === null ||
+    previous.spreadBps === undefined ||
+    previous.nearDepthUsd === undefined ||
+    previous.nearDepthUsd <= 0 ||
+    previous.observedAt >= input.observedAt
+  ) {
+    return { spreadBps, nearDepthUsd };
+  }
+  return {
+    spreadBps,
+    nearDepthUsd,
+    spreadBpsChange: spreadBps - previous.spreadBps,
+    depthChangePercent: ((nearDepthUsd - previous.nearDepthUsd) / previous.nearDepthUsd) * 100,
+    sinceSeconds: Math.round((input.observedAt - previous.observedAt) / 1_000),
+  };
+};
+
 /**
  * Every reading, from the inputs one observation already holds.
  *
@@ -182,12 +290,43 @@ export const readMicrostructure = (input: {
   readonly orderBook: OrderBook | null;
   /** The primary-timeframe lookback window the other readings measure over. */
   readonly candles: ReadonlyArray<MarketCandle>;
+  readonly observedAt: number;
+  /** The previous observation's sample, when one was kept. Deltas need it. */
+  readonly previousSample: MarketSample | null;
 }): MarketMicrostructure | null => {
-  const bookImbalance = input.orderBook === null ? null : readBookImbalance(input.orderBook);
+  const book = input.orderBook;
+  const bookImbalance = book === null ? null : readBookImbalance(book);
   const aggressorFlow = readAggressorFlow(input.candles);
-  if (bookImbalance === null && aggressorFlow === null) return null;
+  const liquidity =
+    book === null
+      ? null
+      : readLiquidity({
+          orderBook: book,
+          observedAt: input.observedAt,
+          previous: input.previousSample,
+        });
+  if (bookImbalance === null && aggressorFlow === null && liquidity === null) return null;
   return {
     ...(bookImbalance === null ? {} : { bookImbalance }),
     ...(aggressorFlow === null ? {} : { aggressorFlow }),
+    ...(liquidity === null ? {} : { liquidity }),
   };
 };
+
+/** What this observation should leave behind for the next one to compare against. */
+export const sampleFromObservation = (input: {
+  readonly markPrice: number;
+  readonly observedAt: number;
+  readonly microstructure: MarketMicrostructure | null;
+  readonly openInterest: number | undefined;
+}): MarketSample => ({
+  markPrice: input.markPrice,
+  ...(input.microstructure?.liquidity === undefined
+    ? {}
+    : {
+        spreadBps: input.microstructure.liquidity.spreadBps,
+        nearDepthUsd: input.microstructure.liquidity.nearDepthUsd,
+      }),
+  ...(input.openInterest === undefined ? {} : { openInterest: input.openInterest }),
+  observedAt: input.observedAt,
+});

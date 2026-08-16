@@ -654,6 +654,12 @@ layer("TradingWakeupComposer", (it) => {
       // The tape reading rides the same field, from the same history the
       // volatility measurement was taken over.
       assert.equal(wakeup.microstructure?.aggressorFlow?.bars, 15);
+      // Spread and near-touch depth come off the same book. This database has
+      // no sample table, so the change fields are absent — which is the point:
+      // "nothing to compare against" is stated by their absence, never by a
+      // zero that would read as "unchanged".
+      assert.isDefined(wakeup.microstructure?.liquidity?.spreadBps);
+      assert.isUndefined(wakeup.microstructure?.liquidity?.depthChangePercent);
     }),
   );
 

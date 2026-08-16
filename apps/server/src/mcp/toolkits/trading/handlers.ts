@@ -774,9 +774,23 @@ const describeMarketReadFailure = (market: string, cause: Cause.Cause<unknown>):
  *
  * The unbound half builds them here from its own book read; the mission half
  * takes the composer's, so the two paths measure the same thing.
+ *
+ * An unbound look has no mission to have kept a previous sample under, so it
+ * reports the current spread and depth with no change beside them. That is the
+ * honest answer: there is nothing to compare against, which the schema states
+ * by leaving the change fields absent rather than reporting a zero.
  */
-const withMicrostructure = (orderBook: OrderBook, candles: ReadonlyArray<MarketCandle>) => {
-  const microstructure = readMicrostructure({ orderBook, candles });
+const withMicrostructure = (
+  orderBook: OrderBook,
+  candles: ReadonlyArray<MarketCandle>,
+  observedAt: number,
+) => {
+  const microstructure = readMicrostructure({
+    orderBook,
+    candles,
+    observedAt,
+    previousSample: null,
+  });
   return microstructure === null ? {} : { microstructure };
 };
 
@@ -809,7 +823,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
         candles: candles.candles,
         measuredAt: candles.freshness.observedAt,
       }),
-      ...withMicrostructure(orderBook, candles.candles),
+      ...withMicrostructure(orderBook, candles.candles, snapshot.freshness.observedAt),
       structure,
     };
   }

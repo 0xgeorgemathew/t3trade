@@ -6,7 +6,10 @@ import {
   BOOK_IMBALANCE_LEVELS,
   readAggressorFlow,
   readBookImbalance,
+  readLiquidity,
   readMicrostructure,
+  sampleFromObservation,
+  type MarketSample,
 } from "./microstructure.ts";
 
 const level = (price: number, size: number): OrderBookLevel => ({ price, size });
@@ -144,15 +147,115 @@ describe("readAggressorFlow", () => {
   });
 });
 
+describe("readLiquidity", () => {
+  const twoSided = book({ bids: [level(99.9, 10)], asks: [level(100.1, 10)] });
+
+  it("prices the spread in basis points off the mid", () => {
+    const reading = readLiquidity({ orderBook: twoSided, observedAt: 10_000, previous: null });
+    // 0.2 wide on a mid of 100 is 20 bps.
+    assert.closeTo(reading?.spreadBps ?? 0, 20, 1e-9);
+  });
+
+  it("counts only what rests within ten bps of the mid", () => {
+    // The mid is 100. The far bid sits 100 bps below and must not be counted.
+    const reading = readLiquidity({
+      orderBook: book({
+        bids: [level(99.99, 1), level(99, 1_000)],
+        asks: [level(100.01, 1)],
+      }),
+      observedAt: 10_000,
+      previous: null,
+    });
+    assert.closeTo(reading?.nearDepthUsd ?? 0, 99.99 + 100.01, 1e-9);
+  });
+
+  it("reports no change when there is nothing to compare against", () => {
+    const reading = readLiquidity({ orderBook: twoSided, observedAt: 10_000, previous: null });
+    // Absent, not zero: "unchanged" and "no predecessor" are different facts.
+    assert.isUndefined(reading?.depthChangePercent);
+    assert.isUndefined(reading?.spreadBpsChange);
+    assert.isUndefined(reading?.sinceSeconds);
+  });
+
+  it("reports a thinning book against the previous sample", () => {
+    const previous: MarketSample = {
+      markPrice: 100,
+      spreadBps: 10,
+      nearDepthUsd: 4_000,
+      observedAt: 40_000,
+    };
+    const reading = readLiquidity({ orderBook: twoSided, observedAt: 100_000, previous });
+    // 2000 of depth against 4000: half of it went.
+    assert.closeTo(reading?.depthChangePercent ?? 0, -50, 1e-9);
+    // 20 bps wide against 10: the spread doubled while the book emptied.
+    assert.closeTo(reading?.spreadBpsChange ?? 0, 10, 1e-9);
+    assert.strictEqual(reading?.sinceSeconds, 60);
+  });
+
+  it("refuses a predecessor that is not older than this observation", () => {
+    const reading = readLiquidity({
+      orderBook: twoSided,
+      observedAt: 10_000,
+      previous: { markPrice: 100, spreadBps: 10, nearDepthUsd: 4_000, observedAt: 10_000 },
+    });
+    assert.isUndefined(reading?.depthChangePercent);
+  });
+
+  it("reports nothing without a two-sided top of book", () => {
+    assert.isNull(
+      readLiquidity({
+        orderBook: book({ bids: [level(99.9, 10)], asks: [] }),
+        observedAt: 10_000,
+        previous: null,
+      }),
+    );
+  });
+});
+
+describe("sampleFromObservation", () => {
+  it("carries forward exactly what the next observation compares against", () => {
+    const microstructure = readMicrostructure({
+      orderBook: book({ bids: [level(99.9, 10)], asks: [level(100.1, 10)] }),
+      candles: [],
+      observedAt: 10_000,
+      previousSample: null,
+    });
+    const sample = sampleFromObservation({
+      markPrice: 100,
+      observedAt: 10_000,
+      microstructure,
+      openInterest: 55,
+    });
+    assert.strictEqual(sample.nearDepthUsd, microstructure?.liquidity?.nearDepthUsd);
+    assert.strictEqual(sample.spreadBps, microstructure?.liquidity?.spreadBps);
+    assert.strictEqual(sample.openInterest, 55);
+    assert.strictEqual(sample.observedAt, 10_000);
+  });
+
+  it("leaves the book fields off when there was no book to read", () => {
+    const sample = sampleFromObservation({
+      markPrice: 100,
+      observedAt: 10_000,
+      microstructure: null,
+      openInterest: undefined,
+    });
+    assert.deepStrictEqual(sample, { markPrice: 100, observedAt: 10_000 });
+  });
+});
+
 describe("readMicrostructure", () => {
   it("costs only the fields the missing read would have filled", () => {
-    assert.isNull(readMicrostructure({ orderBook: null, candles: [] }));
+    assert.isNull(
+      readMicrostructure({ orderBook: null, candles: [], observedAt: 0, previousSample: null }),
+    );
   });
 
   it("carries the book reading when the book was read", () => {
     const reading = readMicrostructure({
       orderBook: book({ bids: [level(100, 30)], asks: [level(100, 10)] }),
       candles: [],
+      observedAt: 10_000,
+      previousSample: null,
     });
     assert.strictEqual(reading?.bookImbalance?.imbalance, 0.5);
     // The tape had nothing to split; the book reading survives it alone.

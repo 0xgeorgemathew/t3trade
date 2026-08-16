@@ -35,6 +35,7 @@ import type {
 } from "@t3tools/trading-contracts/market";
 import {
   readMicrostructure,
+  sampleFromObservation,
   type MarketMicrostructure,
 } from "@t3tools/trading-contracts/microstructure";
 import type { LevelHistoryEntry, PreviousStructureRead } from "@t3tools/trading-contracts/wakeup";
@@ -58,6 +59,7 @@ import {
   readLevelHistory,
   readPreviousStructureRead,
 } from "./TradingLevelHistory.ts";
+import { readMarketSample, writeMarketSample } from "./TradingMarketSample.ts";
 
 import type { TradingPlanState } from "./Schemas.ts";
 import type { PersistedWatch } from "./Schemas.ts";
@@ -869,7 +871,34 @@ const make = Effect.gen(function* () {
         ],
         { concurrency: "unbounded" },
       );
-      const microstructure = readMicrostructure({ orderBook, candles: history.candles });
+      // What the previous observation left behind, for the readings that are
+      // deltas. A missing sample costs those two change fields and nothing
+      // else — the current spread and depth are still reported beside them.
+      const previousSample = yield* readMarketSample({
+        missionId: mission.id,
+        market,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+
+      const microstructure = readMicrostructure({
+        orderBook,
+        candles: history.candles,
+        observedAt: occurredAt,
+        previousSample,
+      });
+
+      // ...and what this one leaves for the next. Fire-and-forget by
+      // construction: `writeMarketSample` swallows its own failures, because a
+      // mission that cannot write bookkeeping still has to wake.
+      yield* writeMarketSample({
+        missionId: mission.id,
+        market,
+        sample: sampleFromObservation({
+          markPrice: marketSnapshot.markPrice,
+          observedAt: occurredAt,
+          microstructure,
+          openInterest: marketSnapshot.openInterest,
+        }),
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
 
       // What the levels near the mark have already done to this mission, and
       // what the previous structure read believed (plan 27 B1/B2). Both are
