@@ -425,3 +425,51 @@ refused reconcile" — is a real state the panel has to render. Before this fix 
 was a state that could not occur for a plan without a stated maximum, which
 would have made that half of 8.4 untestable and, worse, would have let a drag
 widen a stop past the approved risk.
+
+---
+
+## Step 8.4a — The publish path becomes callable twice — `355819e23`
+
+**What changed.** Nothing behavioural. `trading_plan`'s handler assembled the
+whole publish sequence inline — `publishPlan`, `announceStrategyPublished` +
+`announceMissionStatus`, the step-4.5 exchange reconcile, and the step-audit
+withdrawal of a resting patient entry. Only the first was a service call, so
+three quarters of what a publish _means_ existed only on the MCP path. That is
+the reason this extraction comes before the drag handler and not with it: a
+drag that called `publishPlan` alone would write a durable plan that never
+reconciled the exchange and never reached the workspace. The stop would move on
+screen and not on Hyperliquid, which is the worst failure this step could ship.
+
+It is now `publishPlanWithAftermath` in a new
+[TradingPlanPublication.ts](../../apps/server/src/trading/TradingPlanPublication.ts),
+with both announce helpers moved along with it (they had no other caller). The
+handler is twenty lines: resolve the bound mission, call it, flatten the
+outcome into the same `warnings` array it returned before.
+
+**One thing that is new, and it is not behaviour.** The outcome carries
+`reconciled` — the `PlanProtectionOutcome` — beside the flattened warnings, and
+a `withdrewRestingEntry` boolean. The MCP handler ignores both; it wants the
+sentences. The drag does not: "accepted publish, refused reconcile" has to
+render the stop _where it actually rests_ and put the plan's own value in the
+hypothetical register 8.1 built, and it cannot do that from a warning string it
+would have to parse. Adding the field now keeps the drag handler from being
+tempted to re-derive the refusal by reading the exchange a second time.
+
+**Decisions you might have made differently.** The function keeps the
+`TradingToolRejectedError` mapping for a mission deleted mid-call, so a non-MCP
+caller inherits an error type named for tools. I left it because the alternative
+— a second error channel that the handler then re-maps — is more moving parts
+than the thing is worth, and `TradingToolRejectedError` is a contracts type, not
+an MCP transport one.
+
+**Numbers.** `pnpm typecheck` 0 errors (suggestions only, all pre-existing).
+`apps/server` `src/trading` + `src/mcp`: 635 passed / 3 skipped, 54 files — the
+publish's existing tests are the proof of no-behaviour-change, and they cover
+the accepted/rejected/refused-reconcile/withdrawn-entry branches already.
+`pnpm lint` 35 warnings and the same 2 pre-existing errors in
+`apps/marketing/scripts/check-scroll-timelines.mjs`.
+
+**Verified in the browser.** Nothing rendered changed; no screenshot. The drag
+that consumes this is the next commit and it is where the shots come.
+
+**Found broken, not mine.** Nothing new.
