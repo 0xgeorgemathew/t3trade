@@ -469,7 +469,26 @@ spent.
 
 ---
 
-## Phase 7 — Enrich the observation
+## Phase 7 — Enrich the observation — LANDED
+
+Six commits, one per step, plus one review fix. Every reading is in
+`packages/trading-contracts/src/microstructure.ts`, built once in
+`TradingWakeupComposer.observe` so the look and the wake cannot disagree, and
+rendered onto the wake for 519 characters against a 5,000-character budget.
+
+Two things worth carrying forward:
+
+- **The book is read once.** `trading_look` used to take its own `getOrderBook`
+  while the wake took none. Both now take the composer's, and the read is
+  guarded with `suspend` + `catchCause` — not `orElseSucceed` — because a
+  gateway that throws while _building_ the effect and one that dies mid-read
+  both produce something the error channel never sees.
+- **A delta needs a gap.** `observe` runs on every look, so the market sample it
+  compares against is only replaced once it is older than
+  `MARKET_SAMPLE_MIN_SPAN_MILLIS`, and the change fields are withheld below it.
+  Without both halves, a model that looked twice in a turn measured open
+  interest over three seconds — during which it never moves — against a mark
+  that had ticked, and read a squeeze that the act of looking had invented.
 
 Independent; can run any time after P0.
 
@@ -511,6 +530,33 @@ information as the candles, more tokens.
 Depends on P4 (the plan's shape decides what is drawn) and on the in-flight
 geometry work landed in Step 0.1.
 
+### The visual system this phase builds inside
+
+`MissionLivePanel` was restyled by hand before this phase started, and the
+result is the baseline every step below works within rather than something to
+be redesigned. It is not up for revision as a side effect of a step:
+
+- **One typeface for figures.** Every number on the panel is mono, at one of
+  two sizes: the P&L at 16px because it is the number being read, everything
+  else at 10.5–11px because it is context for it. Prose — the plan's thesis,
+  the disclosure — stays in the UI face. A proportional face in a column of
+  prices is what made four rows of numbers read as four unrelated facts.
+- **Band legends on the left rule.** `next`, `armed`, `held` — mono, 10px,
+  uppercase, wide-tracked, in the faintest ink on the card (`BAND_LEGEND_CLASS`).
+  They label the row beneath them and are never figures.
+- **Two context bands bracket the checklist.** The schedule strip and the held
+  line share one faint ground a shade off the card (`CONTEXT_BAND_CLASS`), so
+  the checklist between them reads as the panel's centre of gravity.
+- **One number, one place.** P&L, ROI and progress-to-target are header
+  figures; the position strip does not repeat them.
+- **Progress-to-target is drawn in the accent, not the P&L tone.** Distance
+  travelled toward a target is not the same statement as whether the position
+  is up, and painting the rule red through a drawdown said the plan had gone
+  wrong when only the mark had moved.
+
+Any step that changes type, colour or band structure has to say why, and has to
+keep these five rules true or replace them deliberately.
+
 ### Step 8.1 — Finish the future gutter
 
 `nowX`, the gutter and `ChartTimeMarker` exist. Add: bounded trigger segments
@@ -534,15 +580,53 @@ readout. **A drag is a `plan()` revision** — the UI writes the same object the
 model writes. The user's drag wins, is journaled with `author: user`, and the
 model is told on its next wake.
 
+Three things this walks into, none of them optional:
+
+- **The journal has no author.** `trading_journal` is `(id, mission_id, note,
+created_at)` and `TradingJournalEntry` is `(id, note, at)`. `author` is a
+  migration (067 is free; 068 is taken by the market samples) plus a contract
+  field plus a default of `model` for every existing row. Land it before the
+  drag handler, not with it.
+- **A drag sends orders.** `trading_plan` holds an optimistic lock on
+  `expectedMissionVersion`, and since step 4.5 an accepted publish reconciles
+  the exchange immediately — the stop and the resting target move at publish
+  time. So a drag can lose the lock to a model publishing in the same second,
+  and it can be accepted while the reconcile refuses to widen a stop. Both need
+  an answer on screen.
+- **The eight authored fields are the contract.** A drag writes the same fields
+  `tradingPlanAuthoredFields` names, in the same shape. A UI-local plan object
+  would drift, and `misarmedEntryConditions` compares the plan's `confirmation`
+  against the watch's `confirm` on the assumption that it has not.
+
 ### Step 8.5 — Strip the panel
 
 Down to: P&L hero number, the chart, one sentence, and the journal timeline in a
-drawer. Prices become lines, never rows. The model speaks in sentences, never
-fields. Values appear only when actionable.
+drawer. The model speaks in sentences, never fields. Values appear only when
+actionable.
+
+**Amended.** This step was written before the panel was restyled, and one of
+its clauses — "prices become lines, never rows" — now argues with the landed
+design, which deliberately keeps two rows of figures: the armed checklist
+(observed against threshold, read _down_ the list in fixed-width columns) and
+the `held` strip. Those rows are not the duplication the step was aimed at.
+What it was aimed at is a panel that says everything it knows at all times.
+
+So the rule for this step is narrower than the original sentence: a figure
+earns its place by being one the operator would act on now. The checklist rows
+stay — they are the one place a threshold and its live reading sit side by
+side. What goes is anything the chart already draws as a line, anything
+repeated from the header, and any field that is present only because the plan
+has a field for it. Cut _within_ the visual system above; do not replace it.
 
 ### Step 8.6 — State-driven layout
 
 Waiting / in-position / between-trades render differently.
+
+**Partly landed.** `readPanelState` already discriminates
+`planning | armed | live | complete`, and the header, the checklist gate and
+the chart gate already branch on it. What remains is layout rather than
+content: the four states currently draw the same bands in the same order and
+differ only in what is absent. Decide per state what belongs at the top.
 
 ### Step 8.7 — The phone test
 
