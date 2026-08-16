@@ -869,7 +869,7 @@ const make = Effect.gen(function* () {
         ],
         { concurrency: "unbounded" },
       );
-      const microstructure = readMicrostructure({ orderBook });
+      const microstructure = readMicrostructure({ orderBook, candles: history.candles });
 
       // What the levels near the mark have already done to this mission, and
       // what the previous structure read believed (plan 27 B1/B2). Both are

@@ -14,7 +14,7 @@
  */
 import { Schema } from "effect";
 
-import type { OrderBook } from "./market.ts";
+import type { MarketCandle, OrderBook } from "./market.ts";
 import { UsdAmount } from "./primitives.ts";
 
 /**
@@ -55,6 +55,45 @@ export const BookImbalance = Schema.Struct({
 export type BookImbalance = typeof BookImbalance.Type;
 
 /**
+ * How many bars of the primary timeframe the aggressor estimate reads.
+ *
+ * Fifteen, for the same reason the book is measured near the touch: it is the
+ * window the mission is about to trade in. A longer one averages the flow that
+ * is about to matter together with flow that has already been absorbed.
+ */
+export const AGGRESSOR_FLOW_BARS = 15;
+
+/**
+ * Which side of the book recent volume has been crossing into.
+ *
+ * `buyShare` is the share of the window's volume estimated to have lifted the
+ * ask; `1 - buyShare` hit the bid. Above 0.5 is buyers paying up, below is
+ * sellers hitting out, and 0.5 is a two-sided tape.
+ *
+ * ESTIMATED, not counted — and the name of the derivation is on the value so
+ * nothing downstream can mistake one for the other. Hyperliquid's REST surface
+ * serves no trade tape; the true aggressor split needs the WebSocket `trades`
+ * channel and a running accumulator, which is a subscription this observation
+ * does not hold. So each bar is split by where it closed inside its own range —
+ * a bar closing on its high bought all the way up, one closing on its low sold
+ * all the way down — and the splits are weighted by that bar's volume.
+ *
+ * `volume` rides beside it because a lopsided share across a dead tape says
+ * nothing: two trades can put `buyShare` at 1.0.
+ */
+export const AggressorFlow = Schema.Struct({
+  /** Estimated share of window volume crossing into the ask. 0..1. */
+  buyShare: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(1)),
+  /** Total volume over the window, in base units. */
+  volume: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** Bars actually read — a short history serves fewer. */
+  bars: Schema.Number.check(Schema.isGreaterThan(0)),
+  /** How `buyShare` was arrived at. One value today; it is here so it can change. */
+  basis: Schema.Literal("bar_close_location"),
+});
+export type AggressorFlow = typeof AggressorFlow.Type;
+
+/**
  * Everything the book and the tape say, as readings.
  *
  * Every field is optional and independently derived: one unreadable input never
@@ -62,6 +101,7 @@ export type BookImbalance = typeof BookImbalance.Type;
  */
 export const MarketMicrostructure = Schema.Struct({
   bookImbalance: Schema.optional(BookImbalance),
+  aggressorFlow: Schema.optional(AggressorFlow),
 });
 export type MarketMicrostructure = typeof MarketMicrostructure.Type;
 
@@ -100,16 +140,54 @@ export const readBookImbalance = (
 };
 
 /**
- * Everything the book alone can say, from one order book read.
+ * Estimate which side recent volume has been crossing into.
+ *
+ * Returns `null` when the window carries no volume to split — a tape with
+ * nothing on it has no direction, and reporting 0.5 for it would read as
+ * balance rather than absence. Bars with no range contribute their volume at
+ * the midpoint: a bar that opened and closed at one price bought and sold in
+ * equal measure as far as this estimate can tell.
+ */
+export const readAggressorFlow = (
+  candles: ReadonlyArray<MarketCandle>,
+  bars: number = AGGRESSOR_FLOW_BARS,
+): AggressorFlow | null => {
+  const window = candles.slice(-bars);
+  let volume = 0;
+  let buyVolume = 0;
+  for (const candle of window) {
+    if (candle.volume <= 0) continue;
+    const range = candle.high - candle.low;
+    const closeLocation = range > 0 ? (candle.close - candle.low) / range : 0.5;
+    volume += candle.volume;
+    buyVolume += candle.volume * closeLocation;
+  }
+  if (volume <= 0) return null;
+  return {
+    buyShare: buyVolume / volume,
+    volume,
+    bars: window.length,
+    basis: "bar_close_location",
+  };
+};
+
+/**
+ * Every reading, from the inputs one observation already holds.
  *
  * Kept as one entry point so the `trading_look` path and the wake path build
- * the same reading from the same input — they read the same market half
+ * the same readings from the same inputs — they read the same market half
  * through `TradingWakeupComposer.observe`, and this is what that half calls.
  */
 export const readMicrostructure = (input: {
   readonly orderBook: OrderBook | null;
+  /** The primary-timeframe lookback window the other readings measure over. */
+  readonly candles: ReadonlyArray<MarketCandle>;
 }): MarketMicrostructure | null => {
   const bookImbalance = input.orderBook === null ? null : readBookImbalance(input.orderBook);
-  if (bookImbalance === null) return null;
-  return { bookImbalance };
+  const aggressorFlow = readAggressorFlow(input.candles);
+  if (bookImbalance === null && aggressorFlow === null) return null;
+  return {
+    ...(bookImbalance === null ? {} : { bookImbalance }),
+    ...(aggressorFlow === null ? {} : { aggressorFlow }),
+  };
 };

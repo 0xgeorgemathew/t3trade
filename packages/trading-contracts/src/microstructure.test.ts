@@ -1,9 +1,31 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import type { OrderBook, OrderBookLevel } from "./market.ts";
-import { BOOK_IMBALANCE_LEVELS, readBookImbalance, readMicrostructure } from "./microstructure.ts";
+import type { MarketCandle, OrderBook, OrderBookLevel } from "./market.ts";
+import {
+  AGGRESSOR_FLOW_BARS,
+  BOOK_IMBALANCE_LEVELS,
+  readAggressorFlow,
+  readBookImbalance,
+  readMicrostructure,
+} from "./microstructure.ts";
 
 const level = (price: number, size: number): OrderBookLevel => ({ price, size });
+
+/** One bar, named by the four numbers the estimate actually reads. */
+const bar = (input: {
+  readonly low: number;
+  readonly high: number;
+  readonly close: number;
+  readonly volume: number;
+}): MarketCandle => ({
+  openTime: 0,
+  closeTime: 0,
+  open: input.low,
+  close: input.close,
+  high: input.high,
+  low: input.low,
+  volume: input.volume,
+});
 
 const book = (input: {
   readonly bids: ReadonlyArray<OrderBookLevel>;
@@ -73,15 +95,67 @@ describe("readBookImbalance", () => {
   });
 });
 
+describe("readAggressorFlow", () => {
+  it("reads 1 when every bar closed on its high", () => {
+    const reading = readAggressorFlow([
+      bar({ low: 100, high: 110, close: 110, volume: 5 }),
+      bar({ low: 105, high: 115, close: 115, volume: 5 }),
+    ]);
+    assert.strictEqual(reading?.buyShare, 1);
+    assert.strictEqual(reading?.volume, 10);
+    assert.strictEqual(reading?.bars, 2);
+    assert.strictEqual(reading?.basis, "bar_close_location");
+  });
+
+  it("reads 0 when every bar closed on its low", () => {
+    const reading = readAggressorFlow([bar({ low: 100, high: 110, close: 100, volume: 3 })]);
+    assert.strictEqual(reading?.buyShare, 0);
+  });
+
+  it("weights each bar's split by that bar's volume", () => {
+    // A heavy bar closing on its high against a light one closing on its low.
+    const reading = readAggressorFlow([
+      bar({ low: 100, high: 110, close: 110, volume: 9 }),
+      bar({ low: 100, high: 110, close: 100, volume: 1 }),
+    ]);
+    assert.strictEqual(reading?.buyShare, 0.9);
+  });
+
+  it("splits a rangeless bar down the middle rather than guessing", () => {
+    const reading = readAggressorFlow([bar({ low: 100, high: 100, close: 100, volume: 4 })]);
+    assert.strictEqual(reading?.buyShare, 0.5);
+  });
+
+  it("reads only the window, newest bars first to fall inside it", () => {
+    const old = Array.from({ length: 40 }, () =>
+      bar({ low: 100, high: 110, close: 100, volume: 1 }),
+    );
+    const recent = Array.from({ length: AGGRESSOR_FLOW_BARS }, () =>
+      bar({ low: 100, high: 110, close: 110, volume: 1 }),
+    );
+    const reading = readAggressorFlow([...old, ...recent]);
+    assert.strictEqual(reading?.buyShare, 1);
+    assert.strictEqual(reading?.bars, AGGRESSOR_FLOW_BARS);
+  });
+
+  it("reports nothing for a tape with no volume on it", () => {
+    assert.isNull(readAggressorFlow([]));
+    assert.isNull(readAggressorFlow([bar({ low: 100, high: 110, close: 105, volume: 0 })]));
+  });
+});
+
 describe("readMicrostructure", () => {
   it("costs only the fields the missing read would have filled", () => {
-    assert.isNull(readMicrostructure({ orderBook: null }));
+    assert.isNull(readMicrostructure({ orderBook: null, candles: [] }));
   });
 
   it("carries the book reading when the book was read", () => {
     const reading = readMicrostructure({
       orderBook: book({ bids: [level(100, 30)], asks: [level(100, 10)] }),
+      candles: [],
     });
     assert.strictEqual(reading?.bookImbalance?.imbalance, 0.5);
+    // The tape had nothing to split; the book reading survives it alone.
+    assert.isUndefined(reading?.aggressorFlow);
   });
 });

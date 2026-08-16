@@ -651,6 +651,9 @@ layer("TradingWakeupComposer", (it) => {
       // Three on the bid against one on the ask, at one price: (3 - 1) / 4.
       assert.equal(wakeup.microstructure?.bookImbalance?.imbalance, 0.5);
       assert.equal(wakeup.microstructure?.bookImbalance?.levels, 1);
+      // The tape reading rides the same field, from the same history the
+      // volatility measurement was taken over.
+      assert.equal(wakeup.microstructure?.aggressorFlow?.bars, 15);
     }),
   );
 
@@ -677,8 +680,10 @@ layer("TradingWakeupComposer", (it) => {
         ),
       );
 
-      // The reading is gone...
-      assert.equal(wakeup.microstructure, undefined);
+      // The book reading is gone...
+      assert.equal(wakeup.microstructure?.bookImbalance, undefined);
+      // ...and the tape reading, which the book read never fed, is not.
+      assert.isDefined(wakeup.microstructure?.aggressorFlow);
       // ...and everything the wake is actually defined by survived it.
       assert.equal(wakeup.marketSnapshot.markPrice, MARK);
       assert.equal(wakeup.position.size, 0);
