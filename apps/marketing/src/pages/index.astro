@@ -155,8 +155,11 @@ const TARGET_X = planX(1);
    candles too, so the right half reads the same way the left half does and
    each one takes the colour of the direction it closed. They are hollow
    because none of them has happened yet. */
-const PROJ_COUNT = 35;
-const PROJ_SLOT = (PLOT_W - CANDLE_W) / PROJ_COUNT;
+/* The plan sits on the record's own grid: same slot, same width, continuing
+   from the last recorded index. One chart, not two charts side by side. */
+const PROJ_COUNT = Math.floor((PLOT_W - CANDLE_W) / SLOT);
+const tAtX = (x: number) =>
+  Math.min(1, Math.max(0, (x - CANDLE_W) / (PLOT_W - CANDLE_W)));
 
 const planPriceAt = (t: number) => {
   for (let index = 0; index < PLAN.length - 1; index += 1) {
@@ -167,9 +170,10 @@ const planPriceAt = (t: number) => {
   return PLAN[PLAN.length - 1][1];
 };
 
-/* The same seeded walk the record uses. Interpolating the plan on its own
-   gave every candle in a leg the same body, which read as a printed pattern
-   rather than a market. */
+/* The same seeded walk the record uses, down to the jitter and wick figures.
+   Interpolating the plan on its own gave every candle in a leg the same body,
+   and a wider jitter made the plan half look like a rougher market than the
+   half it continues. */
 const projected = (() => {
   let seed = 20260816;
   const rand = () => {
@@ -178,14 +182,13 @@ const projected = (() => {
   };
 
   return Array.from({ length: PROJ_COUNT }, (_, index) => {
-    const openPrice = planPriceAt(index / PROJ_COUNT) + (rand() - 0.5) * 0.95;
-    const closePrice = planPriceAt((index + 1) / PROJ_COUNT) + (rand() - 0.5) * 0.95;
-    const high = Math.max(openPrice, closePrice) + rand() * 0.8;
-    const low = Math.min(openPrice, closePrice) - rand() * 0.8;
+    const x = xOf(CANDLE_COUNT + index);
+    const openPrice = planPriceAt(tAtX(x - SLOT / 2)) + (rand() - 0.5) * 0.5;
+    const closePrice = planPriceAt(tAtX(x + SLOT / 2)) + (rand() - 0.5) * 0.5;
     return {
-      x: CANDLE_W + index * PROJ_SLOT + PROJ_SLOT / 2,
-      high,
-      low,
+      x,
+      high: Math.max(openPrice, closePrice) + rand() * 0.55,
+      low: Math.min(openPrice, closePrice) - rand() * 0.55,
       top: yOf(Math.max(openPrice, closePrice)),
       bottom: yOf(Math.min(openPrice, closePrice)),
       up: closePrice >= openPrice,
@@ -499,7 +502,7 @@ const harnesses = [
                       style={`${span(from, from + 2.6)}; transform-origin: ${candle.x.toFixed(1)}px ${candle.bottom.toFixed(1)}px`}>
                       <line class="proj-wick" x1={candle.x} x2={candle.x}
                         y1={yOf(candle.high)} y2={yOf(candle.low)} />
-                      <rect class="proj-body" x={candle.x - PROJ_SLOT * 0.32} width={PROJ_SLOT * 0.64}
+                      <rect class="proj-body" x={candle.x - SLOT * 0.32} width={SLOT * 0.64}
                         y={candle.top} height={Math.max(1.6, candle.bottom - candle.top)} />
                     </g>
                   );
@@ -1463,16 +1466,17 @@ const harnesses = [
     clip-path: inset(0);
   }
 
+  /* The trend line is one line across the whole chart. The half over the
+     record and the half over the plan carry the same weight, the same ends,
+     and the same two colours the candles use. */
   .plan-path {
     fill: none;
-    stroke-width: 1.8;
-    stroke-dasharray: 6 5;
+    stroke-width: 2.25;
     stroke-linecap: round;
     stroke-linejoin: round;
-    opacity: 0.62;
   }
 
-  .plan-path--up { stroke: var(--accent); }
+  .plan-path--up { stroke: var(--ok); }
   .plan-path--down { stroke: var(--loss); }
 
   /* Solid, like the record. The dashed line running under them is what marks
@@ -1482,10 +1486,11 @@ const harnesses = [
 
   .dip-dot { fill: var(--loss); }
 
+  /* Same weight and dash as the levels it measures between. */
   .dip-drop {
     stroke: var(--loss);
     stroke-width: 1;
-    stroke-dasharray: 3 4;
+    stroke-dasharray: 4 4;
     opacity: 0.5;
   }
 
@@ -1498,9 +1503,12 @@ const harnesses = [
     paint-order: stroke fill;
   }
 
+  /* This is the stop level lighting up, not a second line laid over it, so it
+     keeps the level's dash. */
   .stop-hold {
     stroke: var(--loss);
     stroke-width: 2.5;
+    stroke-dasharray: 4 4;
     opacity: 0;
   }
 
@@ -1702,7 +1710,7 @@ const harnesses = [
   }
 
   .level--entry { color: var(--fg-muted); }
-  .level--entry line { stroke: var(--fg-faint); stroke-dasharray: none; }
+  .level--entry line { stroke: var(--fg-faint); }
   .level--stop { color: var(--loss); }
   .level--stop line { stroke: var(--loss); }
   .level--target { color: var(--accent); }
@@ -1714,7 +1722,9 @@ const harnesses = [
 
   .chart-run {
     fill: none;
-    stroke: var(--accent);
+    /* The same green the up candles and the up legs of the plan use, not the
+       brand accent a shade off it. */
+    stroke: var(--ok);
     stroke-width: 2.25;
     stroke-linecap: round;
     stroke-linejoin: round;
