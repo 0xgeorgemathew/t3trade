@@ -24,6 +24,16 @@ Read this section first; everything below it is the record.
   gitignored, so there is no history to recover. I wrote it back with two
   entries: `web` (`pnpm dev:web`, port 5733) and the harness below. If you had
   other configurations in there, they are gone and I am sorry.
+- **I briefly committed two of your uncommitted files and then took them back
+  out.** `git commit -a` swept `apps/marketing/src/pages/index.astro`,
+  `docs/architecture/agent-tool-architecture-research.md`,
+  `scripts/lib/adhoc-sign-mac.cjs`, `scripts/resolve-previous-release-tag.ts`
+  and `docs/operations/plan-28-standdown-churn.md` into commits of mine. I
+  rewound and they are uncommitted again, as they were — but the pre-commit
+  `vp fmt` hook ran over `plan-28-standdown-churn.md` while it was staged, so
+  that file's working copy is your edit with a formatting pass applied (39
+  lines reflowed, no content changed). Nothing was pushed. From here I stage
+  paths explicitly and never use `-a`.
 - **The panel's gutter tags truncate on a phone.** At 375px the right-edge
   price tags read `1,8|` — the gutter is a fixed 15% of the viewBox, which is
   ~56px at that width. This is pre-existing, not something 8.1 introduced, and
