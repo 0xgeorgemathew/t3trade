@@ -1697,7 +1697,7 @@ a project's.
 | A19a    | The take-profit half of the reconcile is carried back through `OrchestrationReviseTradingPlanResult.target` and surfaced by the panel, so a `failed` placement is not silently redrawn.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | A19b    | The trigger branch and its `PlanDragTarget` variant are deleted, with the three things a real trigger drag would need written into the type's docstring.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | A20     | `SetupAttribution` carries `netUsdPerTrade` and the table sorts by it; the reason line names no best setup below `SETUP_RANKING_MINIMUM_TRADES` (5).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Flakes  | `apps/web`'s unit project moves to a 45s test / 60s hook timeout, with the reason written next to it. Two consecutive full runs are green.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Flakes  | `apps/web`'s unit project moves to a 45s test / 60s hook timeout, with the reason written next to it. **Second pass:** that alone did not fix it. `MessagesTimeline.test.tsx` passed `30_000` as `beforeAll`'s own timeout, and a per-call timeout SILENTLY OVERRIDES the project config — so the one file the raise was aimed at kept failing at 30s, and did, on the very next full run. Both per-call timeouts in that file are removed and the config governs.                                                                                                                                                                                                                                                          |
 
 **Declined, with reasons:**
 
@@ -1716,9 +1716,17 @@ a project's.
   lane must not manage. The existing comment already explains the
   discrimination.
 
-**Two clean runs.** The timeout raise holds: neither full run after it had a
-single timeout, in `imageCompression`, `MessagesTimeline` or anywhere else. The
-only failure either run produced was the real one described above.
+**The flake took two goes.** Two full runs after the config raise were clean,
+which read as proof and was not: `MessagesTimeline.test.tsx` was still timing
+out at its own `beforeAll(…, 30_000)` and simply had not lost the race in those
+two runs. The third run caught it. With both per-call timeouts removed the
+project config finally governs that file, and it imports in 1.6 seconds on its
+own.
+
+The lesson is worth more than the fix: **two green runs do not establish that a
+load-sensitive flake is gone.** During the soak, treat a single timeout as
+signal and check whether the file overrides its own budget before assuming the
+config applies to it.
 
 **One thing left in passing, not fixed.**
 [handlers.test.ts:103](../../apps/server/src/mcp/toolkits/trading/handlers.test.ts:103)

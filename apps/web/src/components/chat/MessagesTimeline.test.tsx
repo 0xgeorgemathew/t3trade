@@ -168,7 +168,12 @@ beforeAll(async () => {
   });
 
   ({ MessagesTimeline } = await import("./MessagesTimeline"));
-}, 30_000);
+  // No per-call timeout: this hook is a module import that takes a few seconds
+  // alone and much longer when the whole monorepo run is competing for the
+  // machine, and a number written here SILENTLY OVERRIDES the project's
+  // `hookTimeout`. That is how this file kept timing out at 30s after
+  // `vite.config.ts` was raised to 60s to stop exactly this.
+});
 
 const ACTIVE_THREAD_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 const MESSAGE_CREATED_AT = "2026-03-17T19:12:28.000Z";
@@ -489,7 +494,10 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("yoo what&#x27;s</p>");
     expect(markup).toContain('<span aria-hidden="true"> </span>');
     expect(markup).toContain("Show full message");
-  }, 20_000);
+    // Same reason as the `beforeAll` above: a per-call timeout here would be
+    // 20s against the project's 45s, and would only ever make this test fail
+    // sooner than the config says it may.
+  });
 
   it("renders chips for standalone element-pick context messages", () => {
     const markup = renderToStaticMarkup(
