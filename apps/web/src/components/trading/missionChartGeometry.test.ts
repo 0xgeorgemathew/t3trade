@@ -1132,9 +1132,16 @@ describe("selectVisibleCandles", () => {
 describe("findLevelAtPrice", () => {
   /** Three drawn levels, of the kinds a mission actually carries at once. */
   const levels = [
-    { kind: "entry" as const, price: 1900, y: 80, inFrame: true, offScale: null },
-    { kind: "stop" as const, price: 1908.5, y: 20, inFrame: true, offScale: null },
-    { kind: "target" as const, price: 1885, y: 150, inFrame: true, offScale: null },
+    { kind: "entry" as const, price: 1900, y: 80, inFrame: true, offScale: null, futureEndX: 880 },
+    { kind: "stop" as const, price: 1908.5, y: 20, inFrame: true, offScale: null, futureEndX: 880 },
+    {
+      kind: "target" as const,
+      price: 1885,
+      y: 150,
+      inFrame: true,
+      offScale: null,
+      futureEndX: 880,
+    },
   ];
 
   it("returns the level a pill's price names", () => {
@@ -1411,5 +1418,93 @@ describe("the two moving averages", () => {
       const last = line.points[line.points.length - 1]!;
       expect(last.y).toBeCloseTo(geometry.yForPrice(line.lastValue), 9);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bounded trigger projections — plan 29 step 8.1
+// ---------------------------------------------------------------------------
+//
+// Every level's rule used to run the full width of the plot, which after the
+// future gutter arrived meant it ran through the gutter too — asserting, in the
+// same ink it uses for the record, that the level will still be there. A named
+// level will be; an armed entry trigger will not, because the plan that armed
+// it goes stale at its own reassessment.
+
+describe("computeChartGeometry — level projections into the future gutter", () => {
+  const candles = fiveWalkingCandles();
+  const lastOpenTime = candles[candles.length - 1]!.openTime;
+  const now = lastOpenTime + 30_000;
+
+  const base = {
+    candles,
+    entryPrice: null,
+    stopPrice: 99,
+    targetPrice: null,
+    liquidationPrice: null,
+    entryTime: null,
+    markPrice: 104,
+    conditions: [{ price: 103, direction: "above" as const, met: false }],
+  } as const;
+
+  it("ends every rule at nowX without a clock, as the review chart draws them", () => {
+    const geometry = computeChartGeometry(base);
+    if (geometry === null) throw new Error("expected geometry");
+
+    for (const level of geometry.levels) {
+      expect(level.futureEndX).toBe(geometry.nowX);
+      expect(level.futureEndX).toBe(PLOT_WIDTH);
+    }
+  });
+
+  it("projects named levels to the frame edge with a clock", () => {
+    const geometry = computeChartGeometry({ ...base, nowMillis: now });
+    if (geometry === null) throw new Error("expected geometry");
+
+    const stop = geometry.levels.find((level) => level.kind === "stop");
+    expect(stop?.futureEndX).toBe(PLOT_WIDTH);
+  });
+
+  it("stops a trigger's projection at the plan's reassessment", () => {
+    // Inside the gutter: the whole future gutter is FUTURE_GUTTER_RATIO of a
+    // window five one-minute bars wide, so ~40s of clock fits in it.
+    const expiry = now + 20_000;
+    const geometry = computeChartGeometry({ ...base, nowMillis: now, triggerExpiryAt: expiry });
+    if (geometry === null) throw new Error("expected geometry");
+
+    const trigger = geometry.levels.find((level) => level.kind === "condition_above");
+    expect(trigger?.futureEndX).toBeCloseTo(geometry.xForTime(expiry), 6);
+    expect(trigger?.futureEndX).toBeGreaterThan(geometry.nowX);
+    expect(trigger?.futureEndX).toBeLessThan(PLOT_WIDTH);
+    // The named levels are untouched by the trigger's horizon.
+    expect(geometry.levels.find((level) => level.kind === "stop")?.futureEndX).toBe(PLOT_WIDTH);
+  });
+
+  it("pins a reassessment beyond the gutter at the frame edge", () => {
+    const geometry = computeChartGeometry({
+      ...base,
+      nowMillis: now,
+      triggerExpiryAt: now + 90 * 60_000,
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.levels.find((level) => level.kind === "condition_above")?.futureEndX).toBe(
+      PLOT_WIDTH,
+    );
+  });
+
+  it("draws no projection at all once the reassessment has passed", () => {
+    // A plan past its own freshness horizon is not a plan the mission is still
+    // waiting on, so its trigger says nothing about the future.
+    const geometry = computeChartGeometry({
+      ...base,
+      nowMillis: now,
+      triggerExpiryAt: now - 60_000,
+    });
+    if (geometry === null) throw new Error("expected geometry");
+
+    expect(geometry.levels.find((level) => level.kind === "condition_above")?.futureEndX).toBe(
+      geometry.nowX,
+    );
   });
 });

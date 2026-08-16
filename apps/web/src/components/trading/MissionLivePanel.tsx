@@ -19,6 +19,12 @@
 // blur, saturation and hairline outline — because two stacked surfaces with
 // different materials read as two objects, and this is one control strip.
 //
+// Every figure on it is set in the mono face, at one of two sizes: the P&L at
+// 16px because it is the number being read, and everything else at 10.5-11px
+// because it is context for that number. Prose — the plan's thesis, the
+// disclosure — stays in the UI face. Mixing a proportional face into a column
+// of prices is what made four rows of numbers read as four unrelated facts.
+//
 // One rule holds the density down: a number appears exactly once. P&L, ROI and
 // progress-to-target are header figures, so the position strip at the foot does
 // not repeat them; the entry price is on the chart and in the strip but nowhere
@@ -78,6 +84,7 @@ import {
   deriveEffectiveLeverage,
   deriveNextReassessmentAt,
   deriveStrategyPlan,
+  deriveTriggerExpiryMillis,
   deriveUpNextItems,
   deriveWatchConditions,
   describeDelayedRead,
@@ -155,6 +162,25 @@ const VISIBLE_BARS = 60;
 /** The panel sits above the composer, so it is a card with its own edges rather
  *  than a band bolted to the header. */
 const PANEL_BOX_CLASS = "mission-panel-glass overflow-hidden rounded-xl border";
+
+/**
+ * The band heading — `next`, `armed`, `held` — that starts each section on the
+ * panel's left rule.
+ *
+ * Mono, wide-tracked and set in the faintest ink on the card: it is a label for
+ * the row beneath it, never a figure to read. The wide tracking is what keeps a
+ * four-letter lowercase word legible at 10px, and it separates the legend from
+ * the mono values in the same band without needing a second colour.
+ */
+const BAND_LEGEND_CLASS =
+  "font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70";
+
+/**
+ * The two context strips — the schedule and the held line — that bracket the
+ * checklist. Both sit on the same faint ground, a shade off the card, so the
+ * checklist between them reads as the panel's centre of gravity.
+ */
+const CONTEXT_BAND_CLASS = "border-t border-border/40 bg-foreground/[0.018] px-3 py-1.5 sm:px-4";
 
 /** Which of the four surfaces the projection says to render. */
 export type PanelState = "planning" | "armed" | "live" | "complete";
@@ -305,6 +331,11 @@ export function MissionLivePanel({
   // axis of moments.
   const nextReassessmentAt = deriveNextReassessmentAt(mission);
 
+  // How far the armed entry triggers are drawn into the future gutter: to the
+  // plan's own reassessment horizon, and no further. A trigger rule running to
+  // the frame edge claims the mission will still be waiting at that price then.
+  const triggerExpiryAt = deriveTriggerExpiryMillis(mission);
+
   // The whole schedule, not just its nearest item. The header's countdown is
   // one reassessment; this is every future event the projection carries.
   const upNext = deriveUpNextItems(mission, nowMillis);
@@ -375,10 +406,10 @@ export function MissionLivePanel({
         )}
       >
         <span className="text-foreground">{mission.market} finished</span>
-        <span className={cn("font-medium tabular-nums", net >= 0 ? "text-profit" : "text-loss")}>
+        <span className={cn("font-mono tabular-nums", net >= 0 ? "text-profit" : "text-loss")}>
           {formatSignedUsd(net)} net
         </span>
-        <span className="tabular-nums text-muted-foreground">
+        <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground/70">
           {mission.result.fillCount} fill{mission.result.fillCount === 1 ? "" : "s"} ·{" "}
           {formatUsd(mission.result.feesPaidUsd)} fees
         </span>
@@ -433,22 +464,28 @@ export function MissionLivePanel({
               isLong={position.size > 0}
             />
             {/* The one figure the operator is actually reading, at the one
-                size on this row that says so. Everything after it is context
+                size on this row that says so, and in the mono face every other
+                figure on the panel is set in. Everything after it is context
                 for it, grouped behind a separator and set in the muted ink
                 the rest of the panel uses for context. */}
-            <span className={cn("text-sm font-semibold leading-none tabular-nums", pnlToneClass)}>
+            <span
+              className={cn(
+                "font-mono text-base leading-none tracking-[-0.01em] tabular-nums",
+                pnlToneClass,
+              )}
+            >
               {formatSignedUsd(position.unrealisedPnl)}
             </span>
             {roiPercent === null ? null : (
-              <span className={cn("tabular-nums", pnlToneClass)}>
+              <span className={cn("font-mono text-xs tabular-nums", pnlToneClass)}>
                 {formatSignedPercent(roiPercent)}
               </span>
             )}
             {progressPercent === null && holdLabel === null ? null : (
-              <span className="flex items-center gap-2 tabular-nums text-muted-foreground">
+              <span className="flex items-center gap-2 font-mono text-[10.5px] tabular-nums text-muted-foreground">
                 {progressPercent === null ? null : (
                   <>
-                    <ProgressToTarget percent={progressPercent} toneClass={pnlToneClass} />
+                    <ProgressToTarget percent={progressPercent} />
                     <span>{Math.round(progressPercent)}% to target</span>
                   </>
                 )}
@@ -511,6 +548,7 @@ export function MissionLivePanel({
           pendingOrder={pendingOrder}
           flash={flash}
           nowMillis={nowMillis}
+          triggerExpiryAt={triggerExpiryAt}
           timeMarkers={timeMarkers}
           pastMarkers={pastMarkers}
         />
@@ -526,11 +564,9 @@ export function MissionLivePanel({
         // makes the row a section rather than a loose set of chips.
         <div
           data-testid="mission-up-next"
-          className="flex flex-wrap items-center gap-1.5 border-t border-border/40 bg-muted/15 px-3 py-1.5 sm:px-4"
+          className={cn("flex flex-wrap items-center gap-1.5", CONTEXT_BAND_CLASS)}
         >
-          <span className="mr-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-            next
-          </span>
+          <span className={cn("mr-0.5", BAND_LEGEND_CLASS)}>next</span>
           {upNext.slice(0, MAX_UP_NEXT_PILLS).map((item) => (
             <UpNextPill
               key={item.key}
@@ -544,7 +580,7 @@ export function MissionLivePanel({
             />
           ))}
           {upNext.length > MAX_UP_NEXT_PILLS ? (
-            <span className="text-[11px] text-muted-foreground">
+            <span className="font-mono text-[10.5px] text-muted-foreground">
               +{upNext.length - MAX_UP_NEXT_PILLS} more
             </span>
           ) : null}
@@ -559,16 +595,14 @@ export function MissionLivePanel({
           {/* The band's own label, on the panel's left rule like every other
               section heading. Without it the rows read as a continuation of
               the pill strip above rather than as the checklist. */}
-          <p className="px-3 pb-0.5 pt-1.5 text-[10px] uppercase tracking-wide text-muted-foreground sm:px-4">
-            armed
-          </p>
+          <p className={cn("px-3 pb-0.5 pt-1.5 sm:px-4", BAND_LEGEND_CLASS)}>armed</p>
           <div className="divide-y divide-border/25">
             {visibleRows.map((row) => (
               <ConditionRow key={row.id} row={row} />
             ))}
           </div>
           {hiddenRows === 0 && droppedConditions === 0 ? null : (
-            <p className="px-3 py-1 text-[11px] text-muted-foreground sm:px-4">
+            <p className="px-3 py-1 font-mono text-[10.5px] text-muted-foreground sm:px-4">
               {hiddenRows > 0
                 ? `+${hiddenRows} more condition${hiddenRows === 1 ? "" : "s"} armed`
                 : `+${droppedConditions} more level${droppedConditions === 1 ? "" : "s"} armed, off the chart`}
@@ -644,18 +678,18 @@ function UpNextPill({
           }
         : {})}
       className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-px text-[11px] tabular-nums",
+        "inline-flex items-center gap-1.5 rounded-full border px-2 py-px font-mono text-[10.5px] tabular-nums",
         item.tone === "warning"
           ? "border-armed/40 bg-armed/10 text-armed"
-          : "border-border/60 bg-muted/40 text-muted-foreground",
-        isClickable && "cursor-pointer transition-colors hover:bg-muted/70",
+          : "border-border/60 bg-foreground/[0.03] text-muted-foreground",
+        isClickable && "cursor-pointer transition-colors hover:bg-foreground/[0.07]",
         isFlashed && "ring-1 ring-foreground/30",
       )}
     >
       <span className="text-foreground">{item.label}</span>
       {item.detail === null ? null : <span>{item.detail}</span>}
       {item.chip === null ? null : (
-        <span className="rounded-full bg-foreground/10 px-1 text-[10px]">{item.chip}</span>
+        <span className="rounded-full bg-foreground/10 px-1 text-[9.5px]">{item.chip}</span>
       )}
     </Tag>
   );
@@ -688,16 +722,20 @@ function PlanningHeader({
   const countdown = formatReassessmentCountdown(nextReassessmentAt);
   return (
     <>
-      <span className="inline-flex flex-none items-center gap-1.5 rounded-full border border-armed/40 bg-armed/10 px-2 py-px text-[11px] font-medium text-armed">
+      <span className="inline-flex flex-none items-center gap-1.5 rounded-full border border-armed/40 bg-armed/10 px-2 py-px font-mono text-[11px] text-armed">
         <span className="size-1.5 animate-pulse rounded-full bg-armed" aria-hidden />
         <span>{market}</span>
       </span>
       <span className="text-foreground">Analysing the market…</span>
       {markPrice === null ? null : (
-        <span className="tabular-nums text-muted-foreground">{formatPrice(markPrice)}</span>
+        <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
+          {formatPrice(markPrice)}
+        </span>
       )}
       {countdown === null ? null : (
-        <span className="tabular-nums text-muted-foreground">{countdown}</span>
+        <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
+          {countdown}
+        </span>
       )}
     </>
   );
@@ -729,7 +767,7 @@ function ArmedHeader({
   const state = plan?.isStandAside === true ? "Standing aside" : "Waiting";
   return (
     <>
-      <span className="inline-flex flex-none items-center gap-1.5 rounded-full border border-armed/40 bg-armed/10 px-2 py-px text-[11px] font-medium text-armed">
+      <span className="inline-flex flex-none items-center gap-1.5 rounded-full border border-armed/40 bg-armed/10 px-2 py-px font-mono text-[11px] text-armed">
         <span>{market}</span>
         <span>{state}</span>
       </span>
@@ -739,20 +777,22 @@ function ArmedHeader({
         </span>
       )}
       {plan?.initialSizeUsd == null ? null : (
-        <span className="tabular-nums text-muted-foreground">
+        <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
           size {formatUsd(plan.initialSizeUsd)}
         </span>
       )}
       {plan?.maxLossUsd == null ? null : (
-        <span className="tabular-nums text-muted-foreground">
+        <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
           max loss {formatUsd(plan.maxLossUsd)}
         </span>
       )}
-      <span className="tabular-nums text-muted-foreground">
+      <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
         up to {formatLeverage(maximumLeverage)}
       </span>
       {countdown === null ? null : (
-        <span className="tabular-nums text-muted-foreground">{countdown}</span>
+        <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
+          {countdown}
+        </span>
       )}
     </>
   );
@@ -783,6 +823,7 @@ function ChartSlot(props: {
   readonly pendingOrder: { readonly price: number; readonly side: "buy" | "sell" } | null;
   readonly flash: { readonly price: number; readonly nonce: number } | null;
   readonly nowMillis: number;
+  readonly triggerExpiryAt: number | null;
   readonly timeMarkers: ReadonlyArray<ChartTimeMarkerInput>;
   readonly pastMarkers: ReadonlyArray<ChartPastMarkerInput>;
 }): ReactNode {
@@ -833,6 +874,7 @@ function ChartSlot(props: {
         pendingOrder={props.pendingOrder}
         flash={props.flash}
         nowMillis={props.nowMillis}
+        {...(props.triggerExpiryAt === null ? {} : { triggerExpiryAt: props.triggerExpiryAt })}
         timeMarkers={props.timeMarkers}
         pastMarkers={props.pastMarkers}
         className={CHART_HEIGHT_CLASS}
@@ -885,23 +927,29 @@ function ConditionRow({ row }: { readonly row: WatchConditionRow }): ReactNode {
   // the values are read DOWN the list against each other, and ragged right
   // edges made four rows of numbers look like four unrelated facts.
   return (
-    <div className="flex items-baseline gap-x-3 px-3 py-1.5 text-xs sm:px-4">
-      <span className="w-4 flex-none text-center">{glyph}</span>
-      <span className="min-w-0 flex-1 truncate text-foreground" title={row.description}>
+    <div className="flex items-baseline gap-x-3 px-3 py-1.5 font-mono text-[11px] sm:px-4">
+      <span className="w-3 flex-none text-center">{glyph}</span>
+      {/* The description names the level; the reading beside it is the figure
+          being read down the list. So the sentence sits a step back from full
+          strength and the numbers keep the foreground ink. */}
+      <span
+        className="min-w-0 flex-1 truncate leading-[1.35] text-foreground/85"
+        title={row.description}
+      >
         {row.description}
       </span>
       <span
         className={cn(
-          "w-20 flex-none text-right tabular-nums",
+          "w-[68px] flex-none text-right tabular-nums",
           row.met ? "text-profit" : "text-foreground",
         )}
       >
         {observed}
       </span>
-      <span className="w-20 flex-none text-right tabular-nums text-muted-foreground">
+      <span className="w-[68px] flex-none text-right tabular-nums text-muted-foreground/70">
         {threshold === null ? "" : `/ ${threshold}`}
       </span>
-      <span className="w-14 flex-none text-right text-[11px] text-muted-foreground">
+      <span className="w-11 flex-none text-right text-muted-foreground/70">
         {row.met ? "met" : "waiting"}
       </span>
     </div>
@@ -986,21 +1034,20 @@ function PlanField({
  * The figure alone ("0% to target") is a number the eye has to read before it
  * means anything; the rule is the same fact at a glance, and it costs one line
  * of the header rather than a band of its own.
+ *
+ * Drawn in the accent rather than in the P&L's tone. Distance travelled toward
+ * the target is not the same statement as whether the position is up or down,
+ * and painting the rule red through a drawdown said the plan itself had gone
+ * wrong when only the mark had moved.
  */
-function ProgressToTarget({
-  percent,
-  toneClass,
-}: {
-  readonly percent: number;
-  readonly toneClass: string;
-}): ReactNode {
+function ProgressToTarget({ percent }: { readonly percent: number }): ReactNode {
   return (
     <span
-      className="inline-block h-1 w-7 overflow-hidden rounded-full bg-foreground/10"
+      className="inline-block h-[3px] w-7 overflow-hidden rounded-full bg-foreground/10"
       aria-hidden
     >
       <span
-        className={cn("block h-full rounded-full bg-current", toneClass)}
+        className="block h-full rounded-full bg-primary"
         style={{ width: `${Math.max(2, Math.min(100, percent))}%` }}
       />
     </span>
@@ -1023,13 +1070,13 @@ function SideChip({
   return (
     <span
       className={cn(
-        "inline-flex flex-none items-center gap-1.5 rounded-full border px-2 py-px text-[11px] font-medium",
+        "inline-flex flex-none items-center gap-1.5 rounded-full border px-2 py-px font-mono text-[11px]",
         tone,
       )}
     >
       <span>{market}</span>
       {leverageLabel === null ? null : (
-        <span className="rounded-sm bg-current/15 px-1 tabular-nums">{leverageLabel}</span>
+        <span className="rounded-[3px] bg-current/15 px-1 tabular-nums">{leverageLabel}</span>
       )}
       <span>{isLong ? "Long" : "Short"}</span>
     </span>
@@ -1072,9 +1119,12 @@ function PositionStrip({
   return (
     <div
       data-testid="mission-position-strip"
-      className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 border-t border-border/40 bg-muted/15 px-3 py-1.5 text-[11px] tabular-nums text-muted-foreground sm:px-4"
+      className={cn(
+        "flex flex-wrap items-baseline gap-x-3 gap-y-0.5 font-mono text-[10.5px] tabular-nums text-muted-foreground/70",
+        CONTEXT_BAND_CLASS,
+      )}
     >
-      <span className="mr-0.5 text-[10px] uppercase tracking-wide">held</span>
+      <span className={cn("mr-0.5", BAND_LEGEND_CLASS)}>held</span>
       <PositionStat label="Size" value={formatSize(Math.abs(size))} />
       {entryPrice === null ? null : <PositionStat label="Entry" value={formatPrice(entryPrice)} />}
       {markPrice === null ? null : <PositionStat label="Mark" value={formatPrice(markPrice)} />}
@@ -1103,7 +1153,7 @@ function PositionStat({
 }): ReactNode {
   return (
     <span>
-      {label} <span className={toneClass ?? "text-foreground"}>{value}</span>
+      {label} <span className={cn("ml-0.5", toneClass ?? "text-foreground")}>{value}</span>
     </span>
   );
 }
@@ -1130,14 +1180,14 @@ function CollapsedRow({
       onClick={onExpand}
       aria-label="Expand chart"
       data-testid="mission-live-panel-collapsed"
-      className="flex w-full items-center gap-2 px-3 text-xs tabular-nums text-muted-foreground sm:px-4"
+      className="flex w-full items-center gap-2 px-3 font-mono text-[11px] tabular-nums text-muted-foreground sm:px-4"
       style={{ height: COLLAPSED_ROW_HEIGHT_PX }}
     >
       <span className="text-foreground">
         {market}
         {leverageLabel === null ? "" : ` ${leverageLabel}`}
       </span>
-      <span className={cn("font-medium", summaryToneClass)}>{summary}</span>
+      <span className={summaryToneClass}>{summary}</span>
       {progressPercent === null ? null : <span>· {Math.round(progressPercent)}% to target</span>}
       <span className="ml-auto">
         <ChevronDown className="size-3.5" aria-hidden />
@@ -1166,7 +1216,7 @@ function FooterRow({ data }: { readonly data: TradingMarketChartView | null }): 
         ? "text-loss"
         : "text-muted-foreground";
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-border/40 px-3 py-1 text-[11px] tabular-nums text-muted-foreground sm:px-4">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-border/40 px-3 py-1 font-mono text-[10.5px] tabular-nums text-muted-foreground/70 sm:px-4">
       <span>
         Funding <span className="text-foreground">{(data.fundingRate8h * 100).toFixed(4)}%</span>/8h
       </span>

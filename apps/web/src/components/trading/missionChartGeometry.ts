@@ -146,6 +146,19 @@ export interface ChartLevel {
    * into the domain and taking the price action's resolution with it.
    */
   readonly offScale: "above" | "below" | null;
+  /**
+   * Where this level's rule stops on the x axis, in viewBox units.
+   *
+   * Everything up to {@link ChartGeometry.nowX} is what the level has been;
+   * everything past it is a projection, drawn in the hypothetical register.
+   * A named level (entry, stop, target) projects to the frame's right edge —
+   * it holds until something moves it. An armed *trigger* does not: the plan
+   * that armed it goes stale at its reassessment, so its projection stops
+   * there, and `futureEndX === nowX` on a plan already past it. Equal to
+   * `nowX` without a clock, which is what keeps the review chart's rules
+   * exactly as long as they were.
+   */
+  readonly futureEndX: number;
   /** Whether an armed condition's predicate is already satisfied. */
   readonly met?: boolean;
   /**
@@ -440,6 +453,17 @@ export interface ComputeChartGeometryInput {
    * is an exit that happened, not a price that is moving.
    */
   readonly nowMillis?: number;
+  /**
+   * When the armed entry triggers stop being the plan the mission is running,
+   * in epoch millis — the plan's own `reassess` horizon.
+   *
+   * The trigger rules are projected into the future gutter only this far. A
+   * level drawn all the way to the frame edge claims the mission will still be
+   * watching it then, and an untriggered plan stops being the plan at its
+   * reassessment. Omitted (or without `nowMillis`), triggers project like every
+   * other level.
+   */
+  readonly triggerExpiryAt?: number;
   /** Future moments to mark on the axis. Ignored without `nowMillis`. */
   readonly timeMarkers?: ReadonlyArray<{
     readonly key: string;
@@ -850,15 +874,21 @@ function buildLevels(input: {
   readonly liquidationPrice: number | null;
   readonly conditions: ReadonlyArray<ChartCondition>;
   readonly pendingOrder: { readonly price: number; readonly side: "buy" | "sell" } | null;
+  /** Where a named level's projection ends — the frame's right edge. */
+  readonly levelEndX: number;
+  /** Where an armed trigger's projection ends. @see ChartLevel.futureEndX */
+  readonly triggerEndX: number;
 }): ChartLevel[] {
   const levels: ChartLevel[] = [];
 
   const pushLevel = (kind: ChartLevelKind, price: number, met?: boolean, count?: number): void => {
     const offScale: "above" | "below" | null =
       price > input.domainMax ? "above" : price < input.domainMin ? "below" : null;
+    const isTrigger = kind === "condition_above" || kind === "condition_below";
     levels.push({
       kind,
       price,
+      futureEndX: isTrigger ? input.triggerEndX : input.levelEndX,
       // Pinned at the edge when off-scale, so the line and its tag stay on
       // screen and the chevron says which way the real price lies.
       y:
@@ -1185,6 +1215,15 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     emaFast === null || emaSlow === null ? [] : [emaSlow, emaFast];
 
   // --- levels --------------------------------------------------------------
+  //
+  // Without a clock there is no future gutter to project into, so every rule
+  // ends at `nowX` — which is the plot's right edge, exactly where the review
+  // chart has always drawn them.
+  const levelEndX = hasClock ? PLOT_WIDTH : nowX;
+  const triggerEndX =
+    hasClock && input.triggerExpiryAt !== undefined
+      ? clamp(xForTime(input.triggerExpiryAt), nowX, PLOT_WIDTH)
+      : levelEndX;
   const levels = buildLevels({
     yForPrice,
     domainMin,
@@ -1195,6 +1234,8 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     liquidationPrice,
     conditions,
     pendingOrder,
+    levelEndX,
+    triggerEndX,
   });
 
   // --- fills: the session's activity, placed on the axis. ------------------

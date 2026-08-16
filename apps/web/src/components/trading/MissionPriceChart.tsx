@@ -90,6 +90,12 @@ interface MissionPriceChartProps {
    */
   readonly nowMillis?: number;
   /**
+   * When the armed entry triggers stop being the plan the mission is running,
+   * in epoch millis. Bounds how far their rules are projected into the future
+   * gutter. Ignored without `nowMillis`.
+   */
+  readonly triggerExpiryAt?: number;
+  /**
    * A level to call attention to, set by clicking its pill in the "Up next"
    * strip. The `nonce` is what makes a second click on the same pill flash
    * again: the overlay is keyed by it, so React remounts the element and the
@@ -118,6 +124,16 @@ interface MissionPriceChartProps {
 
 /** How tall a past-event tick stands off the bottom edge, in viewBox units. */
 const PAST_MARKER_TICK_HEIGHT = 6;
+
+// The hypothetical register — how anything drawn to the right of `now` is
+// distinguished from the record to its left. Thinner than the rule it
+// continues, dashed whatever the rule's own pattern was (a solid entry line
+// running into the gutter claims the entry is a fact out there too), and at
+// three quarters strength. All three together, because any one alone reads as a
+// different level rather than as the same level projected.
+const HYPOTHETICAL_STROKE_WIDTH = 0.75;
+const HYPOTHETICAL_DASH_ARRAY = "2 5";
+const HYPOTHETICAL_OPACITY = 0.75;
 
 /**
  * The colour of a past-event tick, by what the event was — plan 24 §4.1.
@@ -335,6 +351,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     pendingOrder,
     flash,
     nowMillis,
+    triggerExpiryAt,
     timeMarkers,
     pastMarkers,
     className,
@@ -352,6 +369,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     ...(fills === undefined ? {} : { fills }),
     ...(pendingOrder === undefined ? {} : { pendingOrder }),
     ...(nowMillis === undefined ? {} : { nowMillis }),
+    ...(triggerExpiryAt === undefined ? {} : { triggerExpiryAt }),
     ...(timeMarkers === undefined ? {} : { timeMarkers }),
     ...(pastMarkers === undefined ? {} : { pastMarkers }),
   });
@@ -387,6 +405,20 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         className="h-full w-full"
         aria-hidden="true"
       >
+        {/* The future gutter's own ground: a faint wash from now to the frame
+            edge, so everything standing in it is read as a claim about what
+            has not happened rather than as part of the record to its left. */}
+        {geometry.nowX < PLOT_WIDTH ? (
+          <rect
+            x={geometry.nowX}
+            y={0}
+            width={PLOT_WIDTH - geometry.nowX}
+            height={CHART_VIEWBOX_HEIGHT}
+            fill="color-mix(in oklab, var(--color-foreground) 4%, transparent)"
+            stroke="none"
+          />
+        ) : null}
+
         {/* The band between the line and the entry — the trade's P&L, as an
             area. Denser than the old baseline slab was, because it is now a
             thin band around the entry rather than half the frame. */}
@@ -556,20 +588,39 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           />
         ))}
 
-        {/* Horizontal price levels. The tags they belong to live in the HTML
+        {/* Horizontal price levels, in two registers. Up to `nowX` the rule is
+            the record — this price has been the stop, the target, the level
+            being watched. Past it the same rule is a projection, so it is
+            drawn thinner, dashed and at half strength, and a trigger's
+            projection stops at the reassessment that ends its plan rather than
+            running to the frame edge. The tags they belong to live in the HTML
             gutter below, so nothing here is text. */}
         {geometry.levels.map((level) => (
-          <line
-            key={`${level.kind}-${level.price}`}
-            x1={0}
-            y1={level.y}
-            x2={PLOT_WIDTH}
-            y2={level.y}
-            stroke={levelRuleColor(level.kind)}
-            strokeWidth={1}
-            strokeDasharray={levelDashArray(level.kind)}
-            vectorEffect="non-scaling-stroke"
-          />
+          <g key={`${level.kind}-${level.price}`}>
+            <line
+              x1={0}
+              y1={level.y}
+              x2={geometry.nowX}
+              y2={level.y}
+              stroke={levelRuleColor(level.kind)}
+              strokeWidth={1}
+              strokeDasharray={levelDashArray(level.kind)}
+              vectorEffect="non-scaling-stroke"
+            />
+            {level.futureEndX > geometry.nowX ? (
+              <line
+                x1={geometry.nowX}
+                y1={level.y}
+                x2={level.futureEndX}
+                y2={level.y}
+                stroke={levelRuleColor(level.kind)}
+                strokeWidth={HYPOTHETICAL_STROKE_WIDTH}
+                strokeDasharray={HYPOTHETICAL_DASH_ARRAY}
+                opacity={HYPOTHETICAL_OPACITY}
+                vectorEffect="non-scaling-stroke"
+              />
+            ) : null}
+          </g>
         ))}
 
         {/* The flashed level: the same rule, drawn once more in its own ink and
@@ -582,7 +633,9 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
             className="mission-level-flash"
             x1={0}
             y1={flashedLevel.y}
-            x2={PLOT_WIDTH}
+            // Stops at now, like the rule it is highlighting: a flash running
+            // into the gutter would be the one saturated thing in it.
+            x2={geometry.nowX}
             y2={flashedLevel.y}
             stroke={levelInkColor(flashedLevel.kind)}
             strokeWidth={2}

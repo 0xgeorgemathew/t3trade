@@ -34,6 +34,7 @@ import {
   MAX_DRAWN_TIME_MARKERS,
   derivePausedExposure,
   deriveStrategyPlan,
+  deriveTriggerExpiryMillis,
   describeDelayedRead,
   describeStaleness,
   formatLeverage,
@@ -1861,5 +1862,35 @@ describe("deriveChartPastMarkers", () => {
 
   it("is empty for a mission with no timeline at all", () => {
     expect(deriveChartPastMarkers({})).toEqual([]);
+  });
+});
+
+describe("deriveTriggerExpiryMillis", () => {
+  const publishedAt = 1_700_000_000_000;
+
+  it("is the publish plus the plan's own freshness window", () => {
+    expect(
+      deriveTriggerExpiryMillis({
+        position: null,
+        strategy: { updatedAt: publishedAt, reassess: { afterMinutes: 90 } },
+      }),
+    ).toBe(publishedAt + 90 * 60_000);
+  });
+
+  it("is null while a position is held", () => {
+    // `reassess` bounds an UNtriggered plan. The levels a holding mission
+    // watches — its profit rung, its stop proximity — are not on that clock,
+    // and cutting them short in the gutter would say they lapse when they do
+    // not.
+    expect(
+      deriveTriggerExpiryMillis({
+        position: { size: 0.4 },
+        strategy: { updatedAt: publishedAt, reassess: { afterMinutes: 90 } },
+      }),
+    ).toBeNull();
+  });
+
+  it("is null before a plan is published", () => {
+    expect(deriveTriggerExpiryMillis({ position: null, strategy: null })).toBeNull();
   });
 });

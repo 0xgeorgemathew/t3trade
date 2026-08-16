@@ -1686,6 +1686,33 @@ export function deriveChartConditions(
 }
 
 /**
+ * The moment the plan's armed entry triggers stop being the current plan.
+ *
+ * A plan states how long it stays fresh untriggered (`reassess.afterMinutes`),
+ * measured from the publish that authored it. That is the honest right-hand
+ * bound on drawing an entry trigger into the future: past it the mission is
+ * meant to be reassessing, not still waiting at that price.
+ *
+ * Null once there is a position — `reassess` is about an *untriggered* plan,
+ * and the levels a holding mission watches (its profit rung, its stop
+ * proximity) are not on that clock. Null too without a plan to read.
+ */
+export function deriveTriggerExpiryMillis(mission: {
+  readonly position?: { readonly size: number } | null;
+  readonly strategy: {
+    readonly updatedAt: number;
+    readonly reassess: { readonly afterMinutes: number };
+  } | null;
+}): number | null {
+  const strategy = mission.strategy;
+  if (strategy === null) return null;
+  if ((mission.position?.size ?? 0) !== 0) return null;
+  const minutes = strategy.reassess?.afterMinutes;
+  if (typeof minutes !== "number" || !(minutes > 0)) return null;
+  return strategy.updatedAt + minutes * 60_000;
+}
+
+/**
  * What a fill was, in the one dimension a chart marker can carry.
  *
  * An open and a close are the two ends of a position's life, and a close is
