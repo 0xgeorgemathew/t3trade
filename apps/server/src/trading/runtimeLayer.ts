@@ -52,7 +52,7 @@ import { TradingTradeHistoryServiceLive } from "./TradingTradeHistoryService.ts"
 import { TradingCalibrationServiceLive } from "./TradingCalibrationService.ts";
 import { TradingStopAdjustmentServiceLive } from "./TradingStopAdjustmentService.ts";
 import { TradingExitServiceLive } from "./TradingExitService.ts";
-import { TradingQuoteServiceLive } from "./TradingQuoteService.ts";
+import { TradingEntryServiceLive } from "./TradingEntryService.ts";
 
 const httpWithNode = FetchHttpClient.layer.pipe(Layer.provide(NodeServices.layer));
 const infoWithHttp = HyperliquidInfoClientLive.pipe(Layer.provide(httpWithNode));
@@ -124,7 +124,7 @@ const TradingFoundation = Layer.mergeAll(
   AutoMissionConfigLive.pipe(Layer.provide(InterimSignerConfigLive)),
   exchangeWithHttp,
   // One shared set of execution latches: the reactor opens them, the tool
-  // waiting on `trading_execute` blocks on them. Built here so both sides see
+  // waiting on `trading_enter` blocks on them. Built here so both sides see
   // the same instance rather than two maps that never meet.
   TradingExecutionReceiptsLive,
   HyperliquidNonceCoordinatorLive(),
@@ -200,10 +200,10 @@ export const TradingLayerLive = Layer.mergeAll(
     Layer.provide(TradingMissionServiceLive),
     Layer.provide(TradingStrategyServiceLive),
   ),
-  // `trading_quote_entry` prices and sizes an entry against the mission, the
+  // `trading_enter` prices and sizes an entry against the mission, the
   // lease, the live book and the budget, so it needs the mission service and
   // the slippage config at build; everything else it reads per call.
-  TradingQuoteServiceLive.pipe(
+  TradingEntryServiceLive.pipe(
     Layer.provide(TradingMissionServiceLive),
     Layer.provide(IocSlippageConfigLive),
     Layer.provide(TradingBudgetReaderLive),

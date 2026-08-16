@@ -3,17 +3,17 @@ import { Schema } from "effect";
 
 import {
   deriveFeasibleSize,
-  deriveQuoteLimitPrice,
-  TradingQuoteEntryInput,
-  type QuoteSizingInput,
-} from "./quote.ts";
+  deriveEntryLimitPrice,
+  TradingEnterInput,
+  type EntrySizingInput,
+} from "./entry.ts";
 
 /**
  * A long at 2000 with its stop 10 below, on a mission whose ceilings are all
  * generous. Each test tightens exactly one of them, so the constraint the
  * sizing names is the one the test moved.
  */
-const base: QuoteSizingInput = {
+const base: EntrySizingInput = {
   side: "buy",
   entryPrice: 2_000,
   stopPrice: 1_990,
@@ -38,7 +38,7 @@ describe("deriveFeasibleSize", () => {
     assert.strictEqual(sizing.constrainedBy, "requested");
     // Getting the size asked for says nothing about how much of the approved
     // trade it is: 0.5 ETH is a twentieth of what the ceilings here allow, and
-    // the quote can only say so because the ceiling is reported alongside.
+    // the server can only say so because the ceiling is reported alongside.
     assert.strictEqual(sizing.ceilingSize, 10);
     assert.strictEqual(sizing.plannedLossAtStopUsd, 5);
     // 5 planned loss + 1000 notional x (2 x 4.5 + 10) bps.
@@ -93,7 +93,7 @@ describe("deriveFeasibleSize", () => {
     assert.isAtMost(byBudget.reservedRiskUsd, 15);
   });
 
-  it("returns a budget-bound quote whose full reservation clears the budget", () => {
+  it("returns a budget-bound size whose full reservation clears the budget", () => {
     const sizing = deriveFeasibleSize({
       ...base,
       remainingCumulativeLossUsd: 15,
@@ -105,7 +105,7 @@ describe("deriveFeasibleSize", () => {
     assert.isAtMost(sizing.reservedRiskUsd, 15);
   });
 
-  it("quotes the largest feasible size when none was asked for", () => {
+  it("takes the largest feasible size when none was asked for", () => {
     const sizing = deriveFeasibleSize({ ...base, maximumPlannedRiskPerPositionUsd: 30 });
 
     assert.strictEqual(sizing.size, 3);
@@ -147,14 +147,14 @@ describe("deriveFeasibleSize", () => {
   });
 });
 
-describe("deriveQuoteLimitPrice", () => {
+describe("deriveEntryLimitPrice", () => {
   it("crosses the far side for a marketable order and rests on the near side otherwise", () => {
     const book = { bestBid: 1_999, bestAsk: 2_001, slippageBps: 50 };
 
-    const buy = deriveQuoteLimitPrice({ ...book, side: "buy", orderPreference: "marketable_ioc" });
+    const buy = deriveEntryLimitPrice({ ...book, side: "buy", orderPreference: "marketable_ioc" });
     assert.isAbove(buy, book.bestAsk);
 
-    const sell = deriveQuoteLimitPrice({
+    const sell = deriveEntryLimitPrice({
       ...book,
       side: "sell",
       orderPreference: "marketable_ioc",
@@ -162,11 +162,11 @@ describe("deriveQuoteLimitPrice", () => {
     assert.isBelow(sell, book.bestBid);
 
     assert.strictEqual(
-      deriveQuoteLimitPrice({ ...book, side: "buy", orderPreference: "resting_limit" }),
+      deriveEntryLimitPrice({ ...book, side: "buy", orderPreference: "resting_limit" }),
       book.bestBid,
     );
     assert.strictEqual(
-      deriveQuoteLimitPrice({ ...book, side: "sell", orderPreference: "resting_limit" }),
+      deriveEntryLimitPrice({ ...book, side: "sell", orderPreference: "resting_limit" }),
       book.bestAsk,
     );
   });
@@ -174,11 +174,11 @@ describe("deriveQuoteLimitPrice", () => {
   it("prices a post-only order at the near side, never through the book", () => {
     const book = { bestBid: 1_999, bestAsk: 2_001, slippageBps: 50 };
 
-    const buy = deriveQuoteLimitPrice({ ...book, side: "buy", orderPreference: "post_only" });
+    const buy = deriveEntryLimitPrice({ ...book, side: "buy", orderPreference: "post_only" });
     assert.strictEqual(buy, book.bestBid);
     assert.isBelow(buy, book.bestAsk);
 
-    const sell = deriveQuoteLimitPrice({ ...book, side: "sell", orderPreference: "post_only" });
+    const sell = deriveEntryLimitPrice({ ...book, side: "sell", orderPreference: "post_only" });
     assert.strictEqual(sell, book.bestAsk);
     assert.isAbove(sell, book.bestBid);
   });
@@ -228,9 +228,9 @@ describe("sizing to the plan's own profit target", () => {
   });
 });
 
-describe("TradingQuoteEntryInput", () => {
+describe("TradingEnterInput", () => {
   it("rejects two competing size instructions", () => {
-    const decode = Schema.decodeUnknownSync(TradingQuoteEntryInput);
+    const decode = Schema.decodeUnknownSync(TradingEnterInput);
     assert.throws(() =>
       decode({ market: "ETH", side: "buy", stopPrice: 1_900, sizeEth: 1, notionalUsd: 2_000 }),
     );
@@ -238,7 +238,7 @@ describe("TradingQuoteEntryInput", () => {
   });
 
   it("defaults urgency to now, and accepts an explicit patient", () => {
-    const decode = Schema.decodeUnknownSync(TradingQuoteEntryInput);
+    const decode = Schema.decodeUnknownSync(TradingEnterInput);
     const base = { market: "ETH", side: "buy", stopPrice: 1_900 } as const;
 
     // The harness states urgency, never a time-in-force: an omitted one is a

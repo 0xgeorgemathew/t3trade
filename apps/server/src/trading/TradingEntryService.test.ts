@@ -14,7 +14,7 @@ import type { TradingHarnessBinding } from "./Schemas.ts";
 import { TradingBudgetReaderLive } from "./TradingBudgetReader.ts";
 import { TradingCostEstimatorLive } from "./TradingCostEstimator.ts";
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
-import { TradingQuoteService, TradingQuoteServiceLive } from "./TradingQuoteService.ts";
+import { TradingEntryService, TradingEntryServiceLive } from "./TradingEntryService.ts";
 
 const freshness = { observedAt: 1_000, source: "info_api", staleAfterMillis: 2_000 } as const;
 
@@ -47,7 +47,7 @@ const book: OrderBook = {
   freshness,
 };
 
-const unusedRead = () => Effect.die("not used by TradingQuoteService tests");
+const unusedRead = () => Effect.die("not used by TradingEntryService tests");
 
 const stubGateway = Layer.succeed(HyperliquidGateway, {
   resolveMarket: () =>
@@ -76,7 +76,7 @@ const stubGateway = Layer.succeed(HyperliquidGateway, {
 
 const layer = it.layer(
   Layer.mergeAll(
-    TradingQuoteServiceLive.pipe(
+    TradingEntryServiceLive.pipe(
       Layer.provide(TradingMissionServiceLive),
       Layer.provide(IocSlippageConfigLive),
       Layer.provide(TradingBudgetReaderLive),
@@ -98,8 +98,8 @@ const harness: TradingHarnessBinding = {
 };
 
 /**
- * A mission with a published strategy and one open harness run — the state a
- * quote is only cut inside. Each test starts from the same clean slate.
+ * A mission with a published strategy and one open harness run — the state an
+ * entry is only prepared inside. Each test starts from the same clean slate.
  */
 const seed = (options?: { readonly withOpenRun?: boolean }) =>
   Effect.gen(function* () {
@@ -108,14 +108,14 @@ const seed = (options?: { readonly withOpenRun?: boolean }) =>
     yield* sql`DELETE FROM trading_missions`;
     yield* sql`DELETE FROM trading_authority_versions`;
     yield* sql`DELETE FROM trading_harness_runs`;
-    yield* sql`DELETE FROM trading_entry_quotes`;
+    yield* sql`DELETE FROM trading_entry_context`;
     yield* sql`DELETE FROM trading_execution_records`;
     yield* sql`DELETE FROM trading_execution_sequences`;
     yield* sql`DELETE FROM trading_accounts`;
 
     // The master wallet is the §10.6 identity every account and fee read uses.
     const walletJson =
-      '{"privyWalletId":"wallet-quote","address":"0x000000000000000000000000000000000000beef","ownership":"user"}';
+      '{"privyWalletId":"wallet-entry","address":"0x000000000000000000000000000000000000beef","ownership":"user"}';
     yield* sql`
       INSERT INTO trading_accounts (
         account_id, user_id, environment, master_wallet_json,
@@ -132,7 +132,7 @@ const seed = (options?: { readonly withOpenRun?: boolean }) =>
       allocatedCapitalUsd: 1_000,
       harness,
     });
-    // A quote runs the real preview, which requires a live mission.
+    // Preparing runs the real preview, which requires a live mission.
     yield* sql`UPDATE trading_missions SET status = 'waiting' WHERE mission_id = 'mission_1'`;
 
     if (options?.withOpenRun !== false) {
@@ -143,9 +143,9 @@ const seed = (options?: { readonly withOpenRun?: boolean }) =>
     }
   });
 
-const quoteALong = Effect.gen(function* () {
-  const quotes = yield* TradingQuoteService;
-  return yield* quotes.quote({
+const enterALong = Effect.gen(function* () {
+  const entries = yield* TradingEntryService;
+  return yield* entries.prepare({
     missionId: "mission_1",
     market: "ETH",
     side: "buy",
@@ -154,38 +154,64 @@ const quoteALong = Effect.gen(function* () {
   });
 });
 
-layer("TradingQuoteService", (it) => {
+layer("TradingEntryService", (it) => {
   it.effect("derives the whole order from a side, a stop, and a size", () =>
     Effect.gen(function* () {
       yield* seed();
 
-      const result = yield* quoteALong;
+      const result = yield* enterALong;
 
-      assert.strictEqual(result.outcome, "quoted");
-      if (result.outcome !== "quoted") return;
-      const quote = result.quote;
+      assert.strictEqual(result.outcome, "prepared");
+      if (result.outcome !== "prepared") return;
 
       // Nothing here was supplied by the caller.
-      assert.strictEqual(quote.harnessRunId, "run_1");
-      assert.strictEqual(quote.executionSequence, 0);
-      assert.strictEqual(quote.size, 0.05);
-      assert.strictEqual(quote.constrainedBy, "requested");
+      assert.strictEqual(result.activeHarnessRunId, "run_1");
+      assert.strictEqual(result.intent.executionSequence, 0);
+      assert.strictEqual(result.size, 0.05);
+      assert.strictEqual(result.constrainedBy, "requested");
       // A marketable buy has to cross, so the limit sits above the ask.
-      assert.isAbove(quote.limitPrice, bestBidOffer.askPrice);
+      assert.isAbove(result.intent.limitPrice, bestBidOffer.askPrice);
       // Planned loss is size x the distance from the fill price to the stop.
-      assert.closeTo(quote.plannedLossAtStopUsd, 0.05 * (2_000.5 - 1_980), 1e-9);
-      assert.isAbove(quote.expiresAt, quote.quotedAt);
+      assert.closeTo(result.plannedLossAtStopUsd, 0.05 * (2_000.5 - 1_980), 1e-9);
+      assert.strictEqual(result.intent.stop?.stopPrice, 1_980);
+    }),
+  );
+
+  it.effect("records the entry's evidence before the order goes out", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+
+      const result = yield* enterALong;
+      assert.strictEqual(result.outcome, "prepared");
+      if (result.outcome !== "prepared") return;
+
+      const rows = yield* sql<{
+        readonly execution_sequence: number;
+        readonly entry_price: number;
+        readonly stop_price: number;
+        readonly best_ask: number;
+      }>`
+        SELECT execution_sequence, entry_price, stop_price, best_ask
+        FROM trading_entry_context WHERE mission_id = 'mission_1'
+      `;
+      assert.strictEqual(rows.length, 1);
+      assert.strictEqual(rows[0]?.execution_sequence, result.intent.executionSequence);
+      // A buy is filled at the ask, not at the padded crossing limit.
+      assert.strictEqual(rows[0]?.entry_price, bestBidOffer.askPrice);
+      assert.strictEqual(rows[0]?.best_ask, bestBidOffer.askPrice);
+      assert.strictEqual(rows[0]?.stop_price, 1_980);
     }),
   );
 
   it.effect("proposes the size a ceiling allows instead of refusing the one asked for", () =>
     Effect.gen(function* () {
       yield* seed();
-      const quotes = yield* TradingQuoteService;
+      const entries = yield* TradingEntryService;
 
       // 200 ETH is far past both the leverage and the gross-notional ceilings
       // a $1,000 allocation carries.
-      const result = yield* quotes.quote({
+      const result = yield* entries.prepare({
         missionId: "mission_1",
         market: "ETH",
         side: "buy",
@@ -193,21 +219,20 @@ layer("TradingQuoteService", (it) => {
         sizeEth: 200,
       });
 
-      assert.strictEqual(result.outcome, "quoted");
-      if (result.outcome !== "quoted") return;
-      assert.isBelow(result.quote.size, 200);
-      assert.strictEqual(result.quote.requestedSize, 200);
-      assert.notStrictEqual(result.quote.constrainedBy, "requested");
-      assert.isAbove(result.warnings.length, 0);
+      assert.strictEqual(result.outcome, "prepared");
+      if (result.outcome !== "prepared") return;
+      assert.isBelow(result.size, 200);
+      assert.notStrictEqual(result.constrainedBy, "requested");
+      assert.isAbove(result.notes.length, 0);
     }),
   );
 
   it.effect("refuses a stop on the winning side, and says so in the harness's terms", () =>
     Effect.gen(function* () {
       yield* seed();
-      const quotes = yield* TradingQuoteService;
+      const entries = yield* TradingEntryService;
 
-      const result = yield* quotes.quote({
+      const result = yield* entries.prepare({
         missionId: "mission_1",
         market: "ETH",
         side: "buy",
@@ -221,11 +246,11 @@ layer("TradingQuoteService", (it) => {
     }),
   );
 
-  it.effect("will not quote outside a turn that owns the decision lease", () =>
+  it.effect("will not prepare an entry outside a turn that owns the decision lease", () =>
     Effect.gen(function* () {
       yield* seed({ withOpenRun: false });
 
-      const result = yield* quoteALong;
+      const result = yield* enterALong;
 
       assert.strictEqual(result.outcome, "refused");
       if (result.outcome !== "refused") return;
@@ -233,30 +258,30 @@ layer("TradingQuoteService", (it) => {
     }),
   );
 
-  it.effect("hands each quote its own sequence, so two orders never share a cloid", () =>
+  it.effect("hands each entry its own sequence, so two orders never share a cloid", () =>
     Effect.gen(function* () {
       yield* seed();
 
-      const first = yield* quoteALong;
-      const second = yield* quoteALong;
+      const first = yield* enterALong;
+      const second = yield* enterALong;
 
-      assert.strictEqual(first.outcome, "quoted");
-      assert.strictEqual(second.outcome, "quoted");
-      if (first.outcome !== "quoted" || second.outcome !== "quoted") return;
-      assert.strictEqual(first.quote.executionSequence, 0);
-      assert.strictEqual(second.quote.executionSequence, 1);
+      assert.strictEqual(first.outcome, "prepared");
+      assert.strictEqual(second.outcome, "prepared");
+      if (first.outcome !== "prepared" || second.outcome !== "prepared") return;
+      assert.strictEqual(first.intent.executionSequence, 0);
+      assert.strictEqual(second.intent.executionSequence, 1);
     }),
   );
 
-  it.effect("allocates distinct sequences when quotes are requested concurrently", () =>
+  it.effect("allocates distinct sequences when entries are prepared concurrently", () =>
     Effect.gen(function* () {
       yield* seed();
 
-      const results = yield* Effect.all([quoteALong, quoteALong, quoteALong], {
+      const results = yield* Effect.all([enterALong, enterALong, enterALong], {
         concurrency: "unbounded",
       });
       const sequences = results.flatMap((result) =>
-        result.outcome === "quoted" ? [result.quote.executionSequence] : [],
+        result.outcome === "prepared" ? [result.intent.executionSequence] : [],
       );
 
       assert.deepStrictEqual(
@@ -264,116 +289,6 @@ layer("TradingQuoteService", (it) => {
         [0, 1, 2],
       );
       assert.strictEqual(new Set(sequences).size, 3);
-    }),
-  );
-
-  it.effect("turns a quote back into the intent the server built for it", () =>
-    Effect.gen(function* () {
-      yield* seed();
-      const quotes = yield* TradingQuoteService;
-      const quoted = yield* quoteALong;
-      if (quoted.outcome !== "quoted") return assert.fail("expected a quote");
-
-      const consumed = yield* quotes.consume({
-        quoteId: quoted.quote.quoteId,
-        missionId: "mission_1",
-      });
-
-      assert.strictEqual(consumed.outcome, "ready");
-      if (consumed.outcome !== "ready") return;
-      assert.strictEqual(consumed.replay, false);
-      assert.strictEqual(consumed.intent.size, quoted.quote.size);
-      assert.strictEqual(consumed.intent.executionSequence, quoted.quote.executionSequence);
-      assert.strictEqual(consumed.intent.stop?.stopPrice, 1_980);
-      assert.strictEqual(consumed.activeHarnessRunId, "run_1");
-    }),
-  );
-
-  it.effect("replays the same execution rather than cutting a second one", () =>
-    Effect.gen(function* () {
-      yield* seed();
-      const quotes = yield* TradingQuoteService;
-      const quoted = yield* quoteALong;
-      if (quoted.outcome !== "quoted") return assert.fail("expected a quote");
-
-      const first = yield* quotes.consume({
-        quoteId: quoted.quote.quoteId,
-        missionId: "mission_1",
-      });
-      const again = yield* quotes.consume({
-        quoteId: quoted.quote.quoteId,
-        missionId: "mission_1",
-      });
-
-      assert.strictEqual(first.outcome, "ready");
-      assert.strictEqual(again.outcome, "ready");
-      if (first.outcome !== "ready" || again.outcome !== "ready") return;
-      // Same sequence means the same cloid, so the exchange sees one order.
-      assert.strictEqual(again.replay, true);
-      assert.strictEqual(again.intent.executionSequence, first.intent.executionSequence);
-    }),
-  );
-
-  it.effect("tells a stale quote to re-quote instead of filling it at yesterday's price", () =>
-    Effect.gen(function* () {
-      yield* seed();
-      const sql = yield* SqlClient.SqlClient;
-      const quotes = yield* TradingQuoteService;
-      const quoted = yield* quoteALong;
-      if (quoted.outcome !== "quoted") return assert.fail("expected a quote");
-
-      // The test clock starts at zero, so "already expired" is a negative
-      // deadline rather than a small positive one.
-      yield* sql`UPDATE trading_entry_quotes SET expires_at = -1 WHERE quote_id = ${quoted.quote.quoteId}`;
-
-      const consumed = yield* quotes.consume({
-        quoteId: quoted.quote.quoteId,
-        missionId: "mission_1",
-      });
-
-      assert.strictEqual(consumed.outcome, "refused");
-      if (consumed.outcome !== "refused") return;
-      assert.strictEqual(consumed.reason, "quote_expired");
-      assert.include(consumed.detail, "trading_quote_entry");
-    }),
-  );
-
-  it.effect("refuses a quote whose turn has since released the lease", () =>
-    Effect.gen(function* () {
-      yield* seed();
-      const sql = yield* SqlClient.SqlClient;
-      const quotes = yield* TradingQuoteService;
-      const quoted = yield* quoteALong;
-      if (quoted.outcome !== "quoted") return assert.fail("expected a quote");
-
-      yield* sql`UPDATE trading_harness_runs SET status = 'completed' WHERE run_id = 'run_1'`;
-
-      const consumed = yield* quotes.consume({
-        quoteId: quoted.quote.quoteId,
-        missionId: "mission_1",
-      });
-
-      assert.strictEqual(consumed.outcome, "refused");
-      if (consumed.outcome !== "refused") return;
-      assert.strictEqual(consumed.reason, "lease_lost");
-    }),
-  );
-
-  it.effect("will not hand one mission's quote to another", () =>
-    Effect.gen(function* () {
-      yield* seed();
-      const quotes = yield* TradingQuoteService;
-      const quoted = yield* quoteALong;
-      if (quoted.outcome !== "quoted") return assert.fail("expected a quote");
-
-      const consumed = yield* quotes.consume({
-        quoteId: quoted.quote.quoteId,
-        missionId: "mission_2",
-      });
-
-      assert.strictEqual(consumed.outcome, "refused");
-      if (consumed.outcome !== "refused") return;
-      assert.strictEqual(consumed.reason, "quote_mission_mismatch");
     }),
   );
 
@@ -385,7 +300,6 @@ layer("TradingQuoteService", (it) => {
     Effect.gen(function* () {
       yield* seed();
       const sql = yield* SqlClient.SqlClient;
-      const quotes = yield* TradingQuoteService;
 
       // The plan's target, as the reshaped document stores it: a $50 rung at a
       // level $100 above the entry. Sizing toward it lifts the 0.05 ETH
@@ -399,24 +313,24 @@ layer("TradingQuoteService", (it) => {
         VALUES ('mission_1', 1, ${planJson("long")}, 1000)
       `;
 
-      const lifted = yield* quoteALong;
-      assert.strictEqual(lifted.outcome, "quoted");
+      const lifted = yield* enterALong;
+      assert.strictEqual(lifted.outcome, "prepared");
 
       yield* sql`
         UPDATE trading_plan_history
         SET strategy_json = ${planJson("stand_aside")}
         WHERE mission_id = 'mission_1' AND version = 1
       `;
-      const skipped = yield* quoteALong;
-      assert.strictEqual(skipped.outcome, "quoted");
+      const skipped = yield* enterALong;
+      assert.strictEqual(skipped.outcome, "prepared");
 
-      if (lifted.outcome !== "quoted" || skipped.outcome !== "quoted") return;
+      if (lifted.outcome !== "prepared" || skipped.outcome !== "prepared") return;
       // The lift is real (the long plan's target raised the size above the
       // bare request), and the stand-aside skips it: same target fields, no
       // lift — the request is sized exactly as a plan with no target is.
-      assert.isAbove(lifted.quote.size, 0.05);
-      assert.strictEqual(skipped.quote.size, 0.05);
-      assert.strictEqual(skipped.quote.constrainedBy, "requested");
+      assert.isAbove(lifted.size, 0.05);
+      assert.strictEqual(skipped.size, 0.05);
+      assert.strictEqual(skipped.constrainedBy, "requested");
     }),
   );
 });

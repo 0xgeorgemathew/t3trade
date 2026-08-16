@@ -100,9 +100,9 @@
       "types": "./src/decision.ts",
       "import": "./src/decision.ts"
     },
-    "./quote": {
-      "types": "./src/quote.ts",
-      "import": "./src/quote.ts"
+    "./entry": {
+      "types": "./src/entry.ts",
+      "import": "./src/entry.ts"
     },
     "./exit": {
       "types": "./src/exit.ts",

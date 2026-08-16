@@ -35,7 +35,8 @@ import { ObservedVolatility } from "./volatility.ts";
 import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./mission.ts";
 import { Price, TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
 import { StopAdjustmentJustification, StopAdjustmentRefusalCode } from "./stopAdjustment.ts";
-import { TradingOrderIntent, TradingOrderTimeInForce } from "./execution.ts";
+import { TradingOrderTimeInForce } from "./execution.ts";
+import { EntrySizeConstraint } from "./entry.ts";
 import { FailureRecovery } from "./recovery.ts";
 import { tradingPlanAuthoredFields, TradingPlanState } from "./strategy.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
@@ -49,21 +50,11 @@ export const TRADING_PUBLISH_PLAN_TOOL = "trading_publish_plan";
 export const TRADING_GET_TARGET_CALIBRATION_TOOL = "trading_get_target_calibration";
 export const TRADING_GET_PLAYBOOK_TOOL = "trading_get_playbook";
 export const TRADING_ADJUST_STOP_TOOL = "trading_adjust_stop";
-/**
- * The whole position lifecycle, not just entries.
- *
- * `intent.actionType` selects between `open`, `scale_in`, `reduce`, `close`,
- * `cancel`, and `modify_stop`, so the older name below described one of six
- * things it does. A harness reading a tool list picks by name before it reads
- * the description, and "request entry" is the wrong name to pick `close` from.
- */
-export const TRADING_EXECUTE_TOOL = "trading_execute";
 
-/**
- * The original name, kept as an alias so nothing that already learned it
- * breaks. Identical parameters, identical behaviour, same handler.
- */
-export const TRADING_REQUEST_ENTRY_TOOL = "trading_request_entry";
+// `trading_execute` and its `trading_request_entry` alias retired into
+// `TRADING_ENTER_TOOL` (./entry.ts) — plan 29 step 6.2. Both existed to spend
+// a quote the harness had just been handed; with the quote gone, entering is
+// one call and its name is what it does.
 
 // -- shared tool rejection ---------------------------------------------------
 
@@ -296,43 +287,6 @@ const missionBound = {
   missionId: Schema.optional(TradingId),
 } as const;
 
-/**
- * One execution, named either by a server-cut quote or by a hand-built intent.
- *
- * `quoteId` is the whole call for an entry: `trading_quote_entry` already
- * derived the strategy version, the authority version, the lease-owning run,
- * the sequence, the crossing limit price, and a size inside every ceiling, so
- * repeating them here is four more chances to be refused for a reason that has
- * nothing to do with the market.
- *
- * The legacy intent fields remain decodable so old clients receive a precise
- * migration refusal instead of a schema error. They are no longer executable:
- * every live action uses a quote or its dedicated server-owned tool.
- */
-export const TradingRequestEntryInput = Schema.Struct({
-  ...missionBound,
-  /** A quote from `trading_quote_entry`. Supplies every field below. */
-  quoteId: Schema.optional(TradingId),
-  intent: Schema.optional(TradingOrderIntent),
-  expectedAuthorityVersion: Schema.optional(Schema.Number),
-  activeHarnessRunId: Schema.optional(TradingId),
-}).check(
-  Schema.makeFilter((input) => {
-    const quoteForm = input.quoteId !== undefined;
-    const intentFields = [
-      input.intent,
-      input.expectedAuthorityVersion,
-      input.activeHarnessRunId,
-    ].filter((value) => value !== undefined).length;
-    if (quoteForm && intentFields > 0) return "quoteId cannot be combined with a full intent.";
-    if (!quoteForm && intentFields !== 3) {
-      return "Give quoteId alone, or all legacy intent fields together.";
-    }
-    return true;
-  }),
-);
-export type TradingRequestEntryInput = typeof TradingRequestEntryInput.Type;
-
 export const TradingRequestEntryResult = Schema.Struct({
   /**
    * The execution record this request wrote, when it wrote one.
@@ -430,23 +384,38 @@ export const TradingRequestEntryResult = Schema.Struct({
 });
 export type TradingRequestEntryResult = typeof TradingRequestEntryResult.Type;
 
-// `trading_execute` is the same call under the name that describes it. The
-// aliases are exported separately so a caller reads the name it is using.
 /**
- * The live execution tool's intentionally tiny input.
+ * What `trading_enter` reports back: the execution outcome, plus what the
+ * server decided on the way to it.
  *
- * `TradingRequestEntryInput` remains above as a decoder for callers on the old
- * wire shape, but advertising those fields to a harness invites it to choose a
- * form the server must refuse. The published tool accepts only the token whose
- * server-owned intent has already cleared preview.
+ * The sizing fields are the half the retired quote used to return in its own
+ * call. They are not decoration: a harness that asked for one size and got
+ * another has to know which ceiling bound it before it sizes the next
+ * decision, and `notes` carries the things that are true of the entry without
+ * stopping it — a size under the mandate's own floor, a target the ceilings
+ * cannot fund.
  */
-export const TradingExecuteInput = Schema.Struct({
-  ...missionBound,
-  quoteId: TradingId,
+export const TradingEnterResult = Schema.Struct({
+  ...TradingRequestEntryResult.fields,
+  /** Size the server actually sent, in base units. Absent on a refusal. */
+  size: Schema.optional(Schema.Number),
+  /** Which ceiling produced that size. `requested` means none did. */
+  constrainedBy: Schema.optional(EntrySizeConstraint),
+  /** Notional at the entry price, in USD. */
+  notionalUsd: Schema.optional(Schema.Number),
+  /** Planned loss if the stop is hit, at the size that went out. */
+  plannedLossAtStopUsd: Schema.optional(Schema.Number),
+  /** Round trip at this size, so the target can be held against it. */
+  estimatedRoundTripCostUsd: Schema.optional(Schema.Number),
+  /**
+   * The largest size that would have cleared, when a smaller one would.
+   * Absent when the refusal is not about size at all.
+   */
+  feasibleSize: Schema.optional(Schema.Number),
+  /** True of this entry, but not reasons to refuse it. */
+  notes: Schema.optional(Schema.Array(Schema.String)),
 });
-export type TradingExecuteInput = typeof TradingExecuteInput.Type;
-export const TradingExecuteResult = TradingRequestEntryResult;
-export type TradingExecuteResult = TradingRequestEntryResult;
+export type TradingEnterResult = typeof TradingEnterResult.Type;
 
 // -- trading_adjust_stop (plan 24 §5.2) --------------------------------------
 

@@ -10,11 +10,10 @@
 import {
   TradingToolRejectedError,
   type TradingGetMissionResult,
-  type TradingRequestEntryInput,
 } from "@t3tools/trading-contracts/tools";
 import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
 import type { TradingUrgency } from "@t3tools/trading-contracts/strategy";
-import { classifyFailure, type FailureRecovery } from "@t3tools/trading-contracts/recovery";
+import { classifyFailure } from "@t3tools/trading-contracts/recovery";
 import type { TradingLookInput, TradingObservation } from "@t3tools/trading-contracts/observation";
 import { DEFAULT_TRADING_MARKET, type TradingMarket } from "@t3tools/trading-contracts/primitives";
 import { CommandId, ThreadId, TradingMissionId } from "@t3tools/contracts";
@@ -34,7 +33,7 @@ import { TradingExitService } from "../../../trading/TradingExitService.ts";
 import { TradingMissionService } from "../../../trading/TradingMissionService.ts";
 import { TradingPlanProtectionService } from "../../../trading/TradingPlanProtectionService.ts";
 import { TradingWorkingOrderService } from "../../../trading/TradingWorkingOrderService.ts";
-import { TradingQuoteService } from "../../../trading/TradingQuoteService.ts";
+import { TradingEntryService } from "../../../trading/TradingEntryService.ts";
 import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
@@ -420,18 +419,6 @@ const announceStopAdjusted = Effect.fn("TradingToolkit.announceStopAdjusted")(fu
     );
 });
 
-/**
- * What a refused quote consumption means for the next move.
- *
- * A stale price wants a new price; everything else wants the harness to look at
- * what is actually true before deciding again. None of the four is retryable —
- * repeating a call with the same dead quote id produces the same refusal.
- */
-const classifyQuoteRefusal = (reason: string): FailureRecovery =>
-  reason === "quote_expired"
-    ? { retryable: false, action: "re_quote", retryAfterMillis: 0, reason }
-    : { retryable: false, action: "read_state", retryAfterMillis: 0, reason };
-
 /** An execution whose intent and versions are already settled. */
 interface ResolvedExecuteInput {
   readonly missionId?: string | undefined;
@@ -443,8 +430,8 @@ interface ResolvedExecuteInput {
 /**
  * Submit one execution intent and wait for what actually happened to it.
  *
- * Shared by `trading_execute` and its older alias `trading_request_entry` —
- * one implementation, so the two names can never drift into two behaviours.
+ * Shared by `trading_enter` and the three exit tools, so an entry and an exit
+ * cannot drift into two ways of reporting what happened.
  */
 const executeIntent = (input: ResolvedExecuteInput) =>
   Effect.gen(function* () {
@@ -487,60 +474,9 @@ const executeIntent = (input: ResolvedExecuteInput) =>
   });
 
 /**
- * The two ways an execution can be named, resolved to one.
- *
- * A `quoteId` is turned back into the intent the server itself built for it —
- * including the execution sequence, which is what makes a repeated execute
- * idempotent: the same sequence derives the same cloid, so the exchange sees
- * one order however many times the harness asks.
- */
-const executeFromQuoteOrIntent = (input: TradingRequestEntryInput) =>
-  Effect.gen(function* () {
-    if (input.quoteId !== undefined) {
-      const { mission } = yield* resolveBoundCall(input.missionId);
-      const quotes = yield* TradingQuoteService;
-      const consumed = yield* quotes.consume({ quoteId: input.quoteId, missionId: mission.id });
-      if (consumed.outcome === "refused") {
-        return {
-          status: "rejected" as const,
-          cloid: "",
-          orderResults: [],
-          budget: { remainingCumulativeLossUsd: 0, exhausted: false },
-          detail: `${consumed.reason}: ${consumed.detail}`,
-          // A quote that aged out wants a fresh one; a lease that moved on
-          // wants the mission read. Neither is worth retrying unchanged, and
-          // saying so is what stops the harness from doing it anyway.
-          recovery: classifyQuoteRefusal(consumed.reason),
-        };
-      }
-      return yield* executeIntent({
-        missionId: mission.id,
-        intent: consumed.intent,
-        expectedAuthorityVersion: consumed.expectedAuthorityVersion,
-        activeHarnessRunId: consumed.activeHarnessRunId,
-      });
-    }
-
-    return {
-      status: "rejected" as const,
-      cloid: "",
-      orderResults: [],
-      budget: { remainingCumulativeLossUsd: 0, exhausted: false },
-      detail:
-        "full intents are no longer executable because their sequence, authority version, and lease identity are caller-owned; use trading_quote_entry + trading_execute { quoteId } for entries, or the dedicated close/reduce/cancel/adjust-stop tool",
-      recovery: {
-        retryable: false,
-        action: "read_state" as const,
-        retryAfterMillis: 0,
-        reason: "legacy_intent_disabled",
-      },
-    };
-  });
-
-/**
  * Run one exit: size it from the canonical position, then execute it.
  *
- * The three exit tools do not go through `trading_execute` because the thing
+ * The three exit tools have their own preparation because the thing
  * that makes them worth having is that they cannot be called wrongly. There is
  * no intent to hand-build, so there is no side to get backwards, no size to
  * exceed the position, no version to be stale, and no sequence to collide. What
@@ -987,17 +923,18 @@ const handlers = {
     }),
 
   /**
-   * Price, size, and pre-check one entry, then hand back a token.
+   * Price, size, pre-check and submit one entry.
    *
-   * Everything `trading_execute` used to demand of the harness is derived here
-   * from state the server owns; the harness supplies only what it can actually
-   * see — a side, a stop, and how much it wants on.
+   * Everything executing used to demand of the harness is derived here from
+   * state the server owns; the harness supplies only what it can actually see
+   * — a side, a stop, and how much it wants on. The sizing the retired quote
+   * used to return in its own call travels out with the outcome instead.
    */
-  trading_quote_entry: (input) =>
+  trading_enter: (input) =>
     Effect.gen(function* () {
       const { mission } = yield* resolveBoundCall(input.missionId);
-      const quotes = yield* TradingQuoteService;
-      return yield* quotes.quote({
+      const entries = yield* TradingEntryService;
+      const prepared = yield* entries.prepare({
         missionId: mission.id,
         market: input.market,
         side: input.side,
@@ -1007,15 +944,45 @@ const handlers = {
         actionType: input.actionType,
         urgency: input.urgency,
       });
-    }),
 
-  trading_execute: (input) => executeFromQuoteOrIntent(input),
+      if (prepared.outcome === "refused") {
+        return {
+          status: "rejected" as const,
+          cloid: "",
+          orderResults: [],
+          budget: { remainingCumulativeLossUsd: 0, exhausted: false },
+          detail: `${prepared.reason}: ${prepared.detail}`,
+          ...(prepared.feasibleSize === undefined ? {} : { feasibleSize: prepared.feasibleSize }),
+          recovery: classifyFailure({ reason: prepared.reason }),
+        };
+      }
+
+      const executed = yield* executeIntent({
+        missionId: mission.id,
+        intent: prepared.intent,
+        expectedAuthorityVersion: prepared.expectedAuthorityVersion,
+        activeHarnessRunId: prepared.activeHarnessRunId,
+      });
+
+      // What the server decided rides along with what the exchange did. A
+      // harness told only "accepted" has to guess the size it is now holding,
+      // and the guess is what it sizes its stop and its next entry against.
+      return {
+        ...executed,
+        size: prepared.size,
+        constrainedBy: prepared.constrainedBy,
+        notionalUsd: prepared.notionalUsd,
+        plannedLossAtStopUsd: prepared.plannedLossAtStopUsd,
+        estimatedRoundTripCostUsd: prepared.estimatedRoundTripCostUsd,
+        ...(prepared.notes.length === 0 ? {} : { notes: prepared.notes }),
+      };
+    }),
 
   /**
    * Flatten the whole position. Takes a market and nothing else.
    *
    * See `executeExit` for why the three exit tools go through their own path
-   * rather than through `trading_execute`'s intent.
+   * rather than through the entry path's intent.
    */
   trading_close_position: (input) =>
     executeExit({
@@ -1044,7 +1011,7 @@ const handlers = {
    * Two steps and no third: the policy decides, and an approved decision goes
    * out as an ordinary `modify_stop` intent. Nothing here re-implements the
    * replacement — the confirm-before-cancel sequence, the §17.5 escalation and
-   * the execution record are the same ones `trading_execute` produces.
+   * the execution record are the same ones `trading_enter` produces.
    */
   trading_adjust_stop: (input) =>
     Effect.gen(function* () {

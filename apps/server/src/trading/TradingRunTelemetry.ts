@@ -34,10 +34,9 @@ import {
 } from "@t3tools/trading-contracts/policy";
 import {
   TRADING_ADJUST_STOP_TOOL,
-  TRADING_EXECUTE_TOOL,
   TRADING_PUBLISH_PLAN_TOOL,
-  TRADING_REQUEST_ENTRY_TOOL,
 } from "@t3tools/trading-contracts/tools";
+import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
 import {
   TRADING_CANCEL_ORDER_TOOL,
   TRADING_CLOSE_POSITION_TOOL,
@@ -48,8 +47,7 @@ import type * as SqlClient from "effect/unstable/sql/SqlClient";
 
 /** Tool names that mean the turn tried to change exchange state. */
 const EXECUTION_TOOLS: ReadonlySet<string> = new Set([
-  TRADING_EXECUTE_TOOL,
-  TRADING_REQUEST_ENTRY_TOOL,
+  TRADING_ENTER_TOOL,
   TRADING_ADJUST_STOP_TOOL,
   TRADING_CLOSE_POSITION_TOOL,
   TRADING_REDUCE_POSITION_TOOL,

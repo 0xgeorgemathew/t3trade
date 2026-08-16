@@ -1,8 +1,8 @@
 /**
- * TradingQuoteService — priced, sized, pre-checked entries the harness can
- * execute with one field.
+ * TradingEntryService — one entry, priced, sized and pre-checked, from what the
+ * harness can actually name.
  *
- * `trading_execute` asks for eight things a language model cannot know: the
+ * Executing used to ask for eight things a language model cannot know: the
  * current strategy version, the current authority version, the id of the
  * harness run holding the decision lease, a monotonic execution sequence, a
  * limit price that crosses the book, a size inside four separate ceilings, a
@@ -10,33 +10,33 @@
  * accepts. Every one of them is a refusal when it is wrong, and all eight are
  * things the server already knows.
  *
- * A quote is the server answering them. The harness names a market, a side, a
+ * This is the server answering them. The harness names a market, a side, a
  * stop, and optionally a size; this reads the mission, the lease, the book, the
- * account and the budget, derives the rest, runs the same §16.3 preview the
- * execution will run, and persists a short-lived token. Executing is then
- * `{ quoteId }`.
+ * account and the budget, derives the rest, and runs the same §16.3 preview the
+ * execution will run. What comes back is the intent, ready to submit.
  *
- * A quote is not an order: nothing is reserved, nothing is signed, and the
- * ceilings are re-checked at execution against state read then. What the quote
- * removes is the class of failure where a correct read of the market died on
- * the way to a well-formed call.
+ * Nothing is persisted as a token and nothing is handed to the harness to hand
+ * back (plan 29 step 6.2). The two-step existed so the harness could see the
+ * size and price before committing, but the only thing it could DO with them
+ * was execute — and the wait between the halves was four more ways to fail:
+ * an expired quote, a lease that moved on, a mission mismatch, a token that
+ * was never cut. The sizing travels out with the outcome instead, which is
+ * where a harness needs it: sizing the NEXT decision.
  *
- * @module TradingQuoteService
+ * Symmetric with `TradingExitService.prepare` on purpose — both hand the
+ * caller a ready intent with the versions and the lease it must execute
+ * against, and both refuse in the same shape.
+ *
+ * @module TradingEntryService
  */
 import {
   deriveFeasibleSize,
-  deriveQuoteLimitPrice,
-  QUOTE_VALIDITY_MILLIS,
-  type ExecutableQuote,
-  type QuotableActionType,
-  type TradingQuoteEntryResult,
-} from "@t3tools/trading-contracts/quote";
+  deriveEntryLimitPrice,
+  type EntryActionType,
+  type EntrySizeConstraint,
+} from "@t3tools/trading-contracts/entry";
 import type { TradingOrderIntent, TradingOrderSide } from "@t3tools/trading-contracts/execution";
-import {
-  urgencyToOrderPreference,
-  type OrderPreference,
-  type TradingUrgency,
-} from "@t3tools/trading-contracts/strategy";
+import { urgencyToOrderPreference, type TradingUrgency } from "@t3tools/trading-contracts/strategy";
 import { evaluateLossBudget } from "@t3tools/trading-contracts/loss-accounting";
 import {
   analyseMarketStructure,
@@ -50,7 +50,6 @@ import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -63,15 +62,15 @@ import { TradingMissionService } from "./TradingMissionService.ts";
 import { previewOrder } from "./TradingPreviewService.ts";
 import { allocateExecutionSequence } from "./TradingExecutionSequence.ts";
 
-/** What the harness asked to be quoted, with the mission already resolved. */
-export interface QuoteRequest {
+/** What the harness asked for, with the mission already resolved. */
+export interface EntryRequest {
   readonly missionId: string;
   readonly market: string;
   readonly side: TradingOrderSide;
   readonly stopPrice: number;
   readonly sizeEth?: number | undefined;
   readonly notionalUsd?: number | undefined;
-  readonly actionType?: QuotableActionType | undefined;
+  readonly actionType?: EntryActionType | undefined;
   /**
    * How urgently the entry should land, in the harness's vocabulary. Mapped to
    * the internal order preference below; the persisted column stays the
@@ -81,86 +80,55 @@ export interface QuoteRequest {
 }
 
 /**
- * Why a quote could not be turned into an order.
- *
- * All four are about the quote itself rather than about the market: the
- * harness named one that never existed, one belonging to another mission, one
- * whose prices have aged out, or one cut by a harness run that has since
- * released the decision lease.
+ * A prepared entry: the intent the server built, with everything the submit
+ * path needs to check it against, and what the sizing decided on the way.
  */
-export type QuoteConsumptionRefusal =
-  | "quote_not_found"
-  | "quote_mission_mismatch"
-  | "quote_expired"
-  | "lease_lost";
-
-export type QuoteConsumption =
-  | {
-      readonly outcome: "ready";
-      readonly intent: TradingOrderIntent;
-      readonly expectedAuthorityVersion: number;
-      readonly activeHarnessRunId: string;
-      /** True on a repeat execute of the same quote — same sequence, same cloid. */
-      readonly replay: boolean;
-    }
-  | {
-      readonly outcome: "refused";
-      readonly reason: QuoteConsumptionRefusal;
-      readonly detail: string;
-    };
-
-export class TradingQuoteService extends Context.Service<
-  TradingQuoteService,
-  {
-    readonly quote: (request: QuoteRequest) => Effect.Effect<TradingQuoteEntryResult>;
-    readonly consume: (input: {
-      readonly quoteId: string;
-      readonly missionId: string;
-    }) => Effect.Effect<QuoteConsumption>;
-  }
->()("t3/trading/TradingQuoteService") {}
-
-interface QuoteRow {
-  readonly quote_id: string;
-  readonly mission_id: string;
-  readonly harness_run_id: string;
-  readonly authority_version: number;
-  readonly execution_sequence: number;
-  readonly market: string;
-  readonly side: string;
-  readonly action_type: string;
-  readonly order_preference: string;
+export interface PreparedEntry {
+  readonly outcome: "prepared";
+  readonly intent: TradingOrderIntent;
+  readonly expectedAuthorityVersion: number;
+  readonly activeHarnessRunId: string;
   readonly size: number;
-  readonly limit_price: number;
-  readonly stop_price: number;
-  readonly planned_loss_usd: number;
-  readonly notional_usd: number;
-  readonly constrained_by: string;
-  readonly best_bid: number;
-  readonly best_ask: number;
-  readonly setup_kind_at_entry: string | null;
-  readonly setup_score_at_entry: number | null;
-  readonly regime_at_entry: string | null;
-  readonly atr_usd_at_entry: number | null;
-  readonly expires_at: number;
-  readonly consumed_at: number | null;
+  readonly constrainedBy: EntrySizeConstraint;
+  readonly notionalUsd: number;
+  readonly plannedLossAtStopUsd: number;
+  readonly estimatedRoundTripCostUsd: number;
+  /** True of this entry, but not reasons to refuse it. */
+  readonly notes: ReadonlyArray<string>;
 }
 
-const refused = (
-  reason: string,
-  detail: string,
-  feasibleSize?: number,
-): TradingQuoteEntryResult => ({
+/**
+ * Why no entry could be built. The `reason` is the §16.3 preview item that
+ * refused it or the size constraint that left nothing to send — one name for
+ * the rule, the server's own.
+ */
+export interface RefusedEntry {
+  readonly outcome: "refused";
+  readonly reason: string;
+  readonly detail: string;
+  /** The largest size that would have cleared, when a smaller one would. */
+  readonly feasibleSize?: number | undefined;
+}
+
+export type EntryPreparation = PreparedEntry | RefusedEntry;
+
+export class TradingEntryService extends Context.Service<
+  TradingEntryService,
+  {
+    readonly prepare: (request: EntryRequest) => Effect.Effect<EntryPreparation>;
+  }
+>()("t3/trading/TradingEntryService") {}
+
+const refused = (reason: string, detail: string, feasibleSize?: number): RefusedEntry => ({
   outcome: "refused",
   reason,
   detail,
   ...(feasibleSize === undefined ? {} : { feasibleSize }),
 });
 
-export const makeTradingQuoteService = Effect.gen(function* () {
+export const makeTradingEntryService = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const missions = yield* TradingMissionService;
-  const crypto = yield* Crypto.Crypto;
   const iocSlippage = yield* IocSlippageConfig;
   const gateway = yield* HyperliquidGateway;
   const budgetReader = yield* TradingBudgetReader;
@@ -187,7 +155,7 @@ export const makeTradingQuoteService = Effect.gen(function* () {
    * The published plan's target: the USD rung and the price it aims at, when
    * the plan publishes either, and whether the plan stood aside.
    *
-   * Read as numbers rather than through the strategy decoder: a quote that
+   * Read as numbers rather than through the strategy decoder: an entry that
    * fails because a historical field no longer decodes would be a refusal about
    * bookkeeping, and this is a sizing hint. Null fields when the mission has
    * published nothing, when the plan stood aside (`intent: "stand_aside"` —
@@ -210,11 +178,11 @@ export const makeTradingQuoteService = Effect.gen(function* () {
     `.pipe(
       Effect.map((rows) => rows[0] ?? null),
       // A sizing hint is never worth the turn: an unreadable row leaves the
-      // quote sized exactly as it was before this existed.
+      // entry sized exactly as it was before this existed.
       Effect.orElseSucceed(() => null),
     );
 
-  const quote: TradingQuoteService["Service"]["quote"] = (request) =>
+  const prepare: TradingEntryService["Service"]["prepare"] = (request) =>
     Effect.gen(function* () {
       const mission = yield* missions.getMission(request.missionId);
       if (mission.market !== request.market) {
@@ -228,7 +196,7 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       if (harnessRunId === null) {
         return refused(
           "harness_run_owns_lease",
-          "no harness run currently owns this mission's decision lease; a quote is only executable inside a turn",
+          "no harness run currently owns this mission's decision lease; an entry is only executable inside a turn",
         );
       }
 
@@ -238,15 +206,15 @@ export const makeTradingQuoteService = Effect.gen(function* () {
         Effect.map((rate) => rate.feeBps),
         Effect.orElseSucceed(() => fallbackFeeBps),
       );
-      // The two reads a quote cannot be made without. A dropped socket or a
+      // The two reads an entry cannot be made without. A dropped socket or a
       // rate limit here used to end the turn; now it costs one backoff.
       const orderBook = yield* retryTransientRead(
         gateway.getOrderBook(request.market),
-        "quote.getOrderBook",
+        "entry.getOrderBook",
       );
       const resolved = yield* retryTransientRead(
         gateway.resolveMarket(request.market),
-        "quote.resolveMarket",
+        "entry.resolveMarket",
       );
       const budgetInput = yield* budgetReader.read({
         missionId: request.missionId,
@@ -266,10 +234,10 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       if (bestBid === undefined || bestAsk === undefined) {
         return refused(
           "market_data_unavailable",
-          `${request.market} has no two-sided book right now, so there is no price to quote against`,
+          `${request.market} has no two-sided book right now, so there is no price to enter against`,
         );
       }
-      const limitPrice = deriveQuoteLimitPrice({
+      const limitPrice = deriveEntryLimitPrice({
         side: request.side,
         orderPreference,
         bestBid,
@@ -294,7 +262,7 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       // Sized through the same composition the structure read's cost estimate
       // prices from (`targetNotionalForPlan`), so the two cannot drift apart on
       // what a target needs. The expected move is the distance from the entry
-      // being quoted to the plan's own take-profit price, so the lift applies
+      // being taken to the plan's own take-profit price, so the lift applies
       // only to plans that name the level they are aiming at.
       const targetNotional =
         plan === null ||
@@ -369,7 +337,7 @@ export const makeTradingQuoteService = Effect.gen(function* () {
         requestingHarnessRunId: harnessRunId,
         // Signing identity is not resolvable from a read path and is checked
         // again immediately before the nonce is spent.
-        approvedExecutionWalletAddress: "quote",
+        approvedExecutionWalletAddress: "prepare",
         bbo,
         accountObservedAt: budgetInput.observedAt,
         pendingExecution: null,
@@ -401,9 +369,9 @@ export const makeTradingQuoteService = Effect.gen(function* () {
         );
 
       // Plan 27 C1: snapshot the setup evidence behind this entry, or null.
-      // Measurement, never a gate — a quote with no scored setup behind it is
-      // still cut; the funnel is what reads the difference. The structure is
-      // recomputed here so the snapshot is the server's own read at quote
+      // Measurement, never a gate — an entry with no scored setup behind it is
+      // still taken; the funnel is what reads the difference. The structure is
+      // recomputed here so the snapshot is the server's own read at entry
       // time, not prose the harness asserted.
       const setupSnapshot = yield* Effect.gen(function* () {
         const histories = yield* Effect.all(
@@ -442,7 +410,7 @@ export const makeTradingQuoteService = Effect.gen(function* () {
           atrUsd: primaryFrame === null ? null : primaryFrame.atrUsd,
         };
       }).pipe(
-        // A failed structure read costs the snapshot, never the quote.
+        // A failed structure read costs the snapshot, never the entry.
         Effect.catchCause(() =>
           Effect.succeed({
             setupKind: null,
@@ -477,56 +445,30 @@ export const makeTradingQuoteService = Effect.gen(function* () {
             `${entryPrice} entry, inside the ${noiseFloorUsd.toFixed(2)} USD noise floor ` +
             `(max(2 x ${halfSpreadUsd.toFixed(2)} half-spread, 0.35 x ${(setupSnapshot.atrUsd ?? 0).toFixed(2)} ATR)); ` +
             `${clearingStop.toFixed(2)} is the nearest stop that clears it — place yours at or beyond ` +
-            "the level that invalidates the thesis, plus that margin, and re-quote once",
+            "the level that invalidates the thesis, plus that margin, and try once more",
         );
       }
 
-      const quoteId = `qte_${yield* crypto.randomUUIDv4.pipe(Effect.orDie)}`;
-      const executable: ExecutableQuote = {
-        quoteId,
-        quotedAt: now,
-        expiresAt: now + QUOTE_VALIDITY_MILLIS,
+      // The entry the server is about to commit to, recorded before it is
+      // sent (plan 29 step 6.2). The retired quote row carried this and every
+      // reader of it now reads here; writing it before the submit keeps the
+      // sequence floor honest for an order refused on the wire.
+      yield* recordEntryContext({
         missionId: request.missionId,
+        executionSequence: intent.executionSequence,
         market: request.market,
         side: request.side,
         actionType,
-        urgency,
-        authorityVersion: mission.authorityVersion,
-        harnessRunId,
-        executionSequence: intent.executionSequence,
-        size: sizing.size,
-        requestedSize: sizing.requestedSize,
-        constrainedBy: sizing.constrainedBy,
-        notionalUsd: sizing.notionalUsd,
-        limitPrice,
+        entryPrice,
         bestBid,
         bestAsk,
         stopPrice: request.stopPrice,
-        plannedLossAtStopUsd: sizing.plannedLossAtStopUsd,
-        reservedRiskUsd: sizing.reservedRiskUsd,
-        estimatedRoundTripCostUsd: costs?.roundTripUsd ?? 0,
-      };
-
-      yield* sql`
-        INSERT INTO trading_entry_quotes (
-          quote_id, mission_id, harness_run_id, authority_version,
-          execution_sequence, market, side, action_type, order_preference,
-          size, requested_size, constrained_by, limit_price, stop_price,
-          planned_loss_usd, reserved_risk_usd, notional_usd, best_bid, best_ask,
-          round_trip_cost_usd, quoted_at, expires_at,
-          setup_kind_at_entry, setup_score_at_entry, regime_at_entry, atr_usd_at_entry
-        ) VALUES (
-          ${quoteId}, ${request.missionId}, ${harnessRunId},
-          ${mission.authorityVersion}, ${intent.executionSequence}, ${request.market},
-          ${request.side}, ${actionType}, ${orderPreference},
-          ${sizing.size}, ${sizing.requestedSize}, ${sizing.constrainedBy}, ${limitPrice},
-          ${request.stopPrice}, ${sizing.plannedLossAtStopUsd}, ${sizing.reservedRiskUsd},
-          ${sizing.notionalUsd}, ${bestBid}, ${bestAsk}, ${executable.estimatedRoundTripCostUsd},
-          ${now}, ${executable.expiresAt},
-          ${setupSnapshot.setupKind}, ${setupSnapshot.setupScore}, ${setupSnapshot.regime},
-          ${setupSnapshot.atrUsd}
-        )
-      `;
+        size: sizing.size,
+        notionalUsd: sizing.notionalUsd,
+        constrainedBy: sizing.constrainedBy,
+        setup: setupSnapshot,
+        now,
+      });
 
       const warnings: Array<string> = [];
       if (sizing.constrainedBy !== "requested") {
@@ -567,21 +509,32 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       }
       if (costs === null) {
         warnings.push(
-          "the round-trip cost could not be read, so estimatedRoundTripCostUsd is 0 — hold the target against trading_look before executing",
+          "the round-trip cost could not be read, so estimatedRoundTripCostUsd is 0 — hold the target against trading_look",
         );
       }
 
-      return { outcome: "quoted" as const, quote: executable, warnings };
+      return {
+        outcome: "prepared" as const,
+        intent,
+        expectedAuthorityVersion: mission.authorityVersion,
+        activeHarnessRunId: harnessRunId,
+        size: sizing.size,
+        constrainedBy: sizing.constrainedBy,
+        notionalUsd: sizing.notionalUsd,
+        plannedLossAtStopUsd: sizing.plannedLossAtStopUsd,
+        estimatedRoundTripCostUsd: costs?.roundTripUsd ?? 0,
+        notes: warnings,
+      } satisfies PreparedEntry;
     }).pipe(
-      // Everything a quote reads is either the mission's own state or the
+      // Everything this reads is either the mission's own state or the
       // exchange. Neither failing is a defect worth killing the tool call over:
       // the harness gets a refusal it can act on, and the funnel counts it.
       Effect.catchCause((cause) =>
-        Effect.logWarning("trading quote failed", { cause: String(cause) }).pipe(
+        Effect.logWarning("trading entry could not be prepared", { cause: String(cause) }).pipe(
           Effect.as(
             refused(
               "market_data_unavailable",
-              "the mission, book, or account state a quote is made of could not be read; retry once",
+              "the mission, book, or account state an entry is made of could not be read; retry once",
             ),
           ),
         ),
@@ -591,30 +544,47 @@ export const makeTradingQuoteService = Effect.gen(function* () {
   /**
    * Record what the server saw at the moment it committed to this entry.
    *
-   * Written at consumption rather than at quote time because a quote nobody
-   * executed describes an entry that never happened, and the four readers of
-   * this table all ask "what was behind the trade that opened here?". The
-   * mission-local execution sequence is the key, so a replay of the same quote
-   * writes the same row — `OR IGNORE` makes the second write a no-op rather
-   * than a conflict.
+   * Four readers depend on it — the wake's `enteredWithoutScoredSetup`, the
+   * run telemetry's entry governance and session economics, and the
+   * closed-trade review's stop measurement. All four ask "what was behind the
+   * trade that opened here?", so the row is keyed by the mission-local
+   * execution sequence and written before the order goes out.
    *
-   * Losing the row costs the evidence, never the execution: every reader of it
-   * already treats an absent row as an entry it cannot explain.
+   * Losing the row costs the evidence, never the entry: every reader already
+   * treats an absent row as a trade it cannot explain.
    */
-  const recordEntryContext = (row: QuoteRow, now: number) =>
+  const recordEntryContext = (input: {
+    readonly missionId: string;
+    readonly executionSequence: number;
+    readonly market: string;
+    readonly side: string;
+    readonly actionType: string;
+    readonly entryPrice: number;
+    readonly bestBid: number;
+    readonly bestAsk: number;
+    readonly stopPrice: number;
+    readonly size: number;
+    readonly notionalUsd: number;
+    readonly constrainedBy: string;
+    readonly setup: {
+      readonly setupKind: string | null;
+      readonly setupScore: number | null;
+      readonly regime: string | null;
+      readonly atrUsd: number | null;
+    };
+    readonly now: number;
+  }) =>
     sql`
       INSERT OR IGNORE INTO trading_entry_context (
         mission_id, execution_sequence, market, side, action_type,
         entry_price, best_bid, best_ask, stop_price, size, notional_usd,
         constrained_by, setup_kind, setup_score, regime, atr_usd, recorded_at
       ) VALUES (
-        ${row.mission_id}, ${row.execution_sequence}, ${row.market}, ${row.side},
-        ${row.action_type},
-        ${row.side === "buy" ? row.best_ask : row.best_bid},
-        ${row.best_bid}, ${row.best_ask}, ${row.stop_price}, ${row.size},
-        ${row.notional_usd}, ${row.constrained_by},
-        ${row.setup_kind_at_entry}, ${row.setup_score_at_entry},
-        ${row.regime_at_entry}, ${row.atr_usd_at_entry}, ${now}
+        ${input.missionId}, ${input.executionSequence}, ${input.market}, ${input.side},
+        ${input.actionType}, ${input.entryPrice}, ${input.bestBid}, ${input.bestAsk},
+        ${input.stopPrice}, ${input.size}, ${input.notionalUsd}, ${input.constrainedBy},
+        ${input.setup.setupKind}, ${input.setup.setupScore}, ${input.setup.regime},
+        ${input.setup.atrUsd}, ${input.now}
       )
     `.pipe(
       Effect.catchCause((cause) =>
@@ -622,93 +592,7 @@ export const makeTradingQuoteService = Effect.gen(function* () {
       ),
     );
 
-  const consume: TradingQuoteService["Service"]["consume"] = (input) =>
-    Effect.gen(function* () {
-      const rows = yield* sql<QuoteRow>`
-        SELECT * FROM trading_entry_quotes WHERE quote_id = ${input.quoteId}
-      `;
-      const row = rows[0];
-      if (row === undefined) {
-        return {
-          outcome: "refused" as const,
-          reason: "quote_not_found" as const,
-          detail: `no quote ${input.quoteId}; call trading_quote_entry to cut one`,
-        };
-      }
-      if (row.mission_id !== input.missionId) {
-        return {
-          outcome: "refused" as const,
-          reason: "quote_mission_mismatch" as const,
-          detail: `quote ${input.quoteId} belongs to another mission`,
-        };
-      }
-
-      const now = yield* Clock.currentTimeMillis;
-      // A replay is not stale: the sequence is already spent, so re-executing
-      // it can only produce the execution it already produced. Only a quote
-      // that never became an order expires.
-      const replay = row.consumed_at !== null;
-      if (!replay && now > row.expires_at) {
-        return {
-          outcome: "refused" as const,
-          reason: "quote_expired" as const,
-          detail:
-            `quote ${input.quoteId} expired ${Math.round((now - row.expires_at) / 1000)}s ago; ` +
-            "call trading_quote_entry again for a fresh price and size",
-        };
-      }
-
-      const activeRun = yield* readActiveRun(input.missionId);
-      if (activeRun !== row.harness_run_id) {
-        return {
-          outcome: "refused" as const,
-          reason: "lease_lost" as const,
-          detail:
-            `the turn that cut quote ${input.quoteId} no longer owns the decision lease; ` +
-            "re-quote inside the current turn",
-        };
-      }
-
-      yield* sql`
-        UPDATE trading_entry_quotes SET consumed_at = ${now}
-        WHERE quote_id = ${input.quoteId} AND consumed_at IS NULL
-      `;
-      yield* recordEntryContext(row, now);
-
-      return {
-        outcome: "ready" as const,
-        replay,
-        expectedAuthorityVersion: row.authority_version,
-        activeHarnessRunId: row.harness_run_id,
-        intent: {
-          missionId: row.mission_id,
-          executionSequence: row.execution_sequence,
-          actionType: row.action_type as TradingOrderIntent["actionType"],
-          market: row.market as TradingOrderIntent["market"],
-          side: row.side as TradingOrderSide,
-          size: row.size,
-          orderPreference: row.order_preference as OrderPreference,
-          limitPrice: row.limit_price,
-          stop: {
-            stopPrice: row.stop_price,
-            plannedLossAtStopUsd: row.planned_loss_usd,
-          },
-          reduceOnly: false,
-        },
-      };
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("trading quote could not be read", { cause: String(cause) }).pipe(
-          Effect.as({
-            outcome: "refused" as const,
-            reason: "quote_not_found" as const,
-            detail: "the quote could not be read; call trading_quote_entry again",
-          }),
-        ),
-      ),
-    );
-
-  return TradingQuoteService.of({ quote, consume });
+  return TradingEntryService.of({ prepare });
 });
 
-export const TradingQuoteServiceLive = Layer.effect(TradingQuoteService, makeTradingQuoteService);
+export const TradingEntryServiceLive = Layer.effect(TradingEntryService, makeTradingEntryService);

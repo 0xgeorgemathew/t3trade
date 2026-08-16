@@ -16,7 +16,7 @@
  * @module TradingExitService
  */
 import { resolveExitSize } from "@t3tools/trading-contracts/exit";
-import { deriveQuoteLimitPrice } from "@t3tools/trading-contracts/quote";
+import { deriveEntryLimitPrice } from "@t3tools/trading-contracts/entry";
 import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
 import { urgencyToOrderPreference, type TradingUrgency } from "@t3tools/trading-contracts/strategy";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
@@ -204,7 +204,7 @@ export const makeTradingExitService = Effect.gen(function* () {
       // keeping the exit able to never happen in exchange for not paying the
       // spread.
       const orderPreference = urgencyToOrderPreference(request.urgency ?? "now");
-      const limitPrice = deriveQuoteLimitPrice({
+      const limitPrice = deriveEntryLimitPrice({
         side: sizing.side,
         orderPreference,
         bestBid,

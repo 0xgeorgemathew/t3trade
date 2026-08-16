@@ -20,7 +20,7 @@ export * from "./history.ts";
 export * from "./calibration.ts";
 export * from "./playbook.ts";
 export * from "./decision.ts";
-export * from "./quote.ts";
+export * from "./entry.ts";
 export * from "./exit.ts";
 export * from "./recovery.ts";
 export * from "./policy.ts";

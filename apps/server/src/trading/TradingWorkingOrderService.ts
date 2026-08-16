@@ -89,7 +89,7 @@ import {
   isPositionIncreasing,
   PROTECTION_RECONCILIATION,
 } from "@t3tools/trading-contracts/protection";
-import { QUOTE_VALIDITY_MILLIS } from "@t3tools/trading-contracts/quote";
+import { ENTRY_PRICING_VALIDITY_MILLIS } from "@t3tools/trading-contracts/entry";
 import type { TradingMissionStatus } from "@t3tools/trading-contracts";
 
 import { PERMANENT_TERMINAL_STATUSES, SUSPENDED_STATUSES } from "./MissionTransitions.ts";
@@ -131,13 +131,13 @@ export const WORKING_ORDER_REPRICE_CADENCE_MILLIS = 15_000;
  * How long a working entry may rest in total before the loop crosses.
  *
  * Policy-shaped knob: a plan may state its own wait (plan 29 phase 4). The
- * default is deliberately the quote validity — the wake's approval was priced
- * against a book that lives 90 seconds, so beyond that the approval's market
- * context is dead and the choice is cross (take the liquidity the wake's
- * urgency-"now" fallback implied) or abandon. Crossing first matches the
+ * default is deliberately the entry pricing validity — the wake's approval was
+ * priced against a book that lives 90 seconds, so beyond that the approval's
+ * market context is dead and the choice is cross (take the liquidity the
+ * wake's urgency-"now" fallback implied) or abandon. Crossing first matches the
  * moment the wake approved; abandoning is what a failed cross falls back to.
  */
-export const WORKING_ORDER_MAX_WAIT_MILLIS = QUOTE_VALIDITY_MILLIS;
+export const WORKING_ORDER_MAX_WAIT_MILLIS = ENTRY_PRICING_VALIDITY_MILLIS;
 
 /** What one pass needs to know about the mission whose entry it works. */
 export interface WorkingOrderInput {

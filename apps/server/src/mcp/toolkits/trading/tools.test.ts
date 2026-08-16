@@ -2,7 +2,6 @@ import { expect, it } from "@effect/vitest";
 import {
   TRADING_CANCEL_WATCH_TOOL,
   TRADING_ADJUST_STOP_TOOL,
-  TRADING_EXECUTE_TOOL,
   TRADING_GET_PLAYBOOK_TOOL,
   TRADING_GET_TARGET_CALIBRATION_TOOL,
   TRADING_LIST_WATCHES_TOOL,
@@ -10,7 +9,7 @@ import {
   TRADING_REGISTER_WATCH_TOOL,
 } from "@t3tools/trading-contracts/tools";
 import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
-import { TRADING_QUOTE_ENTRY_TOOL } from "@t3tools/trading-contracts/quote";
+import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
 import {
   TRADING_CANCEL_ORDER_TOOL,
   TRADING_CLOSE_POSITION_TOOL,
@@ -33,8 +32,7 @@ it("exposes one read, the mission tools, and the watch tools", () => {
       TRADING_GET_TARGET_CALIBRATION_TOOL,
       TRADING_GET_PLAYBOOK_TOOL,
       TRADING_REGISTER_WATCH_TOOL,
-      TRADING_QUOTE_ENTRY_TOOL,
-      TRADING_EXECUTE_TOOL,
+      TRADING_ENTER_TOOL,
       TRADING_CLOSE_POSITION_TOOL,
       TRADING_REDUCE_POSITION_TOOL,
       TRADING_CANCEL_ORDER_TOOL,
@@ -69,14 +67,33 @@ it("exports provider-compatible object schemas the harness can fill in", () => {
   }
 });
 
-it("advertises only the server-owned quote form for execution", () => {
-  const schema = Tool.getJsonSchema(TradingToolkit.tools[TRADING_EXECUTE_TOOL]) as {
+// Plan 29 step 6.2: entering is one call, and its input is only what the
+// harness can actually see. Nothing about the order's identity — no sequence,
+// no versions, no lease, no limit price, and no token to hand back — is
+// advertised, because a field a harness can fill in is a field it can fill in
+// wrongly.
+it("advertises only what the harness can see, and asks for the stop", () => {
+  const schema = Tool.getJsonSchema(TradingToolkit.tools[TRADING_ENTER_TOOL]) as {
     readonly properties?: Readonly<Record<string, unknown>>;
     readonly required?: ReadonlyArray<string>;
   };
 
-  expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["missionId", "quoteId"]);
-  expect(schema.required).toContain("quoteId");
+  expect(Object.keys(schema.properties ?? {}).sort()).toEqual([
+    "actionType",
+    "market",
+    "missionId",
+    "notionalUsd",
+    "side",
+    "sizeEth",
+    "stopPrice",
+    "urgency",
+  ]);
+  // The mandatory stop is a required field, not a hope.
+  expect(schema.required).toContain("stopPrice");
+  expect(schema.required).toContain("side");
+  for (const owned of ["quoteId", "executionSequence", "limitPrice", "activeHarnessRunId"]) {
+    expect(schema.properties?.[owned], `${owned} is the server's`).toBeUndefined();
+  }
 });
 
 // The publish description states the publish contract (optimistic
@@ -191,7 +208,7 @@ it("marks reading as safe and publishing as non-idempotent", () => {
 it("keeps every description on a budget", () => {
   const tools = Object.values(TradingToolkit.tools);
 
-  expect(tools.length, "expected exactly 13 trading tools").toBe(13);
+  expect(tools.length, "expected exactly 12 trading tools").toBe(12);
 
   const total = tools.reduce((sum, tool) => sum + (tool.description ?? "").length, 0);
   expect(total, "total description chars must stay under 4,000").toBeLessThan(4_000);
@@ -216,9 +233,9 @@ it("teaches urgency and keeps time-in-force vocabulary out of the descriptions",
     expect(tool.description ?? "", tool.name).not.toContain("time-in-force");
   }
 
-  const quote = TradingToolkit.tools[TRADING_QUOTE_ENTRY_TOOL].description ?? "";
-  expect(quote).toContain("urgency");
-  expect(quote).toContain("patient");
+  const enter = TradingToolkit.tools[TRADING_ENTER_TOOL].description ?? "";
+  expect(enter).toContain("urgency");
+  expect(enter).toContain("patient");
   const close = TradingToolkit.tools[TRADING_CLOSE_POSITION_TOOL].description ?? "";
   expect(close).toContain("urgency");
   const reduce = TradingToolkit.tools[TRADING_REDUCE_POSITION_TOOL].description ?? "";

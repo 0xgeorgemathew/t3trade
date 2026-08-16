@@ -24,12 +24,12 @@ import {
   TradingRegisterWatchResult,
   TradingAdjustStopInput,
   TradingAdjustStopResult,
-  TradingExecuteInput,
+  TradingEnterResult,
   TradingRequestEntryResult,
   TradingToolRejectedError,
 } from "@t3tools/trading-contracts/tools";
 import { TradingLookInput, TradingObservation } from "@t3tools/trading-contracts/observation";
-import { TradingQuoteEntryInput, TradingQuoteEntryResult } from "@t3tools/trading-contracts/quote";
+import { TradingEnterInput } from "@t3tools/trading-contracts/entry";
 import {
   TradingCancelOrderInput,
   TradingClosePositionInput,
@@ -51,7 +51,7 @@ import { TradingMissionService } from "../../../trading/TradingMissionService.ts
 import { TradingExitService } from "../../../trading/TradingExitService.ts";
 import { TradingPlanProtectionService } from "../../../trading/TradingPlanProtectionService.ts";
 import { TradingWorkingOrderService } from "../../../trading/TradingWorkingOrderService.ts";
-import { TradingQuoteService } from "../../../trading/TradingQuoteService.ts";
+import { TradingEntryService } from "../../../trading/TradingEntryService.ts";
 import { TradingStrategyService } from "../../../trading/TradingStrategyService.ts";
 import { TradingStopAdjustmentService } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingWatchService } from "../../../trading/TradingWatchService.ts";
@@ -76,14 +76,13 @@ const dependencies = [
   TradingTradeHistoryService,
   // `trading_get_target_calibration` grades the targets against those trades.
   TradingCalibrationService,
-  // `trading_request_entry` reports what the reactor actually did with the
-  // request, not that the request was raised.
+  // `trading_enter` reports what the reactor actually did with the request,
+  // not that the request was raised.
   TradingExecutionOutcome,
   // `trading_adjust_stop` measures the mission before it moves the stop.
   TradingStopAdjustmentService,
-  // `trading_quote_entry` prices and sizes an entry; `trading_execute` turns a
-  // quote back into the intent the server built for it.
-  TradingQuoteService,
+  // `trading_enter` prices, sizes and pre-checks the entry it then submits.
+  TradingEntryService,
   // The three exit tools size themselves from the canonical position.
   TradingExitService,
   // An accepted publish reconciles the exchange's stop and target to the plan
@@ -184,33 +183,22 @@ export const TradingCancelWatchTool = Tool.make("trading_cancel_watch", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
-export const TradingQuoteEntryTool = Tool.make("trading_quote_entry", {
+export const TradingEnterTool = Tool.make("trading_enter", {
   description:
-    "Price and size one entry: the server derives the limit and the largest size every risk ceiling allows — that is the approved trade. `urgency` defaults to `now` (cross immediately); `patient` rests at the near side as a maker order. Too large gets a smaller quote plus `constrainedBy`. Quotes expire in 90s; executing one twice returns the same execution. Refuses stops inside the noise floor.",
-  parameters: TradingQuoteEntryInput,
-  success: TradingQuoteEntryResult,
+    "Enter in one call: name the market, the side and your stop; the server derives the limit, the precision, the versions, the lease, and the largest size every risk ceiling allows — the approved trade — pre-checks it, and sends it. Omit the size for that ceiling; too large comes back smaller with `constrainedBy`. `urgency` defaults to `now` (cross); `patient` rests at the near side and the server works it. Refuses stops inside the noise floor. `notes` is what is true of it but does not stop it.",
+  parameters: TradingEnterInput,
+  success: TradingEnterResult,
   failure: TradingToolRejectedError,
   dependencies,
 })
-  .annotate(Tool.Title, "Quote an entry")
-  // A quote writes a row, but reserves nothing and touches no exchange state.
-  .annotate(Tool.Readonly, false)
-  .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, false)
-  .annotate(Tool.OpenWorld, true);
-
-export const TradingExecuteTool = Tool.make("trading_execute", {
-  description:
-    "Submit an entry with `{ quoteId }` from trading_quote_entry — the server derived and pre-checked every other field; full intents are refused. `accepted` rests on the book, `submitted` means outcome unknown, `reduce`/`close` report `remainingSize`; every other outcome is terminal.",
-  parameters: TradingExecuteInput,
-  success: TradingRequestEntryResult,
-  failure: TradingToolRejectedError,
-  dependencies,
-})
-  .annotate(Tool.Title, "Execute trading intent")
+  .annotate(Tool.Title, "Enter")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.Idempotent, true)
+  // Deliberately NOT idempotent: with the quote token retired there is nothing
+  // for a second call to replay, so it allocates a fresh sequence, derives a
+  // fresh cloid, and is a second trade. Saying otherwise would invite exactly
+  // the double entry the annotation is supposed to prevent.
+  .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, true);
 
 export const TradingGetPlaybookTool = Tool.make("trading_get_playbook", {
@@ -291,8 +279,7 @@ export const TradingToolkit = Toolkit.make(
   TradingRegisterWatchTool,
   TradingListWatchesTool,
   TradingCancelWatchTool,
-  TradingQuoteEntryTool,
-  TradingExecuteTool,
+  TradingEnterTool,
   TradingClosePositionTool,
   TradingReducePositionTool,
   TradingCancelOrderTool,

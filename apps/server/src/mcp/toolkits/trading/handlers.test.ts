@@ -45,7 +45,7 @@ import {
   TradingMissionServiceLive,
 } from "../../../trading/TradingMissionService.ts";
 import { TradingPlanProtectionService } from "../../../trading/TradingPlanProtectionService.ts";
-import { TradingQuoteService } from "../../../trading/TradingQuoteService.ts";
+import { TradingEntryService } from "../../../trading/TradingEntryService.ts";
 import { TradingStopAdjustmentServiceLive } from "../../../trading/TradingStopAdjustmentService.ts";
 import { TradingStrategyServiceLive } from "../../../trading/TradingStrategyService.ts";
 import { TradingTradeHistoryServiceLive } from "../../../trading/TradingTradeHistoryService.ts";
@@ -350,7 +350,7 @@ const tradingLayerOverExchange = (fake: FakeExchange) =>
       Layer.provide(fakeCostEstimator),
     ),
     Layer.succeed(TradingExecutionOutcome, {} as unknown as TradingExecutionOutcome["Service"]),
-    Layer.succeed(TradingQuoteService, {} as unknown as TradingQuoteService["Service"]),
+    Layer.succeed(TradingEntryService, {} as unknown as TradingEntryService["Service"]),
     Layer.succeed(TradingExitService, {} as unknown as TradingExitService["Service"]),
   );
 
@@ -955,48 +955,41 @@ it.effect("decodes a prose-string entry trigger and round-trips it as the object
   ),
 );
 
-it.effect("refuses to quote an entry outside a turn that owns the decision lease", () =>
+it.effect("refuses an entry outside a turn that owns the decision lease", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
       // No harness run has been opened for this mission, so nothing owns the
       // lease — the check preview item 5 was named for, made real by reading
       // the table the lease actually lives in rather than trusting an argument.
-      const quoted = yield* callTool(BOUND_THREAD, "trading_quote_entry", {
+      const entered = yield* callTool(BOUND_THREAD, "trading_enter", {
         market: "ETH",
         side: "buy",
         stopPrice: 3_100,
         sizeEth: 0.1,
       });
 
-      assert.equal(quoted.result.isError, false);
-      assert.equal(quoted.result.structuredContent.outcome, "refused");
-      assert.equal(quoted.result.structuredContent.reason, "harness_run_owns_lease");
+      assert.equal(entered.result.isError, false);
+      // A refusal reaches the harness in the same result shape a fill does,
+      // so one outcome type covers every write it makes.
+      assert.equal(entered.result.structuredContent.status, "rejected");
+      assert.include(entered.result.structuredContent.detail, "harness_run_owns_lease");
+      assert.equal(entered.result.structuredContent.recovery?.retryable, false);
     }),
   ),
 );
 
-it.effect("tells an execute carrying an unknown quote to go and get one", () =>
+it.effect("will not enter without a stop", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {
-      const executed = yield* callTool(BOUND_THREAD, "trading_execute", {
-        quoteId: "qte_never_issued",
+      // The mandatory stop is a required input, so an entry without one never
+      // reaches the sizing at all.
+      const entered = yield* callTool(BOUND_THREAD, "trading_enter", {
+        market: "ETH",
+        side: "buy",
       });
 
-      assert.equal(executed.result.isError, false);
-      assert.equal(executed.result.structuredContent.status, "rejected");
-      assert.include(executed.result.structuredContent.detail, "quote_not_found");
-      assert.include(executed.result.structuredContent.detail, "trading_quote_entry");
-    }),
-  ),
-);
-
-it.effect("refuses an execute that names neither a quote nor a full intent", () =>
-  withMcpServer(({ callTool }) =>
-    Effect.gen(function* () {
-      const executed = yield* callTool(BOUND_THREAD, "trading_execute", {});
-
-      assert.equal(executed.result.isError, true);
-      assert.include(executed.result.content[0]?.text ?? "", "quoteId");
+      assert.equal(entered.result.isError, true);
+      assert.include(entered.result.content[0]?.text ?? "", "stopPrice");
     }),
   ),
 );

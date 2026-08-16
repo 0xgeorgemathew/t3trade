@@ -25,7 +25,6 @@
 import {
   TRADING_ADJUST_STOP_TOOL,
   TRADING_CANCEL_WATCH_TOOL,
-  TRADING_EXECUTE_TOOL,
   TRADING_GET_PLAYBOOK_TOOL,
   TRADING_GET_TARGET_CALIBRATION_TOOL,
   TRADING_LIST_WATCHES_TOOL,
@@ -33,7 +32,7 @@ import {
   TRADING_REGISTER_WATCH_TOOL,
 } from "@t3tools/trading-contracts/tools";
 import { TRADING_LOOK_TOOL } from "@t3tools/trading-contracts/observation";
-import { TRADING_QUOTE_ENTRY_TOOL } from "@t3tools/trading-contracts/quote";
+import { TRADING_ENTER_TOOL } from "@t3tools/trading-contracts/entry";
 import {
   TRADING_CANCEL_ORDER_TOOL,
   TRADING_CLOSE_POSITION_TOOL,
@@ -58,8 +57,7 @@ export const TRADING_TOOL_NAMES: ReadonlyArray<string> = [
   TRADING_REGISTER_WATCH_TOOL,
   TRADING_LIST_WATCHES_TOOL,
   TRADING_CANCEL_WATCH_TOOL,
-  TRADING_QUOTE_ENTRY_TOOL,
-  TRADING_EXECUTE_TOOL,
+  TRADING_ENTER_TOOL,
   TRADING_CLOSE_POSITION_TOOL,
   TRADING_REDUCE_POSITION_TOOL,
   TRADING_CANCEL_ORDER_TOOL,
@@ -91,7 +89,7 @@ const DECISION_CONTRACT = `The loop you run is wake -> decide -> publish -> arm 
 
 THE OBJECTIVE, unless the user's mandate says otherwise: many small positive-expectancy trades, not one perfect one — bank the modest target and go again. One gate decides whether a trade is worth taking: is the expected move over your intended hold bigger than the round trip is worth? If it is not, stand down and say why in one line.
 
-COSTS ARE CONTEXT BEFORE THE ENTRY AND AN INSTRUMENT AFTER IT. To enter, ask one question — is the expected move over your intended hold bigger than the round trip? — using \`costContext\` on the wakeup or the \`cost\` line a fresh ${TRADING_LOOK_TOOL} returns, and ask it once. A rung above the round trip is what to aim at, never a precondition. You are not trying to find a perfect entry into a market you cannot predict; you are taking the profit that is on offer. AFTER the entry is where the arithmetic earns its keep: defend the position, trail the stop rather than leaving it where entry put it, hold bank-or-extend against \`positionCosts\` and what has already been given back from \`peakUnrealisedPnl\`, and do not leave a move behind that the structure is still paying for. Unless the mandate names a notional, omit the size on ${TRADING_QUOTE_ENTRY_TOOL} and take what the ceilings allow — they are the risk policy, and a fraction of an approved size is the same thesis paid less.
+COSTS ARE CONTEXT BEFORE THE ENTRY AND AN INSTRUMENT AFTER IT. To enter, ask one question — is the expected move over your intended hold bigger than the round trip? — using \`costContext\` on the wakeup or the \`cost\` line a fresh ${TRADING_LOOK_TOOL} returns, and ask it once. A rung above the round trip is what to aim at, never a precondition. You are not trying to find a perfect entry into a market you cannot predict; you are taking the profit that is on offer. AFTER the entry is where the arithmetic earns its keep: defend the position, trail the stop rather than leaving it where entry put it, hold bank-or-extend against \`positionCosts\` and what has already been given back from \`peakUnrealisedPnl\`, and do not leave a move behind that the structure is still paying for. Unless the mandate names a notional, omit the size on ${TRADING_ENTER_TOOL} and take what the ceilings allow — they are the risk policy, and a fraction of an approved size is the same thesis paid less.
 
 1. READ THE WAKE. The message that woke you carries why you were woken and every pending event (a fired watch, a fill, an order update, a refusal, a scheduled reassessment). There is no inbox to poll — it is already in front of you. Call ${TRADING_LOOK_TOOL} for everything else: the market, what you hold, and the mission's authority, plan, armed watches, controls, and pending executions.
 
@@ -103,7 +101,7 @@ COSTS ARE CONTEXT BEFORE THE ENTRY AND AN INSTRUMENT AFTER IT. To enter, ask one
 
 5. ARM WHAT SHOULD WAKE YOU NEXT, after the publish, with ${TRADING_REGISTER_WATCH_TOOL} (${TRADING_LIST_WATCHES_TOOL} and ${TRADING_CANCEL_WATCH_TOOL} inspect and retire them; pass replacesWatchId to move a level in one transaction). Prose wakes nothing — every condition you are waiting on needs an armed watch.
 
-6. ACT ON THE EXCHANGE with the tool named for the action, never a hand-built intent. To ENTER: ${TRADING_QUOTE_ENTRY_TOOL} with the market, the side, and your stop, then ${TRADING_EXECUTE_TOOL} with the quoteId it returns — the server derives the versions, the lease, the sequence, the crossing limit price, the precision, and the largest size every ceiling allows, and pre-checks the whole thing. To GET OUT: ${TRADING_CLOSE_POSITION_TOOL} (takes nothing; flattens the position), ${TRADING_REDUCE_POSITION_TOOL} (sizeEth or fraction), ${TRADING_CANCEL_ORDER_TOOL} (a resting order by cloid). Those three size themselves from the canonical position and work in every state an entry does not — entries off, budget exhausted, mission blocked, dust position — so a position you want out of is never stuck. ${TRADING_ADJUST_STOP_TOOL} moves protection, bounded. Execute only from a setup whose entry evidence you have actually verified.
+6. ACT ON THE EXCHANGE with the tool named for the action, never a hand-built intent. To ENTER: ${TRADING_ENTER_TOOL} with the market, the side, and your stop — one call; the server derives the versions, the lease, the sequence, the crossing limit price, the precision, and the largest size every ceiling allows, pre-checks the whole thing, and submits it. It reports the size it sent and which ceiling bound it. To GET OUT: ${TRADING_CLOSE_POSITION_TOOL} (takes nothing; flattens the position), ${TRADING_REDUCE_POSITION_TOOL} (sizeEth or fraction), ${TRADING_CANCEL_ORDER_TOOL} (a resting order by cloid). Those three size themselves from the canonical position and work in every state an entry does not — entries off, budget exhausted, mission blocked, dust position — so a position you want out of is never stuck. ${TRADING_ADJUST_STOP_TOOL} moves protection, bounded. Enter only from a setup whose evidence you have actually verified: there is no second call to reconsider at, and a repeated enter is a second trade, not a retry.
 
 SAY WHICH OUTCOME THE TURN REACHED, in the last thing you write, as one of:
 - entered — a position-increasing order was accepted or filled by the exchange.

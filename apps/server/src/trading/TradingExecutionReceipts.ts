@@ -1,7 +1,7 @@
 /**
  * The signal that one execution is finished, instead of asking eighty times.
  *
- * `trading_execute` raises an event and the reactor answers it on another
+ * `trading_enter` raises an event and the reactor answers it on another
  * fiber, so the tool has to wait for an answer it cannot see being produced. It
  * did that by re-reading the database every 250ms for twenty seconds: up to
  * eighty queries per execution, each one a guess, and a latency floor of a

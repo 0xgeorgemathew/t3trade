@@ -279,12 +279,12 @@ describe("coerceToolArguments", () => {
       ).toEqual({ market: "ETH", newStopPrice: 100 });
     });
 
-    it("coerces the numeric entry fields on trading_quote_entry", () => {
+    it("coerces the numeric entry fields on trading_enter", () => {
       // The sizing fields are nullable numbers, so each is an `anyOf` whose
       // number branch is itself an `anyOf` of the constrained number and the
       // Infinity/NaN enum. Coercion has to reach through both levels.
       expect(
-        coerceToolArguments(schemaFor("trading_quote_entry"), {
+        coerceToolArguments(schemaFor("trading_enter"), {
           missionId: "mission_1",
           market: "ETH",
           side: "buy",
@@ -304,17 +304,6 @@ describe("coerceToolArguments", () => {
         actionType: "open",
         urgency: "patient",
       });
-    });
-
-    it("leaves the quote-id shape of trading_execute untouched", () => {
-      // `trading_execute` takes no numbers of its own since execution moved
-      // behind a quote id — an already-valid payload must pass through as-is.
-      expect(
-        coerceToolArguments(schemaFor("trading_execute"), {
-          missionId: "mission_1",
-          quoteId: "quote_1",
-        }),
-      ).toEqual({ missionId: "mission_1", quoteId: "quote_1" });
     });
 
     it("coerces through a $ref'd trigger and leaves a prose trigger a string", () => {

@@ -28,11 +28,10 @@ import {
 } from "./strategy.ts";
 import {
   TradingGetMissionResult,
-  TradingExecuteInput,
   TradingPublishPlanInput,
   TradingPublishPlanResult,
-  TradingRequestEntryInput,
 } from "./tools.ts";
+import { TradingEnterInput } from "./entry.ts";
 import { MarketWatch, PersistedWatch } from "./watch.ts";
 import {
   TradingCloid,
@@ -54,8 +53,7 @@ const decodeHarnessRun = Schema.decodeUnknownSync(TradingHarnessRun);
 const decodePublishInput = Schema.decodeUnknownSync(TradingPublishPlanInput);
 const decodePublishResult = Schema.decodeUnknownSync(TradingPublishPlanResult);
 const decodeGetMissionResult = Schema.decodeUnknownSync(TradingGetMissionResult);
-const decodeRequestEntry = Schema.decodeUnknownSync(TradingRequestEntryInput);
-const decodeExecute = Schema.decodeUnknownSync(TradingExecuteInput);
+const decodeEnter = Schema.decodeUnknownSync(TradingEnterInput);
 const decodeResolvedMarket = Schema.decodeUnknownSync(ResolvedMarket);
 const decodeAgentMarketSnapshot = Schema.decodeUnknownSync(AgentMarketSnapshot);
 const decodeMarketHistoryRequest = Schema.decodeUnknownSync(MarketHistoryRequest);
@@ -393,51 +391,27 @@ describe("§14.3 mission tool contracts", () => {
     expect(decoded.missionId).toBeUndefined();
   });
 
-  it("does not accept competing execution forms", () => {
-    const intent = {
-      missionId: "mission_1",
-      executionSequence: 1,
-      actionType: "open",
+  it("takes an entry in the harness's own vocabulary and refuses a hand-built intent", () => {
+    // Market, side, stop — and urgency, never a time-in-force. Everything the
+    // retired two-step made the harness carry between calls is the server's.
+    const entered = decodeEnter({
       market: "ETH",
       side: "buy",
-      size: 0.1,
-      orderPreference: "marketable_ioc",
-      limitPrice: 2_000,
-      stop: { stopPrice: 1_990, plannedLossAtStopUsd: 1 },
-      reduceOnly: false,
-    };
+      stopPrice: 1_990,
+      urgency: "patient",
+    });
+    expect(entered.stopPrice).toBe(1_990);
+    expect(entered.urgency).toBe("patient");
+    // Urgency defaults rather than being asked for twice.
+    expect(decodeEnter({ market: "ETH", side: "buy", stopPrice: 1_990 }).urgency).toBe("now");
+    // A size named two ways is a size the server would have to pick between.
     expect(() =>
-      decodeRequestEntry({
-        quoteId: "quote_1",
-        intent,
-        expectedAuthorityVersion: 1,
-        activeHarnessRunId: "run_1",
-      }),
+      decodeEnter({ market: "ETH", side: "buy", stopPrice: 1_990, sizeEth: 1, notionalUsd: 2_000 }),
     ).toThrow();
-    expect(() => decodeRequestEntry({ intent })).toThrow();
-    expect(decodeRequestEntry({ quoteId: "quote_1" }).quoteId).toBe("quote_1");
-  });
-
-  it("publishes quote identity as the only live execution form", () => {
-    expect(decodeExecute({ quoteId: "quote_1" }).quoteId).toBe("quote_1");
-    expect(() =>
-      decodeExecute({
-        intent: {
-          missionId: "mission_1",
-          executionSequence: 1,
-          actionType: "open",
-          market: "ETH",
-          side: "buy",
-          size: 0.1,
-          orderPreference: "marketable_ioc",
-          limitPrice: 2_000,
-          stop: { stopPrice: 1_990, plannedLossAtStopUsd: 1 },
-          reduceOnly: false,
-        },
-        expectedAuthorityVersion: 1,
-        activeHarnessRunId: "run_1",
-      }),
-    ).toThrow();
+    // The intent fields are not part of the input at all.
+    expect("limitPrice" in decodeEnter({ market: "ETH", side: "buy", stopPrice: 1_990 })).toBe(
+      false,
+    );
   });
 
   it("decodes a prose-string condition into the object shape", () => {
@@ -831,7 +805,7 @@ describe("subpath exports", () => {
         "./calibration",
         "./playbook",
         "./decision",
-        "./quote",
+        "./entry",
         "./exit",
         "./recovery",
         "./policy",
