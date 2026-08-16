@@ -24,6 +24,38 @@ Read this section first; everything below it is the record.
   gitignored, so there is no history to recover. I wrote it back with two
   entries: `web` (`pnpm dev:web`, port 5733) and the harness below. If you had
   other configurations in there, they are gone and I am sorry.
+- **Your panel restyle is committed, inside my step 8.1 commit.** You said you
+  had left it uncommitted in the working tree. `git add` on the whole
+  `components/trading` directory swept it in, so `cb546eef8` carries 152 lines
+  of `MissionLivePanel.tsx` typography under a message that talks about the
+  chart's future gutter. About five of those lines are mine (the
+  `triggerExpiryAt` wiring); the rest is your restyle. I did **not** rewrite
+  history to split it, for one reason: another session is writing into this
+  working tree at the same time as me (see the next item), and rebasing under a
+  concurrent writer is how you lose someone's work. Say the word when you are
+  back and I will split `cb546eef8` into a restyle commit and a gutter commit.
+- **Another session audited phases 0–7 into the plan doc while I was working,
+  and it audited _me_ by accident.** `docs/operations/plan-29-trader-restructure.md`
+  now carries an uncommitted 636-line "Appendix A" that I did not write. Its
+  §A15 reports that "step 8.1 is done, uncommitted" and lists `futureEndX`,
+  `triggerExpiryAt`, `HYPOTHETICAL_STROKE_WIDTH`, `deriveTriggerExpiryMillis`
+  and "0.5 opacity" as pre-existing work. Those are my step 8.1 edits, caught
+  mid-run before I raised the opacity to 0.75 — that appendix is describing my
+  own working tree back to me, not a discovery. **Do not let it convince you
+  step 8.1 was already landed at `add220b1a`.** It was not; it is `cb546eef8`.
+  I have left the appendix untouched and uncommitted, as I found it.
+- **That appendix's §A1 alleges a live risk-gate hole, and I have not acted on
+  it.** It claims `TradingPlanProtectionService`'s widening guard never fires,
+  because the query that finds the entry's execution record filters
+  `created_at >= openedAt` while `created_at` is stamped before signing and
+  `opened_at` after the fill — so the filter excludes the one row it exists to
+  find, and a plan omitting `maximumPlannedLossUsd` gets a null envelope and
+  skips the check. If that is right it is the most important thing in this
+  repository right now and it is worth more than all of phase 8. It is also
+  server-side, outside phases 8–10, written by an agent whose §A15 I have just
+  shown to be mistaken, and unverified by me. Tightening a gate on someone
+  else's unchecked reading, unsupervised, is not a call I should make. Read A1
+  yourself first.
 - **I briefly committed two of your uncommitted files and then took them back
   out.** `git commit -a` swept `apps/marketing/src/pages/index.astro`,
   `docs/architecture/agent-tool-architecture-research.md`,
