@@ -47,10 +47,10 @@ interface StrategyRow {
   readonly target_profit_usd: number | null;
 }
 
-/** The entry quote that opened the trade — where its stop sat, and against what market. */
-interface EntryQuoteRow {
+/** The entry that opened the trade — where its stop sat, and against what market. */
+interface EntryContextRow {
   readonly stop_price: number;
-  readonly atr_usd_at_entry: number | null;
+  readonly atr_usd: number | null;
   readonly best_bid: number;
   readonly best_ask: number;
 }
@@ -58,13 +58,13 @@ interface EntryQuoteRow {
 /**
  * Stop distance at entry in USD, ATRs, and noise-floor multiples — plan 27 G1.
  *
- * All read off the entry quote: the stop the entry was approved with, the ATR
- * the server measured then, and the spread it was quoted against. Empty when
+ * All read off the entry record: the stop the entry was approved with, the ATR
+ * the server measured then, and the spread it was priced against. Empty when
  * any leg is missing; a partial measurement would grade the stop against a
  * floor that was never computed.
  */
 const measureStopAtEntry = (
-  quote: EntryQuoteRow | undefined,
+  entry: EntryContextRow | undefined,
   entryPrice: number | null,
 ): Partial<
   Pick<
@@ -72,16 +72,16 @@ const measureStopAtEntry = (
     "stopPriceAtEntry" | "stopDistanceUsd" | "stopDistanceAtrMultiple" | "stopNoiseFloorMultiple"
   >
 > => {
-  if (quote === undefined || entryPrice === null || entryPrice <= 0) return {};
-  if (!(quote.stop_price > 0)) return {};
-  const distance = Math.abs(entryPrice - quote.stop_price);
-  const atr = quote.atr_usd_at_entry;
+  if (entry === undefined || entryPrice === null || entryPrice <= 0) return {};
+  if (!(entry.stop_price > 0)) return {};
+  const distance = Math.abs(entryPrice - entry.stop_price);
+  const atr = entry.atr_usd;
   const floor = stopNoiseFloorUsd({
-    halfSpreadUsd: Math.max(0, (quote.best_ask - quote.best_bid) / 2),
+    halfSpreadUsd: Math.max(0, (entry.best_ask - entry.best_bid) / 2),
     atrUsd: atr ?? 0,
   });
   return {
-    stopPriceAtEntry: quote.stop_price,
+    stopPriceAtEntry: entry.stop_price,
     stopDistanceUsd: distance,
     ...(atr !== null && atr > 0 ? { stopDistanceAtrMultiple: distance / atr } : {}),
     ...(floor > 0 ? { stopNoiseFloorMultiple: distance / floor } : {}),
@@ -127,17 +127,17 @@ export const buildClosedTradeReview = (input: {
       WHERE mission_id = ${input.missionId} AND market = ${input.market}
         AND traded_at >= ${openedAt} AND side = ${closingSide}
     `;
-    // The quote that opened this trade: the newest consumed open quote cut at
-    // or shortly before the position was first observed. Same join the entry
-    // governance read uses; a minute of slack covers the gap between consume
-    // and the snapshot pass that observed the fill.
-    const entryQuotes = yield* sql<EntryQuoteRow>`
-      SELECT stop_price, atr_usd_at_entry, best_bid, best_ask
-      FROM trading_entry_quotes
+    // The entry that opened this trade: the newest open entry the server
+    // committed to at or shortly before the position was first observed. Same
+    // join the entry governance read uses; a minute of slack covers the gap
+    // between the entry and the snapshot pass that observed the fill.
+    const entries = yield* sql<EntryContextRow>`
+      SELECT stop_price, atr_usd, best_bid, best_ask
+      FROM trading_entry_context
       WHERE mission_id = ${input.missionId} AND market = ${input.market}
-        AND action_type = 'open' AND consumed_at IS NOT NULL
-        AND consumed_at <= ${openedAt + 60_000}
-      ORDER BY consumed_at DESC
+        AND action_type = 'open'
+        AND recorded_at <= ${openedAt + 60_000}
+      ORDER BY recorded_at DESC
       LIMIT 1
     `;
     // The plan in force when the position closed — the newest history row the
@@ -187,7 +187,7 @@ export const buildClosedTradeReview = (input: {
       ...(strategy?.target_profit_usd == null
         ? {}
         : { targetProfitUsd: strategy.target_profit_usd }),
-      ...measureStopAtEntry(entryQuotes[0], previous.entry_price),
+      ...measureStopAtEntry(entries[0], previous.entry_price),
     } satisfies ClosedTradeReview;
   }).pipe(
     // A review is commentary on a trade that is already over. Failing the whole
