@@ -273,15 +273,30 @@ export const formatSessionReport = (report: SessionReport): string => {
   const pricedNote = `${economics.pricedTrades} of ${economics.trades} trades priced`;
   const bookedNote = `${economics.bookedTrades} of ${economics.trades} trades with an entry book`;
 
+  // Plan 29 step 10.2: the four numbers the soak is run to answer stand
+  // first, under their own rule. They were already computed and already
+  // printed — by step 0.2 and step 2.7 — but they sat fourth, ninth and tenth
+  // in a fourteen-line block, which is a report you have to already know how
+  // to read. Nothing is printed twice: the four are lifted out of the list
+  // below rather than copied above it.
   const lines = [
     `mission: ${report.missionId} (${report.market}, created ${DateTime.formatIso(DateTime.makeUnsafe(report.createdAt))})`,
-    `trades: ${economics.trades}`,
+    "",
+    "the four numbers",
+    `  trades: ${economics.trades}`,
+    noTrades || economics.netBpsPerTrade === null
+      ? `  net bps per trade: n/a (${noTrades ? "no closed trades" : pricedNote})`
+      : `  net bps per trade: ${round1(economics.netBpsPerTrade)}`,
+    fillCosts.feeShareOfGross === null
+      ? `  cost fees, share of gross notional traded: n/a (${fillCosts.fills === 0 ? "no fills recorded" : "no notional recorded"})`
+      : `  cost fees, share of gross notional traded: ${round2(fillCosts.feeShareOfGross * 100)}% (${fillCosts.fills} fills)`,
+    fillCosts.makerFillRate === null
+      ? `  maker fill rate (by fill count): n/a (${fillCosts.fills === 0 ? "no fills recorded" : "no maker flag recorded"})`
+      : `  maker fill rate (by fill count): ${round1(fillCosts.makerFillRate * 100)}% (${fillCosts.makerFills} of ${fillCosts.flaggedFills} flagged fills)`,
+    "",
     noTrades
       ? `win rate: n/a (no closed trades)`
       : `win rate: ${round1((economics.wins / economics.trades) * 100)}% (${economics.wins} of ${economics.trades})`,
-    noTrades || economics.netBpsPerTrade === null
-      ? `net bps per trade: n/a (${noTrades ? "no closed trades" : pricedNote})`
-      : `net bps per trade: ${round1(economics.netBpsPerTrade)}`,
     noTrades
       ? `cost fees: n/a (no closed trades)`
       : bpsLine("cost fees", economics.feesBps, `round trip; ${pricedNote}`),
@@ -292,12 +307,6 @@ export const formatSessionReport = (report: SessionReport): string => {
       ? `cost slippage, entry side: n/a (no closed trades)`
       : bpsLine("cost slippage, entry side", economics.entrySlippageBps, bookedNote),
     "cost spread/slippage, exit side: n/a (no exit quotes recorded)",
-    fillCosts.makerFillRate === null
-      ? `maker fill rate (by fill count): n/a (${fillCosts.fills === 0 ? "no fills recorded" : "no maker flag recorded"})`
-      : `maker fill rate (by fill count): ${round1(fillCosts.makerFillRate * 100)}% (${fillCosts.makerFills} of ${fillCosts.flaggedFills} flagged fills)`,
-    fillCosts.feeShareOfGross === null
-      ? `cost fees, share of gross notional traded: n/a (${fillCosts.fills === 0 ? "no fills recorded" : "no notional recorded"})`
-      : `cost fees, share of gross notional traded: ${round2(fillCosts.feeShareOfGross * 100)}% (${fillCosts.fills} fills)`,
     `plan versions published: ${wakes.planVersionsPublished}`,
     `wakes taken: ${wakes.wakes}`,
     `wakes that changed nothing: ${wakes.noOpWakes}`,
