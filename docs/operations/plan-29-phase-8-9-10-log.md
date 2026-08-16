@@ -7,86 +7,57 @@ run was `add220b1a`.
 
 ## Open questions for George
 
-Read this section first; everything below it is the record.
+Read this section first; everything below it is the record. Items resolved by
+the run that wrote them are gone; what is left is either still open or still
+true.
 
+- **The plan is out. Phase 8 is complete, phase 9 is complete, phase 10 is
+  complete except the soak, which is 10.1 and is yours.** The last entry in
+  this log says exactly what to run and what to keep.
+- **Phase 9's mode is derived from the mandate, not stored.** That means you
+  cannot switch a mission's mode from the panel without editing its mandate. I
+  judged that right — a mission that changes its job halfway through is one
+  whose journal no longer explains its trades — but it is the decision in phase
+  9 most likely to be yours to overturn, and it is one migration away.
+- **Phase 9 has no tool subset and I think the step is wrong to ask for one.**
+  All seven tools are needed in both modes. See the phase 9 entry.
+- **The panel does not show the mode.** An operator looking at a mission in
+  execute mode cannot see that it is. Server and contract carry it; no UI reads
+  it yet.
+- **Trigger prices and the reassessment horizon are draggable in the code and
+  not wired to the chart.** `applyPlanDrag` handles both and is tested; the
+  panel only wires stop and target, because a condition rule does not yet carry
+  which trigger it belongs to and a drag would publish into an index the
+  operator cannot see. See the 8.4 entry.
+- **A drag's refusal is shown in the system's own words**, including the
+  trailing "trading_exit's move_stop can move it inside the envelope" — model
+  vocabulary in front of a human. Deliberate, under the rule that whatever the
+  model can write must read back in the same vocabulary. If you want an
+  operator register, it belongs in `planStopRefusal` so both readers get it.
+- **The same wrong query shape is still in `TradingStopAdjustmentService` line
+  254 and I left it, as instructed.** Its fallback is `currentStopPrice`, so
+  the effective envelope becomes the stop currently resting and every widening
+  is refused — _stricter_ than designed, not a hole. `move_stop` cannot widen
+  at all today where the plan says it may widen inside the approved envelope.
+  Correcting it loosens a live gate, which is your call.
 - **A trigger's reassessment horizon is almost always off the right edge.** The
-  future gutter is `FUTURE_GUTTER_RATIO` (12%) of a window that is
-  `VISIBLE_BARS` one-minute candles wide — about seven minutes of clock. The
-  plan's default `reassess.afterMinutes` is 90. So for the first ~83 minutes of
-  a plan's life its triggers project all the way to the frame edge and 8.1's
-  bound does nothing visible; it only starts to bite in the last seven minutes,
-  where the rule visibly shortens and then stops projecting at all. I decided
-  that is the right behaviour rather than a defect — the bound turns into a
-  "this plan is about to lapse" signal exactly when that is the useful thing to
-  say — but you may have wanted the gutter to be wider, or the horizon drawn as
-  a marker regardless of whether it fits. Say so and I will change it.
-- **I overwrote `.claude/launch.json` without reading it first.** It is
-  gitignored, so there is no history to recover. I wrote it back with two
-  entries: `web` (`pnpm dev:web`, port 5733) and the harness below. If you had
-  other configurations in there, they are gone and I am sorry.
-- **Your panel restyle is committed, inside my step 8.1 commit.** You said you
-  had left it uncommitted in the working tree. `git add` on the whole
-  `components/trading` directory swept it in, so `cb546eef8` carries 152 lines
-  of `MissionLivePanel.tsx` typography under a message that talks about the
-  chart's future gutter. About five of those lines are mine (the
-  `triggerExpiryAt` wiring); the rest is your restyle. I did **not** rewrite
-  history to split it, for one reason: another session is writing into this
-  working tree at the same time as me (see the next item), and rebasing under a
-  concurrent writer is how you lose someone's work. Say the word when you are
-  back and I will split `cb546eef8` into a restyle commit and a gutter commit.
-- **Another session audited phases 0–7 into the plan doc while I was working,
-  and it audited _me_ by accident.** `docs/operations/plan-29-trader-restructure.md`
-  now carries an uncommitted 636-line "Appendix A" that I did not write. Its
-  §A15 reports that "step 8.1 is done, uncommitted" and lists `futureEndX`,
-  `triggerExpiryAt`, `HYPOTHETICAL_STROKE_WIDTH`, `deriveTriggerExpiryMillis`
-  and "0.5 opacity" as pre-existing work. Those are my step 8.1 edits, caught
-  mid-run before I raised the opacity to 0.75 — that appendix is describing my
-  own working tree back to me, not a discovery. **Do not let it convince you
-  step 8.1 was already landed at `add220b1a`.** It was not; it is `cb546eef8`.
-  I have left the appendix untouched and uncommitted, as I found it.
-- **The envelope hole was real, and it is closed.** The reading flagged above
-  was checked against the code and reproduced: `TradingPlanProtectionService`
-  scoped the entry's approved risk to `created_at >= opened_at`, and those two
-  timestamps come from opposite ends of an entry — the execution record is
-  persisted before the order is signed, `opened_at` is stamped by the reconcile
-  pass that later saw the fill. The record is therefore always the older of the
-  two and the filter excluded exactly the row it existed to find. With no row
-  the envelope fell back to `plan.stop.maximumPlannedLossUsd`, which is
-  optional, and a plan that omitted it could widen its stop without limit at
-  publish time.
-
-  What hid it was the test fixture, which seeded `opened_at 500` against a
-  record `created_at 600` — the production order inverted, so the gate passed
-  its tests by being handed a world it never sees. The fixture now stamps them
-  in the real order, and two of the suite's tests fail without the fix.
-
-  Fixed in `ENTRY_RECORD_LEAD_MILLIS`: a minute of lead on the lower bound,
-  the same slack `buildClosedTradeReview` already gives the same gap. See the
-  entry below.
-
-- **The same query shape is in `TradingStopAdjustmentService` and I left it
-  alone.** Line 254 scopes the original stop the same wrong way, but its
-  fallback is `currentStopPrice` rather than null — so the effective envelope
-  becomes the stop currently resting, and every widening is refused. That is
-  _stricter_ than designed, not a hole: `move_stop` cannot widen at all today,
-  where the plan says it may widen inside the approved envelope. Correcting it
-  would loosen a live gate, which is your call and not one to make
-  unsupervised. Flagging it, not touching it.
-- **I briefly committed two of your uncommitted files and then took them back
-  out.** `git commit -a` swept `apps/marketing/src/pages/index.astro`,
-  `docs/architecture/agent-tool-architecture-research.md`,
-  `scripts/lib/adhoc-sign-mac.cjs`, `scripts/resolve-previous-release-tag.ts`
-  and `docs/operations/plan-28-standdown-churn.md` into commits of mine. I
-  rewound and they are uncommitted again, as they were — but the pre-commit
-  `vp fmt` hook ran over `plan-28-standdown-churn.md` while it was staged, so
-  that file's working copy is your edit with a formatting pass applied (39
-  lines reflowed, no content changed). Nothing was pushed. From here I stage
-  paths explicitly and never use `-a`.
-- **The panel's gutter tags truncate on a phone.** At 375px the right-edge
-  price tags read `1,8|` — the gutter is a fixed 15% of the viewBox, which is
-  ~56px at that width. This is pre-existing, not something 8.1 introduced, and
-  it is squarely step 8.7's problem. Flagging it now so it does not read as new
-  when I get there.
+  future gutter is `FUTURE_GUTTER_RATIO` (12%) of a `VISIBLE_BARS` window —
+  about seven minutes — against a default `reassess.afterMinutes` of 90. So
+  8.1's bound only bites in the last seven minutes of a plan's life, where the
+  rule visibly shortens and then stops projecting. I decided that is the right
+  behaviour (it becomes a "this plan is about to lapse" signal exactly when
+  that is the useful thing to say) but you may have wanted a wider gutter or
+  the horizon drawn as a marker regardless.
+- **Two things from the previous run that are still true and still yours to
+  decide.** `cb546eef8` carries ~152 lines of your `MissionLivePanel`
+  typography restyle inside a commit whose message is about the chart's future
+  gutter — history was not rewritten because another session was writing into
+  this tree. And `.claude/launch.json` was overwritten without being read
+  first; it now has two entries, `web` (5733) and `trading-harness` (5799).
+- **The fixture harness now renders the real `MissionLivePanel`, not just the
+  chart.** `apps/web/vite.harness.config.ts` aliases the panel's two data seams
+  to stubs under `apps/web/harness/stubs/`. All of it is still untracked and in
+  `.git/info/exclude`. Every phone screenshot from 8.5 onward comes from it.
 
 ## How the screenshots are taken
 
@@ -715,3 +686,175 @@ visible against the same fixtures the 8-5 shot clipped.
 **Found broken, not mine.** Nothing new. The drag readout at 375 spans most of
 the plot, which I flagged under 8.4; with the tags now legible it reads as
 deliberate rather than broken, and I left it.
+
+---
+
+## Phase 9 — Mode B — `58b397927` (9.1 + 9.2), 9.3 already true
+
+**9.1 and 9.2 landed in one commit** because the rename is what the mode's
+doctrine points at; splitting them would have left a commit whose doctrine
+named a tool that did not exist yet.
+
+**The mode is derived from the mandate, not stored.** This is the decision in
+the phase and the one most likely to be yours to overturn. A `mode` column
+would be a second copy of a fact `mission.instruction` already states, written
+once at creation and free to disagree with the words the operator typed — and
+the instruction is what the model actually reads. Deriving it keeps one source,
+costs no migration, and makes the rule inspectable: the mandate that produced
+the mode sits in the same `trading_look` read as the mode itself.
+
+What you might want instead: a mode you can _switch_ mid-mission from the
+panel. Deriving it makes that impossible without editing the mandate. I judged
+that a feature rather than a gap — a mission that changes its own job halfway
+through is a mission whose journal no longer explains its trades — but it is a
+real constraint and it is one line of migration away if you disagree.
+
+`readMissionMode` is deliberately narrow: an execute verb followed by a
+playbook name, or the explicit `strategy: <name>` form. "momentum has been
+working lately, trade ETH" stays discretionary, because a mention is the
+operator thinking out loud and a standing order should have to be written as
+one. Unparsed names fall back rather than failing — "run the usual" is a
+mandate, not a mode declaration. `classify` and `standing_rules` are not
+executable: the first is how to read a regime, the second is what holds in
+every mode.
+
+**Where "selects a system prompt" landed.** Not in `TradingSessionProfile`: that
+seam is per thread and static, and has no mission in scope at all. The doctrine
+rides `trading_look`'s new `mode` field, which the model reads every turn and
+which is where it already learns what it is doing. The doctrine says three
+things — the playbook is the procedure, deviation is allowed but must be named
+in the plan's `because` and in the journal, and no mode can authorise what the
+authority refuses. That third sentence is load-bearing: a procedure read as a
+standing order is exactly the context in which a model talks itself past a
+ceiling.
+
+**"A tool subset" — I did not build one, and I think the step is wrong about
+it.** Every one of the seven tools is needed in both modes: an executing
+mission still looks, plans, enters, exits, watches and journals. The only
+candidate for removal was `trading_strategy` in discretionary mode, and taking
+it away would make the playbooks unreadable to the mode that treats them as
+reference. So the tool sets are identical and the mode's teeth are the doctrine
+and the tool's own description. Saying so is better than inventing a difference
+to satisfy a sentence.
+
+**9.3 was already true.** All five strategies — `momentum`, `range_reversion`,
+`opening_range`, `ema_cross`, `rsi_reversion` — are in `PLAYBOOKS` unchanged,
+and `EXECUTABLE_STRATEGIES` is exactly that list. Nothing to do; the step
+describes a state the codebase was already in.
+
+**Numbers.** `pnpm typecheck` 0 errors. `apps/server` `src/mcp` + `src/trading`
+
+- `src/provider` 1,142 passed / 9 skipped (99 files). `trading-contracts` 435
+  passed (25 files) — 7 new on `readMissionMode`, plus two fixture updates: the
+  `trading_look` decode now carries `mode`, and the subpath-export list gains
+  `./mode`. `pnpm lint` 35 warnings, same 2 pre-existing errors.
+
+**Verified in the browser.** Nothing rendered changed — phase 9 is server and
+contract only. The mode is a field on a tool result; the panel does not read it
+yet, which is a gap worth naming: an operator looking at a mission cannot see
+that it is in execute mode. That belongs to whoever does the next UI pass.
+
+**Found broken, not mine.** Nothing new.
+
+---
+
+## Step 10.2 — The four numbers — `f0a797f4d`
+
+All four were already computed and already printed — `trades` by step 0.2, the
+other three by 0.2 and 2.7. What was wrong was where: they sat fourth, ninth
+and tenth in a fourteen-line block, which is a report you have to already know
+how to read. They now stand first under their own rule.
+
+Nothing is printed twice: the four are lifted out of the list below rather than
+copied above it, and each keeps its availability note, so a partial record
+still cannot read as a complete one.
+
+**Numbers.** `pnpm typecheck` 0 errors. `sessionReport.test.ts` 4 passed — its
+three formatting fixtures assert the report line for line, so the reorder had to
+be written into all three, which is the point of asserting it that way.
+`pnpm lint` 35 warnings, same 2 errors.
+
+**Found broken, not mine.** `apps/server/src/bin.test.ts > "prints a session's
+numbers through the session-report command"` still fails, and fails **at the
+same assertion as before**: `cost spread, entry side: n/a (0 of 1 trades with
+an entry book)`. That line's text is untouched by this step (same `bpsLine`,
+same `bookedNote`), and the assertions on the lines I did move — `trades:` and
+`net bps per trade:` — pass before it. So the pre-existing failure is unchanged,
+not deepened. Its cause is in the fixture's entry-book join, not in the report.
+
+---
+
+## Step 10.3 — The journal as a learning loop — `8bf2df451`
+
+Everything that does not need a live session. `assessEntryGovernance` already
+carried `setupKindAtEntry` through its join and spent it on a single boolean —
+was there a scored setup or not. It now also groups by it.
+
+`scored` vs `unscored` asks whether having _a_ reason paid. `bySetup` asks
+whether _this_ reason paid: one row per setup kind, best net first, with the
+entries nothing explains as their own row rather than a silence. That is the
+inversion the plan names — a strategy stops being an a priori rule with a veto
+and becomes a row in a table with a net number against it, and _do EMA-cross
+entries actually pay?_ is read off the record instead of argued from doctrine.
+
+Measurement, not a gate: nothing refuses an entry off any of it.
+
+**What is left of 10.3, and it needs the soak.** The table has no rows until
+real trades close, and `bySetup` is not yet printed by `session-report` — I did
+not add it there because a block that says "no closed trades joined to an entry
+record yet" on every run until the soak lands is noise, and after the soak you
+will know what shape you want it in. The reading is one call away
+(`readEntryGovernance`) whenever you want it.
+
+**Numbers.** `pnpm typecheck` 0 errors. `trading-contracts` `policy.test.ts` 16
+passed (1 new, plus an assertion added to the empty-record test).
+`apps/server/src/trading` 539 passed / 3 skipped (45 files). `pnpm lint` 35
+warnings, same 2 errors.
+
+---
+
+## Step 10.1 — The testnet soak — yours to run
+
+This is the standing outstanding item since plan 23 and it is not mine to run.
+Here is exactly what to do and what to keep.
+
+**Before you start.** Confirm the key is where it should be — `~/.t3trade/secrets`
+is the only location since 2026-08-13 — and that the Gate-0 testnet address is
+funded. Start T3 once so migrations run against the home database.
+
+**The run.** Open a trading thread and give it a mandate that names ETH and the
+1m interval, and let it run for **at least four hours of live market**, ideally
+across a session boundary (a quiet stretch and an active one). Do not intervene
+except to answer the two things this run is meant to exercise:
+
+1. **Drag a level at least twice** — once while flat (the target), once while
+   holding (the stop), and once deliberately _wider_ than the entry's approved
+   envelope so the refused-reconcile path renders. Note whether the refusal
+   sentence made sense to you as a human reading it; that is the wording I kept
+   in the system's own voice and it is the thing most likely to read wrong.
+2. **Run one mission in execute mode.** Start a second thread whose mandate
+   begins "Execute the momentum playbook on ETH, 1m." Check on its first wake
+   that `trading_look` reported `mode.kind: execute_strategy` — the harness log
+   in `state.sqlite` carries every tool call and its result — and that the model
+   read `trading_strategy` rather than deciding for itself.
+
+**What to capture.** For each mission:
+
+```bash
+pnpm --filter @t3tools/server exec t3 session-report --mission-id <id>
+```
+
+Keep the whole output verbatim, both missions, in a file beside this log. The
+four numbers at the top are the comparison; the lines below them are why. Also
+keep: the mission id, the wall-clock start and end, and one screenshot of the
+panel while a position was open (the phone width is the one that matters).
+
+**What the run is for.** Not profit — the sample is far too small to say
+anything about edge. It is for four failures that only a live session produces:
+a drag that races a real model publish, a refused reconcile against a real
+exchange stop, an execute-mode mission that either follows its playbook or does
+not, and whether the panel is readable while something is actually moving.
+
+**If something breaks.** The harness run log in `state.sqlite` holds every tool
+call, its arguments and its error text — that is the first place to look, ahead
+of the server log.
