@@ -143,7 +143,7 @@ export const TradingGetTargetCalibrationTool = Tool.make("trading_get_target_cal
 
 export const TradingWatchTool = Tool.make("trading_watch", {
   description:
-    'Arm one `condition` — `price` (a level; `confirm: "close"` needs an `interval`, otherwise it fires on touch), `pnl`, `giveback`, `fill`, `time`. Fires exactly once, then terminal — re-arm to keep a level standing. `replacesWatchId` moves a level: cancel and arm in one transaction; if that watch already fired, what was armed is an ADDITION, not a swap. A refused condition arms nothing and says in `recovery` whether to fix it, read state, or retry.',
+    'Arm one `condition` — `price` (a level; `confirm: "close"` needs an `interval`, otherwise it fires on touch), `pnl`, `giveback`, `fill`, `time`. Fires exactly once, then terminal — re-arm to keep a level standing. `replacesWatchId` moves a level: cancel and arm in one transaction; if that watch already fired, what was armed is an ADDITION, not a swap. A refused condition arms nothing and says in `recovery` whether to restate it or read state first.',
   parameters: TradingWatchInput,
   success: TradingWatchResult,
   failure: TradingToolRejectedError,

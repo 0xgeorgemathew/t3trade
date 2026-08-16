@@ -143,6 +143,15 @@ export function classifyFailure(failure: ClassifiableFailure): FailureRecovery {
         ? permanent("re_quote", `preview_${failure.reason}`)
         : permanent("stand_down", `preview_${failure.reason ?? "rejected"}`);
 
+    // A condition `trading_watch` will not arm (plan 29 step 6.3). Three of the
+    // four are rules about the condition itself — the identical call gets the
+    // identical answer, so the fix is to say a different condition. The fourth
+    // is not about the condition at all: the mission ended underneath the call.
+    case "TradingWatchRefusal":
+      return failure.reason === "mission_not_found"
+        ? permanent("read_state", "watch_mission_not_found")
+        : permanent("stand_down", `watch_${failure.reason ?? "refused"}`);
+
     default:
       return permanent("read_state", failure.reason ?? failure.tag ?? "unknown");
   }

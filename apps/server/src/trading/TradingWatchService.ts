@@ -22,7 +22,7 @@ import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/
 import { TradingMissionNotFoundError } from "./Errors.ts";
 import { recordLevelEvent } from "./TradingLevelHistory.ts";
 import { isActiveMissionStatus } from "./MissionTransitions.ts";
-import { WatchArmedReason } from "@t3tools/trading-contracts/watch";
+import { toWatchCondition, WatchArmedReason } from "@t3tools/trading-contracts/watch";
 import {
   MarketWatch,
   PersistedWatch,
@@ -146,21 +146,27 @@ interface WatchRow {
   readonly last_evaluated_at?: number | null;
 }
 
-export const toPersistedWatch = (row: WatchRow): PersistedWatch => ({
-  id: row.watch_id,
-  missionId: row.mission_id,
-  watch: decodeWatch(row.watch_json),
-  status: decodeWatchStatus(row.status),
-  ...(row.armed_reason === null ? {} : { armedReason: decodeArmedReason(row.armed_reason) }),
-  createdAt: row.created_at,
-  updatedAt: row.updated_at,
-  ...(row.last_observed_value == null || row.last_evaluated_at == null
-    ? {}
-    : {
-        lastObservedValue: row.last_observed_value,
-        lastEvaluatedAt: row.last_evaluated_at,
-      }),
-});
+export const toPersistedWatch = (row: WatchRow): PersistedWatch => {
+  const watch = decodeWatch(row.watch_json);
+  return {
+    id: row.watch_id,
+    missionId: row.mission_id,
+    watch,
+    // What the model would have to write to arm this again. Derived on read
+    // rather than stored, so rows armed before the union existed carry it too.
+    condition: toWatchCondition(watch),
+    status: decodeWatchStatus(row.status),
+    ...(row.armed_reason === null ? {} : { armedReason: decodeArmedReason(row.armed_reason) }),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    ...(row.last_observed_value == null || row.last_evaluated_at == null
+      ? {}
+      : {
+          lastObservedValue: row.last_observed_value,
+          lastEvaluatedAt: row.last_evaluated_at,
+        }),
+  };
+};
 
 const sqlFail = (operation: string) => toPersistenceSqlError(`TradingWatchService.${operation}`);
 

@@ -61,6 +61,21 @@ describe("classifyFailure", () => {
     assert.strictEqual(rule.action, "stand_down");
   });
 
+  it("separates a condition that is wrong from a mission that has ended", () => {
+    // Both refuse the same call, and the harness's next move is different:
+    // one is fixed by saying a different condition, the other by looking.
+    const badCondition = classifyFailure({
+      tag: "TradingWatchRefusal",
+      reason: "close_needs_interval",
+    });
+    assert.strictEqual(badCondition.action, "stand_down");
+    assert.strictEqual(badCondition.reason, "watch_close_needs_interval");
+
+    const gone = classifyFailure({ tag: "TradingWatchRefusal", reason: "mission_not_found" });
+    assert.strictEqual(gone.action, "read_state");
+    assert.strictEqual(gone.retryable, false);
+  });
+
   it("retries a nonce conflict, because the cloid is what the exchange dedupes on", () => {
     const conflict = classifyFailure({ tag: "HyperliquidNonceError" });
     assert.strictEqual(conflict.retryable, true);

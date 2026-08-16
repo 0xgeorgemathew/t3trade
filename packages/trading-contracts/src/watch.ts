@@ -360,6 +360,20 @@ export const PersistedWatch = Schema.Struct({
   id: TradingId,
   missionId: TradingId,
   watch: MarketWatch,
+  /**
+   * The same predicate in the vocabulary the model can write (plan 29 step
+   * 6.3).
+   *
+   * `watch` is the persisted and evaluated encoding, and after the union
+   * collapsed it is no longer something a model can put in a call — a harness
+   * that read back `pnl_giveback` and re-armed it under that name would be
+   * writing a type `trading_watch` does not accept. Every read carries the
+   * condition beside the encoding so what the model reads is what it can say.
+   *
+   * Derived by `toPersistedWatch`, so it is present on every row read out of
+   * `trading_watches`; optional only because it is not a stored column.
+   */
+  condition: Schema.optional(WatchCondition),
   status: PersistedWatchStatus,
   armedReason: Schema.optional(WatchArmedReason),
   createdAt: UnixMillis,

@@ -1202,20 +1202,15 @@ const handlers = {
 
       // The condition is derived into the persisted predicate before anything
       // is written, so a condition that cannot be armed arms nothing and costs
-      // no transaction. `stand_down` on all three: each is a rule about the
-      // condition itself, and the identical call fails identically.
+      // no transaction. What to do about it is the classifier's answer, not
+      // this handler's — one place decides what a refusal means (step 6.2).
       const derived = toMarketWatch(input.condition);
       if (isWatchRefusal(derived)) {
         return {
           outcome: "refused" as const,
           reason: derived.code,
           detail: derived.detail,
-          recovery: {
-            retryable: false,
-            action: "stand_down" as const,
-            retryAfterMillis: 0,
-            reason: `watch_${derived.code}`,
-          },
+          recovery: classifyFailure({ tag: "TradingWatchRefusal", reason: derived.code }),
         };
       }
 
@@ -1241,12 +1236,7 @@ const handlers = {
           outcome: "refused" as const,
           reason: "mission_not_found" as const,
           detail: "this thread's mission is no longer active; nothing was armed",
-          recovery: {
-            retryable: false,
-            action: "read_state" as const,
-            retryAfterMillis: 0,
-            reason: "watch_mission_not_found",
-          },
+          recovery: classifyFailure({ tag: "TradingWatchRefusal", reason: "mission_not_found" }),
         };
       }
       yield* announceWatchRegistered({

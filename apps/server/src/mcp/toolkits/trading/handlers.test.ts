@@ -820,6 +820,31 @@ it.effect("registers a watch before the first plan is published", () =>
   ),
 );
 
+// Plan 29 step 6.3: the model writes conditions, so the model has to read
+// conditions. `watch` is the persisted encoding and is no longer a name any
+// call accepts — a harness that re-armed what it read would be writing
+// `pnl_giveback` into a tool that only takes `giveback`.
+it.effect("reads a watch back in the vocabulary it can re-arm it with", () =>
+  withMcpServer(({ callTool }) =>
+    Effect.gen(function* () {
+      yield* callTool(BOUND_THREAD, "trading_watch", {
+        missionId: MISSION_ID,
+        condition: { kind: "giveback", market: "ETH", drawdownUsd: 4 },
+      });
+
+      const listed = yield* callTool(BOUND_THREAD, "trading_list_watches", {});
+      const readBack = listed.result.structuredContent[0].condition;
+      assert.deepStrictEqual(readBack, { kind: "giveback", market: "ETH", drawdownUsd: 4 });
+
+      // The proof that matters: what came out of the read goes back into the
+      // tool unedited and arms.
+      const rearmed = yield* callTool(BOUND_THREAD, "trading_watch", { condition: readBack });
+      assert.equal(rearmed.result.isError, false);
+      assert.equal(rearmed.result.structuredContent.outcome, "armed");
+    }),
+  ),
+);
+
 // Plan 29 step 6.3: a condition the server will not arm comes back as an
 // outcome carrying what to do about it, not as a thrown error. All three of
 // these are rules about the condition, so all three stand down — retrying the
