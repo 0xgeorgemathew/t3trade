@@ -416,10 +416,10 @@ export const tradingPlanAuthoredFields = {
 /**
  * The persisted plan document — the eight authored fields plus `updatedAt`.
  *
- * No `version`: the plan carries no version number of its own. The
- * `momentum_strategy_versions` table keys its rows and the mission's
- * `strategy_version` column points at the current one; neither is the
- * document's business.
+ * No `version`: the plan carries no version number of its own. Its rows in
+ * `trading_plan_history` number themselves for the journal's ordering, and
+ * nothing in the runtime points at one — the current plan is simply the
+ * newest row.
  */
 export const TradingPlanState = Schema.Struct({
   ...tradingPlanAuthoredFields,

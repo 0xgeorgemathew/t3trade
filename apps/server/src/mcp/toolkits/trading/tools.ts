@@ -252,7 +252,7 @@ export const TradingGetTradeHistoryTool = Tool.make("trading_get_trade_history",
 
 export const TradingGetTargetCalibrationTool = Tool.make("trading_get_target_calibration", {
   description:
-    "Score published profit targets against what trades actually reached: a target is reached when unrealised PnL ever touched it, not when it was banked. One entry per strategy version: `claimedHitRatePercent`, `observedHitRatePercent`, `verdict`, `recommendation`.",
+    "Score published profit targets against what trades actually reached: a target is reached when unrealised PnL ever touched it, not when it was banked. One entry per plan revision: `claimedHitRatePercent`, `observedHitRatePercent`, `verdict`, `recommendation`.",
   parameters: TradingGetTargetCalibrationInput,
   success: TargetCalibration,
   failure: TradingToolRejectedError,
@@ -338,7 +338,7 @@ export const TradingRegisterWatchTool = Tool.make("trading_register_watch", {
 
 export const TradingListWatchesTool = Tool.make("trading_list_watches", {
   description:
-    "List every watch registered for this mission, newest first, including status (active, triggered, superseded, cancelled).",
+    "List every watch registered for this mission, newest first, including status (active, triggered, consumed, cancelled, expired).",
   parameters: TradingListWatchesInput,
   success: TradingListWatchesResult,
   failure: TradingToolRejectedError,
@@ -352,7 +352,7 @@ export const TradingListWatchesTool = Tool.make("trading_list_watches", {
 
 export const TradingCancelWatchTool = Tool.make("trading_cancel_watch", {
   description:
-    "Cancel an active watch by id; only an active watch can be cancelled — a publish may already have superseded it.",
+    "Cancel an active watch by id; only an active watch can be cancelled — one that already fired or was cancelled is terminal.",
   parameters: TradingCancelWatchInput,
   success: TradingCancelWatchResult,
   failure: TradingToolRejectedError,
@@ -451,7 +451,7 @@ export const TradingReducePositionTool = Tool.make("trading_reduce_position", {
 
 export const TradingCancelOrderTool = Tool.make("trading_cancel_order", {
   description:
-    "Withdraw one resting order by its `cloid`. Publishing a plan supersedes watches but not exchange orders — an unwanted order stays until this is called. Touches no position.",
+    "Withdraw one resting order by its `cloid`. A plan revision withdraws its own resting working entries, but any other resting order stays until this is called. Touches no position.",
   parameters: TradingCancelOrderInput,
   success: TradingRequestEntryResult,
   failure: TradingToolRejectedError,

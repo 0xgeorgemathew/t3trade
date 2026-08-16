@@ -466,7 +466,8 @@ export type TradingExecuteResult = TradingRequestEntryResult;
  *
  * `checkStopAdjustment` answers "is this move within the rules"; these are the
  * cases where the question could not be asked at all — nothing to adjust, no
- * price to measure against, or a harness reasoning against a superseded plan.
+ * price to measure against, or a harness reasoning against a plan the mission
+ * has since revised.
  */
 export const TradingAdjustStopRefusalContext = Schema.Literals([
   "no_position",
@@ -686,8 +687,8 @@ export type TradingGetOpenOrdersResult = ReadonlyArray<AgentOpenOrder>;
 
 // -- §14.4 watch tools (Phase 3) ---------------------------------------------
 //
-// Watches are registered against the mission's current strategy version. A
-// cancel only affects an active watch; triggered/consumed/superseded watches
+// Watches are registered against the mission, not a plan revision (plan 29
+// step 4.2). A cancel only affects an active watch; already-terminal watches
 // keep their terminal status. The handler resolves the bound mission through
 // the same `resolveBoundCall` path as the §14.2/§14.3 tools.
 
@@ -717,7 +718,7 @@ export const TradingRegisterWatchResult = Schema.Struct({
    *
    * Absent when none was named — and, importantly, also absent when the one
    * named was already terminal. That case is the harness's cue that the level
-   * it meant to retire had already fired or been superseded, so what it just
+   * it meant to retire had already fired or been cancelled, so what it just
    * armed is an addition, not a swap.
    */
   replaced: Schema.optional(PersistedWatch),

@@ -184,7 +184,7 @@ const scoreOne = (
     return {
       ...base,
       verdict: "insufficient_sample",
-      note: `${trades.length} closed trade(s) under v${strategyVersion} — under ${MIN_CALIBRATION_TRADES}, a hit rate would be noise`,
+      note: `${trades.length} closed trade(s) under the plan in force — under ${MIN_CALIBRATION_TRADES}, a hit rate would be noise`,
     };
   }
 
@@ -329,7 +329,7 @@ function recommend(
   const optimistic = entries.filter((e) => e.verdict === "optimistic").length;
   const conservative = entries.filter((e) => e.verdict === "conservative").length;
   if (optimistic > conservative) {
-    return `targets are reached ${overall}% of the time across ${tradeCount} trades and ${optimistic} version(s) came in under their claim — read the next target off a nearer rung (p50 rather than p75, or a shorter hold horizon) before widening anything`;
+    return `targets are reached ${overall}% of the time across ${tradeCount} trades and the targets of ${optimistic} earlier plan(s) came in under their claim — read the next target off a nearer rung (p50 rather than p75, or a shorter hold horizon) before widening anything`;
   }
   if (conservative > optimistic) {
     return `targets are reached ${overall}% of the time across ${tradeCount} trades, above what they claimed — the conservative rung is leaving move on the table, so extend more often at the target wake rather than banking every one`;
