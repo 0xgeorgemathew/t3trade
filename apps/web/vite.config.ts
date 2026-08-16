@@ -78,8 +78,15 @@ const unitTestProject = {
     // The web runtime suite exercises auth bootstrap, saved environments,
     // and websocket subscription lifecycles. Under the full monorepo test
     // run, those async tests can exceed Vitest's default 5s budget.
-    hookTimeout: 15_000,
-    testTimeout: 15_000,
+    //
+    // Raised from 15s (plan 29 Appendix A): the failures were a canvas encode
+    // in `imageCompression` and a module import in `MessagesTimeline`, both of
+    // which pass on their own in three seconds and time out only when the
+    // whole run is competing for the machine. A suite that fails in a
+    // different file every run cannot tell a real regression from a busy
+    // laptop, which is exactly the signal a soak relies on.
+    hookTimeout: 60_000,
+    testTimeout: 45_000,
   },
 } satisfies TestProjectInlineConfiguration;
 
