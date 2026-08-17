@@ -116,11 +116,13 @@ export interface TradingTurnCoordinatorShape {
    * to be left in the harness's context. A message on an operative mission is
    * an event like any other, and gets the same fresh snapshot.
    *
-   * Returns `true` when a run started and this call owns the turn — the caller
-   * must NOT also dispatch the plain turn. Returns `false` for every other
-   * case (no mission, not operative, blocked, or queued behind an active run),
-   * so the message still reaches the provider the ordinary way rather than
-   * being dropped.
+   * Returns `true` when the message is the coordinator's — either a run started
+   * for it, or it was queued behind the run holding the lease and will get its
+   * own run when that lease is released. Either way the caller must NOT also
+   * dispatch the plain turn. Returns `false` when the message is not the
+   * coordinator's (no mission, not operative, blocked) or when queueing it
+   * failed, so it still reaches the provider the ordinary way rather than being
+   * dropped.
    */
   readonly requestUserMessageRun: (input: {
     readonly threadId: string;
@@ -386,7 +388,43 @@ const make = Effect.gen(function* () {
       );
 
       yield* ensureNotDeaf(missionId);
+      yield* deliverQueuedUserMessages(missionId);
     });
+
+  /**
+   * Start a run for the operator messages that arrived while the lease was held.
+   *
+   * This is the other half of queueing them: the lease is released by the time
+   * this runs, so the queued text gets the run it was always owed — a fresh
+   * snapshot and the authority to act — a moment after the run that blocked it
+   * ends, rather than waiting for the next staleness floor.
+   *
+   * A message the queue could not read back is left where it is; the events
+   * themselves are claimed by the run this starts, so the queue drains whether
+   * or not their text made it into `userMessage`.
+   */
+  const deliverQueuedUserMessages = (missionId: string) =>
+    Effect.gen(function* () {
+      const queued = yield* inbox.readQueuedUserMessages(missionId);
+      if (queued.length === 0) return;
+
+      yield* Effect.logInfo("TradingTurnCoordinator: delivering queued operator messages", {
+        missionId,
+        messages: queued.length,
+      });
+      yield* requestRun({
+        missionId,
+        cause: "user_message",
+        userMessage: queued.join("\n\n"),
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("TradingTurnCoordinator: could not deliver queued operator messages", {
+          missionId,
+          cause: String(cause),
+        }),
+      ),
+    );
 
   /**
    * Release the lease if the dispatched turn never starts at all.
@@ -951,6 +989,50 @@ const make = Effect.gen(function* () {
       return { status: "started", harnessRunId: runId } as const;
     });
 
+  /** How much of an operator message its inbox summary carries. */
+  const QUEUED_MESSAGE_SUMMARY_CHARS = 120;
+
+  /**
+   * Persist an operator message that could not have its run yet.
+   *
+   * The summary carries the text (truncated) rather than a label, so the words
+   * still reach the harness through the ordinary pending-events render even if
+   * this row is claimed by some other run — or by one started after a restart —
+   * instead of by the delivery this queueing schedules.
+   *
+   * Returns whether the message is now owned by the queue. A failed persist
+   * returns `false` so the caller falls back to the ordinary turn: a turn that
+   * cannot trade still beats a message that vanishes.
+   */
+  const queueUserMessage = (missionId: string, text: string) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const eventId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      const summary =
+        text.length > QUEUED_MESSAGE_SUMMARY_CHARS
+          ? `operator: ${text.slice(0, QUEUED_MESSAGE_SUMMARY_CHARS)}…`
+          : `operator: ${text}`;
+      yield* inbox.persist({
+        missionId,
+        category: "user",
+        deduplicationKey: `user_message:${eventId}`,
+        payload: { text },
+        occurredAt: now,
+        summary,
+      });
+      yield* Effect.logInfo("TradingTurnCoordinator: queued an operator message behind a run", {
+        missionId,
+      });
+      return true;
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("TradingTurnCoordinator: could not queue an operator message", {
+          missionId,
+          cause: String(cause),
+        }).pipe(Effect.as(false)),
+      ),
+    );
+
   const requestUserMessageRun: TradingTurnCoordinatorShape["requestUserMessageRun"] = (input) =>
     Effect.gen(function* () {
       const bound = yield* missions.findMissionByThreadId(input.threadId);
@@ -970,6 +1052,16 @@ const make = Effect.gen(function* () {
         awaitWake: true,
       });
       if (outcome.status === "started") return true;
+
+      // Another run holds the lease. The ordinary turn is the wrong home for
+      // the message here: it reaches the harness without a lease, so every
+      // trade it asks for is refused with `harness_run_owns_lease`, and the
+      // operator watches their instruction bounce. Queue it instead — the
+      // lease-release path starts a run for it seconds later, with the
+      // snapshot and the authority to actually carry it out.
+      if (outcome.status === "queued_behind_active_run") {
+        return yield* queueUserMessage(mission.id, input.text);
+      }
 
       yield* Effect.logInfo("TradingTurnCoordinator: user message took the ordinary turn path", {
         missionId: mission.id,

@@ -380,9 +380,11 @@ layer("TradingTurnCoordinator", (it) => {
     }),
   );
 
-  it.effect("leaves a message queued behind an active run to the ordinary turn path", () =>
-    // Never swallow the operator's message: if the lease is held, the message
-    // goes the ordinary way rather than nowhere.
+  it.effect("queues a message behind an active run instead of sending it leaseless", () =>
+    // The ordinary turn would carry the message to the harness without a lease,
+    // so every trade it asked for came back `harness_run_owns_lease` — the
+    // operator's "close long." refused while the position stayed open. The
+    // message is queued instead, and the lease-release path runs it.
     Effect.gen(function* () {
       yield* migrated;
       yield* seedMission;
@@ -395,9 +397,12 @@ layer("TradingTurnCoordinator", (it) => {
 
       const routed = yield* coordinator.requestUserMessageRun({
         threadId: "thread_1",
-        text: "are you there",
+        text: "close long.",
       });
-      assert.isFalse(routed);
+      assert.isTrue(routed);
+
+      const inbox = yield* TradingEventInbox;
+      assert.deepEqual([...(yield* inbox.readQueuedUserMessages("mission_1"))], ["close long."]);
     }),
   );
 
@@ -703,11 +708,15 @@ it.live("releases the lease and consumes claimed inbox events when the turn ends
       assert.equal(outcome.status, "started");
 
       const sql = yield* SqlClient.SqlClient;
+      // Scoped by cause and category: the operator's message adds a second run
+      // and a second inbox row later in this test.
       const runStatus = sql<{ readonly status: string }>`
-        SELECT status FROM trading_harness_runs WHERE mission_id = 'mission_1'
+        SELECT status FROM trading_harness_runs
+        WHERE mission_id = 'mission_1' AND cause = 'mission_created'
       `.pipe(Effect.map((rows) => rows[0]?.status));
       const inboxStatus = sql<{ readonly status: string }>`
-        SELECT status FROM trading_event_inbox WHERE mission_id = 'mission_1'
+        SELECT status FROM trading_event_inbox
+        WHERE mission_id = 'mission_1' AND category = 'market'
       `.pipe(Effect.map((rows) => rows[0]?.status));
 
       // The run claimed the pending event and holds the lease.
@@ -731,12 +740,29 @@ it.live("releases the lease and consumes claimed inbox events when the turn ends
       assert.equal(yield* runStatus, "starting");
       assert.equal(yield* inboxStatus, "included_in_run");
 
+      // An operator types while this run holds the lease. The message is
+      // queued rather than sent leaselessly, so it waits here.
+      const routed = yield* coordinator.requestUserMessageRun({
+        threadId: "thread_1",
+        text: "close long.",
+      });
+      assert.isTrue(routed);
+
       // The turn starts, then ends: the watcher releases the lease and closes
       // the inbox.
       yield* Queue.offer(queue, turnRunningEvent("thread_1"));
       yield* Queue.offer(queue, turnEndEvent("thread_1"));
       yield* awaitCondition(runStatus, (status) => status === "completed");
       yield* awaitCondition(inboxStatus, (status) => status === "consumed");
+
+      // Releasing the lease delivers what was queued behind it: a second run,
+      // caused by the operator's message, carrying their words.
+      const userRun = sql<{ readonly cause: string }>`
+        SELECT cause FROM trading_harness_runs
+        WHERE mission_id = 'mission_1' AND cause = 'user_message'
+      `.pipe(Effect.map((rows) => rows[0]?.cause));
+      yield* awaitCondition(userRun, (cause) => cause === "user_message");
+      assert.deepEqual([...(yield* inbox.readQueuedUserMessages("mission_1"))], []);
     }).pipe(Effect.provide(testLayer));
   }),
 );

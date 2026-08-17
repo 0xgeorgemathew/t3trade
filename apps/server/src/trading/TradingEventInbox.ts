@@ -18,6 +18,7 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -28,6 +29,10 @@ const decodeCategory = Schema.decodeUnknownSync(MissionInboxEventCategory);
 const encodeCategorySync = Schema.encodeSync(MissionInboxEventCategory);
 /** Encode the opaque inbox payload (`unknown`) to a JSON string for storage. */
 const encodePayloadJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+/** The payload shape a queued operator message is stored with. */
+const decodeQueuedUserMessage = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ text: Schema.String })),
+);
 
 export interface PersistEventInput {
   readonly missionId: string;
@@ -85,6 +90,20 @@ export interface TradingEventInboxShape {
    * consumed` lifecycle so the inbox never holds stale in-flight state.
    */
   readonly markIncludedConsumed: (missionId: string) => Effect.Effect<void, PersistenceSqlError>;
+
+  /**
+   * The text of every operator message still queued for `missionId`, oldest
+   * first.
+   *
+   * An operator message that arrives while another run holds the lease is
+   * persisted here rather than delivered, and this is what the next run reads
+   * to carry it. A row whose payload does not hold a string `text` is skipped:
+   * the queue is a delivery mechanism, and one unreadable row must not stop the
+   * rest of the operator's words from arriving.
+   */
+  readonly readQueuedUserMessages: (
+    missionId: string,
+  ) => Effect.Effect<ReadonlyArray<string>, PersistenceSqlError>;
 }
 
 export class TradingEventInbox extends Context.Service<TradingEventInbox, TradingEventInboxShape>()(
@@ -181,12 +200,28 @@ const makeTradingEventInbox = Effect.gen(function* () {
       WHERE mission_id = ${missionId} AND status = 'included_in_run'
     `.pipe(Effect.mapError(sqlFail("markIncludedConsumed")), Effect.asVoid);
 
+  const readQueuedUserMessages: TradingEventInboxShape["readQueuedUserMessages"] = (missionId) =>
+    sql<{ readonly payload_json: string }>`
+      SELECT payload_json FROM trading_event_inbox
+      WHERE mission_id = ${missionId} AND category = 'user' AND status = 'pending'
+      ORDER BY occurred_at ASC, event_id ASC
+    `.pipe(
+      Effect.mapError(sqlFail("readQueuedUserMessages")),
+      Effect.map((rows) =>
+        rows.flatMap((row) => {
+          const decoded = decodeQueuedUserMessage(row.payload_json);
+          return Option.isSome(decoded) ? [decoded.value.text] : [];
+        }),
+      ),
+    );
+
   return {
     persist,
     claimPending,
     findSummary,
     isPending,
     markIncludedConsumed,
+    readQueuedUserMessages,
   } satisfies TradingEventInboxShape;
 });
 
