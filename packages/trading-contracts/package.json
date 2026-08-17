@@ -128,6 +128,10 @@
       "types": "./src/precision.ts",
       "import": "./src/precision.ts"
     },
+    "./indicators": {
+      "types": "./src/indicators.ts",
+      "import": "./src/indicators.ts"
+    },
     "./policy": {
       "types": "./src/policy.ts",
       "import": "./src/policy.ts"

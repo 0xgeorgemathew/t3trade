@@ -74,6 +74,11 @@ import type {
 } from "@t3tools/trading-contracts/market";
 import { readMicrostructure } from "@t3tools/trading-contracts/microstructure";
 import {
+  computeIndicator,
+  INDICATOR_MAX_REQUESTS,
+  type IndicatorRequest,
+} from "@t3tools/trading-contracts/indicators";
+import {
   roundMarketStructure,
   roundMicrostructure,
   roundObservedVolatility,
@@ -712,6 +717,7 @@ const readObservation = Effect.fn("TradingToolkit.readObservation")(function* (
     scopes,
     ...(input.interval === undefined ? {} : { interval: input.interval }),
     ...(input.bars === undefined ? {} : { bars: input.bars }),
+    ...(input.indicators === undefined ? {} : { indicators: input.indicators }),
   }).pipe(
     Effect.catchCause((cause) =>
       Effect.logWarning("trading_look: the market half could not be read", {
@@ -837,8 +843,20 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
   readonly scopes: ReadonlySet<TradingLookScope>;
   readonly interval?: TradingTimeframe;
   readonly bars?: number;
+  readonly indicators?: ReadonlyArray<IndicatorRequest>;
 }) {
   const { market, mission, scopes, bars } = input;
+
+  // The indicator readings this call asked for, computed on the same bars the
+  // candle read fetched — the model pulls `ema(20)` instead of deriving it
+  // from raw bars in context. Computed on the FULL fetched window, not the
+  // bounded slice riding back, so a 50-period read works beside `bars: 20`.
+  const indicatorReadings = (history: MarketHistory) => {
+    const requests = (input.indicators ?? []).slice(0, INDICATOR_MAX_REQUESTS);
+    return requests.length === 0
+      ? {}
+      : { indicators: requests.map((request) => computeIndicator(request, history.candles)) };
+  };
   const gateway = yield* HyperliquidGateway;
   const wantsMarket = scopes.has("market");
   const wantsCandles = scopes.has("candles");
@@ -877,6 +895,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
                 measuredAt: candles.freshness.observedAt,
               }),
             ),
+            ...indicatorReadings(candles),
           }),
       ...(orderBook === null || candles === null || snapshot === null
         ? {}
@@ -952,6 +971,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
           ...(facts.higherTimeframeVolatility === null
             ? {}
             : { higherTimeframeVolatility: facts.higherTimeframeVolatility }),
+          ...indicatorReadings(namedHistory ?? facts.history),
         }
       : {}),
     ...(structure === null ? {} : { structure }),

@@ -813,6 +813,7 @@ describe("subpath exports", () => {
         "./microstructure",
         "./market-structure",
         "./precision",
+        "./indicators",
         "./history",
         "./calibration",
         "./playbook",

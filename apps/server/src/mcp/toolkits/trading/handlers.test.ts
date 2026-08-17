@@ -861,6 +861,44 @@ it.effect("rebuilds a reacting turn's picture in two scoped, bounded looks", () 
   );
 });
 
+it.effect("computes the indicators a look asks for, on bars already fetched", () => {
+  const fake = makeFakeExchange();
+  return withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+        const look = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["candles"],
+          bars: 6,
+          indicators: [{ kind: "ema", period: 3 }, { kind: "vwap" }, { kind: "sma", period: 200 }],
+        });
+        const read = look.result.body;
+        assert.equal(read.indicators.length, 3);
+        // The request's kind and period are echoed; unnamed periods default.
+        assert.equal(read.indicators[0].kind, "ema");
+        assert.equal(read.indicators[0].period, 3);
+        assert.equal(read.indicators[1].kind, "vwap");
+        // Computed on the FULL fetched window, not the 6-bar slice riding
+        // back — the values exist even though only 6 bars were returned.
+        assert.isTrue(Number.isFinite(read.indicators[0].value));
+        assert.isTrue(Number.isFinite(read.indicators[1].value));
+        assert.isTrue(Number.isFinite(read.indicators[0].previous));
+        // A period longer than the window is an absent value, never a zero.
+        assert.equal(read.indicators[2].value, undefined);
+
+        // A look that names no indicators carries none.
+        const bare = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["candles"],
+          bars: 6,
+        });
+        assert.equal(bare.result.body.indicators, undefined);
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
 it.effect("answers an unbound thread instead of failing every tool on it", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {

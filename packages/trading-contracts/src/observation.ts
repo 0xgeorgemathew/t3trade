@@ -17,6 +17,7 @@ import { Schema } from "effect";
 import { AgentAccountSnapshot, AgentNetPosition, AgentOpenOrder } from "./account-snapshot.ts";
 import { TradingCostContext, TradingCostEstimate } from "./costs.ts";
 import { TradingTradeHistory } from "./history.ts";
+import { IndicatorReading, IndicatorRequest } from "./indicators.ts";
 import { AgentMarketSnapshot, MarketHistory, OrderBook, ResolvedMarket } from "./market.ts";
 import { MarketStructure } from "./marketStructure.ts";
 import { MarketMicrostructure } from "./microstructure.ts";
@@ -106,6 +107,14 @@ export const TradingLookInput = Schema.Struct({
       Schema.isBetween({ minimum: 1, maximum: TRADING_LOOK_MAX_BARS }),
     ),
   ),
+  /**
+   * Indicator readings computed server-side on the `candles` scope's bars —
+   * the model pulls `ema(20)` instead of deriving it from raw bars in
+   * context. Each reading returns `value` and `previous` (one bar back), the
+   * pair a cross or slope check needs. At most
+   * {@link INDICATOR_MAX_REQUESTS} per look.
+   */
+  indicators: Schema.optional(Schema.Array(IndicatorRequest)),
 });
 export type TradingLookInput = typeof TradingLookInput.Type;
 
@@ -143,6 +152,11 @@ export const TradingObservation = Schema.Struct({
   candles: Schema.optional(MarketHistory),
   /** Fluctuation on the mission's runtime timeframe. Gross of costs. */
   volatility: Schema.optional(ObservedVolatility),
+  /**
+   * The indicator readings this look asked for, computed on the same bars the
+   * candle read fetched. Present only when the call named `indicators`.
+   */
+  indicators: Schema.optional(Schema.Array(IndicatorReading)),
   /** The same measurement one interval up; absent on the highest interval. */
   higherTimeframeVolatility: Schema.optional(ObservedVolatility),
   /** Direction, alignment, regime, and the scored setups with their cost. */
