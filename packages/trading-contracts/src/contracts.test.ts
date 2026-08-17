@@ -321,6 +321,7 @@ describe("§14.3 mission tool contracts", () => {
       decode({
         outcome: "accepted",
         strategy,
+        version: 3,
         warnings: [],
       }).outcome,
     ).toBe("accepted");

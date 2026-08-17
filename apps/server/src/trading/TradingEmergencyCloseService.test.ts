@@ -148,7 +148,7 @@ const missionsLayer = (fake: FakeExchange) =>
 /** Migrate the shared in-memory db so the order-cancel query has tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 65 });
+  yield* runMigrations({ toMigrationInclusive: 69 });
   yield* sql`DELETE FROM trading_orders`;
   yield* sql`DELETE FROM trading_execution_records`;
 });

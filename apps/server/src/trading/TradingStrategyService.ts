@@ -126,6 +126,7 @@ interface WatchRow {
   readonly armed_reason: string | null;
   readonly created_at: number;
   readonly updated_at: number;
+  readonly prediction_version: number | null;
 }
 
 /**
@@ -227,7 +228,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
   const listWatches: TradingStrategyServiceShape["listWatches"] = (missionId) =>
     sql<WatchRow>`
       SELECT watch_id, mission_id, watch_json, status, armed_reason,
-             created_at, updated_at
+             created_at, updated_at, prediction_version
       FROM trading_watches
       WHERE mission_id = ${missionId}
       ORDER BY created_at DESC, watch_id DESC
@@ -239,16 +240,16 @@ const makeTradingStrategyService = Effect.gen(function* () {
   const listWatchesForRead: TradingStrategyServiceShape["listWatchesForRead"] = (missionId) =>
     sql<WatchRow>`
       SELECT watch_id, mission_id, watch_json, status, armed_reason,
-             created_at, updated_at
+             created_at, updated_at, prediction_version
       FROM trading_watches
       WHERE mission_id = ${missionId}
         AND status IN ('active', 'triggered')
       UNION ALL
       SELECT watch_id, mission_id, watch_json, status, armed_reason,
-             created_at, updated_at
+             created_at, updated_at, prediction_version
       FROM (
         SELECT watch_id, mission_id, watch_json, status, armed_reason,
-               created_at, updated_at
+               created_at, updated_at, prediction_version
         FROM trading_watches
         WHERE mission_id = ${missionId}
           AND status NOT IN ('active', 'triggered')
@@ -350,7 +351,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
       // staleness check because there is no plan to be stale against. Step 8.4
       // gave this path a second caller, so an operator dragging a stop can
       // reach it too.
-      const staleVersion = yield* sql
+      const written = yield* sql
         .withTransaction(
           Effect.gen(function* () {
             const bumped = yield* sql<{ readonly mission_id: string }>`
@@ -366,7 +367,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
               const fresh = yield* sql<{ readonly version: number }>`
                 SELECT version FROM trading_missions WHERE mission_id = ${missionId}
               `;
-              return fresh[0]?.version ?? input.expectedMissionVersion;
+              return { staleVersion: fresh[0]?.version ?? input.expectedMissionVersion };
             }
 
             // The history append: rows keep their own per-mission counter and
@@ -377,32 +378,37 @@ const makeTradingStrategyService = Effect.gen(function* () {
               SELECT MAX(version) AS version FROM trading_plan_history
               WHERE mission_id = ${missionId}
             `;
+            const version = (latest[0]?.version ?? 0) + 1;
 
             yield* sql`
               INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
-              VALUES (${missionId}, ${(latest[0]?.version ?? 0) + 1}, ${encodeStrategyJson(strategy)}, ${now})
+              VALUES (${missionId}, ${version}, ${encodeStrategyJson(strategy)}, ${now})
             `;
-            return null;
+            return { version };
           }),
         )
         .pipe(Effect.mapError(sqlFail("publish:write")));
 
-      if (staleVersion !== null) {
+      if ("staleVersion" in written) {
         return {
           outcome: "rejected",
           reason: "stale_mission_state",
-          currentVersion: staleVersion,
+          currentVersion: written.staleVersion,
         } as const;
       }
 
       // Watches survive the revision (plan 29 step 4.2): a plan that changes
       // its mind about a level cancels or replaces the watch itself, and a
       // plan that keeps waiting on the same level keeps the trigger it armed.
-      // Supersede-on-publish is gone.
+      // The one exception is the prediction pair the runtime armed for an
+      // OLDER version of this plan, which the publish path sweeps once the new
+      // prediction is armed — see `TradingPredictionWatches`.
 
       return {
         outcome: "accepted",
         strategy,
+        // The prediction's id: the plan-history row this publish just wrote.
+        version: written.version,
         // Everything that was not worth refusing the publish over: any prose
         // the server clipped.
         warnings: [...proseWarnings],

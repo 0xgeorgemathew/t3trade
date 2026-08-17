@@ -22,7 +22,11 @@ import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/
 import { TradingMissionNotFoundError } from "./Errors.ts";
 import { recordLevelEvent } from "./TradingLevelHistory.ts";
 import { isActiveMissionStatus } from "./MissionTransitions.ts";
-import { toWatchCondition, WatchArmedReason } from "@t3tools/trading-contracts/watch";
+import {
+  PREDICTION_ARMED_REASONS,
+  toWatchCondition,
+  WatchArmedReason,
+} from "@t3tools/trading-contracts/watch";
 import {
   MarketWatch,
   PersistedWatch,
@@ -54,6 +58,21 @@ export interface RegisterWatchInput {
    * nothing to say it happened.
    */
   readonly replacesWatchId?: string | undefined;
+  /**
+   * What `replacesWatchId` is retired AS. Defaults to `cancelled` — a level
+   * the runtime re-levelled was taken down deliberately.
+   *
+   * A plan revision passes `superseded` instead, because "cancelled" would
+   * tell the operator someone disarmed the level when what actually happened
+   * is that a newer read replaced it.
+   */
+  readonly replacedStatus?: "cancelled" | "superseded";
+  /**
+   * The `strategyVersion` of the plan whose projection this watch was armed
+   * for. Only the runtime's prediction watches carry one; it is what a later
+   * revision sweeps against (see `supersedePredictionWatches`).
+   */
+  readonly predictionVersion?: number | undefined;
 }
 
 /** What a register call did: the new watch, and the one it replaced. */
@@ -122,6 +141,23 @@ export interface TradingWatchServiceShape {
    * Returns `null` when the watch does not exist.
    */
   readonly getWatch: (watchId: string) => Effect.Effect<PersistedWatch | null, PersistenceSqlError>;
+
+  /**
+   * Retire the active prediction watches armed for an older plan revision.
+   *
+   * Called by the publish path once a new prediction is durable. The filter is
+   * deliberately narrow on both axes: only the two prediction armed reasons,
+   * and only rows whose `prediction_version` is strictly below the new one.
+   * A `profit_target`, a stop-proximity level or a coverage floor is
+   * protection for a live position and survives every revision; the pair this
+   * publish just armed carries the new version and is never its own victim.
+   *
+   * Returns the ids it superseded, for the log line.
+   */
+  readonly supersedePredictionWatches: (input: {
+    readonly missionId: string;
+    readonly beforeVersion: number;
+  }) => Effect.Effect<ReadonlyArray<string>, PersistenceSqlError>;
 }
 
 export class TradingWatchService extends Context.Service<
@@ -144,6 +180,8 @@ interface WatchRow {
    */
   readonly last_observed_value?: number | null;
   readonly last_evaluated_at?: number | null;
+  /** Optional for the same reason: rows and callers that predate migration 069. */
+  readonly prediction_version?: number | null;
 }
 
 export const toPersistedWatch = (row: WatchRow): PersistedWatch => {
@@ -157,6 +195,7 @@ export const toPersistedWatch = (row: WatchRow): PersistedWatch => {
     condition: toWatchCondition(watch),
     status: decodeWatchStatus(row.status),
     ...(row.armed_reason === null ? {} : { armedReason: decodeArmedReason(row.armed_reason) }),
+    ...(row.prediction_version == null ? {} : { predictionVersion: row.prediction_version }),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ...(row.last_observed_value == null || row.last_evaluated_at == null
@@ -189,14 +228,20 @@ const makeTradingWatchService = Effect.gen(function* () {
     return row;
   });
 
-  /** Cancel one active watch, returning it, or `null` if it was not active. */
-  const cancelActive = (missionId: string, watchId: string, now: number) =>
+  /** Retire one active watch, returning it, or `null` if it was not active. */
+  const retireActive = (
+    missionId: string,
+    watchId: string,
+    now: number,
+    status: "cancelled" | "superseded",
+  ) =>
     sql<WatchRow>`
       UPDATE trading_watches
-      SET status = 'cancelled', version = version + 1, updated_at = ${now}
+      SET status = ${status}, version = version + 1, updated_at = ${now}
       WHERE watch_id = ${watchId} AND mission_id = ${missionId} AND status = 'active'
       RETURNING watch_id, mission_id, watch_json, status, armed_reason,
-                created_at, updated_at, last_observed_value, last_evaluated_at
+                created_at, updated_at, last_observed_value, last_evaluated_at,
+                prediction_version
     `.pipe(Effect.map((rows) => (rows[0] ? toPersistedWatch(rows[0]) : null)));
 
   const registerWatch: TradingWatchServiceShape["registerWatch"] = (input) =>
@@ -216,15 +261,21 @@ const makeTradingWatchService = Effect.gen(function* () {
             const cancelled =
               input.replacesWatchId === undefined
                 ? null
-                : yield* cancelActive(input.missionId, input.replacesWatchId, now);
+                : yield* retireActive(
+                    input.missionId,
+                    input.replacesWatchId,
+                    now,
+                    input.replacedStatus ?? "cancelled",
+                  );
 
             yield* sql`
               INSERT INTO trading_watches
                 (watch_id, mission_id, watch_json, status, armed_reason, version,
-                 created_at, updated_at)
+                 created_at, updated_at, prediction_version)
               VALUES
                 (${watchId}, ${input.missionId}, ${watchJson}, 'active',
-                 ${input.armedReason ?? null}, 1, ${now}, ${now})
+                 ${input.armedReason ?? null}, 1, ${now}, ${now},
+                 ${input.predictionVersion ?? null})
             `;
 
             // §11.1 `analysing → waiting`, second actor (plan 29 step 4.4):
@@ -275,6 +326,9 @@ const makeTradingWatchService = Effect.gen(function* () {
           watch: input.watch,
           status: "active",
           ...(input.armedReason === undefined ? {} : { armedReason: input.armedReason }),
+          ...(input.predictionVersion === undefined
+            ? {}
+            : { predictionVersion: input.predictionVersion }),
           createdAt: now,
           updatedAt: now,
         },
@@ -295,7 +349,8 @@ const makeTradingWatchService = Effect.gen(function* () {
           AND mission_id = ${input.missionId}
           AND status = 'active'
         RETURNING watch_id, mission_id, watch_json, status, armed_reason,
-                created_at, updated_at, last_observed_value, last_evaluated_at
+                created_at, updated_at, last_observed_value, last_evaluated_at,
+                prediction_version
       `.pipe(Effect.mapError(sqlFail("cancel:update")));
 
       return rows[0] ? toPersistedWatch(rows[0]) : null;
@@ -311,7 +366,8 @@ const makeTradingWatchService = Effect.gen(function* () {
         SET status = 'triggered', version = version + 1, updated_at = ${now}
         WHERE watch_id = ${watchId} AND status = 'active'
         RETURNING watch_id, mission_id, watch_json, status, armed_reason,
-                  created_at, updated_at, last_observed_value, last_evaluated_at
+                  created_at, updated_at, last_observed_value, last_evaluated_at,
+                prediction_version
       `.pipe(Effect.mapError(sqlFail("markTriggered:update")));
 
       return rows[0] ? toPersistedWatch(rows[0]) : null;
@@ -321,13 +377,39 @@ const makeTradingWatchService = Effect.gen(function* () {
     Effect.gen(function* () {
       const rows = yield* sql<WatchRow>`
         SELECT watch_id, mission_id, watch_json, status, armed_reason,
-               created_at, updated_at, last_observed_value, last_evaluated_at
+               created_at, updated_at, last_observed_value, last_evaluated_at,
+                prediction_version
         FROM trading_watches WHERE watch_id = ${watchId}
       `.pipe(Effect.mapError(sqlFail("getWatch")));
       return rows[0] ? toPersistedWatch(rows[0]) : null;
     });
 
-  return { registerWatch, cancelWatch, markTriggered, getWatch } satisfies TradingWatchServiceShape;
+  const supersedePredictionWatches: TradingWatchServiceShape["supersedePredictionWatches"] = (
+    input,
+  ) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const rows = yield* sql<{ readonly watch_id: string }>`
+        UPDATE trading_watches
+        SET status = 'superseded', version = version + 1, updated_at = ${now}
+        WHERE mission_id = ${input.missionId}
+          AND status = 'active'
+          AND ${sql.in("armed_reason", PREDICTION_ARMED_REASONS)}
+          AND prediction_version IS NOT NULL
+          AND prediction_version < ${input.beforeVersion}
+        RETURNING watch_id
+      `.pipe(Effect.mapError(sqlFail("supersedePredictionWatches")));
+
+      return rows.map((row) => row.watch_id);
+    });
+
+  return {
+    registerWatch,
+    cancelWatch,
+    markTriggered,
+    getWatch,
+    supersedePredictionWatches,
+  } satisfies TradingWatchServiceShape;
 });
 
 export const TradingWatchServiceLive = Layer.effect(TradingWatchService, makeTradingWatchService);

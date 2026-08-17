@@ -118,6 +118,7 @@ import { TradingMissionProjectionLive } from "./trading/TradingMissionProjection
 import { TradingStrategyServiceLive } from "./trading/TradingStrategyService.ts";
 import { TradingMissionServiceLive } from "./trading/TradingMissionService.ts";
 import { TradingJournalServiceLive } from "./trading/TradingJournalService.ts";
+import { TradingWatchServiceLive } from "./trading/TradingWatchService.ts";
 import { TradingPlanProtectionService } from "./trading/TradingPlanProtectionService.ts";
 import { TradingWorkingOrderService } from "./trading/TradingWorkingOrderService.ts";
 import { TradingAutoMission } from "./trading/TradingAutoMission.ts";
@@ -885,14 +886,16 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       // Plan 29 step 8.4: the plan-revision RPC publishes through the same
-      // path `trading_plan` does, so the routes layer now needs the four
-      // services that path touches. The three SQL-only ones are live — a mock
+      // path `trading_plan` does, so the routes layer now needs the five
+      // services that path touches. The four SQL-only ones are live — a mock
       // would be a second definition of what a publish does. The two that
       // reach the exchange are mocked flat: these tests seed no position, and
       // an accepted publish with nothing to reconcile is a real outcome.
       Layer.provide(TradingStrategyServiceLive),
       Layer.provide(TradingMissionServiceLive),
       Layer.provide(TradingJournalServiceLive),
+      // The fourth: an accepted publish arms its prediction's watches.
+      Layer.provide(TradingWatchServiceLive),
       Layer.provide(
         Layer.mock(TradingPlanProtectionService)({
           reconcilePlan: () =>

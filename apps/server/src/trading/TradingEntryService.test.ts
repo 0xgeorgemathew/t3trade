@@ -115,7 +115,7 @@ const seed = (options?: { readonly withOpenRun?: boolean }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     servedBook = book;
-    yield* runMigrations({ toMigrationInclusive: 65 });
+    yield* runMigrations({ toMigrationInclusive: 69 });
     yield* sql`DELETE FROM trading_missions`;
     yield* sql`DELETE FROM trading_authority_versions`;
     yield* sql`DELETE FROM trading_harness_runs`;

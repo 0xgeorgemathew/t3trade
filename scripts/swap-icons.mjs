@@ -1,48 +1,48 @@
 #!/usr/bin/env node
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const rootDir = path.resolve(__dirname, "..");
+const __filename = NodeURL.fileURLToPath(import.meta.url);
+const __dirname = NodePath.dirname(__filename);
+const rootDir = NodePath.resolve(__dirname, "..");
 
-const THEMED_DIR = path.join(rootDir, "assets", "themed-t3trade");
-const BACKUP_DIR = path.join(rootDir, "assets", "original-backup");
-const STATE_FILE = path.join(rootDir, "assets", ".asset-theme-state.json");
+const THEMED_DIR = NodePath.join(rootDir, "assets", "themed-t3trade");
+const BACKUP_DIR = NodePath.join(rootDir, "assets", "original-backup");
+const STATE_FILE = NodePath.join(rootDir, "assets", ".asset-theme-state.json");
 
 function getAllFiles(dir, base = dir) {
   let results = [];
-  if (!fs.existsSync(dir)) return results;
-  const list = fs.readdirSync(dir);
+  if (!NodeFS.existsSync(dir)) return results;
+  const list = NodeFS.readdirSync(dir);
   for (const file of list) {
-    const filePath = path.join(dir, file);
-    const stat = fs.statSync(filePath);
+    const filePath = NodePath.join(dir, file);
+    const stat = NodeFS.statSync(filePath);
     if (stat && stat.isDirectory()) {
       results = results.concat(getAllFiles(filePath, base));
     } else {
-      results.push(path.relative(base, filePath));
+      results.push(NodePath.relative(base, filePath));
     }
   }
   return results;
 }
 
 function ensureDir(filePath) {
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  const dir = NodePath.dirname(filePath);
+  if (!NodeFS.existsSync(dir)) {
+    NodeFS.mkdirSync(dir, { recursive: true });
   }
 }
 
 function copyFileSafe(src, dest) {
   ensureDir(dest);
-  fs.copyFileSync(src, dest);
+  NodeFS.copyFileSync(src, dest);
 }
 
 function getActiveState() {
-  if (fs.existsSync(STATE_FILE)) {
+  if (NodeFS.existsSync(STATE_FILE)) {
     try {
-      const data = JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
+      const data = JSON.parse(NodeFS.readFileSync(STATE_FILE, "utf-8"));
       if (data && data.activeTheme) {
         return data.activeTheme;
       }
@@ -55,7 +55,7 @@ function getActiveState() {
 
 function saveState(theme, count) {
   ensureDir(STATE_FILE);
-  fs.writeFileSync(
+  NodeFS.writeFileSync(
     STATE_FILE,
     JSON.stringify(
       {
@@ -72,10 +72,10 @@ function saveState(theme, count) {
 
 function ensureOriginalBackup(relativeFiles) {
   for (const relPath of relativeFiles) {
-    const backupPath = path.join(BACKUP_DIR, relPath);
-    const activePath = path.join(rootDir, relPath);
-    if (!fs.existsSync(backupPath)) {
-      if (fs.existsSync(activePath)) {
+    const backupPath = NodePath.join(BACKUP_DIR, relPath);
+    const activePath = NodePath.join(rootDir, relPath);
+    if (!NodeFS.existsSync(backupPath)) {
+      if (NodeFS.existsSync(activePath)) {
         copyFileSafe(activePath, backupPath);
       }
     }
@@ -83,7 +83,7 @@ function ensureOriginalBackup(relativeFiles) {
 }
 
 function swap() {
-  if (!fs.existsSync(THEMED_DIR)) {
+  if (!NodeFS.existsSync(THEMED_DIR)) {
     console.error(`Error: Themed directory not found at ${THEMED_DIR}`);
     process.exit(1);
   }
@@ -104,8 +104,8 @@ function swap() {
     // Swap original -> t3trade
     let swappedCount = 0;
     for (const relPath of relativeFiles) {
-      const src = path.join(THEMED_DIR, relPath);
-      const dest = path.join(rootDir, relPath);
+      const src = NodePath.join(THEMED_DIR, relPath);
+      const dest = NodePath.join(rootDir, relPath);
       copyFileSafe(src, dest);
       swappedCount++;
     }
@@ -118,9 +118,9 @@ function swap() {
     // Swap t3trade -> original
     let restoredCount = 0;
     for (const relPath of relativeFiles) {
-      const src = path.join(BACKUP_DIR, relPath);
-      const dest = path.join(rootDir, relPath);
-      if (fs.existsSync(src)) {
+      const src = NodePath.join(BACKUP_DIR, relPath);
+      const dest = NodePath.join(rootDir, relPath);
+      if (NodeFS.existsSync(src)) {
         copyFileSafe(src, dest);
         restoredCount++;
       }

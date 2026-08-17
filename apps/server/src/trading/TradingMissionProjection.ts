@@ -497,9 +497,11 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         readonly updated_at: number;
         readonly last_observed_value: number | null;
         readonly last_evaluated_at: number | null;
+        readonly prediction_version: number | null;
       }>`
         SELECT watch_id, mission_id, watch_json, status, armed_reason,
-               created_at, updated_at, last_observed_value, last_evaluated_at
+               created_at, updated_at, last_observed_value, last_evaluated_at,
+               prediction_version
         FROM trading_watches
         WHERE mission_id = ${input.missionId}
         ORDER BY created_at DESC, watch_id DESC
@@ -524,6 +526,10 @@ const makeTradingMissionProjection = Effect.gen(function* () {
         // The web's provenance chips ("auto", "target", "stop") read this; a
         // mapping that drops it renders every watch as harness-armed.
         ...(row.armed_reason === null ? {} : { armedReason: decodeArmedReason(row.armed_reason) }),
+        // Which prediction armed this. The unified watch stream labels every
+        // row `v{n}` from it, so a dropped mapping here would leave the panel
+        // unable to say which read a level belongs to.
+        ...(row.prediction_version === null ? {} : { predictionVersion: row.prediction_version }),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         // Guarded on BOTH columns: `lastEvaluatedAt` is typed non-null when

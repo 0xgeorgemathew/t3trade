@@ -18,7 +18,7 @@ const layer = it.layer(
 /** Shared in-memory database; each test migrates then truncates the inbox. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 65 });
+  yield* runMigrations({ toMigrationInclusive: 69 });
   yield* sql`DELETE FROM trading_event_inbox`;
 });
 

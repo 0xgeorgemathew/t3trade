@@ -311,23 +311,54 @@ export type TradingPlanTarget = typeof TradingPlanTarget.Type;
 export const DEFAULT_REASSESS_AFTER_MINUTES = 90;
 
 /**
- * The plan's best current estimate of where price is headed — not a
- * prediction, an informed working read the safety-net triggers are set
- * against.
+ * The plan's prediction: where this read says price is going, by when, and
+ * what would prove it wrong.
  *
- * `price` is where the read says the mark may be `byMinutes` from publish.
+ * This is the unit the whole loop turns on. A plan without one is a plan the
+ * runtime cannot arm anything for; a plan with one gets two watches armed
+ * against it automatically — a horizon wake at `byMinutes` and an
+ * invalidation wake at `invalidationPrice` — so the mission sleeps until the
+ * market either runs the clock out or says the read was wrong. The plan's own
+ * `strategyVersion` is the prediction's id, which is how a fired watch names
+ * the prediction it belongs to.
+ *
+ * - `direction` is the claim itself. `price` alone leaves it to be inferred
+ *   from a mark that has already moved by the time anything reads it.
+ * - `price` is the point estimate; `zone` is the band around it when the read
+ *   is honestly a range rather than a number. `price` stays required so
+ *   everything downstream has one line to draw.
+ * - `byMinutes` is the horizon, measured from publish.
+ * - `invalidationPrice` is the level at which this read is wrong — not the
+ *   stop (which is where the money is protected), but where the thesis stops
+ *   being the thesis. It sits on the opposite side of the mark from `price`.
+ *
  * The web draws it as a dotted line from the live mark into the chart's
  * future gutter, with the armed watches around it, so the operator sees in
  * one picture what the mission expects AND what wakes it if the market
- * disagrees. Optional: a stand-aside plan, or a read with no directional
- * conviction, states none — a projection invented to fill the field would be
- * drawn as if it were believed.
+ * disagrees. Optional on the plan: a stand-aside plan states none — a
+ * prediction invented to fill the field would be armed and drawn as if it
+ * were believed.
  */
 export const TradingPlanProjection = Schema.Struct({
+  direction: Schema.Literals(["long", "short"]),
   price: Price,
+  /** The honest band around `price`, when the read is a range. `low <= high`. */
+  zone: Schema.optional(Schema.Struct({ low: Price, high: Price })),
   byMinutes: Schema.Number.check(Schema.isGreaterThan(0)),
+  invalidationPrice: Price,
 });
 export type TradingPlanProjection = typeof TradingPlanProjection.Type;
+
+/**
+ * Which way the mark has to cross `invalidationPrice` for the read to be
+ * wrong: a long read is invalidated by price falling through it, a short read
+ * by price rising through it.
+ */
+export function projectionInvalidationDirection(
+  projection: TradingPlanProjection,
+): "above" | "below" {
+  return projection.direction === "long" ? "below" : "above";
+}
 
 export const TradingPlanReassess = Schema.Struct({
   afterMinutes: Schema.Number.check(Schema.isGreaterThan(0)).pipe(
@@ -416,10 +447,10 @@ export const tradingPlanAuthoredFields = {
   reassess: TradingPlanReassess,
 
   /**
-   * Where the read expects price to go, and by when — see
-   * {@link TradingPlanProjection}. The triggers above should bracket it: one
-   * side confirms the expected move, the other is the safety net that says
-   * the market is doing something else.
+   * The prediction this plan IS: direction, price, horizon, and the level
+   * that would prove it wrong — see {@link TradingPlanProjection}. Publishing
+   * one arms the horizon and invalidation wakes automatically, so the loop
+   * has something to wait on without the plan spelling out the triggers.
    */
   projection: Schema.optional(TradingPlanProjection),
 

@@ -426,6 +426,13 @@ export type PersistedWatchStatus = typeof PersistedWatchStatus.Type;
  * consumed by a wake that then failed to reach the harness. The condition it
  * carries is the same one the harness armed; the reason records that the
  * original firing was lost, so a wake from it is not a second crossing.
+ *
+ * `prediction_horizon` and `prediction_invalidation` are the two the runtime
+ * arms from a published plan's projection: the clock running out on the read,
+ * and the level at which the read is wrong. Together they are what lets a
+ * mission publish a prediction and then genuinely sleep — the pair is the only
+ * thing that has to wake it before the market has said anything new. They are
+ * the only reasons a plan revision sweeps (see `predictionVersion`).
  */
 export const WatchArmedReason = Schema.Literals([
   "staleness_floor",
@@ -433,8 +440,21 @@ export const WatchArmedReason = Schema.Literals([
   "wake_retry",
   "stop_proximity",
   "stop_decision",
+  "prediction_horizon",
+  "prediction_invalidation",
 ]);
 export type WatchArmedReason = typeof WatchArmedReason.Type;
+
+/** The armed reasons a plan revision may sweep — see `predictionVersion`. */
+export const PREDICTION_ARMED_REASONS: ReadonlyArray<WatchArmedReason> = [
+  "prediction_horizon",
+  "prediction_invalidation",
+];
+
+/** Whether a watch was armed by the runtime from a plan's projection. */
+export function isPredictionArmedReason(reason: WatchArmedReason | undefined): boolean {
+  return reason !== undefined && PREDICTION_ARMED_REASONS.includes(reason);
+}
 
 /**
  * A watch as persisted - spec §12.1.
@@ -464,6 +484,21 @@ export const PersistedWatch = Schema.Struct({
   condition: Schema.optional(WatchCondition),
   status: PersistedWatchStatus,
   armedReason: Schema.optional(WatchArmedReason),
+  /**
+   * The `strategyVersion` of the plan whose projection this watch was armed
+   * for — the id of the prediction it belongs to.
+   *
+   * Present on runtime-armed prediction watches (see
+   * {@link isPredictionArmedReason}) and absent everywhere else: a watch the
+   * harness armed itself belongs to no prediction, and neither does a watch
+   * from a row written before migration 069.
+   *
+   * This is what makes a plan revision safe to sweep. A new prediction
+   * supersedes only the watches armed for an OLDER one — never a
+   * `profit_target`, a stop-proximity level, or a coverage floor, all of which
+   * protect a live position and outlive whatever the plan currently believes.
+   */
+  predictionVersion: Schema.optional(Schema.Number),
   createdAt: UnixMillis,
   updatedAt: UnixMillis,
   /**

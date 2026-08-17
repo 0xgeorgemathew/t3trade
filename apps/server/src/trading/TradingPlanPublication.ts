@@ -27,6 +27,7 @@ import * as Effect from "effect/Effect";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { TradingMission } from "./Schemas.ts";
 import { TradingMissionService } from "./TradingMissionService.ts";
+import { armPredictionWatchesQuietly } from "./TradingPredictionWatches.ts";
 import {
   TradingPlanProtectionService,
   type PlanProtectionOutcome,
@@ -161,6 +162,17 @@ export const publishPlanWithAftermath = Effect.fn(
   // path instead of leaving the UI to poll.
   yield* announceStrategyPublished({ threadId, missionId: mission.id });
   yield* announceMissionStatus({ threadId, missionId: mission.id });
+
+  // The published prediction gets its own two triggers — the horizon and the
+  // invalidation level — and the previous prediction's pair is retired. This
+  // is what lets a plan be published and then waited on: without it a
+  // confident read arms nothing, and the mission's only wake is the coverage
+  // floor's cadence, which knows nothing about what the plan believes.
+  yield* armPredictionWatchesQuietly({
+    missionId: mission.id,
+    version: published.version,
+    plan: published.strategy,
+  });
 
   // Plan 29 step 4.5: the plan is the position's declared state, so an
   // accepted publish reconciles the exchange to it NOW — the stop and the

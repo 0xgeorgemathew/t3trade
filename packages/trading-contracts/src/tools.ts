@@ -289,6 +289,12 @@ export const TradingPublishPlanResult = Schema.Union([
     outcome: Schema.Literal("accepted"),
     strategy: TradingPlanState,
     /**
+     * The plan-history version this publish wrote — the id of the prediction
+     * it published. Watches armed from its projection carry it, and the next
+     * revision supersedes everything armed below it.
+     */
+    version: Schema.Number,
+    /**
      * Things wrong with the published strategy that did not stop the publish —
      * today, prose the server clipped to its published bound.
      *

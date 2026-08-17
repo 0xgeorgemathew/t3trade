@@ -327,7 +327,15 @@ layer("TradingWakeupComposer", (it) => {
 
       // The same plan with one on file wakes without the nag.
       const projected = yield* composeFull({
-        activeStrategy: { ...strategy, projection: { price: MARK + 12, byMinutes: 15 } },
+        activeStrategy: {
+          ...strategy,
+          projection: {
+            direction: "long",
+            price: MARK + 12,
+            byMinutes: 15,
+            invalidationPrice: MARK - 8,
+          },
+        },
       }).pipe(Effect.map((composed) => composed.wakeup));
       assert.notInclude(projected.strategyReview ?? "", "NO PROJECTION ON FILE");
     }),
