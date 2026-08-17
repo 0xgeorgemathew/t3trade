@@ -277,23 +277,63 @@ describe("deriveWatchLifecycle", () => {
   };
   const firedAtIso = new Date(1_700_000_120_000).toISOString();
 
-  it("keeps active watches out of the history and orders the rest newest first", () => {
-    const { history } = deriveWatchLifecycle({
+  it("puts the armed rows first and orders everything settled newest first", () => {
+    const { stream } = deriveWatchLifecycle({
       watches: [
-        { ...base, id: "still-armed", status: "active" as const },
         { ...base, id: "older-fire", status: "consumed" as const, updatedAt: 1_700_000_060_000 },
+        { ...base, id: "still-armed", status: "active" as const },
         { ...base, id: "newer-fire", status: "triggered" as const, updatedAt: 1_700_000_120_000 },
         { ...base, id: "retired", status: "cancelled" as const, updatedAt: 1_700_000_090_000 },
       ] as PersistedWatch[],
       missionTimeline: [],
     });
-    expect(history.map((row) => row.id)).toEqual(["newer-fire", "retired", "older-fire"]);
-    expect(history[0]?.outcome).toBe("fired");
-    expect(history[1]?.outcome).toBe("cancelled");
+    expect(stream.map((row) => row.id)).toEqual([
+      "still-armed",
+      "newer-fire",
+      "retired",
+      "older-fire",
+    ]);
+    expect(stream.map((row) => row.state)).toEqual(["armed", "triggered", "disarmed", "triggered"]);
+    // Armed rows date from when they were armed; settled ones from when they
+    // settled — the row's timestamp always means the state it is showing.
+    expect(stream[0]?.atMillis).toBe(base.createdAt);
+    expect(stream[1]?.atMillis).toBe(1_700_000_120_000);
+  });
+
+  // The four dead ends are not interchangeable: a level someone cancelled, a
+  // level a newer prediction moved, and a clock that ran out are different
+  // facts about why the mission is no longer watching it.
+  it("separates expiry from cancellation, and names a replacement as one", () => {
+    const { stream } = deriveWatchLifecycle({
+      watches: [
+        { ...base, id: "expired", status: "expired" as const, updatedAt: 1_700_000_120_000 },
+        { ...base, id: "replaced", status: "superseded" as const, updatedAt: 1_700_000_110_000 },
+        { ...base, id: "cancelled", status: "cancelled" as const, updatedAt: 1_700_000_100_000 },
+      ] as PersistedWatch[],
+      missionTimeline: [],
+    });
+    expect(stream.map((row) => [row.state, row.outcomeLabel])).toEqual([
+      ["expired", "expired"],
+      ["disarmed", "replaced"],
+      ["disarmed", "cancelled"],
+    ]);
+  });
+
+  // The stream labels each row with the prediction that armed it, so an
+  // operator can see which read a level belongs to without opening the plan.
+  it("carries the prediction version through, and leaves it null when there is none", () => {
+    const { stream } = deriveWatchLifecycle({
+      watches: [
+        { ...base, id: "runtime-armed", status: "active" as const, predictionVersion: 4 },
+        { ...base, id: "model-armed", status: "active" as const },
+      ] as PersistedWatch[],
+      missionTimeline: [],
+    });
+    expect(stream.map((row) => row.predictionVersion)).toEqual([4, null]);
   });
 
   it("pairs a firing with the decision that followed it, preferring it over the wake", () => {
-    const { history } = deriveWatchLifecycle({
+    const { stream } = deriveWatchLifecycle({
       watches: [
         { ...base, id: "fired", status: "triggered" as const, updatedAt: 1_700_000_120_000 },
       ] as PersistedWatch[],
@@ -312,11 +352,11 @@ describe("deriveWatchLifecycle", () => {
         },
       ],
     });
-    expect(history[0]?.actionLabel).toBe("published short below the range");
+    expect(stream[0]?.actionLabel).toBe("published short below the range");
   });
 
   it("falls back to the wake when no decision has landed yet", () => {
-    const { history } = deriveWatchLifecycle({
+    const { stream } = deriveWatchLifecycle({
       watches: [
         { ...base, id: "fired", status: "triggered" as const, updatedAt: 1_700_000_120_000 },
       ] as PersistedWatch[],
@@ -324,11 +364,11 @@ describe("deriveWatchLifecycle", () => {
         { at: firedAtIso, kind: "wake" as const, label: "woke on ETH mark above 1900" },
       ],
     });
-    expect(history[0]?.actionLabel).toBe("woke on ETH mark above 1900");
+    expect(stream[0]?.actionLabel).toBe("woke on ETH mark above 1900");
   });
 
   it("carries no action for a watch that was retired rather than fired", () => {
-    const { history } = deriveWatchLifecycle({
+    const { stream } = deriveWatchLifecycle({
       watches: [
         { ...base, id: "retired", status: "cancelled" as const, updatedAt: 1_700_000_120_000 },
       ] as PersistedWatch[],
@@ -336,7 +376,7 @@ describe("deriveWatchLifecycle", () => {
         { at: firedAtIso, kind: "wake" as const, label: "a wake that has nothing to do with it" },
       ],
     });
-    expect(history[0]?.actionLabel).toBeNull();
+    expect(stream[0]?.actionLabel).toBeNull();
   });
 });
 

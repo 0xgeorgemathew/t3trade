@@ -138,13 +138,14 @@ import {
   formatSize,
   formatUsd,
   hyperliquidTradeUrl,
+  isArmedRow,
   isMissionComplete,
   type ChartFillMarker,
   type ChartPastMarkerInput,
   type ChartTimeMarkerInput,
   type StrategyPlan,
-  type WatchConditionRow,
-  type WatchHistoryRow,
+  type WatchLifecycleState,
+  type WatchStreamRow,
 } from "./tradingPresentation";
 
 /**
@@ -193,19 +194,14 @@ const TICK_INTERVAL_MILLIS = 250;
 const COLLAPSED_ROW_HEIGHT_PX = 38;
 
 /**
- * How many condition rows the checklist shows before it says "+N more".
+ * How many settled watches the stream renders before it says how many are left.
  *
- * The panel is pinned above the composer, so its height is taken directly out
- * of the conversation. A mission that has republished a few times can hold a
- * dozen watches, and the twelfth is never the one being read.
- *
- * A live mission gets one fewer. Holding a position adds a P&L, a progress
- * rule and the exposure grid above the list, and the readout column must not
- * grow taller than the chart it captions: a caption longer than its picture is
- * a second column of reading, which is what the two-column shape was for.
+ * A mission that re-levels on every bar retires hundreds of them, and rendering
+ * all of them makes a 220px window into sixty screens of scroll — with the row
+ * anyone would want in the first two. Forty is a few screens of genuine
+ * scrollback; past that the number itself is the useful fact.
  */
-const MAX_CONDITION_ROWS = 4;
-const MAX_CONDITION_ROWS_LIVE = 3;
+const MAX_SETTLED_WATCH_ROWS = 40;
 
 /**
  * How many of the fetched bars the live chart draws.
@@ -492,38 +488,17 @@ export function MissionLivePanel({
   // show. Bounded server-side, and again by the geometry's own cap.
   const pastMarkers = deriveChartPastMarkers(mission);
 
-  // The checklist is capped because the panel now sits directly above the
-  // composer: a mission that has republished a few times can hold a dozen
-  // watches, and an unbounded list would push the input off the screen.
+  // One stream: what is armed, then everything that has settled, newest first.
   //
-  // Planning shows none of them. The only thing armed before a publish is the
-  // staleness reassessment, which the schedule strip above already names — and
-  // a checklist headed by a condition the mission never chose reads as a plan
-  // when there is not one.
-  //
-  // Waiting rows first, met rows after: what the mission is still watching for
-  // is what the operator is monitoring, and a satisfied condition is a fact
-  // rather than a question. The sort is stable, so within each group the
-  // projection's own order survives — and because it runs before the cap, a
-  // waiting condition can never be the one pushed under "+N more" by three
-  // conditions that have already resolved.
-  const rows = state === "planning" ? [] : (watches?.rows ?? []);
-  // Fired alerts clear from the checklist — but not instantly. A row that just
-  // flipped keeps its place for a beat while the live dot becomes a tick, so
-  // the operator sees the moment happen instead of a row vanishing between
-  // polls. After the beat it lives in the history below.
-  const recentlyFired = useRecentlyFiredWatches(rows, nowMillis);
-  const pendingRows = rows.filter((row) => !row.met || recentlyFired.has(row.id));
-  const orderedRows = [...pendingRows].sort((a, b) => Number(a.met) - Number(b.met));
-  const visibleRows = orderedRows.slice(
-    0,
-    state === "live" ? MAX_CONDITION_ROWS_LIVE : MAX_CONDITION_ROWS,
-  );
-  const hiddenRows = pendingRows.length - visibleRows.length;
-
-  // Everything that already fired or was retired, newest first, with the
-  // action the mission took after it. The scrollback for the alert system.
-  const watchHistory = state === "planning" ? [] : deriveWatchLifecycle(mission).history;
+  // Planning shows none of it. The only thing armed before a publish is the
+  // staleness reassessment, which the stream excludes anyway — and a list
+  // headed by a condition the mission never chose reads as a plan when there
+  // is not one.
+  const watchStream = state === "planning" ? [] : deriveWatchLifecycle(mission).stream;
+  // A row that just fired holds its place at the top for a beat while the live
+  // dot becomes a tick, so the operator sees the moment happen instead of a row
+  // sliding down between polls.
+  const recentlyFired = useRecentlyFiredWatches(watchStream, nowMillis);
 
   const pnlSign: "profit" | "loss" | null =
     position === null ? null : position.unrealisedPnl >= 0 ? "profit" : "loss";
@@ -599,33 +574,14 @@ export function MissionLivePanel({
   // the noisier of the two. The next reassessment keeps both of its homes: a
   // rule standing in the chart's future gutter, captioned there, and a cell in
   // the grid in the two states that have room for one.
-  const visibleHistory = watchHistory.filter((entry) => !recentlyFired.has(entry.id));
   const checklist =
-    visibleRows.length === 0 && visibleHistory.length === 0 ? null : (
-      <div className="border-t border-border/40 pt-2.5">
-        {visibleRows.length === 0 ? null : (
-          <>
-            <p className={cn(BAND_PAD_CLASS, "pb-1.5", BAND_LEGEND_CLASS)}>armed watches</p>
-            <div className="divide-y divide-border/25">
-              {visibleRows.map((row) => (
-                <ConditionRow key={row.id} row={row} justFired={recentlyFired.has(row.id)} />
-              ))}
-            </div>
-            {hiddenRows === 0 && droppedConditions === 0 ? null : (
-              <p
-                className={cn(BAND_PAD_CLASS, "py-1.5 font-mono text-[11px] text-muted-foreground")}
-              >
-                {hiddenRows > 0
-                  ? `+${hiddenRows} more condition${hiddenRows === 1 ? "" : "s"} armed`
-                  : `+${droppedConditions} more level${droppedConditions === 1 ? "" : "s"} armed, off the chart`}
-              </p>
-            )}
-          </>
-        )}
-        {visibleHistory.length === 0 ? null : (
-          <WatchHistoryList entries={visibleHistory} nowMillis={nowMillis} />
-        )}
-      </div>
+    watchStream.length === 0 ? null : (
+      <WatchStream
+        rows={watchStream}
+        nowMillis={nowMillis}
+        recentlyFired={recentlyFired}
+        droppedConditions={droppedConditions}
+      />
     );
 
   return (
@@ -1377,22 +1333,23 @@ const FIRED_LINGER_MILLIS = 4_000;
  * no moment to show.
  */
 function useRecentlyFiredWatches(
-  rows: ReadonlyArray<WatchConditionRow>,
+  rows: ReadonlyArray<WatchStreamRow>,
   nowMillis: number,
 ): ReadonlySet<string> {
   // No timers: the panel already re-renders on its 250ms clock, so the linger
   // is read off `nowMillis` and expired entries are pruned lazily. A timeout
   // here would be cleared by the next poll's new `rows` identity and leave a
-  // fired row stuck on the checklist forever.
+  // fired row stuck at the top of the stream forever.
   const seenMet = useRef<Map<string, boolean>>(new Map());
   const firedAt = useRef<Map<string, number>>(new Map());
 
   for (const row of rows) {
+    const met = row.state === "triggered";
     const wasMet = seenMet.current.get(row.id);
-    if (wasMet === false && row.met && !firedAt.current.has(row.id)) {
+    if (wasMet === false && met && !firedAt.current.has(row.id)) {
       firedAt.current.set(row.id, nowMillis);
     }
-    seenMet.current.set(row.id, row.met);
+    seenMet.current.set(row.id, met);
   }
 
   const fired = new Set<string>();
@@ -1403,139 +1360,244 @@ function useRecentlyFiredWatches(
   return fired;
 }
 
-/** One row of the checklist: glyph, description, observed vs threshold. */
-function ConditionRow({
-  row,
-  justFired,
+/**
+ * The watch stream: one list from armed to settled.
+ *
+ * It was two lists under two headings — a checklist of what was armed, and a
+ * scrollback of what had fired. A watch that fired vanished from the first and
+ * reappeared in the second, which is the single event the operator most wants
+ * to follow, hidden by the layout. One list, one scroll, and the row stays put
+ * while its dot changes.
+ *
+ * Armed rows are sticky at the top of the scroll: what can still happen is
+ * what the operator is monitoring, and scrolling back through an hour of
+ * history should not take it off screen. They are naturally few — a mission
+ * arms a handful of levels, not a page of them.
+ */
+function WatchStream({
+  rows,
+  nowMillis,
+  recentlyFired,
+  droppedConditions,
 }: {
-  readonly row: WatchConditionRow;
-  readonly justFired: boolean;
+  readonly rows: ReadonlyArray<WatchStreamRow>;
+  readonly nowMillis: number;
+  readonly recentlyFired: ReadonlySet<string>;
+  /** Armed levels the chart could not draw, reported once under the list. */
+  readonly droppedConditions: number;
 }): ReactNode {
-  // Waiting rows carry a live indicator — a breathing dot, because the
-  // evaluator really is sweeping this predicate every couple of seconds. When
-  // the predicate fires the dot becomes the tick in place (scale-in, dot
-  // fades), and after a beat the row moves down into the history.
-  const glyph = row.met ? (
-    <span
-      className={cn("inline-block text-profit", justFired && "watch-tick-in")}
-      aria-label="condition met"
-    >
-      ✓
-    </span>
-  ) : (
-    <span className="relative inline-flex size-2" aria-label="condition waiting">
-      <span className="absolute inline-flex size-full animate-ping rounded-full bg-armed/50 [animation-duration:2.4s]" />
-      <span className="relative inline-flex size-2 rounded-full bg-armed/70" />
-    </span>
-  );
+  // A row that just fired is held among the armed rows for a beat: the dot
+  // becomes a tick in place rather than the row jumping down the list.
+  const held = (row: WatchStreamRow) => isArmedRow(row) || recentlyFired.has(row.id);
+  const armed = rows.filter(held);
+  const allSettled = rows.filter((row) => !held(row));
+  // A long mission re-levels constantly: six hundred settled watches is sixty
+  // screens of scroll, and the row worth finding is never the four-hundredth.
+  // The tail is bounded and the count says what was left off, so the list stays
+  // scrollable rather than becoming an archive nobody reaches the end of.
+  const settled = allSettled.slice(0, MAX_SETTLED_WATCH_ROWS);
+  const earlierSettled = allSettled.length - settled.length;
 
-  // The observed value's format depends on the predicate it measures against.
-  // A PnL watch reads a signed dollar figure; a price watch reads a market
-  // price. The threshold follows the same rule, so a row that compares the two
-  // never mixes a dollar value with a raw number.
-  const isPnlRow = row.description.includes("PnL");
-  const observed =
-    row.observedValue === null
-      ? "—"
-      : isPnlRow
-        ? formatSignedUsd(row.observedValue)
-        : formatPrice(row.observedValue);
-  const threshold =
-    row.thresholdValue === null
-      ? null
-      : isPnlRow
-        ? formatSignedUsd(row.thresholdValue)
-        : formatPrice(row.thresholdValue);
-
-  // The row reads as a sentence and ends in a verdict: description, then the
-  // reading it is measured on, then met or waiting. The threshold column the
-  // wide panel carried is gone — the description already names the level, and
-  // in a 336px column it was the one figure that pushed the verdict off the
-  // end. It stays in the title so the exact pair is still one hover away.
-  //
-  // A met row recedes: it has stopped being a question, and holding it at the
-  // same strength as the rows still waiting made a satisfied checklist compete
-  // with the one condition the operator is actually watching.
   return (
-    <div
-      className={cn(BAND_PAD_CLASS, "flex items-baseline gap-x-2.5 py-2 font-mono text-[12px]")}
-      title={
-        threshold === null ? row.description : `${row.description} · ${observed} / ${threshold}`
-      }
-    >
-      <span className="w-3 flex-none text-center">{glyph}</span>
-      <span
-        className={cn(
-          "min-w-0 flex-1 truncate leading-[1.35]",
-          row.met ? "text-muted-foreground" : "text-foreground/90",
+    <div data-testid="mission-watch-stream" className="border-t border-border/40 pt-2.5 pb-1">
+      <div className="max-h-[220px] overflow-y-auto overscroll-contain">
+        {armed.length === 0 ? null : (
+          // Sticky, on a surface that actually hides what slides under it. The
+          // panel is a translucent card, so a translucent strip inside it let
+          // settled rows read straight through the armed ones — two sentences
+          // in the same place, which is worse than either. The blur closes the
+          // gap between this opaque fill and the card's own tint.
+          <div className="sticky top-0 z-10 bg-card backdrop-blur-sm">
+            <div className="divide-y divide-border/25">
+              {armed.map((row) => (
+                <WatchStreamEntry
+                  key={row.id}
+                  row={row}
+                  nowMillis={nowMillis}
+                  justFired={recentlyFired.has(row.id)}
+                />
+              ))}
+            </div>
+            {/* The waterline: live above, over below. No heading on either
+                side of it — both halves are the same objects, and two labels
+                made them read as two systems. Flush at the pinned block's
+                bottom edge, because when the stream is scrolled this is also
+                the edge settled rows slide under. */}
+            {settled.length === 0 ? null : <div className="h-px bg-border" />}
+          </div>
         )}
-      >
-        {row.description}
-      </span>
-      {/* The verdict, not a status colour per row: a column of amber "waiting"
-          on four rows is four alarms for the ordinary case. Green marks the
-          moment one resolves, which is the only event in this list. */}
-      <span
-        className={cn("flex-none tabular-nums", row.met ? "text-profit" : "text-muted-foreground")}
-      >
-        {row.met ? "met" : "waiting"}
-      </span>
+        <div className="divide-y divide-border/15">
+          {settled.map((row) => (
+            <WatchStreamEntry key={row.id} row={row} nowMillis={nowMillis} justFired={false} />
+          ))}
+        </div>
+        {earlierSettled === 0 ? null : (
+          <p
+            className={cn(
+              BAND_PAD_CLASS,
+              "py-2 font-mono text-[11px] tabular-nums text-muted-foreground/60",
+            )}
+          >
+            {earlierSettled} earlier watch{earlierSettled === 1 ? "" : "es"} not shown
+          </p>
+        )}
+      </div>
+      {droppedConditions === 0 ? null : (
+        <p className={cn(BAND_PAD_CLASS, "pt-1.5 font-mono text-[11px] text-muted-foreground")}>
+          +{droppedConditions} more level{droppedConditions === 1 ? "" : "s"} armed, off the chart
+        </p>
+      )}
     </div>
   );
 }
 
 /**
- * The alert scrollback: what was set, that it fired, and what followed.
+ * The lifecycle dot.
  *
- * Scrollable rather than capped with "+N more": history only grows, and the
- * row the operator wants is often the one from ten minutes ago. Three rows
- * tall; the newest sits at the top. Each row is one line — outcome glyph,
- * the predicate, its age — with the action the mission took on the line
- * beneath in the faintest ink, indented under its alert.
+ * Four states, and none of them borrows the long/short palette: a watch firing
+ * is not a profit and a watch being cancelled is not a loss, and colouring them
+ * green and red would put two unrelated meanings on the panel's most loaded
+ * pair of hues. Armed is the amber `--armed` already used for "committed but
+ * not yet exposed"; triggered is `--info` blue, which reads as an arrival;
+ * disarmed and expired both recede into the muted ink, separated by fill
+ * against ring — taken down is solid, ran out is hollow.
  */
-function WatchHistoryList({
-  entries,
-  nowMillis,
+function WatchDot({
+  state,
+  justFired,
 }: {
-  readonly entries: ReadonlyArray<WatchHistoryRow>;
-  readonly nowMillis: number;
+  readonly state: WatchLifecycleState;
+  readonly justFired: boolean;
 }): ReactNode {
+  if (state === "armed") {
+    return (
+      <span className="relative inline-flex size-2" aria-label="armed">
+        {/* The evaluator really is sweeping this predicate every couple of
+            seconds, so the dot breathes. `watch-dot-pulse` rather than
+            Tailwind's `animate-ping`, which carries no reduced-motion guard —
+            see index.css. */}
+        <span className="watch-dot-pulse absolute inline-flex size-full rounded-full bg-armed/50" />
+        <span className="relative inline-flex size-2 rounded-full bg-armed/70" />
+      </span>
+    );
+  }
+  if (state === "triggered") {
+    return (
+      <span
+        className={cn("inline-block size-2 rounded-full bg-info", justFired && "watch-tick-in")}
+        aria-label="fired"
+      />
+    );
+  }
+  if (state === "expired") {
+    return (
+      <span
+        className="inline-block size-2 rounded-full border border-muted-foreground/45"
+        aria-label="expired"
+      />
+    );
+  }
   return (
-    <div data-testid="mission-watch-history" className="border-t border-border/40 pt-2">
-      <p className={cn(BAND_PAD_CLASS, "pb-1", BAND_LEGEND_CLASS)}>alert history</p>
-      <div className="max-h-[104px] overflow-y-auto overscroll-contain">
-        {entries.map((entry) => (
-          <div key={entry.id} className={cn(BAND_PAD_CLASS, "py-1.5 font-mono text-[11px]")}>
-            <div className="flex items-baseline gap-x-2">
-              <span
-                className={cn(
-                  "w-3 flex-none text-center",
-                  entry.outcome === "fired" ? "text-profit/80" : "text-muted-foreground/60",
-                )}
-                aria-hidden
-              >
-                {entry.outcome === "fired" ? "✓" : "—"}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                {entry.description}
-              </span>
-              <span className="flex-none tabular-nums text-muted-foreground/60">
-                {entry.outcome === "fired" ? "" : `${entry.outcome} · `}
-                {formatDuration(Math.max(0, nowMillis - entry.endedAt))} ago
-              </span>
-            </div>
-            {entry.actionLabel === null ? null : (
-              <p
-                className="truncate pl-5 text-[10.5px] leading-[1.6] text-muted-foreground/60"
-                title={entry.actionLabel}
-              >
-                → {entry.actionLabel}
-              </p>
-            )}
-          </div>
-        ))}
+    <span
+      className="inline-block size-2 rounded-full bg-muted-foreground/45"
+      aria-label="disarmed"
+    />
+  );
+}
+
+/**
+ * One row: dot, what it waits for, which prediction it belongs to, and when.
+ *
+ * Everything else — the live reading against the threshold, the decision the
+ * mission took after it fired — is behind the disclosure, because a stream
+ * four rows deep with two lines each stops being scannable at exactly the
+ * moment it matters.
+ */
+function WatchStreamEntry({
+  row,
+  nowMillis,
+  justFired,
+}: {
+  readonly row: WatchStreamRow;
+  readonly nowMillis: number;
+  readonly justFired: boolean;
+}): ReactNode {
+  const armed = isArmedRow(row);
+  // A PnL watch reads a signed dollar figure; a price watch reads a market
+  // price. Both columns follow the predicate, so a row never compares a dollar
+  // value against a raw number.
+  const isPnlRow = row.description.includes("PnL");
+  const format = (value: number) => (isPnlRow ? formatSignedUsd(value) : formatPrice(value));
+  const observed = row.observedValue === null ? null : format(row.observedValue);
+  const threshold = row.thresholdValue === null ? null : format(row.thresholdValue);
+  const hasDetail = observed !== null || threshold !== null || row.actionLabel !== null;
+
+  const age = formatDuration(Math.max(0, nowMillis - row.atMillis));
+  const when = armed ? `armed ${age} ago` : `${row.outcomeLabel ?? "fired"} ${age} ago`;
+
+  const summary = (
+    <>
+      <span className="w-3 flex-none text-center">
+        <WatchDot state={row.state} justFired={justFired} />
+      </span>
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate leading-[1.35]",
+          armed ? "text-foreground/90" : "text-muted-foreground",
+        )}
+      >
+        {row.description}
+      </span>
+      {/* Which prediction armed it. Only the runtime's own prediction watches
+          carry one, so the column is empty for everything the model armed
+          itself — which is the distinction, not a gap. */}
+      {row.predictionVersion === null ? null : (
+        <span
+          className="flex-none tabular-nums text-muted-foreground/60"
+          title={`armed for prediction v${row.predictionVersion}`}
+        >
+          v{row.predictionVersion}
+        </span>
+      )}
+      <span className="flex-none tabular-nums text-muted-foreground/60">{when}</span>
+    </>
+  );
+
+  const rowClass = cn(BAND_PAD_CLASS, "flex items-baseline gap-x-2.5 py-2 font-mono text-[11.5px]");
+
+  if (!hasDetail) {
+    return <div className={rowClass}>{summary}</div>;
+  }
+
+  return (
+    <details className="group">
+      <summary
+        className={cn(
+          rowClass,
+          "cursor-pointer list-none select-none marker:hidden hover:bg-foreground/[0.02]",
+        )}
+      >
+        {summary}
+      </summary>
+      {/* Indented past the dot column so the detail hangs under the sentence
+          it belongs to, not under the dot. */}
+      <div className={cn(BAND_PAD_CLASS, "pb-2 font-mono text-[11px] text-muted-foreground/70")}>
+        <div className="pl-[1.375rem]">
+          {threshold === null ? null : (
+            <p className="tabular-nums">
+              {observed === null
+                ? `no reading taken yet, against ${threshold}`
+                : `last read ${observed}, against ${threshold}`}
+            </p>
+          )}
+          {row.actionLabel === null ? null : (
+            <p className="truncate" title={row.actionLabel}>
+              then: {row.actionLabel}
+            </p>
+          )}
+        </div>
       </div>
-    </div>
+    </details>
   );
 }
 

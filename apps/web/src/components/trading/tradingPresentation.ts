@@ -1342,38 +1342,71 @@ export function deriveWatchConditions(mission: {
 }
 
 // ---------------------------------------------------------------------------
-// Alert lifecycle — pending alerts stay on the checklist, everything that has
-// fired or been retired moves into a scrollable history with the action that
-// followed it.
+// The watch stream — one list, armed at the top and everything settled beneath
+// it, newest first.
 // ---------------------------------------------------------------------------
 
-/** One retired alert: what was set, how it ended, and what happened next. */
-export interface WatchHistoryRow {
+/**
+ * Where a watch is in its life.
+ *
+ * Four states because four things can happen to a watch and the operator needs
+ * to tell them apart: it is still waiting, its predicate matched, someone took
+ * it down, or its clock ran out. `replaced` is `disarmed` with a different word
+ * in the row — a newer prediction moved the level, which is not the same event
+ * as a level being cancelled, but it is the same fact about the watch.
+ */
+export type WatchLifecycleState = "armed" | "triggered" | "disarmed" | "expired";
+
+/** One row of the stream: a watch, where it is, and what it belongs to. */
+export interface WatchStreamRow {
   readonly id: string;
-  /** One line describing what the predicate was waiting for. */
+  readonly state: WatchLifecycleState;
+  /** One line describing what the predicate is (or was) waiting for. */
   readonly description: string;
-  /** How the watch left the active set. */
-  readonly outcome: "fired" | "cancelled" | "expired" | "replaced";
-  /** Epoch millis of the status change (the row's `updatedAt`). */
-  readonly endedAt: number;
   /**
-   * The first thing the mission did at or after the watch ended, read off the
+   * The word the row shows for how it ended. `armed` rows carry null — they
+   * have not ended. Distinguishes `replaced` from `cancelled`, which share a
+   * dot but not a cause.
+   */
+  readonly outcomeLabel: string | null;
+  /** Epoch millis: when it was armed, or when it settled. */
+  readonly atMillis: number;
+  /**
+   * The plan version whose projection this was armed for, when the runtime
+   * armed it for one. Null for everything the harness armed itself.
+   */
+  readonly predictionVersion: number | null;
+  /** The live reading the evaluator last took, for a row still waiting. */
+  readonly observedValue: number | null;
+  /** The number the predicate compares against, where it has one. */
+  readonly thresholdValue: number | null;
+  /**
+   * The first thing the mission did at or after the watch fired, read off the
    * timeline: a plan publish or stop move wins over the wake itself, because
-   * "woke" is the mechanism and the publish is the decision. Null when the
-   * timeline holds nothing after the firing yet.
+   * "woke" is the mechanism and the publish is the decision. Null on rows that
+   * did not fire, and on firings the timeline has not caught up with.
    */
   readonly actionLabel: string | null;
 }
 
+/** Whether this row is still live, which is what orders the stream. */
+export function isArmedRow(row: WatchStreamRow): boolean {
+  return row.state === "armed";
+}
+
 /**
- * Split a mission's watches into the live checklist and the history beneath it.
+ * Every watch the mission has, as one ordered stream.
  *
- * `pending` is every active non-reassessment watch — the alerts still waiting,
- * each carrying the live number it is measuring against. `history` is every
- * watch that has left the active set, newest first: fired (`triggered` /
- * `consumed`), `cancelled`, `expired`, or `superseded` (shown as "replaced").
- * The action that followed a firing comes from the mission timeline rather
- * than from the watch table, because the watch row only knows that it fired.
+ * This used to be two derivations feeding two lists under two headings: a
+ * checklist of what was armed, and a separate scrollback of what had fired.
+ * They are the same objects at different points in one life, and splitting
+ * them meant a watch disappeared from one list and reappeared in another — the
+ * single event the operator most wants to follow was the one the layout hid.
+ *
+ * Armed rows come first, in the order the projection gave them. Everything
+ * settled follows, newest first. `scheduled_reassessment` watches stay out of
+ * both halves: they carry no level, and the panel already counts down to the
+ * next one in its header.
  */
 export function deriveWatchLifecycle(mission: {
   readonly watches: ReadonlyArray<PersistedWatch>;
@@ -1382,7 +1415,7 @@ export function deriveWatchLifecycle(mission: {
     readonly kind: "wake" | "stop_adjusted" | "strategy_published" | "journal";
     readonly label: string;
   }>;
-}): { readonly history: ReadonlyArray<WatchHistoryRow> } {
+}): { readonly stream: ReadonlyArray<WatchStreamRow> } {
   // Timeline entries as (millis, kind, label), oldest first, so "the first
   // thing after the firing" is a forward scan.
   const timeline = mission.missionTimeline
@@ -1400,27 +1433,55 @@ export function deriveWatchLifecycle(mission: {
     return wake === undefined ? null : wake.label;
   };
 
-  const history: WatchHistoryRow[] = [];
+  const armed: WatchStreamRow[] = [];
+  const settled: WatchStreamRow[] = [];
+
   for (const persisted of mission.watches) {
-    if (persisted.status === "active") continue;
-    if (persisted.watch.type === "scheduled_reassessment") continue;
-    const fired = persisted.status === "triggered" || persisted.status === "consumed";
-    history.push({
+    const watch = persisted.watch;
+    if (watch.type === "scheduled_reassessment") continue;
+
+    const shared = {
       id: persisted.id,
-      description: describeWatchCondition(persisted.watch),
-      outcome: fired
-        ? "fired"
-        : persisted.status === "cancelled"
-          ? "cancelled"
-          : persisted.status === "expired"
-            ? "expired"
-            : "replaced",
-      endedAt: persisted.updatedAt,
+      description: describeWatchCondition(watch),
+      predictionVersion: persisted.predictionVersion ?? null,
+      thresholdValue: readWatchThreshold(watch),
+    };
+
+    if (persisted.status === "active") {
+      armed.push({
+        ...shared,
+        state: "armed",
+        outcomeLabel: null,
+        atMillis: persisted.createdAt,
+        observedValue: persisted.lastObservedValue ?? null,
+        actionLabel: null,
+      });
+      continue;
+    }
+
+    const fired = persisted.status === "triggered" || persisted.status === "consumed";
+    settled.push({
+      ...shared,
+      state: fired
+        ? "triggered"
+        : persisted.status === "expired"
+          ? "expired"
+          : // `cancelled` and `superseded` both mean the level was taken down
+            // rather than reached. The word below says which.
+            "disarmed",
+      outcomeLabel: fired
+        ? null
+        : persisted.status === "superseded"
+          ? "replaced"
+          : persisted.status,
+      atMillis: persisted.updatedAt,
+      observedValue: persisted.lastObservedValue ?? null,
       actionLabel: fired ? actionAfter(persisted.updatedAt) : null,
     });
   }
-  history.sort((a, b) => b.endedAt - a.endedAt);
-  return { history };
+
+  settled.sort((a, b) => b.atMillis - a.atMillis);
+  return { stream: [...armed, ...settled] };
 }
 
 // ---------------------------------------------------------------------------
