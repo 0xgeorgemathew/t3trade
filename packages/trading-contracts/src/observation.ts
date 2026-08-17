@@ -21,10 +21,58 @@ import { AgentMarketSnapshot, MarketHistory, OrderBook, ResolvedMarket } from ".
 import { MarketStructure } from "./marketStructure.ts";
 import { MarketMicrostructure } from "./microstructure.ts";
 import { TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
+import { TradingTimeframe } from "./strategy.ts";
 import { ObservedVolatility } from "./volatility.ts";
 import { TradingGetMissionResult } from "./tools.ts";
 
 export const TRADING_LOOK_TOOL = "trading_look";
+
+/**
+ * The parts of a look, so a turn can ask for the one it needs.
+ *
+ * The full read answers what twelve tools used to and is the right shape for
+ * an assessment turn. It is the wrong shape for a reaction: a run woken by a
+ * fired level wants the last few bars, or the position, or the structure — and
+ * paying for the account, the trade history and a multi-timeframe structure
+ * read to get one of them is how a mission's context fills up in a handful of
+ * wakes.
+ *
+ * - `market`: the resolved market, the snapshot, the book, microstructure.
+ * - `candles`: recent bars and the volatility measured on them.
+ * - `structure`: the multi-timeframe read with its scored `candidates[]`.
+ * - `position`: what is held, the account behind it, resting orders, and what
+ *   closing it costs.
+ * - `mission`: mandate, authority, plan, watches, pending executions.
+ * - `trades`: this mission's completed orders and round trips.
+ */
+export const TradingLookScope = Schema.Literals([
+  "market",
+  "candles",
+  "structure",
+  "position",
+  "mission",
+  "trades",
+]);
+export type TradingLookScope = typeof TradingLookScope.Type;
+
+/** Every scope, which is what an omitted `scope` means. */
+export const TRADING_LOOK_SCOPES: ReadonlyArray<TradingLookScope> = [
+  "market",
+  "candles",
+  "structure",
+  "position",
+  "mission",
+  "trades",
+];
+
+/**
+ * The most bars a scoped candle read will return.
+ *
+ * The cap is the schema's, not the caller's: a bounded response is the point,
+ * and a bound the model can raise is not a bound. Above this the answer is a
+ * chart, and a chart is not something to put in a context window.
+ */
+export const TRADING_LOOK_MAX_BARS = 200;
 
 /**
  * `market` defaults to the mission's own market. A thread with no live mission
@@ -34,8 +82,35 @@ export const TRADING_LOOK_TOOL = "trading_look";
 export const TradingLookInput = Schema.Struct({
   missionId: Schema.optional(TradingId),
   market: Schema.optional(TradingMarket),
+  /**
+   * Which parts to read. Omit for all of them — the assessment read. Name one
+   * or two to answer a specific question cheaply.
+   */
+  scope: Schema.optional(Schema.Array(TradingLookScope)),
+  /** The bar interval for the `candles` scope. Defaults to the mission's own. */
+  interval: Schema.optional(TradingTimeframe),
+  /**
+   * How many bars the `candles` scope returns, newest last. Clamped to
+   * {@link TRADING_LOOK_MAX_BARS}; omitted returns the volatility lookback the
+   * measurements were taken over.
+   */
+  bars: Schema.optional(
+    Schema.Number.check(
+      Schema.isInt(),
+      Schema.isBetween({ minimum: 1, maximum: TRADING_LOOK_MAX_BARS }),
+    ),
+  ),
 });
 export type TradingLookInput = typeof TradingLookInput.Type;
+
+/** The scopes this call asks for — every one, when it named none. */
+export function resolveLookScopes(
+  input: Pick<TradingLookInput, "scope">,
+): ReadonlySet<TradingLookScope> {
+  return new Set(
+    input.scope === undefined || input.scope.length === 0 ? TRADING_LOOK_SCOPES : input.scope,
+  );
+}
 
 /**
  * Everything one look answers.

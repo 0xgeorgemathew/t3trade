@@ -341,6 +341,40 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
+  // A lean wake is a fired trigger and little else. The trigger carries the
+  // prediction version it was armed for, which means nothing unless the wake
+  // also says which prediction is running — so the alert render carries it.
+  it.effect("puts the running prediction on the lean render, as one line", () =>
+    Effect.gen(function* () {
+      const composer = yield* TradingWakeupComposer;
+      const composed = yield* composer.compose({
+        mission,
+        harnessRunId: "run_1",
+        cause: "market_watch_triggered",
+        occurredAt: NOW,
+        triggeringWatchId: "watch_up",
+        pendingEvents: [],
+        activeStrategy: {
+          ...strategy,
+          projection: {
+            direction: "long",
+            price: MARK + 12,
+            byMinutes: 15,
+            invalidationPrice: MARK - 8,
+          },
+        },
+      });
+
+      assert.include(composed.text, "prediction");
+      assert.include(composed.text, `wrong below ${MARK - 8}`);
+      assert.include(composed.text, `within 15m`);
+      // Still lean: the line replaced a round trip, it did not reopen the
+      // snapshot.
+      assert.notInclude(composed.text, "recentCandles");
+      assert.isBelow(composed.text.length, 2_000);
+    }),
+  );
+
   it.effect("publishes the active watches with their distance from the mark", () =>
     Effect.gen(function* () {
       const wakeup = yield* compose();

@@ -749,6 +749,72 @@ it.effect("keeps the prior version's active watches working across an accepted p
   ),
 );
 
+// Phase 3.3: a lean wake hands the run a fired trigger and little else. The
+// picture it needs back has to be reachable in at most two scoped looks, each
+// bounded — otherwise the lean wake has only moved the context cost one call
+// to the right.
+it.effect("rebuilds a reacting turn's picture in two scoped, bounded looks", () => {
+  const fake = makeFakeExchange();
+  return withMcpServer(
+    ({ callTool, seedActiveWatch, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        // The market half reads the account through the mission's master wallet.
+        yield* seedTradingAccount();
+        yield* callTool(BOUND_THREAD, "trading_plan", {
+          missionId: MISSION_ID,
+          expectedMissionVersion: 1,
+          strategy: strategyBody("v1"),
+        });
+        yield* seedActiveWatch("watch_scoped_look");
+
+        // One: what price just did, bounded to the bars actually wanted.
+        const bars = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["candles"],
+          bars: 6,
+        });
+        const barsRead = bars.result.structuredContent;
+        assert.isAtMost(barsRead.candles.candles.length, 6);
+        assert.equal(barsRead.volatility.market, "ETH");
+        // Everything a reaction did not ask for stayed home.
+        assert.equal(barsRead.structure, undefined);
+        assert.equal(barsRead.account, undefined);
+        assert.equal(barsRead.orderBook, undefined);
+        assert.equal(barsRead.trades, undefined);
+        // `mission.bound` is always answered — without it nothing else in the
+        // response can be read as being about this mission.
+        assert.equal(barsRead.mission.bound, true);
+        // The live half of the mission read survives a scoped call; the
+        // retrospective half is absent rather than reported empty.
+        assert.equal(barsRead.mission.watches.length, 1);
+        assert.equal(barsRead.mission.journal, undefined);
+        assert.equal(barsRead.mission.strategyHistory, undefined);
+
+        // Two: what the mission holds, and what it costs to get out of.
+        const held = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["position"],
+        });
+        const heldRead = held.result.structuredContent;
+        assert.equal(heldRead.position.size, 0);
+        assert.notEqual(heldRead.account, undefined);
+        assert.equal(heldRead.candles, undefined);
+        assert.equal(heldRead.structure, undefined);
+
+        // And the unscoped read is unchanged: the assessment turn still gets
+        // everything, retrospect included.
+        const full = yield* callTool(BOUND_THREAD, "trading_look", { missionId: MISSION_ID });
+        const fullRead = full.result.structuredContent;
+        assert.notEqual(fullRead.structure, undefined);
+        assert.notEqual(fullRead.account, undefined);
+        assert.notEqual(fullRead.candles, undefined);
+        assert.notEqual(fullRead.mission.strategyHistory, undefined);
+        assert.notEqual(fullRead.mission.journal, undefined);
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
 it.effect("answers an unbound thread instead of failing every tool on it", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {

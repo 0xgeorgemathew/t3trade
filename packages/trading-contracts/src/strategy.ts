@@ -360,6 +360,21 @@ export function projectionInvalidationDirection(
   return projection.direction === "long" ? "below" : "above";
 }
 
+/**
+ * The prediction as one line: what it claims, by when, and what would end it.
+ *
+ * Shared rather than rendered per surface, because the lean wake and the panel
+ * are both saying the same sentence and a run that reads one then the other
+ * should not have to reconcile two phrasings of its own prediction.
+ */
+export function describeProjection(projection: TradingPlanProjection): string {
+  const where =
+    projection.zone === undefined
+      ? `${projection.price}`
+      : `${projection.price} (${projection.zone.low}-${projection.zone.high})`;
+  return `${projection.direction} to ${where} within ${projection.byMinutes}m; wrong ${projectionInvalidationDirection(projection)} ${projection.invalidationPrice}`;
+}
+
 export const TradingPlanReassess = Schema.Struct({
   afterMinutes: Schema.Number.check(Schema.isGreaterThan(0)).pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_REASSESS_AFTER_MINUTES)),

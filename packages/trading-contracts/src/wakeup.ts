@@ -390,6 +390,29 @@ export const TradingHarnessWakeup = Schema.Struct({
    * forty minutes ago on a 1m chart" without a second tool call.
    */
   strategyAgeMillis: Schema.optional(Schema.Number),
+  /**
+   * The prediction the mission is currently running, as one line.
+   *
+   * An alert wake is a fired trigger and not much else, which is what makes it
+   * cheap — but a trigger with no prediction attached asks the run to
+   * remember, across an arbitrary gap, what it was waiting for. `version` is
+   * the plan-history version the trigger's own `predictionVersion` matches
+   * against: equal means the trigger belongs to the read in force, lower means
+   * it belongs to a read that has since been replaced.
+   *
+   * `summary` is deliberately a rendered string rather than the structured
+   * projection. The full projection is on `activeStrategy` for the wakes that
+   * carry it; on a lean wake the point is a line the run can act on without
+   * unpacking anything.
+   *
+   * Absent when the mission has no plan, or its plan states no projection.
+   */
+  prediction: Schema.optional(
+    Schema.Struct({
+      version: Schema.Number,
+      summary: TradingText,
+    }),
+  ),
   instruction: Schema.optional(TradingText),
   /**
    * The timeframe to work on unless the instruction names another. Published on

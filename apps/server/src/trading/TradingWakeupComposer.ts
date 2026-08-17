@@ -46,6 +46,7 @@ import {
   type TradingCostEstimate,
 } from "@t3tools/trading-contracts/costs";
 import {
+  describeProjection,
   planPhase,
   runtimeTimeframe,
   type TradingTimeframe,
@@ -582,17 +583,14 @@ const renderLeanWakeup = (wakeup: TradingHarnessWakeup): string =>
     position: wakeup.position,
     ...(wakeup.positionCosts === undefined ? {} : { positionCosts: wakeup.positionCosts }),
     ...(wakeup.costContext === undefined ? {} : { costContext: wakeup.costContext }),
+    // The prediction the fired trigger belongs to, as one line. The trigger
+    // itself carries `predictionVersion`; without this the run would have to
+    // fetch the plan to learn what that number refers to, which is the round
+    // trip the lean wake exists to avoid.
+    ...(wakeup.prediction === undefined ? {} : { prediction: wakeup.prediction }),
     ...(wakeup.activeStrategy === undefined
       ? {}
-      : {
-          plan: {
-            intent: wakeup.activeStrategy.intent,
-            phase: planPhase(wakeup.position.size),
-            ...(wakeup.activeStrategy.projection === undefined
-              ? {}
-              : { projection: wakeup.activeStrategy.projection }),
-          },
-        }),
+      : { plan: { intent: wakeup.activeStrategy.intent, phase: planPhase(wakeup.position.size) } }),
     ...(wakeup.strategyReview === undefined ? {} : { strategyReview: wakeup.strategyReview }),
     ...(wakeup.positionReview === undefined ? {} : { positionReview: wakeup.positionReview }),
     armedWatches: wakeup.armedWatches.slice(0, 8),
@@ -733,6 +731,23 @@ const make = Effect.gen(function* () {
   const costs = yield* TradingCostEstimator;
   // Level memory + prior-read echo (plan 27 B1/B2) are local table reads.
   const sql = yield* SqlClient.SqlClient;
+
+  /**
+   * The plan-history version in force — the id of the prediction the mission
+   * is running, and what a fired watch's `predictionVersion` is compared
+   * against.
+   *
+   * Falls back to 0 rather than failing the wake: a wake that cannot name its
+   * prediction's version is still a wake, and 0 matches no watch, which reads
+   * as "unknown" rather than as a false match.
+   */
+  const currentPlanVersion = (missionId: string) =>
+    sql<{ readonly version: number | null }>`
+      SELECT MAX(version) AS version FROM trading_plan_history WHERE mission_id = ${missionId}
+    `.pipe(
+      Effect.map((rows) => rows[0]?.version ?? 0),
+      Effect.orElseSucceed(() => 0),
+    );
 
   /**
    * Measure the higher timeframe, or return nothing.
@@ -1138,8 +1153,20 @@ const make = Effect.gen(function* () {
       // intent. A plan without one gets told so on every wake until it is.
       const projectionNote =
         activeStrategy !== undefined && activeStrategy.projection === undefined
-          ? "NO PROJECTION ON FILE — republish the plan with projection {price, byMinutes}; a current price estimate is always required, stand_aside included. "
+          ? "NO PROJECTION ON FILE — republish with projection {direction, price, byMinutes, invalidationPrice}; a prediction is always required, stand_aside included, and it is what arms the horizon and invalidation wakes. "
           : "";
+
+      // The prediction the mission is running, as one line and a version.
+      // A lean wake is a fired trigger and little else; the trigger's own
+      // `predictionVersion` means nothing unless the wake also says which
+      // prediction is current.
+      const prediction =
+        activeStrategy?.projection === undefined
+          ? undefined
+          : {
+              version: yield* currentPlanVersion(mission.id),
+              summary: describeProjection(activeStrategy.projection),
+            };
       const strategyReview =
         position.size === 0 ? `${projectionNote}${staleNote}${flatReview}` : undefined;
 
@@ -1185,6 +1212,7 @@ const make = Effect.gen(function* () {
         ...(activeStrategy === undefined
           ? {}
           : { strategyAgeMillis: Math.max(0, occurredAt - activeStrategy.updatedAt) }),
+        ...(prediction === undefined ? {} : { prediction }),
         armedWatches,
         ...(unarmedEntryConditions.length === 0 ? {} : { unarmedEntryConditions }),
         ...(misarmedEntryConditions.length === 0 ? {} : { misarmedEntryConditions }),

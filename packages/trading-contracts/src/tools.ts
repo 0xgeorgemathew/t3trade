@@ -198,8 +198,12 @@ export const TradingBoundMissionResult = Schema.Struct({
    * has republished three times cannot see what it previously believed, what it
    * targeted, or on what basis — which makes "was the last target the right
    * rung?" unanswerable from inside the loop.
+   *
+   * Optional since scoped looks: ABSENT means this call did not read it, and
+   * an EMPTY ARRAY means the mission has published nothing. Collapsing the two
+   * would tell a scoped read that its own history is empty.
    */
-  strategyHistory: Schema.Array(PublishedStrategySummary),
+  strategyHistory: Schema.optional(Schema.Array(PublishedStrategySummary)),
   /**
    * Those targets, graded against what the mission's trades actually reached —
    * plan 29 step 6.5, where `trading_get_target_calibration` came off the hot
@@ -220,8 +224,11 @@ export const TradingBoundMissionResult = Schema.Struct({
    * model told itself across plan revisions, and a memory that has to be asked
    * for is a memory a turn will run without. `trading_journal` with no note
    * reads the longer tail.
+   *
+   * Optional on the same terms as `strategyHistory`: absent means unread, and
+   * empty means the mission has written nothing down.
    */
-  journal: Schema.Array(TradingJournalEntry),
+  journal: Schema.optional(Schema.Array(TradingJournalEntry)),
 });
 export type TradingBoundMissionResult = typeof TradingBoundMissionResult.Type;
 

@@ -361,12 +361,12 @@ describe("§14.3 mission tool contracts", () => {
       journal: [{ id: "jr_1", note: "3200 chopped me twice", at: 1_200, author: "model" }],
     });
     assert(decoded.bound);
-    expect(decoded.journal[0]?.note).toBe("3200 chopped me twice");
+    expect(decoded.journal?.[0]?.note).toBe("3200 chopped me twice");
     expect(decoded.watches).toEqual([]);
     // The lock a `no_conflicting_execution_pending` rejection names.
     expect(decoded.pendingExecutions[0]?.cloid).toBe("0xblocking");
     // What the mission believed before it believed the current thing.
-    expect(decoded.strategyHistory[0]?.targetProfitUsd).toBe(12);
+    expect(decoded.strategyHistory?.[0]?.targetProfitUsd).toBe(12);
   });
 
   it("decodes the unbound answer a thread gets once its mission has ended", () => {
