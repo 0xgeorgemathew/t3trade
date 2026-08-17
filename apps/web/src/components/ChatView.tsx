@@ -174,7 +174,6 @@ import {
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { useTradingMissions } from "~/lib/tradingMissionsState";
 import { MissionLivePanel } from "./trading/MissionLivePanel";
-import { MissionComposerControls } from "./trading/MissionComposerControls";
 import { MissionHeaderPill } from "./trading/MissionHeaderPill";
 import { MissionThreadBanners, MissionThreadCards } from "./trading/MissionThreadPanel";
 import { TradingAssetPicker } from "./trading/TradingAssetPicker";
@@ -6289,13 +6288,6 @@ function ChatViewContent(props: ChatViewProps) {
                             runtimeMode={runtimeMode}
                             interactionMode={interactionMode}
                             lockedProvider={lockedProvider}
-                            {...(boundMission
-                              ? {
-                                  missionControls: (
-                                    <MissionComposerControls mission={boundMission} />
-                                  ),
-                                }
-                              : {})}
                             {...(isDraftHeroState
                               ? {
                                   assetPicker: (

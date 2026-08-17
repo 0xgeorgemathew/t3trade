@@ -217,10 +217,21 @@ export const ChatHeader = memo(function ChatHeader({
   );
   return (
     <div
-      className="@container/header-actions flex min-w-0 flex-1 items-center gap-2 sm:gap-3"
+      className="@container/header-actions relative flex min-w-0 flex-1 items-center gap-2 sm:gap-3"
       onContextMenu={handleHeaderContextMenu}
     >
-      <WorkspaceBreadcrumb ariaLabel="Thread breadcrumb" className="flex-1">
+      {/* While the capsule is centred it is out of flow, so the breadcrumb would
+          otherwise stretch straight under it and a long thread title would run
+          beneath the glass. Capped to just short of the capsule's own half-width
+          so the title truncates at the gap instead: the centred treatment never
+          costs the title a readable character it would otherwise have had. */}
+      <WorkspaceBreadcrumb
+        ariaLabel="Thread breadcrumb"
+        className={cn(
+          "flex-1",
+          missionSlot ? "@3xl/header-actions:max-w-[calc(50%-11rem)]" : undefined,
+        )}
+      >
         {/* The project always leads the header: knowing which project a
             thread lives in is priority zero, and the thread title alone
             doesn't answer it. */}
@@ -302,15 +313,37 @@ export const ChatHeader = memo(function ChatHeader({
           )}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
-      {/* The mission pill sits between the breadcrumb and the actions so it
-          reads as a peer of the thread title rather than as something trailing
-          it. Absent on every non-trading thread, so the layout is unchanged
-          there. */}
-      {missionSlot ? <div className="flex shrink-0 items-center">{missionSlot}</div> : null}
+      {/* The mission capsule is the header's subject on a trading thread, so on
+          a wide header it sits at the header's true centre rather than wherever
+          the breadcrumb happens to end. An absolutely centred element cannot
+          know how long the title is, so the treatment is earned by width: below
+          3xl the capsule leaves the overlay and renders inline after the
+          breadcrumb in its narrowest tier, because overlapping the title is
+          never acceptable. Absent on every non-trading thread, so the layout is
+          unchanged there. */}
+      {missionSlot ? (
+        // One instance either way: the same element goes out of flow at 3xl
+        // rather than a second copy being mounted for the wide case, which
+        // would double the pill's polling and its test id.
+        <div
+          className={cn(
+            "flex shrink-0 items-center",
+            "@3xl/header-actions:pointer-events-none @3xl/header-actions:absolute @3xl/header-actions:inset-x-0 @3xl/header-actions:top-1/2 @3xl/header-actions:z-10 @3xl/header-actions:-translate-y-1/2 @3xl/header-actions:justify-center",
+          )}
+        >
+          {/* Clickable over the Electron drag region: the wrapper opts out
+              explicitly, since only the button inside it is excluded by the
+              shared .drag-region rules. */}
+          <div className="pointer-events-auto [-webkit-app-region:no-drag]">{missionSlot}</div>
+        </div>
+      ) : null}
       <div
         data-chat-header-actions
         className={cn(
-          "flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
+          // `ms-auto` so the controls stay pinned right even when the breadcrumb
+          // is capped for the centred capsule and no longer fills the row. A
+          // no-op whenever the breadcrumb does grow, which is every other thread.
+          "ms-auto flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
           rightPanelOpen ? "pr-0" : "pr-16",
         )}
       >

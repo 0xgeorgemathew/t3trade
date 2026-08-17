@@ -96,7 +96,32 @@ import type {
   OrchestrationTradingMission,
   TradingMarketChartView,
 } from "@t3tools/contracts";
-import { ChevronDown, ChevronUp, Clock, ExternalLinkIcon } from "lucide-react";
+import {
+  Activity,
+  ArrowDownRight,
+  ArrowRightToLine,
+  ArrowUpRight,
+  Box,
+  ChartCandlestick,
+  ChevronDown,
+  ChevronUp,
+  CircleSlash,
+  Clock,
+  Crosshair,
+  ExternalLinkIcon,
+  FileText,
+  Gauge,
+  OctagonMinus,
+  Radar,
+  Receipt,
+  ShieldAlert,
+  Target,
+  TrendingDown,
+  TrendingUp,
+  TriangleAlert,
+  Wallet,
+  type LucideIcon,
+} from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import { readMissionMode } from "@t3tools/trading-contracts/mode";
@@ -109,6 +134,8 @@ import { Skeleton } from "../ui/skeleton";
 
 import { MissionPriceChart } from "./MissionPriceChart";
 import { useMissionPlanRevision, type MissionPlanRevision } from "./useMissionPlanRevision";
+import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   dedupeConditions,
   deriveEntryFillAtMillis,
@@ -125,11 +152,15 @@ import {
   deriveChartTimeMarkers,
   deriveEffectiveLeverage,
   deriveNextReassessmentAt,
+  derivePositionLedger,
+  deriveRoundTrips,
   deriveStrategyPlan,
   deriveTriggerExpiryMillis,
   deriveWatchConditions,
   deriveWatchLifecycle,
   describeDelayedRead,
+  formatAge,
+  formatFixed3,
   formatDuration,
   formatLeverage,
   formatPrice,
@@ -143,8 +174,12 @@ import {
   type ChartFillMarker,
   type ChartPastMarkerInput,
   type ChartTimeMarkerInput,
+  type PositionLedgerRow,
   type StrategyPlan,
   type WatchLifecycleState,
+  type WatchRowType,
+  type WatchStreamGroup,
+  type WatchStreamItem,
   type WatchStreamRow,
 } from "./tradingPresentation";
 
@@ -174,8 +209,15 @@ const CHART_HEIGHT_CLASS = "h-[260px] w-full sm:h-[340px]";
  */
 const READOUT_WIDTH_CLASS = "lg:w-[400px]";
 
-/** The thesis paragraph's line box: 12px set at 1.5. */
-const THESIS_LINE_HEIGHT_PX = 18;
+/**
+ * How many SETTLED positions the ledger shows before it counts the rest.
+ *
+ * Same posture as the watch stream's own cap: four rows is the recent activity
+ * a glance can take in, and past that the number of earlier ones is the useful
+ * fact rather than the forty rows themselves. The open position is never one of
+ * the four — it is the row the band exists to keep in view.
+ */
+const MAX_LEDGER_ROWS = 4;
 
 /**
  * How often the panel's clock ticks.
@@ -449,6 +491,17 @@ export function MissionLivePanel({
   // session's whole activity is read.
   const fillMarkers = deriveChartFillMarkers(mission);
 
+  // Every position the mission has taken, the open one first. The chart already
+  // draws where each fill landed; this says what each position came to, which no
+  // figure on the panel was carrying — the stat grid describes the current
+  // exposure and the completion summary only arrives once the mission is over.
+  const ledgerRows = derivePositionLedger({
+    position,
+    markPrice,
+    trips: deriveRoundTrips(mission.recentFills),
+    openedAtMillis: entryMillis,
+  });
+
   // The order the agent has committed to but the book has not filled. This is
   // the "I will enter long at X" the plan announces, drawn where it will happen
   // rather than described in a card somewhere else on the screen.
@@ -645,14 +698,13 @@ export function MissionLivePanel({
               {position === null ? (
                 <StateChip
                   market={mission.market}
-                  label={
+                  state={
                     state === "planning"
-                      ? "Analysing"
+                      ? "planning"
                       : plan?.isStandAside === true
-                        ? "Standing aside"
-                        : "Waiting"
+                        ? "standing_aside"
+                        : "waiting"
                   }
-                  isPulsing={state === "planning"}
                 />
               ) : (
                 // Live, the identity chip belongs to the position block below —
@@ -669,13 +721,14 @@ export function MissionLivePanel({
                   // On one line, always. "Stale 2m 36s" wrapping after the
                   // word STALE made the header two rows tall and pushed the
                   // P&L — the figure this card exists for — down with it.
-                  className="flex-none whitespace-nowrap font-mono text-[11px] uppercase tracking-[0.1em] text-armed"
+                  className="flex flex-none items-center gap-1 whitespace-nowrap font-mono text-[11px] uppercase tracking-[0.1em] text-armed"
                   title={
                     delayedRead === null
                       ? "The last exchange read failed"
                       : "The position read is behind. Placement is only suspended once it stops landing altogether."
                   }
                 >
+                  <Clock className="size-3" strokeWidth={2} aria-hidden />
                   {delayedRead ?? "delayed"}
                 </span>
               )}
@@ -724,48 +777,13 @@ export function MissionLivePanel({
               </div>
             )}
 
-            {/* The plan's own sentence: the "why?" of the trade, on the surface
-              rather than behind the disclosure.
-
-              Two lines while flat, one while live. Waiting IS the thesis, so
-              a waiting panel gives it the room to be read; once there is a
-              position the operator is monitoring what it does, not re-reading
-              why it was taken, and the full sentence is a hover and a
-              disclosure away. */}
-            {plan?.because != null && plan.because !== "" ? (
-              <p
-                data-testid="mission-live-because"
-                className={cn(
-                  BAND_PAD_CLASS,
-                  "pb-3 text-[12px] leading-[1.5] text-muted-foreground",
-                )}
-                // Clamped inline rather than through the `line-clamp-N`
-                // utility. The utility never took: `getComputedStyle` reports
-                // this paragraph's display as `flow-root` either way, and with
-                // the class alone a three-line thesis rendered all three lines,
-                // ran under the grid and was sliced in half by the card edge.
-                // Set here, the same declarations bite — verified in the
-                // harness — and a clamp ends the last line in an ellipsis,
-                // which a plain height bound does not: the reader can see the
-                // sentence was cut. It stays whole in the title and in the
-                // plan disclosure.
-                style={{
-                  display: "-webkit-box",
-                  WebkitBoxOrient: "vertical",
-                  WebkitLineClamp: state === "live" ? 2 : 3,
-                  // Belt and braces, and the braces are load-bearing: in the
-                  // packaged app the clamp put an ellipsis on the last line but
-                  // did not shorten the box, so one more line rendered under
-                  // the grid and was sliced in half by it. A max-height cannot
-                  // be ignored by any of them.
-                  maxHeight: `${(state === "live" ? 2 : 3) * THESIS_LINE_HEIGHT_PX}px`,
-                  overflow: "hidden",
-                }}
-                title={plan.because}
-              >
-                {plan.because}
-              </p>
-            ) : null}
+            {/* The thesis paragraph is gone from this card. It was the one
+              block of prose on a surface of figures, and clamping it to two or
+              three lines meant the sentence was usually cut anyway — a
+              paragraph the reader could see had been truncated, taking the
+              height of one they could not finish. It keeps two homes, both
+              whole: the status bar's headline carries it as a hover, and the
+              plan popup opened from that bar states it as its first field. */}
 
             {/* The position, where the receipt in the conversation used to say
                 it: the same chips, above the same figures. */}
@@ -790,7 +808,6 @@ export function MissionLivePanel({
             <StatGrid
               state={state}
               markPrice={markPrice}
-              countdown={formatReassessmentCountdown(nextReassessmentAt)}
               plan={plan}
               stopPrice={stopPrice}
               {...(position === null ? {} : { position })}
@@ -811,12 +828,31 @@ export function MissionLivePanel({
           {checklist}
           <RevisionNote revision={revision} />
 
-          {/* The whole published plan, one disclosure away. It used to be a card
-            in the timeline, where it consumed height on every scroll whether or
-            not anyone was reading it. */}
-          {plan === null ? null : <PlanDisclosure plan={plan} />}
+          {/* The plan disclosure that used to close this card is now the popup
+            opened from the status bar's plan pill. It was a control at the foot
+            of a scrolling column, below the watch stream, where the thing it
+            opened had nothing to do with the rows above it; on the bar it sits
+            beside the sentence it explains. */}
         </section>
       </div>
+
+      {/* The ledger spans both cards rather than sitting in the readout column.
+          A position is five figures wide — side, size, notional, both prices,
+          net — and five figures do not fit a 400px column without one of them
+          being cut, which is the one thing this band must never do. Given the
+          panel's width the columns rule up with room to spare, and the readout
+          card gets the height back for the watch stream, which is the list that
+          actually scrolls. Below `lg` the cards stack and this is the same
+          width they are, so nothing changes there. */}
+      {ledgerRows.length === 0 ? null : (
+        <section className={cn(CARD_CLASS, "pt-3")}>
+          <PositionLedger
+            rows={ledgerRows}
+            market={mission.market}
+            leverageLabel={leverage === null ? null : formatLeverage(leverage)}
+          />
+        </section>
+      )}
 
       {/* The third element, spanning both cards: what the mission is doing,
           said in a sentence, with the facts that qualify it trailing on the
@@ -828,6 +864,24 @@ export function MissionLivePanel({
           rather than a cell inside it. */}
       <MissionStatusBar
         headline={describeMissionStatus(state, position, watches, plan)}
+        because={plan?.because ?? null}
+        plan={plan}
+        countdown={formatReassessmentCountdown(nextReassessmentAt)}
+        projection={
+          // A stand-aside states no prediction, so the bar shows none — and it
+          // is read off the intent rather than trusted to be absent. Nothing in
+          // the schema forbids the field on a `stand_aside` plan, and a plan
+          // published before the wake stopped nagging for one may carry the
+          // invented projection that nagging produced. Drawing it would be the
+          // panel asserting a direction the plan declined to take.
+          strategy?.projection === undefined || plan?.isStandAside === true
+            ? null
+            : {
+                direction: strategy.projection.direction,
+                price: strategy.projection.price,
+                atMillis: strategy.updatedAt + strategy.projection.byMinutes * 60_000,
+              }
+        }
         tone={position === null ? "flat" : position.unrealisedPnl >= 0 ? "profit" : "loss"}
         data={chart.data}
         isHolding={position !== null}
@@ -1015,13 +1069,31 @@ function RiskRewardBar({
  * covering part of it, or none, is the difference between a bounded loss and
  * an open-ended one, so THAT gets a cell, in the loss tone (§16.1).
  */
+/**
+ * The icon that leads each cell's label.
+ *
+ * One table, so the nine of them read as one system: a cell's glyph never
+ * changes with the mission's state, and a label with no entry here simply goes
+ * without rather than borrowing a near-enough shape.
+ */
+const STAT_ICONS: Record<string, typeof Box> = {
+  Size: Box,
+  Entry: ArrowRightToLine,
+  Mark: Crosshair,
+  Stop: OctagonMinus,
+  Liq: TriangleAlert,
+  Margin: Wallet,
+  Risk: TrendingDown,
+  Target: Target,
+  Protected: ShieldAlert,
+};
+
 function StatGrid({
   state,
   position,
   markPrice,
   stopPrice,
   plan,
-  countdown,
 }: {
   readonly state: PanelState;
   readonly position?: {
@@ -1034,7 +1106,6 @@ function StatGrid({
   readonly markPrice: number | null;
   readonly stopPrice: number | null;
   readonly plan: StrategyPlan | null;
-  readonly countdown: string | null;
 }): ReactNode {
   const cells: Array<{ label: string; value: string; tone?: string }> = [];
 
@@ -1067,13 +1138,15 @@ function StatGrid({
       cells.push({ label: "Risk", value: formatUsd(plan.maxLossUsd), tone: "text-loss" });
     if (plan?.targetUsd != null)
       cells.push({ label: "Target", value: formatUsd(plan.targetUsd), tone: "text-profit" });
-    if (countdown !== null) cells.push({ label: "Next", value: countdown });
   } else {
     // Planning has no plan to describe, so it says the one thing it knows: the
-    // market it is reading, and when it will look again.
+    // market it is reading.
     if (markPrice !== null) cells.push({ label: "Mark", value: formatPrice(markPrice) });
-    if (countdown !== null) cells.push({ label: "Next", value: countdown });
   }
+  // The countdown is not a cell in either state any more. It had a home in the
+  // chart's future gutter already, and a third copy in a grid of prices made
+  // the one figure on the panel that is a duration read as one of them. It is
+  // the status bar's now — see MissionStatusBar.
 
   if (cells.length === 0) return null;
   return (
@@ -1081,22 +1154,41 @@ function StatGrid({
       data-testid="mission-stat-grid"
       className="mx-4 mb-3 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border/40 bg-border/40 sm:mx-5"
     >
-      {cells.map((cell, index) => (
-        <span
-          key={cell.label}
-          // An odd last cell takes the whole row rather than leaving a hole in
-          // the grid: a blank half-cell reads as a figure that failed to load.
-          className={cn(
-            "flex items-baseline justify-between gap-2 bg-foreground/[0.03] px-3 py-2 font-mono text-[12px] tabular-nums",
-            index === cells.length - 1 && cells.length % 2 === 1 && "col-span-2",
-          )}
-        >
-          <span className="text-[10.5px] uppercase tracking-[0.12em] text-muted-foreground">
-            {cell.label}
+      {cells.map((cell, index) => {
+        const Icon = STAT_ICONS[cell.label] ?? null;
+        return (
+          <span
+            key={cell.label}
+            // An odd last cell takes the whole row rather than leaving a hole in
+            // the grid: a blank half-cell reads as a figure that failed to load.
+            className={cn(
+              "flex items-baseline justify-between gap-2 bg-foreground/[0.03] px-3 py-2 font-mono text-[12px] tabular-nums",
+              index === cells.length - 1 && cells.length % 2 === 1 && "col-span-2",
+            )}
+          >
+            {/* The icon rides the label, in the label's own ink — an exception
+                cell tints both together, so the glyph never says something
+                milder than the words beside it. The label is the accessible
+                name; the icon is decoration on top of it. */}
+            <span
+              className={cn(
+                "flex min-w-0 items-center gap-1.5 text-[10.5px] uppercase tracking-[0.12em]",
+                cell.tone ?? "text-muted-foreground",
+              )}
+            >
+              {Icon === null ? null : (
+                <Icon
+                  className="size-[11px] flex-none translate-y-[-0.5px] opacity-70"
+                  strokeWidth={2}
+                  aria-hidden
+                />
+              )}
+              <span className="truncate">{cell.label}</span>
+            </span>
+            <span className={cn("truncate", cell.tone ?? "text-foreground")}>{cell.value}</span>
           </span>
-          <span className={cn("truncate", cell.tone ?? "text-foreground")}>{cell.value}</span>
-        </span>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -1126,24 +1218,356 @@ function PositionSkeleton({ market }: { readonly market: string }): ReactNode {
         <span className={cn("ml-auto", BAND_LEGEND_CLASS)}>opens on the entry fill</span>
       </div>
       <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-dashed border-border/50 bg-border/25">
-        {labels.map((label) => (
-          <span
-            key={label}
-            className="flex items-center justify-between gap-2 bg-foreground/[0.02] px-3 py-2"
-          >
-            <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-muted-foreground/60">
-              {label}
-            </span>
-            {/* A static dash, not a shimmer: nothing is loading here — the
+        {labels.map((label) => {
+          const Icon = STAT_ICONS[label] ?? null;
+          return (
+            <span
+              key={label}
+              className="flex items-center justify-between gap-2 bg-foreground/[0.02] px-3 py-2"
+            >
+              {/* The same glyphs the filled grid uses, a stop fainter: the
+                placeholder names the cell the fill will land in, so it should
+                be the same object, not a different one at the same size. */}
+              <span className="flex min-w-0 items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.12em] text-muted-foreground/60">
+                {Icon === null ? null : (
+                  <Icon
+                    className="size-[11px] flex-none translate-y-[-0.5px] opacity-40"
+                    strokeWidth={2}
+                    aria-hidden
+                  />
+                )}
+                <span className="truncate">{label}</span>
+              </span>
+              {/* A static dash, not a shimmer: nothing is loading here — the
                 mission is flat and waiting for a fill. A shimmering bar in
                 this cell read as a request stuck forever. */}
-            <span className="font-mono text-[11px] text-muted-foreground/40" aria-hidden>
-              —
+              <span className="font-mono text-[11px] text-muted-foreground/40" aria-hidden>
+                —
+              </span>
             </span>
-          </span>
-        ))}
+          );
+        })}
       </div>
     </div>
+  );
+}
+
+/**
+ * Every position the mission has taken, one row each, the open one first.
+ *
+ * The stat grid is the exposure now; the watch stream is what could still
+ * happen. Between them there was nothing that said what the mission had
+ * already done, and the position it was IN was described in a different block
+ * from the ones it came from. This is the ledger: side, size, what it committed,
+ * where it went in and out, and what it came to.
+ *
+ * The side pill is the same pill the card's position block uses, so a position
+ * looks the same wherever the panel names it. It is also the one place the
+ * long/short palette is borrowed for something other than P&L, and the
+ * legitimate one: it IS the direction of the trade. The net beside it is money,
+ * so its tint means what it always means.
+ *
+ * Every row is the same five columns, always, on one grid rather than one grid
+ * per row: the band is read down a column as often as across a row. Figures are
+ * fixed at three decimals, which is what lets the price column right-align and
+ * have its arrows line up too. Missing figures render as "—" rather than
+ * collapsing a column.
+ *
+ * The open row is told apart by the only honest difference there is: its exit
+ * figure is the live mark, so it is the one row in the band that moves. No
+ * colour of its own, and no animation.
+ */
+function PositionLedger({
+  rows,
+  market,
+  leverageLabel,
+}: {
+  readonly rows: ReadonlyArray<PositionLedgerRow>;
+  readonly market: string;
+  /**
+   * The mission's configured leverage. Fills record none, so this is the
+   * mandate the position ran under rather than a per-fill fact; null renders
+   * the pill without a leverage tag instead of inventing one.
+   */
+  readonly leverageLabel: string | null;
+}): ReactNode {
+  if (rows.length === 0) return null;
+  // The open position is never the row that gets cut: the cap counts settled
+  // ones, which are the ones an operator scrolls back through.
+  const active = rows.filter((row) => row.isActive);
+  const settled = rows.filter((row) => !row.isActive);
+  const shown = [...active, ...settled.slice(0, MAX_LEDGER_ROWS)];
+  const earlier = settled.length - (shown.length - active.length);
+
+  return (
+    <div data-testid="mission-position-history" className={cn(BAND_PAD_CLASS, "pb-3")}>
+      <p className={cn(BAND_LEGEND_CLASS, "pb-1.5")}>positions</p>
+      {/* One grid for the whole band, each row a subgrid of it: the columns are
+          measured once, so a row with a "—" entry price rules up with a row
+          that has both prices. Per-row grids would each size their own `auto`
+          columns and the band would drift line by line. */}
+      {/* Identity and time take what they need; the four figure columns share
+          the rest equally, so the band's width becomes even spacing rather than
+          one lake of it. Sized in `fr` rather than by `justify-between`, which
+          Chromium redistributes inside each subgrid row and which drifted the
+          headings sixty pixels off their own figures. `max-content` floors keep
+          a figure from ever wrapping when the panel is narrow. */}
+      <div className="grid grid-cols-[auto_auto_repeat(4,minmax(max-content,1fr))] gap-y-1.5">
+        {/* Six figures a row need naming, the same way every cell of the stat
+            grid is named: on a band this wide the reader cannot tell a notional
+            from a net by position alone. The identity column labels itself. */}
+        {/* The same box as a row — transparent border, same column gap — so the
+            headings sit over the figures they name. A subgrid with a different
+            gap redistributes inside the shared outer lines, which is what put
+            the headings six pixels off their own columns. */}
+        <div className="col-span-full grid grid-cols-subgrid gap-x-3 border border-transparent px-2 pb-0.5">
+          <span />
+          <LedgerHeading>closed</LedgerHeading>
+          <LedgerHeading>size</LedgerHeading>
+          <LedgerHeading>notional</LedgerHeading>
+          <LedgerHeading>entry → exit</LedgerHeading>
+          <LedgerHeading>net</LedgerHeading>
+        </div>
+        {shown.map((row) => (
+          <LedgerRow key={row.key} row={row} market={market} leverageLabel={leverageLabel} />
+        ))}
+        {earlier === 0 ? null : (
+          <span className="col-span-full font-mono text-[11px] tabular-nums text-muted-foreground/60">
+            +{earlier} earlier
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** A ledger column's name, in the legend's own ink so it recedes behind figures. */
+function LedgerHeading({ children }: { readonly children: ReactNode }): ReactNode {
+  return (
+    <span
+      className={cn(BAND_LEGEND_CLASS, "whitespace-nowrap text-right text-muted-foreground/50")}
+    >
+      {children}
+    </span>
+  );
+}
+
+/**
+ * A position's full record, as the fill receipt states it.
+ *
+ * The receipts in the conversation are on their way out, so this is where their
+ * fields have to keep living: both legs with their fees, times and order ids,
+ * and the money figures the position came to. The open row says what it is
+ * holding instead of what it settled at, because that is what it has.
+ */
+function LedgerDetail({
+  row,
+  market,
+  leverageLabel,
+}: {
+  readonly row: PositionLedgerRow;
+  readonly market: string;
+  readonly leverageLabel: string | null;
+}): ReactNode {
+  const isLong = row.direction === "long";
+  return (
+    <div className="flex w-64 flex-col gap-1.5 text-left">
+      <div className="flex items-center gap-1.5">
+        <SideChip market={market} leverageLabel={leverageLabel} isLong={isLong} size="sm" />
+        {row.isActive ? (
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            active
+          </span>
+        ) : null}
+      </div>
+      <LedgerDetailRow
+        label="Opened"
+        value={
+          row.entryPrice === null
+            ? "older than the panel's fill window"
+            : `${formatFixed3(row.size)} ${market} @ ${formatFixed3(row.entryPrice)}`
+        }
+      />
+      {row.openedAtMillis === null ? null : (
+        <LedgerDetailRow
+          label=""
+          value={
+            row.openOrderRef === null
+              ? new Date(row.openedAtMillis).toLocaleTimeString()
+              : `${new Date(row.openedAtMillis).toLocaleTimeString()} · order ${row.openOrderRef}`
+          }
+        />
+      )}
+      <LedgerDetailRow
+        label={row.isActive ? "Mark" : "Closed"}
+        value={
+          row.exitPrice === null
+            ? "no read yet"
+            : row.isActive
+              ? formatFixed3(row.exitPrice)
+              : `${formatFixed3(row.size)} ${market} @ ${formatFixed3(row.exitPrice)}`
+        }
+      />
+      {row.isActive || row.closedAtMillis === null ? null : (
+        <LedgerDetailRow
+          label=""
+          value={`${new Date(row.closedAtMillis).toLocaleTimeString()} · order ${row.orderRef ?? "—"}`}
+        />
+      )}
+      <LedgerDetailRow
+        label="Notional"
+        value={row.notionalUsd === null ? "—" : `${formatUsd(row.notionalUsd)} at entry`}
+      />
+      {row.marginUsd === null ? null : (
+        <LedgerDetailRow label="Margin" value={formatUsd(row.marginUsd)} />
+      )}
+      {row.closedPnlUsd === null ? null : (
+        <LedgerDetailRow label="Realised" value={formatSignedUsd(row.closedPnlUsd)} />
+      )}
+      {row.feesUsd === null ? null : (
+        <LedgerDetailRow label="Fees" value={formatUsd(row.feesUsd)} />
+      )}
+      <LedgerDetailRow
+        label={row.isActive ? "Unrealised" : "Net"}
+        value={formatSignedUsd(row.netUsd)}
+      />
+    </div>
+  );
+}
+
+/** A label/value line of the ledger detail, in the popover's own row style. */
+function LedgerDetailRow({
+  label,
+  value,
+}: {
+  readonly label: string;
+  readonly value: string;
+}): ReactNode {
+  return (
+    <div className="flex items-baseline justify-between gap-4">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="text-right font-mono text-[11px] tabular-nums text-foreground">{value}</span>
+    </div>
+  );
+}
+
+/**
+ * One position: side pill, size in its own units, notional, both prices, net.
+ *
+ * The row is a button because it has somewhere to go — hover and keyboard focus
+ * show the record as a tooltip, and a press opens the same record as a popover,
+ * which is the only path a touch screen has to it. A row that merely lit up
+ * under the pointer would be an affordance pointing at nothing.
+ */
+function LedgerRow({
+  row,
+  market,
+  leverageLabel,
+}: {
+  readonly row: PositionLedgerRow;
+  readonly market: string;
+  readonly leverageLabel: string | null;
+}): ReactNode {
+  const isLong = row.direction === "long";
+  // One surface at a time: while the pressed-open record is showing, the hover
+  // one is switched off rather than stacked behind it.
+  const [detailOpen, setDetailOpen] = useState(false);
+  const detail = <LedgerDetail row={row} market={market} leverageLabel={leverageLabel} />;
+  // The same record flattened, so the row reads back whole rather than as five
+  // orphaned figures.
+  const label = [
+    `${row.isActive ? "Active" : "Closed"} ${isLong ? "long" : "short"} ${formatFixed3(row.size)} ${market} at ${leverageLabel ?? "unstated leverage"}`,
+    row.notionalUsd === null ? "notional unknown" : `notional ${formatUsd(row.notionalUsd)}`,
+    row.entryPrice === null
+      ? "the opening fill is older than the panel's window"
+      : `entered ${formatFixed3(row.entryPrice)}`,
+    row.exitPrice === null
+      ? "no closing price"
+      : row.isActive
+        ? `marked ${formatFixed3(row.exitPrice)}`
+        : `exited ${formatFixed3(row.exitPrice)}`,
+    `${row.isActive ? "unrealised" : "net"} ${formatSignedUsd(row.netUsd)}`,
+  ].join(", ");
+
+  return (
+    <Popover open={detailOpen} onOpenChange={setDetailOpen}>
+      <Tooltip disabled={detailOpen}>
+        <TooltipTrigger
+          render={
+            <PopoverTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={label}
+                  data-active={row.isActive ? "" : undefined}
+                  className={cn(
+                    "col-span-full grid h-7 grid-cols-subgrid items-center gap-x-3 rounded-full border px-2 text-left font-mono text-[11px] tabular-nums outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+                    row.isActive
+                      ? "border-border bg-foreground/[0.06] hover:bg-foreground/[0.09]"
+                      : "border-border/60 bg-foreground/[0.03] hover:bg-foreground/[0.06]",
+                  )}
+                />
+              }
+            />
+          }
+        >
+          {/* The card's own side pill, so one position reads the same in the
+              ledger as it does in the position block above. */}
+          <SideChip market={market} leverageLabel={leverageLabel} isLong={isLong} size="sm" />
+          {/* How the position ended, which for one of them is that it has not.
+              `active` sits in the column where every other row states its close
+              time, rather than as a badge beside the pill: it is the answer to
+              the same question, so it belongs in the same place. */}
+          <span
+            className={cn(
+              "whitespace-nowrap",
+              row.isActive
+                ? "uppercase tracking-[0.14em] text-foreground/80"
+                : "text-muted-foreground/60",
+            )}
+          >
+            {row.isActive
+              ? "active"
+              : row.closedAtMillis === null
+                ? "—"
+                : new Date(row.closedAtMillis).toLocaleTimeString(undefined, {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+          </span>
+          {/* The size carries its own unit: a bare 0.500 in a column beside
+              dollar figures is a number without a denomination. */}
+          <span className="whitespace-nowrap text-right text-muted-foreground">
+            {formatFixed3(row.size)} <span className="text-muted-foreground/60">{market}</span>
+          </span>
+          {/* What the position committed, which is the figure that says whether
+              a $2 result came off a small position or a large one. */}
+          <span className="whitespace-nowrap text-right text-muted-foreground/70">
+            {row.notionalUsd === null ? "—" : formatUsd(row.notionalUsd)}
+          </span>
+          {/* Always the pair, so the column reads as one shape. The open row's
+              second figure is the live mark, in foreground ink because it is
+              the only figure here still moving. */}
+          <span className="whitespace-nowrap text-right text-muted-foreground/70">
+            {row.entryPrice === null ? "—" : formatFixed3(row.entryPrice)}{" "}
+            <span className="text-muted-foreground/50">→</span>{" "}
+            <span className={row.isActive ? "text-foreground/90" : undefined}>
+              {row.exitPrice === null ? "—" : formatFixed3(row.exitPrice)}
+            </span>
+          </span>
+          <span className={cn("text-right", row.netUsd >= 0 ? "text-profit" : "text-loss")}>
+            {formatSignedUsd(row.netUsd)}
+          </span>
+        </TooltipTrigger>
+        {/* Left, so the record does not cover the watch stream under the band. */}
+        <TooltipPopup side="left" variant="glass" className="max-w-none">
+          {detail}
+        </TooltipPopup>
+      </Tooltip>
+      <PopoverPopup side="left" align="start" viewportClassName="py-3">
+        {detail}
+      </PopoverPopup>
+    </Popover>
   );
 }
 
@@ -1186,20 +1610,33 @@ function describeArmedSummary(armed: { readonly rows: ReadonlyArray<unknown> } |
  * cells in the stat grid now, where they line up with the same figures a live
  * mission shows. The pulse marks the one state where nothing has been decided
  * yet, so it is the mission working rather than the mission waiting.
+ *
+ * The icon leads and the word stays. A glyph alone would make three states that
+ * differ by a great deal — reading the market, waiting for a level, having
+ * declined the trade — depend on the reader knowing three shapes; the word is
+ * what makes it accurate, and the icon is what makes it findable.
  */
 function StateChip({
   market,
-  label,
-  isPulsing,
+  state,
 }: {
   readonly market: string;
-  readonly label: string;
-  readonly isPulsing: boolean;
+  readonly state: "planning" | "waiting" | "standing_aside";
 }): ReactNode {
+  const { Icon, label } =
+    state === "planning"
+      ? { Icon: Radar, label: "Analysing" }
+      : state === "standing_aside"
+        ? { Icon: CircleSlash, label: "Standing aside" }
+        : { Icon: Crosshair, label: "Waiting" };
   return (
     <span className="inline-flex flex-none items-center gap-1.5 rounded-full border border-armed/40 bg-armed/10 px-2.5 py-0.5 font-mono text-[12px] text-armed">
-      {isPulsing ? (
-        <span className="size-1.5 animate-pulse rounded-full bg-armed" aria-hidden />
+      <Icon className="size-3" strokeWidth={2} aria-hidden />
+      {state === "planning" ? (
+        <span
+          className="size-1.5 animate-pulse rounded-full bg-armed motion-reduce:animate-none"
+          aria-hidden
+        />
       ) : null}
       <span>{market}</span>
       <span className="text-armed/80">{label}</span>
@@ -1333,7 +1770,7 @@ const FIRED_LINGER_MILLIS = 4_000;
  * no moment to show.
  */
 function useRecentlyFiredWatches(
-  rows: ReadonlyArray<WatchStreamRow>,
+  items: ReadonlyArray<WatchStreamItem>,
   nowMillis: number,
 ): ReadonlySet<string> {
   // No timers: the panel already re-renders on its 250ms clock, so the linger
@@ -1343,7 +1780,11 @@ function useRecentlyFiredWatches(
   const seenMet = useRef<Map<string, boolean>>(new Map());
   const firedAt = useRef<Map<string, number>>(new Map());
 
-  for (const row of rows) {
+  for (const item of items) {
+    // Only take-downs group, so a group never contains the transition this
+    // hook exists to catch.
+    if (item.kind !== "watch") continue;
+    const row = item;
     const met = row.state === "triggered";
     const wasMet = seenMet.current.get(row.id);
     if (wasMet === false && met && !firedAt.current.has(row.id)) {
@@ -1380,7 +1821,7 @@ function WatchStream({
   recentlyFired,
   droppedConditions,
 }: {
-  readonly rows: ReadonlyArray<WatchStreamRow>;
+  readonly rows: ReadonlyArray<WatchStreamItem>;
   readonly nowMillis: number;
   readonly recentlyFired: ReadonlySet<string>;
   /** Armed levels the chart could not draw, reported once under the list. */
@@ -1388,9 +1829,9 @@ function WatchStream({
 }): ReactNode {
   // A row that just fired is held among the armed rows for a beat: the dot
   // becomes a tick in place rather than the row jumping down the list.
-  const held = (row: WatchStreamRow) => isArmedRow(row) || recentlyFired.has(row.id);
+  const held = (item: WatchStreamItem) => isArmedRow(item) || recentlyFired.has(item.id);
   const armed = rows.filter(held);
-  const allSettled = rows.filter((row) => !held(row));
+  const allSettled = rows.filter((item) => !held(item));
   // A long mission re-levels constantly: six hundred settled watches is sixty
   // screens of scroll, and the row worth finding is never the four-hundredth.
   // The tail is bounded and the count says what was left off, so the list stays
@@ -1409,12 +1850,12 @@ function WatchStream({
           // gap between this opaque fill and the card's own tint.
           <div className="sticky top-0 z-10 bg-card backdrop-blur-sm">
             <div className="divide-y divide-border/25">
-              {armed.map((row) => (
-                <WatchStreamEntry
-                  key={row.id}
-                  row={row}
+              {armed.map((item) => (
+                <WatchStreamItemRow
+                  key={item.id}
+                  item={item}
                   nowMillis={nowMillis}
-                  justFired={recentlyFired.has(row.id)}
+                  justFired={recentlyFired.has(item.id)}
                 />
               ))}
             </div>
@@ -1427,8 +1868,8 @@ function WatchStream({
           </div>
         )}
         <div className="divide-y divide-border/15">
-          {settled.map((row) => (
-            <WatchStreamEntry key={row.id} row={row} nowMillis={nowMillis} justFired={false} />
+          {settled.map((item) => (
+            <WatchStreamItemRow key={item.id} item={item} nowMillis={nowMillis} justFired={false} />
           ))}
         </div>
         {earlierSettled === 0 ? null : (
@@ -1506,7 +1947,63 @@ function WatchDot({
 }
 
 /**
- * One row: dot, what it waits for, which prediction it belongs to, and when.
+ * The icon that says which kind of predicate a row is.
+ *
+ * One vocabulary across the whole card: Crosshair already means "a price level"
+ * wherever it appears, Activity is the wake beacon's PnL mark, and Receipt is
+ * its fill mark. A row therefore names its kind in the shape the reader has
+ * already learned somewhere else on the panel.
+ */
+const WATCH_TYPE_ICON: Record<WatchRowType, LucideIcon> = {
+  candle_close: ChartCandlestick,
+  price_cross: Crosshair,
+  pnl_above: Activity,
+  pnl_below: Activity,
+  pnl_giveback: Activity,
+  metric_threshold: Gauge,
+  order_update: Receipt,
+  position_update: Receipt,
+};
+
+/**
+ * A watch's figure in the units its own predicate compares.
+ *
+ * A PnL level is signed dollars, a give-back is a dollar distance (the sign
+ * would claim a side it does not have), a metric is the raw number the
+ * evaluator uses — a formatter that guessed units would misstate at least one
+ * metric — and a price is a price.
+ */
+function formatWatchFigure(watchType: WatchRowType, value: number): string {
+  switch (watchType) {
+    case "price_cross":
+    case "candle_close":
+      return formatPrice(value);
+    case "pnl_above":
+    case "pnl_below":
+      return formatSignedUsd(value);
+    case "pnl_giveback":
+      return formatUsd(value);
+    case "metric_threshold":
+      return String(value);
+    case "order_update":
+    case "position_update":
+      // Neither carries a level; these rows show their subject instead.
+      return "";
+  }
+}
+
+/**
+ * One row: dot, kind, direction, figure — and when.
+ *
+ * It used to be a sentence, and three of its words repeated on every row: the
+ * market (the card header names it once) and the verb phrase (which is the
+ * predicate's type, and a type is a glyph). What is left is the row's payload —
+ * the figure — with the icons that qualify it, in the chart gutter's own
+ * ▲ / ▼ + mono-figure vocabulary, so a row here and its dotted line over there
+ * read as the same object seen twice.
+ *
+ * The direction triangle is muted ink, never the profit/loss pair: the side of
+ * a predicate is not the side of a trade.
  *
  * Everything else — the live reading against the threshold, the decision the
  * mission took after it fired — is behind the disclosure, because a stream
@@ -1523,55 +2020,92 @@ function WatchStreamEntry({
   readonly justFired: boolean;
 }): ReactNode {
   const armed = isArmedRow(row);
-  // A PnL watch reads a signed dollar figure; a price watch reads a market
-  // price. Both columns follow the predicate, so a row never compares a dollar
-  // value against a raw number.
-  const isPnlRow = row.description.includes("PnL");
-  const format = (value: number) => (isPnlRow ? formatSignedUsd(value) : formatPrice(value));
+  const format = (value: number) => formatWatchFigure(row.watchType, value);
   const observed = row.observedValue === null ? null : format(row.observedValue);
   const threshold = row.thresholdValue === null ? null : format(row.thresholdValue);
   const hasDetail = observed !== null || threshold !== null || row.actionLabel !== null;
 
-  const age = formatDuration(Math.max(0, nowMillis - row.atMillis));
-  const when = armed ? `armed ${age} ago` : `${row.outcomeLabel ?? "fired"} ${age} ago`;
+  const TypeIcon = WATCH_TYPE_ICON[row.watchType];
+  const age = formatAge(Math.max(0, nowMillis - row.atMillis));
+  // The full sentence stays the row's accessible name: the glyphs are a
+  // shorthand for readers who can see them, not a replacement for the fact.
+  const label = armed
+    ? `${row.description}, armed ${age}`
+    : `${row.description}, ${row.outcomeLabel ?? "fired"} ${age}`;
 
   const summary = (
     <>
       <span className="w-3 flex-none text-center">
         <WatchDot state={row.state} justFired={justFired} />
       </span>
-      <span
-        className={cn(
-          "min-w-0 flex-1 truncate leading-[1.35]",
-          armed ? "text-foreground/90" : "text-muted-foreground",
-        )}
-      >
-        {row.description}
-      </span>
+      <TypeIcon
+        className="size-[11px] flex-none self-center text-muted-foreground/60"
+        strokeWidth={2}
+        aria-hidden
+      />
+      {row.direction === null ? null : (
+        <span className="flex-none text-[9px] text-muted-foreground" aria-hidden>
+          {row.direction === "above" ? "▲" : "▼"}
+        </span>
+      )}
+      {/* The payload. It never truncates — the icons before it drop first —
+          because the figure is the only thing on the row that cannot be
+          inferred from anything else on the card. */}
+      {threshold === null ? (
+        <span
+          className={cn(
+            "min-w-0 flex-1 truncate",
+            armed ? "text-foreground/90" : "text-muted-foreground",
+          )}
+        >
+          {row.description}
+        </span>
+      ) : (
+        <span
+          className={cn(
+            "flex-none tabular-nums",
+            armed ? "text-foreground/90" : "text-muted-foreground",
+          )}
+        >
+          {threshold}
+        </span>
+      )}
+      {row.intervalLabel === null ? null : (
+        <span className="min-w-0 truncate text-muted-foreground/60">{row.intervalLabel}</span>
+      )}
       {/* Which prediction armed it. Only the runtime's own prediction watches
           carry one, so the column is empty for everything the model armed
           itself — which is the distinction, not a gap. */}
       {row.predictionVersion === null ? null : (
-        <span
-          className="flex-none tabular-nums text-muted-foreground/60"
-          title={`armed for prediction v${row.predictionVersion}`}
-        >
+        <span className="ml-auto flex-none tabular-nums text-muted-foreground/60">
           v{row.predictionVersion}
         </span>
       )}
-      <span className="flex-none tabular-nums text-muted-foreground/60">{when}</span>
+      <span
+        className={cn(
+          "flex-none tabular-nums text-muted-foreground/60",
+          row.predictionVersion === null && "ml-auto",
+        )}
+      >
+        {age}
+      </span>
     </>
   );
 
-  const rowClass = cn(BAND_PAD_CLASS, "flex items-baseline gap-x-2.5 py-2 font-mono text-[11.5px]");
+  const rowClass = cn(BAND_PAD_CLASS, "flex items-baseline gap-x-2 py-2 font-mono text-[11.5px]");
 
   if (!hasDetail) {
-    return <div className={rowClass}>{summary}</div>;
+    return (
+      <div className={rowClass} aria-label={label}>
+        {summary}
+      </div>
+    );
   }
 
   return (
     <details className="group">
       <summary
+        aria-label={label}
         className={cn(
           rowClass,
           "cursor-pointer list-none select-none marker:hidden hover:bg-foreground/[0.02]",
@@ -1579,10 +2113,12 @@ function WatchStreamEntry({
       >
         {summary}
       </summary>
-      {/* Indented past the dot column so the detail hangs under the sentence
-          it belongs to, not under the dot. */}
+      {/* Indented past the dot column so the detail hangs under the row it
+          belongs to, not under the dot. The sentence the row no longer spells
+          out leads it: this is where the words live now. */}
       <div className={cn(BAND_PAD_CLASS, "pb-2 font-mono text-[11px] text-muted-foreground/70")}>
         <div className="pl-[1.375rem]">
+          <p className="leading-[1.35]">{row.description}</p>
           {threshold === null ? null : (
             <p className="tabular-nums">
               {observed === null
@@ -1590,12 +2126,70 @@ function WatchStreamEntry({
                 : `last read ${observed}, against ${threshold}`}
             </p>
           )}
-          {row.actionLabel === null ? null : (
-            <p className="truncate" title={row.actionLabel}>
-              then: {row.actionLabel}
-            </p>
-          )}
+          {row.actionLabel === null ? null : <p>then: {row.actionLabel}</p>}
         </div>
+      </div>
+    </details>
+  );
+}
+
+/** A watch row or a folded burst of take-downs, whichever the stream holds here. */
+function WatchStreamItemRow({
+  item,
+  nowMillis,
+  justFired,
+}: {
+  readonly item: WatchStreamItem;
+  readonly nowMillis: number;
+  readonly justFired: boolean;
+}): ReactNode {
+  if (item.kind === "group") {
+    return <WatchGroupEntry group={item} nowMillis={nowMillis} />;
+  }
+  return <WatchStreamEntry row={item} nowMillis={nowMillis} justFired={justFired} />;
+}
+
+/**
+ * A replan's take-downs, as one line that opens into the rows it stands for.
+ *
+ * "watches" rather than "levels": a burst can carry a PnL floor and a metric
+ * threshold, neither of which is a level. No type icon either — a group spans
+ * types, and one of its members' glyphs would misname the rest.
+ */
+function WatchGroupEntry({
+  group,
+  nowMillis,
+}: {
+  readonly group: WatchStreamGroup;
+  readonly nowMillis: number;
+}): ReactNode {
+  const age = formatAge(Math.max(0, nowMillis - group.atMillis));
+  const summary = `${group.count} watches ${group.outcomeLabel}`;
+
+  return (
+    <details className="group">
+      <summary
+        aria-label={`${summary}, ${age}`}
+        className={cn(
+          BAND_PAD_CLASS,
+          "flex cursor-pointer list-none select-none items-baseline gap-x-2 py-2 font-mono text-[11.5px] text-muted-foreground marker:hidden hover:bg-foreground/[0.02]",
+        )}
+      >
+        <span className="w-3 flex-none text-center">
+          <span
+            className="inline-block size-2 rounded-full border border-muted-foreground/45"
+            aria-hidden
+          />
+        </span>
+        <span className="min-w-0 flex-1 truncate tabular-nums">{summary}</span>
+        <span className="flex-none tabular-nums text-muted-foreground/60">{age}</span>
+      </summary>
+      {/* The members as the ordinary settled rows they are, indented so the
+          group reads as the heading over them rather than a peer. */}
+      <div className="divide-y divide-border/15 pl-[1.375rem]">
+        {group.members.map((row) => (
+          <WatchStreamEntry key={row.id} row={row} nowMillis={nowMillis} justFired={false} />
+        ))}
       </div>
     </details>
   );
@@ -1617,14 +2211,21 @@ function formatReassessmentCountdown(nextReassessmentAt: number | null): string 
   return formatDuration(remaining);
 }
 
-/** Everything the published plan says, behind one disclosure. */
-function PlanDisclosure({ plan }: { readonly plan: StrategyPlan }): ReactNode {
+/**
+ * Everything the published plan says.
+ *
+ * The same body that used to sit behind a disclosure at the foot of the readout
+ * card, unchanged but for losing its own `<details>`: the popup it now lives in
+ * IS the disclosure, and a second expander inside an opened popup would be a
+ * control the reader has already used.
+ */
+function PlanBody({ plan }: { readonly plan: StrategyPlan }): ReactNode {
   return (
-    <details className={cn(BAND_PAD_CLASS, "border-t border-border/40 py-2.5 text-[12px]")}>
-      <summary className="cursor-pointer select-none text-muted-foreground transition-colors hover:text-foreground motion-reduce:transition-none">
-        View full plan · {plan.isStandAside ? "standing aside" : plan.planPhase}
-      </summary>
-      <div className="mt-2 space-y-1">
+    <div className="text-[12px]">
+      <p className={cn(BAND_LEGEND_CLASS, "pb-2")}>
+        plan · {plan.isStandAside ? "standing aside" : plan.planPhase}
+      </p>
+      <div className="space-y-1">
         {plan.isStandAside ? (
           // A stand-aside says so in its first line: the plan declined the
           // trade, and reading an intent row before learning that would put
@@ -1657,7 +2258,41 @@ function PlanDisclosure({ plan }: { readonly plan: StrategyPlan }): ReactNode {
         )}
         <PlanField label="Reassess after" value={`${plan.reassessMinutes} min untriggered`} />
       </div>
-    </details>
+    </div>
+  );
+}
+
+/**
+ * The plan, on the bar, opening upward.
+ *
+ * It is anchored to the sentence it explains rather than to the foot of a
+ * scrolling column, and it opens over the panel instead of pushing the
+ * composer down — which is what the disclosure did every time it was used, at
+ * the moment the reader wanted to compare the plan against the figures it had
+ * just displaced.
+ *
+ * 400px wide on purpose: the readout card's own width, so the plan's fields
+ * wrap on the same measure as the figures they describe.
+ */
+function PlanPopover({ plan }: { readonly plan: StrategyPlan }): ReactNode {
+  return (
+    <Popover>
+      <PopoverTrigger
+        aria-haspopup="dialog"
+        data-testid="mission-plan-trigger"
+        className="inline-flex flex-none items-center gap-1.5 rounded-full border border-border/60 px-2 py-0.5 font-mono text-[11px] text-muted-foreground transition-colors hover:text-foreground motion-reduce:transition-none"
+      >
+        <FileText className="size-3" strokeWidth={2} aria-hidden />
+        Plan
+      </PopoverTrigger>
+      {/* Upward, because the bar is the panel's bottom edge and the composer is
+          directly under it. */}
+      <PopoverPopup side="top" align="start" className="w-[400px] max-w-[calc(100vw-2rem)]">
+        <div className="max-h-[60vh] overflow-y-auto">
+          <PlanBody plan={plan} />
+        </div>
+      </PopoverPopup>
+    </Popover>
   );
 }
 
@@ -1710,10 +2345,16 @@ function SideChip({
   market,
   leverageLabel,
   isLong,
+  size = "md",
 }: {
   readonly market: string;
   readonly leverageLabel: string | null;
   readonly isLong: boolean;
+  /**
+   * `sm` is the ledger's row height. One component at two sizes rather than a
+   * second pill that would drift from this one the first time either changed.
+   */
+  readonly size?: "md" | "sm";
 }): ReactNode {
   const tone = isLong
     ? "border-profit/40 bg-profit/10 text-profit"
@@ -1721,7 +2362,8 @@ function SideChip({
   return (
     <span
       className={cn(
-        "inline-flex flex-none items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[12px]",
+        "inline-flex flex-none items-center gap-1.5 rounded-full border font-mono",
+        size === "sm" ? "px-1.5 text-[10.5px]" : "px-2.5 py-0.5 text-[12px]",
         tone,
       )}
     >
@@ -1822,6 +2464,10 @@ function deriveLastActivity(
 
 function MissionStatusBar({
   headline,
+  because,
+  plan,
+  countdown,
+  projection,
   tone,
   data,
   isHolding,
@@ -1831,6 +2477,21 @@ function MissionStatusBar({
   lastActivity,
 }: {
   readonly headline: string;
+  /** The plan's thesis, carried as the headline's hover. It has no paragraph
+   *  on the readout card any more, so this is the cheapest of its two homes —
+   *  the other being the plan popup's own first field. */
+  readonly because: string | null;
+  /** The published plan, for the popup. Null while planning: there is none. */
+  readonly plan: StrategyPlan | null;
+  /** How long until the next reassessment. Null when none is armed. */
+  readonly countdown: string | null;
+  /** The plan's own price prediction — the bar's twin of the chart's dotted
+   *  line. Absent on a stand-aside, which states none. */
+  readonly projection: {
+    readonly direction: "long" | "short";
+    readonly price: number;
+    readonly atMillis: number;
+  } | null;
   /** Tinted by the exposure, not by the market: the bar states what this
    *  mission is doing, and a flat mission is neither winning nor losing. */
   readonly tone: "profit" | "loss" | "flat";
@@ -1860,7 +2521,49 @@ function MissionStatusBar({
           and it is what makes this a status bar rather than another figure
           strip. */}
       <span className={cn("size-1.5 flex-none rounded-full", dotTone)} aria-hidden />
-      <span className="flex-none text-[13px] text-foreground">{headline}</span>
+      <span
+        className="flex-none text-[13px] text-foreground"
+        {...(because === null || because === "" ? {} : { title: because })}
+      >
+        {headline}
+      </span>
+
+      {/* The three objects this bar exists for, in the DOM directly after the
+          headline so a wrapped bar keeps them on its first row. None of them
+          hides at any width: the ambient cluster on the right gives up its
+          segments first, and the activity segment truncates before that. */}
+      {plan === null ? null : <PlanPopover plan={plan} />}
+      {countdown === null ? null : (
+        <span
+          data-testid="mission-next-reassessment"
+          className="flex flex-none items-center gap-1.5 font-mono text-[11px] tabular-nums text-muted-foreground"
+          title="When the mission next reconsiders its plan. The chart's future gutter draws the same appointment as a rule: that says where on the axis, this says how long."
+        >
+          <Clock className="size-3" strokeWidth={2} aria-hidden />
+          next {countdown}
+        </span>
+      )}
+      {projection === null ? null : (
+        <span
+          data-testid="mission-projection"
+          className="flex flex-none items-center gap-1.5 font-mono text-[11px] tabular-nums text-muted-foreground"
+          title="The plan's own price prediction; the dotted line on the chart is this object."
+        >
+          {projection.direction === "long" ? (
+            <TrendingUp className="size-3" strokeWidth={2} aria-hidden />
+          ) : (
+            <TrendingDown className="size-3" strokeWidth={2} aria-hidden />
+          )}
+          <span>
+            → {formatPrice(projection.price)} by{" "}
+            {new Date(projection.atMillis).toLocaleTimeString(undefined, {
+              hour: "numeric",
+              minute: "2-digit",
+            })}
+          </span>
+        </span>
+      )}
+
       {/* What the model last did, in its own composed words. The headline says
           the state; this says the most recent step the harness took toward it
           — the one line of model activity the panel has room for. Truncated,
@@ -1875,15 +2578,27 @@ function MissionStatusBar({
           <span className="text-muted-foreground/50"> · {lastActivity.ageLabel} ago</span>
         </span>
       )}
-      <span className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] tabular-nums text-muted-foreground">
-        {isHolding && holdLabel !== null ? <span>Held {holdLabel}</span> : null}
+      {/* The ambient cluster, and the bar's overflow budget.
+          At `lg` and above the bar is one line, so something has to give as it
+          narrows. In order: the activity segment truncates (it already carries
+          `flex-1 truncate`), then funding drops, then hold time, then the mode.
+          The plan pill, the countdown and the prediction never drop — they are
+          why this bar exists. Below `lg` the bar is allowed a second row, so
+          every segment comes back rather than staying hidden on the narrowest
+          screens, which is what a plain `hidden lg:inline` would have done. */}
+      <span className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] tabular-nums text-muted-foreground lg:flex-nowrap">
+        {isHolding && holdLabel !== null ? (
+          <span className="whitespace-nowrap lg:hidden xl:inline">Held {holdLabel}</span>
+        ) : null}
         {isHolding && data !== null ? (
-          <span>Funding {(data.fundingRate8h * 100).toFixed(4)}%/8h</span>
+          <span className="whitespace-nowrap lg:hidden 2xl:inline">
+            Funding {(data.fundingRate8h * 100).toFixed(4)}%/8h
+          </span>
         ) : null}
         {modeLabel === null ? null : (
           <span
             data-testid="mission-mode"
-            className="uppercase tracking-[0.12em]"
+            className="whitespace-nowrap uppercase tracking-[0.12em]"
             title="This mission executes a named playbook rather than deciding for itself. It is read from the mandate."
           >
             execute · {modeLabel}
