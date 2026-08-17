@@ -210,26 +210,37 @@ describe("TradingHarnessWakeup", () => {
     const decoded = decode(base);
     // Flat is a valid position state, not an absence of position.
     expect(decoded.position.size).toBe(0);
-    expect(decoded.recentCandles.market).toBe("ETH");
-    expect(decoded.recentCandles.interval).toBe("1m");
-    expect(decoded.recentCandles.candles).toHaveLength(1);
-    expect(decoded.recentCandles.candles[0]?.close).toBe(4_000);
+    expect(decoded.recentCandles?.market).toBe("ETH");
+    expect(decoded.recentCandles?.interval).toBe("1m");
+    expect(decoded.recentCandles?.candles).toHaveLength(1);
+    expect(decoded.recentCandles?.candles[0]?.close).toBe(4_000);
   });
 
-  it("requires the new fields rather than treating them as optional", () => {
-    // `strategyAgeMillis` rides with `activeStrategy` (both optional since
-    // plan 29 step 4.3 let a plan-less mission wake); dropping one of the
-    // pair alone must still fail.
+  it("requires the fields a wake is defined by, and only those", () => {
+    // What fired and what is held can never be absent.
     const { armedWatches: _armed, ...withoutArmed } = base;
     expect(() => decode(withoutArmed)).toThrow();
     const { position: _position, ...withoutPosition } = base;
     expect(() => decode(withoutPosition)).toThrow();
-    const { recentCandles: _candles, ...withoutCandles } = base;
-    expect(() => decode(withoutCandles)).toThrow();
-    // A wakeup without the measurement cannot support a derived profit target,
-    // which is the one thing the strategy publish will insist on.
-    const { observedVolatility: _volatility, ...withoutVolatility } = base;
-    expect(() => decode(withoutVolatility)).toThrow();
+  });
+
+  // Every wake is an alert now: the composer wakes a mission without fetching
+  // candles, volatility, or the account — those are `trading_look`'s to
+  // return, on demand. A payload that omits all three must still decode.
+  it("decodes a lean wake that omits the snapshot halves", () => {
+    const {
+      recentCandles: _candles,
+      observedVolatility: _volatility,
+      accountSnapshot: _account,
+      ...lean
+    } = base;
+    const decoded = decode(lean);
+    expect(decoded.recentCandles).toBeUndefined();
+    expect(decoded.observedVolatility).toBeUndefined();
+    expect(decoded.accountSnapshot).toBeUndefined();
+    // What the alert is defined by is still intact.
+    expect(decoded.position.size).toBe(0);
+    expect(decoded.marketSnapshot.markPrice).toBe(4_000);
   });
 
   // The discriminator is what lets the chat timeline tell a wakeup from
@@ -253,7 +264,7 @@ describe("TradingHarnessWakeup", () => {
     expect(decoded.defaultTimeframe).toBeUndefined();
     // The decision-relevant snapshot is still intact.
     expect(decoded.missionId).toBe("mission_1");
-    expect(decoded.observedVolatility.atrUsd).toBe(4);
+    expect(decoded.observedVolatility?.atrUsd).toBe(4);
   });
 
   // The wakeup renders into the resumed turn's context budget. This mirrors the

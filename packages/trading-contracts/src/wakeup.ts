@@ -225,11 +225,14 @@ export const TradingHarnessWakeup = Schema.Struct({
   userMessage: Schema.optional(TradingText),
   marketSnapshot: AgentMarketSnapshot,
   /**
-   * The live balance: what the account actually holds right now, refreshed
-   * every wakeup. This is information for sizing, never a limit — the limits
-   * are in `authority`.
+   * The live balance: what the account holds right now. This is information
+   * for sizing, never a limit — the limits are in `authority`.
+   *
+   * Optional since every wake became an alert: the composer no longer fetches
+   * the account to wake a mission, and `trading_look` returns the live
+   * balance when a decision needs it.
    */
-  accountSnapshot: AgentAccountSnapshot,
+  accountSnapshot: Schema.optional(AgentAccountSnapshot),
   /**
    * The mission's net position for `market`, always present.
    *
@@ -242,12 +245,11 @@ export const TradingHarnessWakeup = Schema.Struct({
    * The last few bars of the runtime timeframe (the interval the mandate
    * names, else `1m` — see `runtimeTimeframe` in `./strategy.ts`).
    *
-   * A bounded slice of recent price action so the run can answer "what did
-   * price just do?" without a `trading_look` round-trip. Deeper
-   * history stays behind that tool; the composer bounds the count
-   * (`WAKEUP_RECENT_CANDLES`, 5 as shipped).
+   * Optional since every wake became an alert: a wake says what fired and what
+   * is held, and price action is one `trading_look` away. The field remains for
+   * a path that chooses to attach a bounded slice.
    */
-  recentCandles: MarketHistory,
+  recentCandles: Schema.optional(MarketHistory),
   /**
    * What the instrument's fluctuation actually measures, on the same primary
    * timeframe, over `VOLATILITY_LOOKBACK_BARS` bars.
@@ -270,8 +272,11 @@ export const TradingHarnessWakeup = Schema.Struct({
    * needed for a third. Nothing here is netted of fees — `costContext` below
    * carries the round trip at a stated reference notional, and
    * `trading_look` prices a hypothetical size exactly.
+   *
+   * Optional since every wake became an alert: the measurement is taken by
+   * `trading_look`, on demand, rather than on every wake.
    */
-  observedVolatility: ObservedVolatility,
+  observedVolatility: Schema.optional(ObservedVolatility),
   /**
    * The same measurement on one higher timeframe — 15m for a mission running on
    * 1m/3m/5m, 1h above that.

@@ -2,12 +2,14 @@
  * TradingWakeupComposer - assembles the bounded `TradingHarnessWakeup` snapshot
  * a resumed run starts with, spec §12.2.
  *
- * The composer is the single place that gathers the fresh facts a resumed
- * harness turn needs: a market snapshot, an account snapshot, the active
- * strategy, the authority, the coalesced pending inbox events, the mission
- * instruction, and (when present) the triggering watch. It does not decide
- * whether to run — the `TradingTurnCoordinator` already did that and holds the
- * decision lease — it only collects and serializes the snapshot.
+ * The composer is the single place that assembles what a resumed harness turn
+ * is told: what woke it (the fired watch or the operator's message), the mark,
+ * the position, one cost line, the plan's numbers, the armed set, and pointers
+ * at `trading_look` for everything else. It does not decide whether to run —
+ * the `TradingTurnCoordinator` already did that and holds the decision lease.
+ * The full market gather (`observe`) lives here too, but it belongs to
+ * `trading_look`: the model pulls fresh data when a decision needs it, rather
+ * than every wake pushing a snapshot it may not read.
  *
  * The serialized wakeup is what the wake path writes into the resumed turn's
  * `message.text` (§12.4): the harness reads the same bounded payload every
@@ -60,7 +62,6 @@ import {
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 import type { ObservedVolatility } from "@t3tools/trading-contracts/volatility";
 
-import { boundStrategyProse } from "./StrategyProse.ts";
 import { TradingCostEstimator } from "./TradingCostEstimator.ts";
 import {
   LEVEL_GROUP_TOLERANCE_ATR,
@@ -114,31 +115,15 @@ const WAKEUP_HOLD_HORIZONS: ReadonlyArray<number> = [3, 20] as const;
  * Hard ceiling on the rendered wakeup text. The wakeup is the resumed turn's
  * `message.text`; an unbounded blob would crowd the provider context.
  *
- * Exceeding it never fails the compose — see `renderBoundedWakeup`. A wakeup
- * that does not fit is a wakeup that does not happen, and a mission whose every
- * wake fails is deaf while still holding exposure.
+ * Exceeding it never fails the compose — see `renderBoundedLeanWakeup`. A
+ * wakeup that does not fit is a wakeup that does not happen, and a mission
+ * whose every wake fails is deaf while still holding exposure.
  *
- * The ceiling is the backstop, not the diet: the standing per-wake savings
- * come from the short reviews and the five-bar candle slice above, which cut
- * every wake, not just the oversized ones.
+ * The ceiling is the backstop, not the diet: every wake renders lean (the
+ * alert, the position, the plan's numbers, pointers), so a real wake sits far
+ * under it.
  */
 export const MAX_WAKEUP_CHARS = 5_000;
-
-/** Longest any single prose field survives in the wakeup projection. */
-const WAKEUP_PROSE_CHARS = 280;
-
-/** The harder per-field clip the `strategy_digest` trim rung applies. */
-const WAKEUP_DIGEST_PROSE_CHARS = 120;
-
-/** Longest any published condition/evidence list survives in the projection. */
-const WAKEUP_LIST_ENTRIES = 6;
-
-/** How many inbox events and armed watches the second trim rung keeps. */
-const WAKEUP_PENDING_EVENTS = 6;
-const WAKEUP_ARMED_WATCHES = 12;
-
-/** Bars `recentCandles` falls back to once the cheaper rungs are exhausted. */
-const WAKEUP_TRIMMED_CANDLES = 4;
 
 /**
  * The second timeframe every wakeup measures, given the mission's first.
@@ -351,212 +336,6 @@ const renderArmedWatches = (
   armed: ReadonlyArray<WakeupArmedWatch>,
 ): ReadonlyArray<WakeupArmedWatchLine> => armed.map(describeArmedWatchLine);
 
-export const renderWakeup = (wakeup: TradingHarnessWakeup): string =>
-  renderWakeupProjection({
-    ...wakeup,
-    armedWatches: renderArmedWatches(wakeup.armedWatches),
-  } as unknown as Record<string, unknown>);
-
-/**
- * Keep the first `WAKEUP_LIST_ENTRIES` entries, and say how many were dropped.
- *
- * The marker entry matters more than it looks: a run that sees five exit
- * conditions where it published nine would work from a plan it never wrote.
- * `(+4 more)` tells it the list is a projection and `trading_look`
- * returns the whole thing.
- */
-const capList = <A>(
-  entries: ReadonlyArray<A>,
-  marker: (dropped: number) => A,
-): ReadonlyArray<A> => {
-  if (entries.length <= WAKEUP_LIST_ENTRIES) return entries;
-  return [...entries.slice(0, WAKEUP_LIST_ENTRIES), marker(entries.length - WAKEUP_LIST_ENTRIES)];
-};
-
-const conditionMarker = (dropped: number) => ({ description: `(+${dropped} more)` });
-
-/**
- * The first rung: clip the plan's prose to what a run reads at a glance.
- *
- * The publish path already bounds each field at 600 chars; this is the harder
- * wakeup projection. The persisted strategy is untouched — the full text stays
- * one `trading_look` call away.
- */
-const boundWakeupProse = (strategy: TradingPlanState): TradingPlanState => ({
-  ...strategy,
-  ...boundStrategyProse(strategy, WAKEUP_PROSE_CHARS).strategy,
-});
-
-/** The second rung: keep the head of each published list, drop the tail. */
-const boundStrategyLists = (strategy: TradingPlanState): TradingPlanState => ({
-  ...strategy,
-  entry: {
-    ...strategy.entry,
-    triggers: capList(strategy.entry.triggers, conditionMarker),
-  },
-  invalidation: capList(strategy.invalidation, (dropped) => `(+${dropped} more)`),
-});
-
-/**
- * The rungs the renderer climbs, cheapest loss of signal first.
- *
- * Order is deliberate: prose the run can re-read on demand goes before the
- * lists it decides from, and the live market data it cannot re-derive from a
- * tool call goes last.
- */
-/**
- * The hardest strategy projection: prose clipped to a line each and the
- * trigger list replaced by a pointer. The persisted plan is untouched and one
- * `trading_look` call away.
- */
-const digestStrategy = (strategy: TradingPlanState): TradingPlanState => ({
-  ...strategy,
-  ...boundStrategyProse(strategy, WAKEUP_DIGEST_PROSE_CHARS).strategy,
-  entry: {
-    ...strategy.entry,
-    triggers: [{ description: "(clipped — call trading_look for the full plan)" }],
-  },
-});
-
-const TRIM_LADDER: ReadonlyArray<{
-  readonly name: string;
-  readonly apply: (wakeup: TradingHarnessWakeup) => TradingHarnessWakeup;
-}> = [
-  {
-    name: "events_and_watches",
-    apply: (wakeup) => ({
-      ...wakeup,
-      pendingEvents: wakeup.pendingEvents.slice(-WAKEUP_PENDING_EVENTS),
-      armedWatches: wakeup.armedWatches.slice(0, WAKEUP_ARMED_WATCHES),
-    }),
-  },
-  {
-    name: "recent_candles",
-    apply: (wakeup) => ({
-      ...wakeup,
-      recentCandles: {
-        ...wakeup.recentCandles,
-        candles: wakeup.recentCandles.candles.slice(-WAKEUP_TRIMMED_CANDLES),
-      },
-    }),
-  },
-  {
-    // The two review reminders go here too (only ever one is present): by this
-    // rung the plan's own prose is being cut to a line, and doctrine the run
-    // can read with one `trading_strategy` call does not outrank the market
-    // data beside it.
-    name: "strategy_digest",
-    apply: (wakeup) => {
-      const { strategyReview: _dropped, positionReview: _alsoDropped, ...rest } = wakeup;
-      // A plan-less wakeup has nothing to digest; the rung still drops the
-      // review reminders, which is the point of arriving here.
-      return wakeup.activeStrategy === undefined
-        ? rest
-        : { ...rest, activeStrategy: digestStrategy(wakeup.activeStrategy) };
-    },
-  },
-];
-
-/**
- * Render the wakeup, shrinking the projection until it fits the budget.
- *
- * Compose used to fail when the rendered text blew `MAX_WAKEUP_CHARS`, on the
- * theory that an oversized wakeup is a composer defect. It is not: the size is
- * the harness's own prose coming back at it, so one verbose plan made every
- * subsequent wake for that mission fail identically — the watch was consumed,
- * the run was marked failed, and the mission went permanently deaf. Trimming is
- * always the better answer than not waking, and every rung is logged so an
- * oversized plan stays visible.
- */
-export const renderBoundedWakeup = (
-  wakeup: TradingHarnessWakeup,
-): {
-  readonly text: string;
-  readonly steps: ReadonlyArray<string>;
-  readonly untrimmedChars: number;
-} => {
-  // Prose and list bounding used to be the first two trim rungs, but in
-  // practice every real plan tripped them: the "full" rendering never survived
-  // to a provider anyway, so it is now the baseline projection rather than a
-  // logged trim step. The full text stays one trading_look call away.
-  let current: TradingHarnessWakeup =
-    wakeup.activeStrategy === undefined
-      ? wakeup
-      : {
-          ...wakeup,
-          activeStrategy: boundStrategyLists(boundWakeupProse(wakeup.activeStrategy)),
-        };
-  let text = renderWakeup(current);
-  const untrimmedChars = text.length;
-  const steps: string[] = [];
-
-  for (const rung of TRIM_LADDER) {
-    if (text.length <= MAX_WAKEUP_CHARS) return { text, steps, untrimmedChars };
-    current = rung.apply(current);
-    steps.push(rung.name);
-    text = renderWakeup(current);
-  }
-  if (text.length <= MAX_WAKEUP_CHARS) return { text, steps, untrimmedChars };
-
-  // Last resort is still structural: keep complete decision-critical fields
-  // and replace re-readable sections with pointers. Never cut the final string
-  // mid-field — a truncated price, condition, or JSON-shaped record is worse
-  // than an explicit omission.
-  steps.push("essential_projection");
-  const essential = renderWakeupProjection({
-    kind: current.kind,
-    missionId: current.missionId,
-    harnessRunId: current.harnessRunId,
-    cause: current.cause,
-    occurredAt: current.occurredAt,
-    triggeringWatch: current.triggeringWatch,
-    wakeReason: current.wakeReason,
-    userMessage: current.userMessage,
-    marketSnapshot: current.marketSnapshot,
-    accountSnapshot: current.accountSnapshot,
-    position: current.position,
-    recentCandles: {
-      ...current.recentCandles,
-      candles: current.recentCandles.candles.slice(-2),
-    },
-    observedVolatility: current.observedVolatility,
-    positionCosts: current.positionCosts,
-    costContext: current.costContext,
-    ...(current.activeStrategy === undefined
-      ? {}
-      : {
-          strategy: {
-            market: current.activeStrategy.market,
-            intent: current.activeStrategy.intent,
-            // The phase the old `currentAction` used to carry, derived from
-            // what the mission holds: flat is waiting, a position is holding.
-            planPhase: planPhase(current.position.size),
-            entryTriggers: current.activeStrategy.entry.triggers.slice(0, 3),
-            stop: current.activeStrategy.stop,
-            target: current.activeStrategy.target,
-          },
-        }),
-    armedWatches: renderArmedWatches(current.armedWatches.slice(0, 6)),
-    unarmedEntryConditions: current.unarmedEntryConditions,
-    misarmedEntryConditions: current.misarmedEntryConditions,
-    pendingEvents: current.pendingEvents.slice(-3),
-    // The microstructure readings are cut here, and saying so is the point: a
-    // model that has read book imbalance every turn for an hour must not get a
-    // wake without it and no statement that it was dropped — that reads as a
-    // reading that could not be taken, which is a different fact.
-    omitted:
-      "call trading_look for the full plan, authority, watches, pending state, and the " +
-      "microstructure readings (book imbalance, aggressor flow, depth change, positioning, " +
-      "the vol ratio and VWAP), which this projection drops",
-  });
-  if (essential.length <= MAX_WAKEUP_CHARS) {
-    return { text: essential, steps, untrimmedChars };
-  }
-
-  steps.push("minimal_projection");
-  return { text: renderMinimalWakeup(current), steps, untrimmedChars };
-};
-
 /**
  * The floor under every render path: what fired, what is held, and a pointer.
  *
@@ -579,29 +358,20 @@ const renderMinimalWakeup = (wakeup: TradingHarnessWakeup): string =>
       "wakeup exceeded the context budget; call trading_look and fresh market tools before deciding",
   });
 
-/**
- * The causes whose wake is an ALERT, not an assessment.
- *
- * A fired watch already tells the model exactly what changed; everything else
- * about the market is one `trading_look` away and will be fresher when asked
- * for. Injecting the full snapshot on every alert is how a mission's context
- * fills after a handful of wakes. Scheduled reassessments, user messages, and
- * the first turn keep the full snapshot — those turns ARE the assessment.
- */
-const LEAN_WAKE_CAUSES: ReadonlySet<TradingHarnessRunCause> = new Set([
-  "market_watch_triggered",
-  "order_updated",
-  "position_updated",
-] as ReadonlyArray<TradingHarnessRunCause>);
-
 /** What a lean wake keeps of the two lists that can grow, and its fallback. */
 const LEAN_WAKE_CAPS = { armedWatches: 8, pendingEvents: 3 } as const;
 const LEAN_WAKE_TRIMMED_CAPS = { armedWatches: 4, pendingEvents: 1 } as const;
 
 /**
- * Render an alert wake: what fired, what the mission holds, the one review
- * line, and pointers. No candles, no volatility, no book — the model reads
- * those with `trading_look` if the alert warrants acting.
+ * Render a wake: what fired (or what the operator said), what the mission
+ * holds, the plan's numbers on one line, the one review line, and pointers.
+ * No candles, no volatility, no book — the model reads those with
+ * `trading_look` when the wake warrants acting.
+ *
+ * This is THE render path. Every cause used to split between this and a full
+ * market-snapshot assessment; the split is gone because the model called
+ * `trading_look` on assessment turns anyway, so the snapshot rode the context
+ * twice per turn.
  */
 const renderLeanWakeup = (
   wakeup: TradingHarnessWakeup,
@@ -615,6 +385,7 @@ const renderLeanWakeup = (
     occurredAt: wakeup.occurredAt,
     triggeringWatch: wakeup.triggeringWatch,
     wakeReason: wakeup.wakeReason,
+    userMessage: wakeup.userMessage,
     market: wakeup.marketSnapshot.market,
     markPrice: wakeup.marketSnapshot.markPrice,
     position: wakeup.position,
@@ -625,15 +396,45 @@ const renderLeanWakeup = (
     // fetch the plan to learn what that number refers to, which is the round
     // trip the lean wake exists to avoid.
     ...(wakeup.prediction === undefined ? {} : { prediction: wakeup.prediction }),
+    // The plan's numbers, flat so they fold onto one line: intent, phase, and
+    // the stop/target levels. These are what let a reassessment conclude
+    // "price is between my stop and my target and nothing fired — keep
+    // waiting" without a look. The prose stays behind `trading_look`.
     ...(wakeup.activeStrategy === undefined
       ? {}
-      : { plan: { intent: wakeup.activeStrategy.intent, phase: planPhase(wakeup.position.size) } }),
+      : {
+          plan: {
+            intent: wakeup.activeStrategy.intent,
+            phase: planPhase(wakeup.position.size),
+            ...(wakeup.activeStrategy.stop.price === undefined
+              ? {}
+              : { stopPrice: wakeup.activeStrategy.stop.price }),
+            ...(wakeup.activeStrategy.stop.maximumPlannedLossUsd === undefined
+              ? {}
+              : { maxPlannedLossUsd: wakeup.activeStrategy.stop.maximumPlannedLossUsd }),
+            ...(wakeup.activeStrategy.target.price === undefined
+              ? {}
+              : { targetPrice: wakeup.activeStrategy.target.price }),
+            ...(wakeup.activeStrategy.target.profitUsd === undefined
+              ? {}
+              : { targetProfitUsd: wakeup.activeStrategy.target.profitUsd }),
+          },
+        }),
     ...(wakeup.strategyReview === undefined ? {} : { strategyReview: wakeup.strategyReview }),
     ...(wakeup.positionReview === undefined ? {} : { positionReview: wakeup.positionReview }),
     armedWatches: renderArmedWatches(wakeup.armedWatches.slice(0, caps.armedWatches)),
+    // The gaps between the plan and the armed set — a published entry level
+    // with no watch on it, or a watch that cannot evaluate its confirmation.
+    // Usually absent; when present they are exactly what the turn is for.
+    ...(wakeup.unarmedEntryConditions === undefined
+      ? {}
+      : { unarmedEntryConditions: wakeup.unarmedEntryConditions }),
+    ...(wakeup.misarmedEntryConditions === undefined
+      ? {}
+      : { misarmedEntryConditions: wakeup.misarmedEntryConditions }),
     pendingEvents: wakeup.pendingEvents.slice(-caps.pendingEvents),
     omitted:
-      "alert wake — candles, volatility, structure, book, and the full plan are " +
+      "candles, volatility, structure, book, the account, and the full plan are " +
       "deliberately not attached; call trading_look for fresh state before acting",
   });
 
@@ -1158,26 +959,69 @@ const make = Effect.gen(function* () {
       const { mission, harnessRunId, cause, occurredAt, pendingEvents } = input;
       const activeStrategy = input.activeStrategy;
 
-      const facts = yield* observe({
-        mission,
-        occurredAt,
-        ...(activeStrategy === undefined ? {} : { activeStrategy }),
-      });
-      const {
-        marketSnapshot,
-        accountSnapshot,
-        recentCandles,
-        observedVolatility,
-        higherTimeframeVolatility,
-        microstructure,
-        positionCosts,
-        costContext,
-        levelHistory,
-        previousStructureRead,
-        enteredWithoutScoredSetup,
-      } = facts;
-      const position = facts.position;
-      const armed = facts.watches;
+      // The lean gather — what a wake actually carries: the mark, the
+      // position, one cost line, and the armed set. The full `observe`
+      // (candles, both volatility reads, the book, structure memory) belongs
+      // to `trading_look`; running it here paid five exchange reads per wake
+      // for measurements the render then dropped, and the model re-read them
+      // with a look anyway.
+      const market = mission.market;
+      const address = yield* missions
+        .getMasterWalletAddress(mission.tradingAccountId)
+        .pipe(Effect.mapError((error) => fail("address_resolution_failed", error)));
+
+      const [marketSnapshot, exchangePosition] = yield* Effect.all(
+        [gateway.getMarketSnapshot(market), gateway.getPosition(address, market)],
+        { concurrency: "unbounded" },
+      ).pipe(Effect.mapError((error) => fail("snapshot_read_failed", error)));
+
+      // What the position was worth at its best, and how far it has come off
+      // that — T3's own bookkeeping, which the exchange does not report.
+      const peak = yield* missions
+        .readPeakUnrealisedPnl({ missionId: mission.id, market })
+        .pipe(Effect.mapError((error) => fail("peak_pnl_read_failed", error)));
+      const position =
+        peak === null
+          ? exchangePosition
+          : {
+              ...exchangePosition,
+              peakUnrealisedPnl: peak,
+              drawdownFromPeakUsd: Math.max(0, peak - exchangePosition.unrealisedPnl),
+            };
+
+      // The one cost figure a wake carries: the held position's round trip, or
+      // the flat reference line. Enrichments — either failing costs the field,
+      // never the wake.
+      const [rawPositionCosts, rawCostContext] = yield* Effect.all(
+        [
+          costOpenPosition(
+            market,
+            position.size,
+            address,
+            mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
+          ),
+          position.size === 0
+            ? costFlatWakeup(
+                market,
+                activeStrategy !== undefined &&
+                  activeStrategy.entry.initialNotionalUsd !== undefined &&
+                  activeStrategy.entry.initialNotionalUsd > 0
+                  ? activeStrategy.entry.initialNotionalUsd
+                  : null,
+                mission.authority.allocatedCapitalUsd,
+                address,
+                mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
+              )
+            : Effect.succeed<TradingCostContext | null>(null),
+        ],
+        { concurrency: "unbounded" },
+      );
+      const positionCosts = rawPositionCosts === null ? null : roundCostEstimate(rawPositionCosts);
+      const costContext = rawCostContext === null ? null : roundCostContext(rawCostContext);
+
+      const armed = yield* strategies
+        .listWatches(mission.id)
+        .pipe(Effect.mapError((error) => fail("watch_list_failed", error)));
 
       const triggeringWatch = yield* resolveTriggeringWatch(input.triggeringWatchId);
 
@@ -1282,12 +1126,7 @@ const make = Effect.gen(function* () {
         wakeReason: Option.isSome(triggeringWatch) ? triggeringWatch.value.armedReason : undefined,
         userMessage: input.userMessage,
         marketSnapshot,
-        accountSnapshot,
         position,
-        recentCandles,
-        observedVolatility,
-        ...(higherTimeframeVolatility === null ? {} : { higherTimeframeVolatility }),
-        ...(microstructure === null ? {} : { microstructure }),
         ...(positionCosts === null ? {} : { positionCosts }),
         ...(costContext === null ? {} : { costContext }),
         ...(activeStrategy === undefined ? {} : { activeStrategy }),
@@ -1300,9 +1139,6 @@ const make = Effect.gen(function* () {
         ...(misarmedEntryConditions.length === 0 ? {} : { misarmedEntryConditions }),
         ...(strategyReview === undefined ? {} : { strategyReview }),
         ...(positionReview === undefined ? {} : { positionReview }),
-        ...(levelHistory.length === 0 ? {} : { levelHistory }),
-        ...(enteredWithoutScoredSetup === undefined ? {} : { enteredWithoutScoredSetup }),
-        ...(previousStructureRead === undefined ? {} : { previousStructureRead }),
         pendingEvents: [...pendingEvents],
       };
 
@@ -1310,13 +1146,10 @@ const make = Effect.gen(function* () {
       // mission's life and no longer duplicated onto every wake — the rendered
       // text points the run at `trading_look` for them instead.
       const validated = decodeWakeup(wakeup);
-      // An alert wake carries the alert, not the market: the fired watch, the
-      // position, the review line, and a pointer at trading_look. The full
-      // snapshot renders only on the causes that are themselves an assessment.
-      // Both paths are bounded, and both report the same way when they trim.
-      const { text, steps, untrimmedChars } = LEAN_WAKE_CAUSES.has(cause)
-        ? renderBoundedLeanWakeup(validated)
-        : renderBoundedWakeup(validated);
+      // Every wake is an alert: what fired, what is held, the plan's numbers,
+      // and a pointer at trading_look. The path is bounded and reports when it
+      // trims.
+      const { text, steps, untrimmedChars } = renderBoundedLeanWakeup(validated);
       if (steps.length > 0) {
         yield* Effect.logWarning("TradingWakeupComposer: wakeup trimmed to fit the budget", {
           missionId: mission.id,

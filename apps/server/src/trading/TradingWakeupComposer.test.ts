@@ -131,8 +131,12 @@ let costedNotional: number | null = null;
  */
 let bookBehaviour: "served" | "throws" = "served";
 
+/** How many times the composer read the order book. */
+let bookReads = 0;
+
 const stubGateway = Layer.succeed(HyperliquidGateway)({
   getOrderBook: () => {
+    bookReads += 1;
     if (bookBehaviour === "throws") throw new Error("l2Book unreachable");
     return Effect.succeed({
       market: "ETH",
@@ -304,23 +308,76 @@ layer("TradingWakeupComposer", (it) => {
       // What fired, and where to get everything else.
       assert.include(composed.text, "triggeringWatch");
       assert.include(composed.text, "call trading_look");
-      assert.include(composed.text, "alert wake");
+      assert.include(composed.text, "deliberately not attached");
       // What is deliberately NOT attached.
       assert.notInclude(composed.text, "recentCandles");
       assert.notInclude(composed.text, "observedVolatility");
       assert.notInclude(composed.text, "microstructure");
-      // The structured wakeup is still the full one — only the text is lean.
-      assert.equal(composed.wakeup.recentCandles.candles.length, 5);
+      // The structured wakeup is lean too — the composer never fetched candles.
+      assert.isUndefined(composed.wakeup.recentCandles);
       // And it is genuinely small.
       assert.isBelow(composed.text.length, 2_000);
     }),
   );
 
-  it.effect("keeps the full snapshot on a scheduled reassessment", () =>
+  // Every cause renders lean now. The reassessment and user-message wakes used
+  // to keep the full snapshot on the theory that those turns ARE the
+  // assessment — but the model called trading_look on them anyway, so the
+  // snapshot rode the context twice per turn and cost five exchange reads to
+  // build.
+  it.effect("renders a scheduled reassessment lean too", () =>
     Effect.gen(function* () {
       const composed = yield* composeFull({});
-      assert.include(composed.text, "recentCandles");
-      assert.include(composed.text, "observedVolatility");
+      assert.notInclude(composed.text, "recentCandles");
+      assert.notInclude(composed.text, "observedVolatility");
+      assert.notInclude(composed.text, "accountSnapshot");
+      assert.include(composed.text, "call trading_look");
+      assert.isBelow(composed.text.length, 2_000);
+    }),
+  );
+
+  it.effect("the operator's words ride a user-message wake", () =>
+    Effect.gen(function* () {
+      const composer = yield* TradingWakeupComposer;
+      const composed = yield* composer.compose({
+        mission,
+        harnessRunId: "run_1",
+        cause: "user_message",
+        occurredAt: NOW,
+        userMessage: "close the long and stand down.",
+        pendingEvents: [],
+        activeStrategy: strategy,
+      });
+      assert.include(composed.text, "close the long and stand down.");
+      // The message wakes an alert, not an assessment.
+      assert.notInclude(composed.text, "recentCandles");
+      assert.isBelow(composed.text.length, 2_000);
+    }),
+  );
+
+  // What lets a reassessment conclude "price is between my stop and my target
+  // and nothing fired — keep waiting" without a look: the plan's numbers ride
+  // the wake as one line. The prose stays behind trading_look.
+  it.effect("carries the plan's stop and target numbers, not its prose", () =>
+    Effect.gen(function* () {
+      const { text } = yield* composeFull({});
+      assert.include(text, "intent=long");
+      assert.include(text, "stopPrice=3900");
+      assert.include(text, "targetProfitUsd=15");
+      assert.notInclude(text, "long the reclaim");
+    }),
+  );
+
+  // The fetch half of the same discipline: a wake that renders no candles and
+  // no book must not read them either. trading_look pays for what it returns;
+  // a wake pays for the mark, the position, and one cost line.
+  it.effect("a wake reads no candles and no book", () =>
+    Effect.gen(function* () {
+      requestedIntervals = [];
+      bookReads = 0;
+      yield* compose();
+      assert.deepEqual(requestedIntervals, []);
+      assert.equal(bookReads, 0);
     }),
   );
 
@@ -514,45 +571,53 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
-  it.effect("carries the net position and a bounded 8-bar slice of the primary timeframe", () =>
+  it.effect("carries the net position, and no candles at all", () =>
     Effect.gen(function* () {
       const wakeup = yield* compose();
       // Flat is a real position, not a missing one.
       assert.equal(wakeup.position.size, 0);
-      // The primary timeframe is strategy.timeframes[0] ("1m"); the slice is capped at 8.
-      assert.equal(wakeup.recentCandles.interval, "1m");
-      assert.equal(wakeup.recentCandles.candles.length, 5);
+      // Price action is trading_look's to return, not the wake's to push.
+      assert.isUndefined(wakeup.recentCandles);
+      assert.isUndefined(wakeup.observedVolatility);
+      assert.isUndefined(wakeup.accountSnapshot);
     }),
   );
 
-  it.effect("measures the volatility a profit target has to be derived from", () =>
+  // The gather half (`observe`) is what trading_look returns — the candles,
+  // the volatility pair, the book. These pin that the look kept everything
+  // the wake stopped pushing.
+  it.effect("observe carries the bounded candle slice and the volatility measurement", () =>
     Effect.gen(function* () {
-      const wakeup = yield* compose();
-      const measured = wakeup.observedVolatility;
+      const composer = yield* TradingWakeupComposer;
+      const facts = yield* composer.observe({ mission, occurredAt: NOW });
 
-      // Measured over the full read, not the 8 bars the wakeup shows.
+      assert.equal(facts.recentCandles.interval, "1m");
+      assert.equal(facts.recentCandles.candles.length, 5);
+      const measured = facts.observedVolatility;
+      // Measured over the full read, not the bounded slice.
       assert.equal(measured.barsObserved, VOLATILITY_LOOKBACK_BARS);
       assert.equal(measured.interval, "1m");
       assert.equal(measured.sufficientData, true);
       // Every bar spans MARK ± 5, so the true range is 10 on each of them.
       assert.closeTo(measured.atrUsd, 10, 1e-6);
-      // Two horizons only: the wakeup trims the default six-point distribution
-      // to the near/far pair a target check needs.
+      // Two horizons only: the near/far pair a target check needs.
       assert.equal(measured.horizons.length, 2);
     }),
   );
-  it.effect("pairs the primary timeframe with the one above it", () =>
+
+  it.effect("observe pairs the primary timeframe with the one above it", () =>
     Effect.gen(function* () {
       requestedIntervals = [];
-      const wakeup = yield* compose();
+      const composer = yield* TradingWakeupComposer;
+      const facts = yield* composer.observe({ mission, occurredAt: NOW });
 
       // A 1m mission gets 15m as its second read — the pair a target needs,
       // without the harness having to remember to ask for it.
       assert.deepEqual([...requestedIntervals].sort(), ["15m", "1m"]);
-      assert.equal(wakeup.higherTimeframeVolatility?.interval, "15m");
-      assert.equal(wakeup.higherTimeframeVolatility?.barsObserved, VOLATILITY_LOOKBACK_BARS);
+      assert.equal(facts.higherTimeframeVolatility?.interval, "15m");
+      assert.equal(facts.higherTimeframeVolatility?.barsObserved, VOLATILITY_LOOKBACK_BARS);
       // The higher timeframe is trimmed to the same two horizons as the primary.
-      assert.equal(wakeup.higherTimeframeVolatility?.horizons.length, 2);
+      assert.equal(facts.higherTimeframeVolatility?.horizons.length, 2);
     }),
   );
 
@@ -625,14 +690,14 @@ layer("TradingWakeupComposer", (it) => {
       assert.isUndefined(wakeup.strategyAgeMillis);
       assert.isUndefined(wakeup.unarmedEntryConditions);
       assert.isUndefined(wakeup.misarmedEntryConditions);
-      // The snapshot half is all still there.
+      // The mark and the armed set still ride; the snapshot halves do not.
       assert.equal(wakeup.marketSnapshot.market, "ETH");
       assert.isArray(wakeup.armedWatches);
-      assert.isArray(wakeup.recentCandles.candles);
+      assert.isUndefined(wakeup.recentCandles);
       // The decision prompt says the mission has no plan and what to do.
       assert.include(wakeup.strategyReview ?? "", "NO PLAN ACTIVE");
       assert.include(wakeup.strategyReview ?? "", "trading_plan");
-      assert.isBelow(text.length, 5_000);
+      assert.isBelow(text.length, 2_000);
     }),
   );
 
@@ -665,34 +730,20 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
-  it.effect("feeds the runtime's 1m bars even when the plan reasons on a longer interval", () =>
+  it.effect("observe works the interval the mandate names when it names one", () =>
     Effect.gen(function* () {
       requestedIntervals = [];
-      // The failure this exists for: a plan that named `timeframes: ["15m"]`
-      // used to make the runtime read 15m bars and measure 15m volatility, so
-      // the 1m structure the entry actually turns on was never in front of it.
-      // The plan no longer names timeframes (plan 29 step 4.1) — the mandate
-      // is the only source, and an unmandated mission gets 1m plus the fixed
-      // 15m pairing.
-      const composed = yield* composeFull({});
-
-      assert.equal(composed.wakeup.recentCandles.interval, "1m");
-      assert.equal(composed.wakeup.observedVolatility.interval, "1m");
-      // The higher read still happens — the fixed pairing, not the plan's.
-      assert.equal(composed.wakeup.higherTimeframeVolatility?.interval, "15m");
-      assert.deepEqual([...requestedIntervals].sort(), ["15m", "1m"]);
-    }),
-  );
-
-  it.effect("works the interval the mandate names when it names one", () =>
-    Effect.gen(function* () {
-      requestedIntervals = [];
-      const composed = yield* composeFull({
-        instruction: "scalp ETH on the 5m while the New York session is open",
+      const composer = yield* TradingWakeupComposer;
+      const facts = yield* composer.observe({
+        mission: {
+          ...mission,
+          instruction: "scalp ETH on the 5m while the New York session is open",
+        },
+        occurredAt: NOW,
       });
 
-      assert.equal(composed.wakeup.recentCandles.interval, "5m");
-      assert.equal(composed.wakeup.higherTimeframeVolatility?.interval, "1h");
+      assert.equal(facts.recentCandles.interval, "5m");
+      assert.equal(facts.higherTimeframeVolatility?.interval, "1h");
     }),
   );
 
@@ -802,22 +853,21 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
-  it.effect("renders an ordinary wakeup untouched", () =>
+  it.effect("renders an ordinary wakeup with no trim markers", () =>
     Effect.gen(function* () {
       const { text } = yield* composeFull();
-      assert.isBelow(text.length, MAX_WAKEUP_CHARS);
+      assert.isBelow(text.length, 2_000);
       assert.notInclude(text, "…");
       assert.notInclude(text, "[truncated:");
-      // The plan's own prose survives verbatim when it fits.
-      assert.include(text, "long the reclaim");
     }),
   );
 
-  it.effect("composes a verbose plan by trimming it, never by failing", () =>
+  it.effect("a verbose plan cannot bloat the wake", () =>
     Effect.gen(function* () {
-      // The failure this pins: one plan authored with 10k-char prose used to
-      // make every wake for that mission's life fail with `wakeup_too_large`,
-      // which left the mission deaf while still holding a position.
+      // The failure this pins, updated for the lean era: one plan authored
+      // with 10k-char prose used to make every wake for that mission's life
+      // ride (a trimmed form of) it. The prose never boards the wake now —
+      // only the plan's numbers do — so no trim is even needed.
       const verbose = {
         ...strategy,
         because: "b".repeat(10_000),
@@ -832,50 +882,41 @@ layer("TradingWakeupComposer", (it) => {
 
       const { text } = yield* composeFull({ activeStrategy: verbose });
 
-      assert.isAtMost(text.length, MAX_WAKEUP_CHARS);
-      // The trim marker is what tells the run the plan it sees is a projection.
-      assert.include(text, "…");
-      assert.include(text, "more)");
-      // The facts a run cannot re-derive from a tool call survive the trim.
-      assert.include(text, "marketSnapshot");
+      assert.isBelow(text.length, 2_000);
+      assert.notInclude(text, "bbbb");
+      assert.notInclude(text, "trigger 0");
+      // The facts a run cannot re-derive from a tool call still ride.
+      assert.include(text, "markPrice");
+      assert.include(text, "stopPrice=3900");
     }),
   );
-  // -- the book, plan 29 step 7.1 --------------------------------------------
+  // -- the book, plan 29 step 7.1 — a look's to read, not a wake's to push ----
 
-  it.effect("carries the book imbalance on every wake", () =>
+  it.effect("observe carries the book imbalance for a look", () =>
     Effect.gen(function* () {
-      const wakeup = yield* compose();
+      const composer = yield* TradingWakeupComposer;
+      const facts = yield* composer.observe({ mission, occurredAt: NOW });
       // Three on the bid against one on the ask, at one price: (3 - 1) / 4.
-      assert.equal(wakeup.microstructure?.bookImbalance?.imbalance, 0.5);
-      assert.equal(wakeup.microstructure?.bookImbalance?.levels, 1);
+      assert.equal(facts.microstructure?.bookImbalance?.imbalance, 0.5);
+      assert.equal(facts.microstructure?.bookImbalance?.levels, 1);
       // The tape reading rides the same field, from the same history the
       // volatility measurement was taken over.
-      assert.equal(wakeup.microstructure?.aggressorFlow?.bars, 15);
+      assert.equal(facts.microstructure?.aggressorFlow?.bars, 15);
       // Spread and near-touch depth come off the same book. This database has
       // no sample table, so the change fields are absent — which is the point:
       // "nothing to compare against" is stated by their absence, never by a
       // zero that would read as "unchanged".
-      assert.isDefined(wakeup.microstructure?.liquidity?.spreadBps);
-      assert.isUndefined(wakeup.microstructure?.liquidity?.depthChangePercent);
-    }),
-  );
-
-  it.effect("reads the same book a look reads, from one read", () =>
-    Effect.gen(function* () {
-      const composer = yield* TradingWakeupComposer;
-      const facts = yield* composer.observe({ mission, occurredAt: NOW });
-      const wakeup = yield* compose();
-      // `trading_look` returns `facts`; the wake renders the same value. If the
-      // two ever diverged, a look and a wake would quote different books.
-      assert.deepEqual(facts.microstructure, wakeup.microstructure);
+      assert.isDefined(facts.microstructure?.liquidity?.spreadBps);
+      assert.isUndefined(facts.microstructure?.liquidity?.depthChangePercent);
       assert.equal(facts.orderBook?.bids[0]?.size, 3);
     }),
   );
 
-  it.effect("a book read that throws costs the book fields and nothing else", () =>
+  it.effect("a book read that throws costs the look's book fields and nothing else", () =>
     Effect.gen(function* () {
       bookBehaviour = "throws";
-      const wakeup = yield* compose().pipe(
+      const composer = yield* TradingWakeupComposer;
+      const facts = yield* composer.observe({ mission, occurredAt: NOW }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
             bookBehaviour = "served";
@@ -884,14 +925,14 @@ layer("TradingWakeupComposer", (it) => {
       );
 
       // The book reading is gone...
-      assert.equal(wakeup.microstructure?.bookImbalance, undefined);
+      assert.equal(facts.microstructure?.bookImbalance, undefined);
       // ...and the tape reading, which the book read never fed, is not.
-      assert.isDefined(wakeup.microstructure?.aggressorFlow);
-      // ...and everything the wake is actually defined by survived it.
-      assert.equal(wakeup.marketSnapshot.markPrice, MARK);
-      assert.equal(wakeup.position.size, 0);
-      assert.isAbove(wakeup.recentCandles.candles.length, 0);
-      assert.isDefined(wakeup.observedVolatility);
+      assert.isDefined(facts.microstructure?.aggressorFlow);
+      // ...and everything the observation is actually defined by survived it.
+      assert.equal(facts.marketSnapshot.markPrice, MARK);
+      assert.equal(facts.position.size, 0);
+      assert.isAbove(facts.recentCandles.candles.length, 0);
+      assert.isDefined(facts.observedVolatility);
     }),
   );
 });
