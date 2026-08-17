@@ -42,7 +42,10 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import { applyTradingTurnContract } from "../TradingSessionProfile.ts";
+import {
+  applyTradingTurnContract,
+  resetTradingContractDelivery,
+} from "../TradingSessionProfile.ts";
 
 import {
   ProviderAdapterRequestError,
@@ -1659,6 +1662,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           yield* Effect.suspend(() => stopSessionInternal(existing));
         }
 
+        // A new session instance, fresh or resumed: its first turn carries the
+        // trading contract in full again.
+        resetTradingContractDelivery(input.threadId);
+
         const serviceTier =
           input.modelSelection?.instanceId === boundInstanceId
             ? getCodexServiceTierOptionValue(input.modelSelection)
@@ -1805,6 +1812,13 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
 
     const session = yield* requireSession(input.threadId);
+    // A trading thread carries the provider-neutral decision contract: Codex
+    // has no replaceable system prompt at this seam, and an ordinary
+    // coding-agent context is not the context a mission runs in. The full text
+    // rides the first turn of each session instance and a one-line header
+    // thereafter, which is why delivery is only recorded once the turn is away.
+    const contract =
+      input.input === undefined ? undefined : applyTradingTurnContract(input.threadId, input.input);
     const reasoningEffort =
       input.modelSelection?.instanceId === boundInstanceId
         ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")
@@ -1815,12 +1829,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         : undefined;
     return yield* session.runtime
       .sendTurn({
-        // A trading thread carries the provider-neutral decision contract on
-        // every turn: Codex has no replaceable system prompt at this seam, and
-        // an ordinary coding-agent context is not the context a mission runs in.
-        ...(input.input !== undefined
-          ? { input: applyTradingTurnContract(input.threadId, input.input) }
-          : {}),
+        ...(contract === undefined ? {} : { input: contract.text }),
         ...(input.modelSelection?.instanceId === boundInstanceId
           ? { model: input.modelSelection.model }
           : {}),
@@ -1833,7 +1842,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
         ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
       })
-      .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
+      .pipe(
+        Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)),
+        Effect.tap(() => Effect.sync(() => contract?.markDelivered())),
+      );
   });
 
   const requireSession = Effect.fn("requireSession")(function* (threadId: ThreadId) {

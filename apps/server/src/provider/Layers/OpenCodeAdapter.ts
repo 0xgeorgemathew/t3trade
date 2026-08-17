@@ -30,7 +30,10 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import { applyTradingTurnContract } from "../TradingSessionProfile.ts";
+import {
+  applyTradingTurnContract,
+  resetTradingContractDelivery,
+} from "../TradingSessionProfile.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
   ProviderAdapterProcessError,
@@ -1222,6 +1225,10 @@ export function makeOpenCodeAdapter(
           sessions.delete(input.threadId);
         }
 
+        // A new session instance, fresh or resumed: its first turn carries the
+        // trading contract in full again.
+        resetTradingContractDelivery(input.threadId);
+
         const started = yield* Effect.gen(function* () {
           const sessionScope = yield* Scope.make();
           const startedExit = yield* Effect.exit(
@@ -1467,9 +1474,13 @@ export function makeOpenCodeAdapter(
 
       // Trading threads carry the provider-neutral decision contract ahead of
       // the wakeup: OpenCode sessions have no replaceable system prompt here.
-      const text = input.input?.trim()
+      // The full text rides the first turn of each session instance and a
+      // one-line header thereafter, which is why delivery is only recorded
+      // once the prompt is away.
+      const contract = input.input?.trim()
         ? applyTradingTurnContract(input.threadId, input.input.trim())
-        : input.input?.trim();
+        : undefined;
+      const text = contract?.text ?? input.input?.trim();
       const fileParts = toOpenCodeFileParts({
         attachments: input.attachments,
         resolveAttachmentPath: (attachment) =>
@@ -1523,6 +1534,7 @@ export function makeOpenCodeAdapter(
         }),
       ).pipe(
         Effect.mapError(toRequestError),
+        Effect.tap(() => Effect.sync(() => contract?.markDelivered())),
         // On failure of a fresh turn: clear active-turn state, flip the
         // session back to ready with lastError set, emit turn.aborted, then
         // let the typed error propagate. We don't need to rebuild the error

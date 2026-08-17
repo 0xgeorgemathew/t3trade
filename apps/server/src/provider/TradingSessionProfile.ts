@@ -126,10 +126,7 @@ Your trading strategy, entry rules, and risk parameters are NOT given here. Read
 
 /**
  * The same contract as a prefix for adapters that cannot replace their system
- * prompt. It is applied to every trading turn rather than once per session: a
- * session is resumed across many wakes and there is no reliable "first turn"
- * signal at this seam, and a wake whose contract is missing is exactly the
- * failure this profile exists to remove.
+ * prompt. Sent once per session instance — see `applyTradingTurnContract`.
  */
 const TRADING_TURN_CONTRACT = `[t3-trade trading session]
 
@@ -140,11 +137,54 @@ ${DECISION_CONTRACT}
 The wakeup follows.`;
 
 /**
+ * What every subsequent turn on the same session carries instead.
+ *
+ * It names the frame and nothing else. The contract itself is already in the
+ * session's transcript, and repeating it does not make it more true.
+ */
+const TRADING_TURN_HEADER = `[t3-trade trading session] Trading mission turn — use ONLY the ${TRADING_MCP_SERVER_NAME} MCP tools; no shell, files, or web. The wakeup follows.`;
+
+/**
+ * Threads whose current session instance has already been handed the contract.
+ *
+ * In memory and per process on purpose. `startSession` clears the entry, and a
+ * restart or an adapter's own resume is a new session instance whose transcript
+ * this process cannot vouch for — so one full copy per instance is the
+ * insurance, and it is cheap. What it replaces is not: on a 206-wake thread the
+ * 9.5k-char contract rode 206 times, which is 1.9M characters of identical
+ * prefix the model paid for on every single turn.
+ */
+const contractDelivered = new Set<ThreadId>();
+
+/**
+ * A new session instance for this thread — the next turn carries the contract
+ * in full again. Called from every adapter's `startSession`, fresh or resumed.
+ */
+export function resetTradingContractDelivery(threadId: ThreadId): void {
+  contractDelivered.delete(threadId);
+}
+
+/** What one turn's prefix is, and how to record that it actually arrived. */
+export interface TradingTurnContract {
+  readonly text: string;
+  /**
+   * Call only once the turn has been dispatched successfully. A turn that
+   * failed to send must not swallow the contract — the next one has to carry
+   * it, or the session runs with no contract at all.
+   */
+  readonly markDelivered: () => void;
+}
+
+/**
  * Prefix a turn's text with the trading contract when the thread is a trading
  * thread. A non-trading thread is returned untouched, so every adapter can call
  * this unconditionally at its prompt-building seam.
  */
-export function applyTradingTurnContract(threadId: ThreadId, text: string): string {
-  if (!isTradingThread(threadId)) return text;
-  return `${TRADING_TURN_CONTRACT}\n\n${text}`;
+export function applyTradingTurnContract(threadId: ThreadId, text: string): TradingTurnContract {
+  if (!isTradingThread(threadId)) return { text, markDelivered: () => {} };
+  const prefix = contractDelivered.has(threadId) ? TRADING_TURN_HEADER : TRADING_TURN_CONTRACT;
+  return {
+    text: `${prefix}\n\n${text}`,
+    markDelivered: () => contractDelivered.add(threadId),
+  };
 }

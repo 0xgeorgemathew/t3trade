@@ -35,7 +35,10 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import { applyTradingTurnContract } from "../TradingSessionProfile.ts";
+import {
+  applyTradingTurnContract,
+  resetTradingContractDelivery,
+} from "../TradingSessionProfile.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -555,6 +558,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             yield* stopSessionInternal(existing);
           }
 
+          // A new session instance, fresh or resumed: its first turn carries
+          // the trading contract in full again.
+          resetTradingContractDelivery(input.threadId);
+
           const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
           const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
           const sessionScope = yield* Scope.make("sequential");
@@ -953,10 +960,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
               // Trading threads carry the provider-neutral decision contract
               // ahead of the wakeup: Grok's ACP session has no replaceable
-              // system prompt.
-              const text = input.input?.trim()
+              // system prompt. The full text rides the first turn of each
+              // session instance and a one-line header thereafter, which is
+              // why delivery is only recorded once the prompt is away.
+              const contract = input.input?.trim()
                 ? applyTradingTurnContract(input.threadId, input.input.trim())
-                : input.input?.trim();
+                : undefined;
+              const text = contract?.text ?? input.input?.trim();
               const imagePromptParts = yield* Effect.forEach(
                 input.attachments ?? [],
                 (attachment) =>
@@ -1047,6 +1057,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               return {
                 acp: ctx.acp,
                 acpSessionId: ctx.acpSessionId,
+                contract,
                 displayModel,
                 promptParts,
                 turnId,
@@ -1085,6 +1096,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 Effect.all([
                   Ref.set(promptRpcSucceeded, true),
                   Ref.set(promptResultRef, promptResult),
+                  Effect.sync(() => prepared.contract?.markDelivered()),
                 ]),
               ),
               Effect.tapError((error) =>

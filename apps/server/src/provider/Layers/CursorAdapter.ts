@@ -43,7 +43,10 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import { applyTradingTurnContract } from "../TradingSessionProfile.ts";
+import {
+  applyTradingTurnContract,
+  resetTradingContractDelivery,
+} from "../TradingSessionProfile.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -504,6 +507,10 @@ export function makeCursorAdapter(
             yield* stopSessionInternal(existing);
           }
 
+          // A new session instance, fresh or resumed: its first turn carries
+          // the trading contract in full again.
+          resetTradingContractDelivery(input.threadId);
+
           const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
           const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
           const sessionScope = yield* Scope.make("sequential");
@@ -962,14 +969,16 @@ export function makeCursorAdapter(
           }
 
           const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
-          if (input.input?.trim()) {
-            // On a trading thread the turn carries the provider-neutral
-            // decision contract ahead of the wakeup — Cursor's ACP session has
-            // no replaceable system prompt.
-            promptParts.push({
-              type: "text",
-              text: applyTradingTurnContract(input.threadId, input.input.trim()),
-            });
+          // On a trading thread the turn carries the provider-neutral decision
+          // contract ahead of the wakeup — Cursor's ACP session has no
+          // replaceable system prompt. The full text rides the first turn of
+          // each session instance and a one-line header thereafter, which is
+          // why delivery is only recorded once the prompt is away.
+          const contract = input.input?.trim()
+            ? applyTradingTurnContract(input.threadId, input.input.trim())
+            : undefined;
+          if (contract !== undefined) {
+            promptParts.push({ type: "text", text: contract.text });
           }
           if (input.attachments && input.attachments.length > 0) {
             for (const attachment of input.attachments) {
@@ -1019,6 +1028,7 @@ export function makeCursorAdapter(
               Effect.mapError((error) =>
                 mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
               ),
+              Effect.tap(() => Effect.sync(() => contract?.markDelivered())),
             );
 
           const turnRecord = ctx.turns.find((turn) => turn.id === turnId);

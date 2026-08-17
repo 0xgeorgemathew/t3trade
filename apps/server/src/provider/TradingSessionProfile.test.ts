@@ -7,6 +7,7 @@ import { TradingToolkit } from "../mcp/toolkits/trading/tools.ts";
 import { clearAllSessionProfiles, setSessionProfile } from "./SessionProfile.ts";
 import {
   applyTradingTurnContract,
+  resetTradingContractDelivery,
   TRADING_ALLOWED_TOOL_NAMES,
   TRADING_SYSTEM_PROMPT,
   TRADING_TOOL_NAMES,
@@ -69,22 +70,59 @@ it("has every provider adapter apply the profile", async () => {
     "GrokAdapter.ts",
     "OpenCodeAdapter.ts",
   ]) {
-    expect(await read(adapter), adapter).toContain("applyTradingTurnContract(input.threadId");
+    const source = await read(adapter);
+    expect(source, adapter).toContain("applyTradingTurnContract(input.threadId");
+    // Both halves of the once-per-session delivery, or the adapter either
+    // repeats the contract forever or drops it after a failed turn.
+    expect(source, adapter).toContain("resetTradingContractDelivery(input.threadId)");
+    expect(source, adapter).toContain("markDelivered()");
   }
 });
 
-it("prefixes the same contract onto a trading thread's turn, and leaves other threads alone", () => {
+it("prefixes the contract onto a trading thread's turn, and leaves other threads alone", () => {
   clearAllSessionProfiles();
   const tradingThread = ThreadId.make("thread-trading");
   const codingThread = ThreadId.make("thread-coding");
   setSessionProfile({ threadId: tradingThread, kind: "trading" });
+  resetTradingContractDelivery(tradingThread);
 
   const wakeup = '{"kind":"trading-harness-wakeup"}';
   const prefixed = applyTradingTurnContract(tradingThread, wakeup);
-  expect(prefixed.endsWith(wakeup)).toBe(true);
-  expect(prefixed).toContain("trading_plan");
-  expect(prefixed).toContain("blocked_by_data");
-  expect(applyTradingTurnContract(codingThread, wakeup)).toBe(wakeup);
+  expect(prefixed.text.endsWith(wakeup)).toBe(true);
+  expect(prefixed.text).toContain("trading_plan");
+  expect(prefixed.text).toContain("blocked_by_data");
+  expect(applyTradingTurnContract(codingThread, wakeup).text).toBe(wakeup);
+
+  clearAllSessionProfiles();
+});
+
+// The contract is 9.5k chars and does not change. On the 206-wake thread the
+// token audit measured, prefixing it to every turn was 1.9M characters of
+// identical text the model paid to read again on each one.
+it("sends the contract once per session instance, and only once it has arrived", () => {
+  clearAllSessionProfiles();
+  const tradingThread = ThreadId.make("thread-trading-once");
+  setSessionProfile({ threadId: tradingThread, kind: "trading" });
+  resetTradingContractDelivery(tradingThread);
+
+  const wakeup = '{"kind":"trading-harness-wakeup"}';
+
+  // A turn that never dispatched must not swallow the contract.
+  expect(applyTradingTurnContract(tradingThread, wakeup).text).toContain("blocked_by_data");
+
+  const first = applyTradingTurnContract(tradingThread, wakeup);
+  expect(first.text).toContain("blocked_by_data");
+  first.markDelivered();
+
+  const second = applyTradingTurnContract(tradingThread, wakeup);
+  expect(second.text).not.toContain("blocked_by_data");
+  expect(second.text).toContain("t3-trade trading session");
+  expect(second.text.endsWith(wakeup)).toBe(true);
+  expect(second.text.length).toBeLessThan(first.text.length / 10);
+
+  // A new session instance starts the thread over.
+  resetTradingContractDelivery(tradingThread);
+  expect(applyTradingTurnContract(tradingThread, wakeup).text).toContain("blocked_by_data");
 
   clearAllSessionProfiles();
 });
