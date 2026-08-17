@@ -278,13 +278,37 @@ export const makeParameterIssueReporter = (
   };
 };
 
+/**
+ * The tool's own encoded result, read back off the text content.
+ *
+ * A success used to ride twice: `structuredContent` and a byte-identical JSON
+ * copy in `content`. `content` is the channel every MCP client reads and the
+ * tools declare no `outputSchema`, so the copy was pure wire cost — a 40k-char
+ * read charged 80k. Telemetry below is the only server-side reader of the
+ * body, and it decodes here rather than keeping the second copy alive.
+ */
+const decodeToolResultBody = (
+  result: McpSchema.CallToolResult,
+): Record<string, unknown> | undefined => {
+  const first = result.content[0];
+  if (first?.type !== "text") return undefined;
+  try {
+    const parsed: unknown = JSON.parse(first.text);
+    return typeof parsed === "object" && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 /** In-band tool outcomes that mean the requested operation did not succeed. */
 const isRejectedToolResult = (result: McpSchema.CallToolResult): boolean => {
   if (result.isError === true) return true;
-  const content = result.structuredContent;
-  if (content === undefined) return false;
-  const outcome = content["outcome"];
-  const status = content["status"];
+  const body = decodeToolResultBody(result);
+  if (body === undefined) return false;
+  const outcome = body["outcome"];
+  const status = body["status"];
   return (
     outcome === "rejected" ||
     outcome === "refused" ||
@@ -363,12 +387,9 @@ const registerToolkitLenient = Effect.fnUntraced(function* <Tools extends Record
             Effect.provideContext(services),
             Effect.map(
               (result) =>
+                // One copy, not two. See `decodeToolResultBody`.
                 new McpSchema.CallToolResult({
                   isError: false,
-                  structuredContent:
-                    typeof result.encodedResult === "object"
-                      ? (result.encodedResult as Record<string, unknown>)
-                      : undefined,
                   content: [{ type: "text", text: JSON.stringify(result.encodedResult) }],
                 }),
             ),
@@ -405,10 +426,12 @@ const registerToolkitLenient = Effect.fnUntraced(function* <Tools extends Record
                     accepted: !isRejectedToolResult(result),
                     ...(result.isError === true
                       ? {
+                          // Every error this registration builds is
+                          // `toolErrorResult`, which is text.
                           errorMessage:
                             result.content[0]?.type === "text"
                               ? result.content[0].text
-                              : JSON.stringify(result.structuredContent ?? {}),
+                              : INTERNAL_TOOL_ERROR_MESSAGE,
                         }
                       : {}),
                   }).pipe(Effect.catchCause(() => Effect.void)),

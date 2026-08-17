@@ -110,6 +110,25 @@ const parseJsonRpc = (body: string): { readonly result?: any; readonly error?: a
 };
 
 /**
+ * The tool's own encoded result, decoded off the text content.
+ *
+ * The server sends it exactly once, as JSON text — `structuredContent` used to
+ * carry a byte-identical second copy and no longer does, so a test reads the
+ * one channel the model reads.
+ */
+const withDecodedBody = (response: { readonly result?: any; readonly error?: any }) => {
+  const first = response.result?.content?.[0];
+  if (first?.type !== "text") return response;
+  // An `isError` result carries a plain sentence, not an encoded body. Those
+  // tests read `result.content`, so leave `body` unset rather than throwing.
+  try {
+    return { ...response, result: { ...response.result, body: decodeJson(first.text) } };
+  } catch {
+    return response;
+  }
+};
+
+/**
  * Records what the toolkit raises on the orchestration engine, so a test can
  * assert that an accepted publish reaches the ordered push path instead of
  * stopping at the database.
@@ -611,7 +630,7 @@ const withMcpServer = <A, E>(
               params: { name, arguments: args },
             }),
           });
-          return parseJsonRpc(yield* response.text);
+          return withDecodedBody(parseJsonRpc(yield* response.text));
         }).pipe(Effect.orDie);
 
       return yield* body({
@@ -639,7 +658,12 @@ it.effect("serves trading_look and a versioned publish over the real /mcp endpoi
           missionId: MISSION_ID,
         });
         assert.equal(initial.result.isError, false);
-        const before = initial.result.structuredContent.mission;
+        // The result rides once. A `structuredContent` copy beside the text was
+        // byte-identical, so a 40k-char read was charged twice on every turn.
+        assert.equal(initial.result.structuredContent, undefined);
+        assert.equal(initial.result.content.length, 1);
+        assert.equal(initial.result.content[0].type, "text");
+        const before = initial.result.body.mission;
         assert.equal(before.mission.id, MISSION_ID);
         assert.equal(before.mission.status, "initializing");
         assert.equal(before.missionVersion, 1);
@@ -649,9 +673,9 @@ it.effect("serves trading_look and a versioned publish over the real /mcp endpoi
         assert.equal(before.harness.threadId, BOUND_THREAD);
         assert.deepStrictEqual(before.watches, []);
         // The market half of the same answer, which used to be eleven more calls.
-        assert.equal(initial.result.structuredContent.market, "ETH");
-        assert.equal(initial.result.structuredContent.position.size, 0);
-        assert.equal(typeof initial.result.structuredContent.snapshot.markPrice, "number");
+        assert.equal(initial.result.body.market, "ETH");
+        assert.equal(initial.result.body.position.size, 0);
+        assert.equal(typeof initial.result.body.snapshot.markPrice, "number");
 
         const published = yield* callTool(BOUND_THREAD, "trading_plan", {
           missionId: MISSION_ID,
@@ -659,17 +683,14 @@ it.effect("serves trading_look and a versioned publish over the real /mcp endpoi
           strategy: strategyBody("overnight range break"),
         });
         assert.equal(published.result.isError, false);
-        assert.equal(published.result.structuredContent.outcome, "accepted");
-        assert.equal(published.result.structuredContent.strategy.intent, "long");
+        assert.equal(published.result.body.outcome, "accepted");
+        assert.equal(published.result.body.strategy.intent, "long");
 
         const after = yield* callTool(BOUND_THREAD, "trading_look", {
           missionId: MISSION_ID,
         });
-        assert.equal(after.result.structuredContent.mission.missionVersion, 2);
-        assert.equal(
-          after.result.structuredContent.mission.strategy.because,
-          "overnight range break",
-        );
+        assert.equal(after.result.body.mission.missionVersion, 2);
+        assert.equal(after.result.body.mission.strategy.because, "overnight range break");
 
         // The accepted publish was announced on the orchestration engine, which
         // is what puts it on the server's ordered WS push path — and so was the
@@ -702,7 +723,7 @@ it.effect("rejects a stale expectedMissionVersion over MCP and leaves the plan i
         strategy: strategyBody("v2 attempt from a stale reader"),
       });
       assert.equal(stale.result.isError, false);
-      assert.deepStrictEqual(stale.result.structuredContent, {
+      assert.deepStrictEqual(stale.result.body, {
         outcome: "rejected",
         reason: "stale_mission_state",
         currentVersion: 2,
@@ -712,8 +733,8 @@ it.effect("rejects a stale expectedMissionVersion over MCP and leaves the plan i
       const current = yield* callTool(BOUND_THREAD, "trading_look", {
         missionId: MISSION_ID,
       });
-      assert.equal(current.result.structuredContent.mission.missionVersion, 2);
-      assert.equal(current.result.structuredContent.mission.strategy.because, "v1");
+      assert.equal(current.result.body.mission.missionVersion, 2);
+      assert.equal(current.result.body.mission.strategy.because, "v1");
     }),
   ),
 );
@@ -734,7 +755,7 @@ it.effect("keeps the prior version's active watches working across an accepted p
         expectedMissionVersion: 2,
         strategy: strategyBody("v2"),
       });
-      assert.equal(republished.result.structuredContent.outcome, "accepted");
+      assert.equal(republished.result.body.outcome, "accepted");
 
       // Plan 29 step 4.2: revising the plan does not touch the watches. The
       // trigger armed under v1 keeps working until the model itself cancels
@@ -742,7 +763,7 @@ it.effect("keeps the prior version's active watches working across an accepted p
       const current = yield* callTool(BOUND_THREAD, "trading_look", {
         missionId: MISSION_ID,
       });
-      const watches = current.result.structuredContent.mission.watches;
+      const watches = current.result.body.mission.watches;
       assert.equal(watches.length, 1);
       assert.equal(watches[0].status, "active");
     }),
@@ -773,7 +794,7 @@ it.effect("rebuilds a reacting turn's picture in two scoped, bounded looks", () 
           scope: ["candles"],
           bars: 6,
         });
-        const barsRead = bars.result.structuredContent;
+        const barsRead = bars.result.body;
         assert.isAtMost(barsRead.candles.candles.length, 6);
         assert.equal(barsRead.volatility.market, "ETH");
         // Everything a reaction did not ask for stayed home.
@@ -795,7 +816,7 @@ it.effect("rebuilds a reacting turn's picture in two scoped, bounded looks", () 
           missionId: MISSION_ID,
           scope: ["position"],
         });
-        const heldRead = held.result.structuredContent;
+        const heldRead = held.result.body;
         assert.equal(heldRead.position.size, 0);
         assert.notEqual(heldRead.account, undefined);
         assert.equal(heldRead.candles, undefined);
@@ -804,7 +825,7 @@ it.effect("rebuilds a reacting turn's picture in two scoped, bounded looks", () 
         // And the unscoped read is unchanged: the assessment turn still gets
         // everything, retrospect included.
         const full = yield* callTool(BOUND_THREAD, "trading_look", { missionId: MISSION_ID });
-        const fullRead = full.result.structuredContent;
+        const fullRead = full.result.body;
         assert.notEqual(fullRead.structure, undefined);
         assert.notEqual(fullRead.account, undefined);
         assert.notEqual(fullRead.candles, undefined);
@@ -825,7 +846,7 @@ it.effect("answers an unbound thread instead of failing every tool on it", () =>
         missionId: MISSION_ID,
       });
       assert.notEqual(unbound.result.isError, true);
-      assert.equal(unbound.result.structuredContent.mission.bound, false);
+      assert.equal(unbound.result.body.mission.bound, false);
 
       // A bound thread naming someone else's mission is still refused, firmly.
       const wrongMission = yield* callTool(BOUND_THREAD, "trading_look", {
@@ -900,17 +921,17 @@ it.effect("registers a watch before the first plan is published", () =>
         condition: { kind: "price", market: "ETH", direction: "above", price: 3200 },
       });
       assert.equal(registered.result.isError, false);
-      assert.equal(registered.result.structuredContent.outcome, "armed");
-      const registeredWatch = registered.result.structuredContent.watch;
+      assert.equal(registered.result.body.outcome, "armed");
+      const registeredWatch = registered.result.body.watch;
       // Nothing was named to replace, so nothing was.
-      assert.equal(registered.result.structuredContent.replaced, undefined);
+      assert.equal(registered.result.body.replaced, undefined);
       assert.equal(registeredWatch.status, "active");
       assert.equal(registeredWatch.watch.type, "price_cross");
 
       // The registry rides the one read now (plan 29 step 6.5).
       const listed = yield* callTool(BOUND_THREAD, "trading_look", { missionId: MISSION_ID });
       assert.equal(listed.result.isError, false);
-      const watches = listed.result.structuredContent.mission.watches;
+      const watches = listed.result.body.mission.watches;
       assert.equal(watches.length, 1);
       assert.equal(watches[0].id, registeredWatch.id);
 
@@ -938,14 +959,14 @@ it.effect("reads a watch back in the vocabulary it can re-arm it with", () =>
       });
 
       const listed = yield* callTool(BOUND_THREAD, "trading_look", {});
-      const readBack = listed.result.structuredContent.mission.watches[0].condition;
+      const readBack = listed.result.body.mission.watches[0].condition;
       assert.deepStrictEqual(readBack, { kind: "giveback", market: "ETH", drawdownUsd: 4 });
 
       // The proof that matters: what came out of the read goes back into the
       // tool unedited and arms.
       const rearmed = yield* callTool(BOUND_THREAD, "trading_watch", { condition: readBack });
       assert.equal(rearmed.result.isError, false);
-      assert.equal(rearmed.result.structuredContent.outcome, "armed");
+      assert.equal(rearmed.result.body.outcome, "armed");
     }),
   ),
 );
@@ -981,7 +1002,7 @@ it.effect("refuses a condition it cannot arm, and arms nothing", () =>
         });
         // A refusal is a successful call with a refusing answer.
         assert.equal(refused.result.isError, false);
-        const body = refused.result.structuredContent;
+        const body = refused.result.body;
         assert.equal(body.outcome, "refused");
         assert.equal(body.reason, expected.reason);
         assert.equal(body.recovery.action, "stand_down");
@@ -990,7 +1011,7 @@ it.effect("refuses a condition it cannot arm, and arms nothing", () =>
 
       // Nothing was armed and nothing was announced, three refusals later.
       const listed = yield* callTool(BOUND_THREAD, "trading_look", {});
-      assert.equal(listed.result.structuredContent.mission.watches.length, 0);
+      assert.equal(listed.result.body.mission.watches.length, 0);
       assert.deepStrictEqual(dispatchedCommands, []);
     }),
   ),
@@ -1008,27 +1029,27 @@ it.effect("appends a note and reads it back in the words it was written in", () 
         note: "  3200 chopped me twice; waiting for a 15m close above it ",
       });
       assert.equal(first.result.isError, false);
-      assert.equal(first.result.structuredContent.outcome, "noted");
+      assert.equal(first.result.body.outcome, "noted");
       assert.equal(
-        first.result.structuredContent.entry.note,
+        first.result.body.entry.note,
         "3200 chopped me twice; waiting for a 15m close above it",
       );
       // A note the model wrote says so (plan 29 step 8.4). The tool never takes
       // an author from its caller — a model that could sign a note `user` could
       // manufacture an instruction it was never given — so this is the server's
       // statement about which surface made the call.
-      assert.equal(first.result.structuredContent.entry.author, "model");
+      assert.equal(first.result.body.entry.author, "model");
 
       yield* callTool(BOUND_THREAD, "trading_journal", { note: "the 1m read disagrees" });
 
       // A call with no `note` writes nothing and hands back what is there,
       // newest first.
       const read = yield* callTool(BOUND_THREAD, "trading_journal", {});
-      assert.equal(read.result.structuredContent.outcome, "read");
+      assert.equal(read.result.body.outcome, "read");
       // Newest first, and the first note is still exactly what it was. This
       // file shares one mission across its tests, so assert the two notes'
       // relative order rather than the whole list.
-      const notes: ReadonlyArray<string> = read.result.structuredContent.entries.map(
+      const notes: ReadonlyArray<string> = read.result.body.entries.map(
         (entry: { note: string }) => entry.note,
       );
       const older = notes.indexOf("3200 chopped me twice; waiting for a 15m close above it");
@@ -1038,13 +1059,13 @@ it.effect("appends a note and reads it back in the words it was written in", () 
       // because the read breaks the tie on insertion order rather than on the
       // random uuid the note is keyed by.
       assert.isAbove(older, newer);
-      assert.equal(read.result.structuredContent.entry, undefined);
+      assert.equal(read.result.body.entry, undefined);
 
       // And the turn sees it without asking: the journal exists to survive a
       // plan revision, which it cannot do if the model has to spend a call to
       // remember it wrote something.
       const look = yield* callTool(BOUND_THREAD, "trading_look", {});
-      const onTheTurn: ReadonlyArray<string> = look.result.structuredContent.mission.journal.map(
+      const onTheTurn: ReadonlyArray<string> = look.result.body.mission.journal.map(
         (entry: { note: string }) => entry.note,
       );
       assert.include(onTheTurn, "the 1m read disagrees");
@@ -1063,7 +1084,7 @@ it.effect("refuses a note it will not record, and records nothing", () =>
       for (const bad of ["   ", "x".repeat(1_001)]) {
         const refused = yield* callTool(BOUND_THREAD, "trading_journal", { note: bad });
         assert.equal(refused.result.isError, false);
-        const body = refused.result.structuredContent;
+        const body = refused.result.body;
         assert.equal(body.outcome, "refused");
         assert.equal(body.recovery.action, "stand_down");
         assert.equal(body.recovery.retryable, false);
@@ -1090,20 +1111,20 @@ it.effect("moves a level atomically through replacesWatchId", () =>
       const first = yield* callTool(BOUND_THREAD, "trading_watch", {
         condition: level(3200),
       });
-      const originalId = first.result.structuredContent.watch.id;
+      const originalId = first.result.body.watch.id;
 
       const moved = yield* callTool(BOUND_THREAD, "trading_watch", {
         condition: level(3250),
         replacesWatchId: originalId,
       });
       assert.equal(moved.result.isError, false);
-      assert.equal(moved.result.structuredContent.replaced.id, originalId);
+      assert.equal(moved.result.body.replaced.id, originalId);
 
       const listed = yield* callTool(BOUND_THREAD, "trading_look", {});
-      const watches = listed.result.structuredContent.mission.watches;
+      const watches = listed.result.body.mission.watches;
       const byId = new Map(watches.map((w: { id: string; status: string }) => [w.id, w.status]));
       assert.equal(byId.get(originalId), "cancelled");
-      assert.equal(byId.get(moved.result.structuredContent.watch.id), "active");
+      assert.equal(byId.get(moved.result.body.watch.id), "active");
 
       // Both halves of the swap reach the workspace: an unannounced cancel
       // leaves a level rendered that is no longer standing.
@@ -1127,19 +1148,19 @@ it.effect("retires a watch through the same tool that armed it", () =>
       const armed = yield* callTool(BOUND_THREAD, "trading_watch", {
         condition: { kind: "price", market: "ETH", direction: "above", price: 3200 },
       });
-      const watchId = armed.result.structuredContent.watch.id;
+      const watchId = armed.result.body.watch.id;
 
       const cancelled = yield* callTool(BOUND_THREAD, "trading_watch", { cancel: watchId });
       assert.equal(cancelled.result.isError, false);
-      assert.equal(cancelled.result.structuredContent.outcome, "cancelled");
-      assert.equal(cancelled.result.structuredContent.watch.status, "cancelled");
+      assert.equal(cancelled.result.body.outcome, "cancelled");
+      assert.equal(cancelled.result.body.watch.status, "cancelled");
 
       // Already terminal, and never there, stay different facts.
       const again = yield* callTool(BOUND_THREAD, "trading_watch", { cancel: watchId });
-      assert.equal(again.result.structuredContent.outcome, "rejected");
-      assert.equal(again.result.structuredContent.reason, "watch_not_active");
+      assert.equal(again.result.body.outcome, "rejected");
+      assert.equal(again.result.body.reason, "watch_not_active");
       const missing = yield* callTool(BOUND_THREAD, "trading_watch", { cancel: "watch_nope" });
-      assert.equal(missing.result.structuredContent.reason, "watch_not_found");
+      assert.equal(missing.result.body.reason, "watch_not_found");
     }),
   ),
 );
@@ -1157,9 +1178,9 @@ it.effect("refuses a watch call that names neither a condition nor a cancel", ()
       ]) {
         const refused = yield* callTool(BOUND_THREAD, "trading_watch", args);
         assert.equal(refused.result.isError, false);
-        assert.equal(refused.result.structuredContent.outcome, "refused");
-        assert.equal(refused.result.structuredContent.reason, "needs_condition_or_cancel");
-        assert.equal(refused.result.structuredContent.recovery.action, "stand_down");
+        assert.equal(refused.result.body.outcome, "refused");
+        assert.equal(refused.result.body.reason, "needs_condition_or_cancel");
+        assert.equal(refused.result.body.recovery.action, "stand_down");
       }
       assert.deepStrictEqual(dispatchedCommands, []);
     }),
@@ -1174,7 +1195,7 @@ it.effect("serves the mission its own completed trades over MCP", () =>
 
       const read = yield* callTool(BOUND_THREAD, "trading_look", {});
       assert.equal(read.result.isError, false);
-      const history = read.result.structuredContent.trades;
+      const history = read.result.body.trades;
 
       assert.equal(history.orders.length, 2);
       assert.equal(history.summary.realizedPnlUsd, 8);
@@ -1193,7 +1214,7 @@ it.effect("resolves an omitted missionId to the bound mission for a read tool", 
       // thread is bound to, exactly as naming it would.
       const omitted = yield* callTool(BOUND_THREAD, "trading_look", {});
       assert.equal(omitted.result.isError, false);
-      assert.equal(omitted.result.structuredContent.mission.mission.id, MISSION_ID);
+      assert.equal(omitted.result.body.mission.mission.id, MISSION_ID);
     }),
   ),
 );
@@ -1208,14 +1229,11 @@ it.effect("resolves an omitted missionId to the bound mission for a write tool",
         strategy: strategyBody("no missionId supplied"),
       });
       assert.equal(published.result.isError, false);
-      assert.equal(published.result.structuredContent.outcome, "accepted");
+      assert.equal(published.result.body.outcome, "accepted");
 
       // The bound mission now carries the published plan.
       const after = yield* callTool(BOUND_THREAD, "trading_look", {});
-      assert.equal(
-        after.result.structuredContent.mission.strategy.because,
-        "no missionId supplied",
-      );
+      assert.equal(after.result.body.mission.strategy.because, "no missionId supplied");
     }),
   ),
 );
@@ -1258,12 +1276,12 @@ it.effect("decodes a prose-string entry trigger and round-trips it as the object
         strategy: strategyBodyWithProseTrigger,
       });
       assert.equal(published.result.isError, false);
-      assert.equal(published.result.structuredContent.outcome, "accepted");
+      assert.equal(published.result.body.outcome, "accepted");
 
       const after = yield* callTool(BOUND_THREAD, "trading_look", {
         missionId: MISSION_ID,
       });
-      const triggers = after.result.structuredContent.mission.strategy.entry.triggers;
+      const triggers = after.result.body.mission.strategy.entry.triggers;
       assert.equal(triggers.length, 1);
       // The persisted/encoded form is the object shape, not the bare string.
       assert.deepStrictEqual(triggers[0], {
@@ -1289,9 +1307,9 @@ it.effect("refuses an entry outside a turn that owns the decision lease", () =>
       assert.equal(entered.result.isError, false);
       // A refusal reaches the harness in the same result shape a fill does,
       // so one outcome type covers every write it makes.
-      assert.equal(entered.result.structuredContent.status, "rejected");
-      assert.include(entered.result.structuredContent.detail, "harness_run_owns_lease");
-      assert.equal(entered.result.structuredContent.recovery?.retryable, false);
+      assert.equal(entered.result.body.status, "rejected");
+      assert.include(entered.result.body.detail, "harness_run_owns_lease");
+      assert.equal(entered.result.body.recovery?.retryable, false);
     }),
   ),
 );
@@ -1310,7 +1328,7 @@ it.effect("tells the run's funnel that an entry was attempted and refused", () =
         stopPrice: 3_100,
         sizeEth: 0.1,
       });
-      assert.equal(entered.result.structuredContent.status, "rejected");
+      assert.equal(entered.result.body.status, "rejected");
 
       // Without this the turn records as `no_setup` — the same shape as a turn
       // that never wanted to trade at all.
@@ -1344,10 +1362,10 @@ it.effect("closes a position with a call carrying no arguments at all", () =>
       const closed = yield* callTool(BOUND_THREAD, "trading_exit", { action: "close" });
 
       assert.equal(closed.result.isError, false);
-      assert.equal(closed.result.structuredContent.status, "rejected");
-      assert.include(closed.result.structuredContent.detail, "harness_run_owns_lease");
+      assert.equal(closed.result.body.status, "rejected");
+      assert.include(closed.result.body.detail, "harness_run_owns_lease");
       // And the harness is told what to do about it rather than left to guess.
-      assert.equal(closed.result.structuredContent.recovery.retryable, false);
+      assert.equal(closed.result.body.recovery.retryable, false);
     }),
   ),
 );
@@ -1361,9 +1379,9 @@ it.effect("refuses a reduce that names neither a size nor a fraction", () =>
       // and onto `readExitRequest` when the three exit tools merged, so the
       // model gets a `recovery` instead of a validation message (step 6.5).
       assert.equal(reduced.result.isError, false);
-      assert.equal(reduced.result.structuredContent.status, "refused_request");
-      assert.equal(reduced.result.structuredContent.reason, "reduce_needs_one_size");
-      assert.equal(reduced.result.structuredContent.recovery.action, "stand_down");
+      assert.equal(reduced.result.body.status, "refused_request");
+      assert.equal(reduced.result.body.reason, "reduce_needs_one_size");
+      assert.equal(reduced.result.body.recovery.action, "stand_down");
     }),
   ),
 );
@@ -1377,8 +1395,8 @@ it.effect("refuses a cancel that names no resting order", () =>
       });
 
       assert.equal(cancelled.result.isError, false);
-      assert.equal(cancelled.result.structuredContent.status, "refused_request");
-      assert.equal(cancelled.result.structuredContent.reason, "cancel_needs_cloid");
+      assert.equal(cancelled.result.body.status, "refused_request");
+      assert.equal(cancelled.result.body.reason, "cancel_needs_cloid");
     }),
   ),
 );
@@ -1408,8 +1426,8 @@ it.effect("refuses a stop adjustment when the mission holds no position", () =>
       const refused = yield* callTool(BOUND_THREAD, "trading_exit", adjustStopArgs(PLAN_READ_AT));
 
       assert.equal(refused.result.isError, false);
-      assert.equal(refused.result.structuredContent.status, "refused");
-      assert.equal(refused.result.structuredContent.refusalCode, "no_position");
+      assert.equal(refused.result.body.status, "refused");
+      assert.equal(refused.result.body.refusalCode, "no_position");
     }),
   ),
 );
@@ -1430,7 +1448,7 @@ it.effect("refuses a stop adjustment asked against a plan the mission has revise
         );
 
         assert.equal(refused.result.isError, false);
-        const decision = refused.result.structuredContent;
+        const decision = refused.result.body;
         assert.equal(decision.status, "refused");
         assert.equal(decision.refusalCode, "stale_plan");
         // The refusal cost nothing: the stop the exchange holds is untouched.
@@ -1456,7 +1474,7 @@ it.effect("lets a current plan through the staleness guard — the next check re
         const refused = yield* callTool(BOUND_THREAD, "trading_exit", adjustStopArgs(PLAN_READ_AT));
 
         assert.equal(refused.result.isError, false);
-        const decision = refused.result.structuredContent;
+        const decision = refused.result.body;
         assert.equal(decision.status, "refused");
         assert.equal(decision.refusalCode, "no_resting_stop");
       }),
@@ -1487,7 +1505,7 @@ it.effect("reads the entry's approved stop, which was written before the positio
         const decision = (yield* callTool(BOUND_THREAD, "trading_exit", {
           ...adjustStopArgs(PLAN_READ_AT),
           newStopPrice: 2_955,
-        })).result.structuredContent;
+        })).result.body;
 
         assert.notEqual(decision.refusalCode, "risk_envelope");
       }),
@@ -1514,7 +1532,7 @@ it.effect("an accepted publish withdraws the mission's resting working entry", (
         });
 
         assert.equal(published.result.isError, false);
-        const content = published.result.structuredContent;
+        const content = published.result.body;
         assert.equal(content.outcome, "accepted");
         // The entry was withdrawn through the same abandon() the reactor's
         // retirement path uses, and the model is told to re-place under the
