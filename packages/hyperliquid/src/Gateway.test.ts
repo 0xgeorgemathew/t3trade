@@ -9,8 +9,9 @@
  *
  * @module HyperliquidGatewayTests
  */
-import { Effect, Layer, Schema } from "effect";
+import { Duration, Effect, Layer, Schema } from "effect";
 import * as Clock from "effect/Clock";
+import * as TestClock from "effect/testing/TestClock";
 import { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
 import { describe, expect, it } from "@effect/vitest";
 import { HyperliquidGateway } from "./Gateway.ts";
@@ -277,6 +278,85 @@ describe("HyperliquidGateway.getMarketHistory", () => {
       ),
     ),
   );
+
+  // One decision turn reads the same recent window several times (a look, a
+  // second look, an overlapping structure read). The cache is a dedupe window
+  // for those repeats — far shorter than any bar, never a freshness policy.
+  it.effect("serves a repeat default-window read from the last fetch", () => {
+    let fetches = 0;
+    const candles = Array.from({ length: 50 }, (_, i) =>
+      wireCandle(1_753_000_000_000 + i * 60_000),
+    );
+    return Effect.gen(function* () {
+      const gateway = yield* HyperliquidGateway;
+      const first = yield* gateway.getMarketHistory({ market: "ETH", interval: "1m", maxBars: 20 });
+      const again = yield* gateway.getMarketHistory({ market: "ETH", interval: "1m", maxBars: 20 });
+      expect(fetches).toBe(1);
+      expect(again).toBe(first);
+      // A smaller request is a tail slice of the same fetch: the newest bars.
+      const smaller = yield* gateway.getMarketHistory({
+        market: "ETH",
+        interval: "1m",
+        maxBars: 5,
+      });
+      expect(fetches).toBe(1);
+      expect(smaller.candles.length).toBe(5);
+      expect(smaller.candles[4]?.openTime).toBe(first.candles[19]?.openTime);
+      // A different interval is a different window entirely.
+      yield* gateway.getMarketHistory({ market: "ETH", interval: "15m", maxBars: 20 });
+      expect(fetches).toBe(2);
+    }).pipe(
+      Effect.provide(
+        gatewayLayerWith({
+          metaAndAssetCtxs: FIXTURE_META_AND_CTX,
+          candleSnapshot: () => {
+            fetches += 1;
+            return candles;
+          },
+        }),
+      ),
+    );
+  });
+
+  it.effect("refetches for more bars, an explicit window, or an aged cache", () => {
+    let fetches = 0;
+    const candles = Array.from({ length: 50 }, (_, i) =>
+      wireCandle(1_753_000_000_000 + i * 60_000),
+    );
+    return Effect.gen(function* () {
+      const gateway = yield* HyperliquidGateway;
+      yield* gateway.getMarketHistory({ market: "ETH", interval: "1m", maxBars: 10 });
+      expect(fetches).toBe(1);
+      // More bars than the cached fetch holds: the cache cannot serve it.
+      yield* gateway.getMarketHistory({ market: "ETH", interval: "1m", maxBars: 20 });
+      expect(fetches).toBe(2);
+      // A caller that names its own window bypasses the cache in both
+      // directions — it is neither served from it nor stored into it.
+      yield* gateway.getMarketHistory({
+        market: "ETH",
+        interval: "1m",
+        maxBars: 20,
+        startTime: 1_753_000_000_000,
+      });
+      expect(fetches).toBe(3);
+      yield* gateway.getMarketHistory({ market: "ETH", interval: "1m", maxBars: 20 });
+      expect(fetches).toBe(3);
+      // Past the TTL the cached fetch is dead.
+      yield* TestClock.adjust(Duration.seconds(16));
+      yield* gateway.getMarketHistory({ market: "ETH", interval: "1m", maxBars: 20 });
+      expect(fetches).toBe(4);
+    }).pipe(
+      Effect.provide(
+        gatewayLayerWith({
+          metaAndAssetCtxs: FIXTURE_META_AND_CTX,
+          candleSnapshot: () => {
+            fetches += 1;
+            return candles;
+          },
+        }),
+      ),
+    );
+  });
 });
 
 describe("HyperliquidGateway.getAccountSnapshot", () => {

@@ -146,6 +146,14 @@ const INTERVAL_MILLIS: Record<MarketCandleInterval, number> = {
 const nowMillis = Effect.map(Clock.currentTimeMillis, (n) => n as number);
 
 /**
+ * How long a default-window candle read is served from the last fetch.
+ *
+ * Far shorter than any bar, so it is a dedupe window for the repeat reads one
+ * decision turn makes, never a freshness policy — see `candleCache` below.
+ */
+export const CANDLE_CACHE_TTL_MILLIS = 15_000;
+
+/**
  * BBO freshness stamp: §13 ages BBO at 2s. The source is the channel that
  * produced the level.
  */
@@ -341,6 +349,24 @@ const makeHyperliquidGateway = Effect.gen(function* () {
     return fields as AgentMarketSnapshot;
   });
 
+  /**
+   * A short-lived candle cache, keyed per (market, interval).
+   *
+   * One turn reads the same recent window several times — a look and a second
+   * look seconds apart, and a four-timeframe structure read that overlaps
+   * both. The bars in those reads cannot have changed inside a few seconds,
+   * so within `CANDLE_CACHE_TTL_MILLIS` a repeat request is served from the
+   * last fetch (sliced down when it asked for fewer bars). The TTL is a
+   * dedupe window, not a freshness policy: it is far shorter than any bar, so
+   * nothing a decision reads goes meaningfully stale. Requests that name
+   * their own window (`startTime`/`endTime`) bypass the cache entirely, and a
+   * request for MORE bars than the cached fetch refetches.
+   */
+  const candleCache = new Map<
+    string,
+    { readonly at: number; readonly cap: number; readonly history: MarketHistory }
+  >();
+
   const getMarketHistory = Effect.fn("HyperliquidGateway.getMarketHistory")(function* (
     request: MarketHistoryRequest,
   ) {
@@ -351,6 +377,23 @@ const makeHyperliquidGateway = Effect.gen(function* () {
       request.maxBars ?? MARKET_FRESHNESS.candleHistoryMaxBars,
       MARKET_FRESHNESS.candleHistoryMaxBars,
     );
+
+    const cacheable = request.startTime === undefined && request.endTime === undefined;
+    const cacheKey = `${request.market}:${request.interval}`;
+    if (cacheable) {
+      const cached = candleCache.get(cacheKey);
+      if (
+        cached !== undefined &&
+        observedAt - cached.at < CANDLE_CACHE_TTL_MILLIS &&
+        cached.cap >= cap
+      ) {
+        // Slicing from the tail keeps the newest bars, so the cached
+        // `finalisedClose` (the newest closed bar) is still in the slice.
+        return cached.cap === cap
+          ? cached.history
+          : ({ ...cached.history, candles: cached.history.candles.slice(-cap) } as MarketHistory);
+      }
+    }
 
     // The exchange requires startTime. When the caller omits it, ask for the
     // most recent `cap` bars ending now (§10.6: "the most recent window up to
@@ -373,13 +416,17 @@ const makeHyperliquidGateway = Effect.gen(function* () {
     // most-recent finalised close is the last candle that has actually closed.
     const finalisedClose = candles.findLast((candle) => candle.closeTime <= observedAt)?.closeTime;
 
-    return {
+    const history = {
       market: request.market,
       interval: request.interval,
       candles,
       finalisedClose,
       freshness: assetFreshness(observedAt, "info_api"),
     } as MarketHistory;
+    if (cacheable) {
+      candleCache.set(cacheKey, { at: observedAt, cap, history });
+    }
+    return history;
   });
 
   const getOrderBook = Effect.fn("HyperliquidGateway.getOrderBook")(function* (symbol: string) {
