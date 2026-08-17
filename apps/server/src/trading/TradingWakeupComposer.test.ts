@@ -426,9 +426,15 @@ layer("TradingWakeupComposer", (it) => {
       // watch, which is what the UI and the persisted wake read.
       assert.equal(composed.wakeup.armedWatches[0]?.watch.missionId, "mission_1");
 
-      // The watch that FIRED is the one thing that keeps its full detail.
+      // The watch that FIRED renders the same way (plan 34 step 2): which
+      // level, what it was reading, whether it is spent — and not the row's
+      // three UUIDs, its timestamps, and the predicate said twice.
       const fired = composed.text.slice(composed.text.indexOf("triggeringWatch:"));
-      assert.include(fired.slice(0, fired.indexOf("\nmarket:")), "watch_level_0");
+      const firedLine = fired.slice(0, fired.indexOf("\nmarket:"));
+      assert.include(firedLine, "watch_level_0");
+      assert.include(firedLine, "status=");
+      assert.notInclude(firedLine, "missionId");
+      assert.notInclude(firedLine, "createdAt");
       assert.equal(composed.wakeup.triggeringWatch?.id, "watch_level_0");
     }),
   );
@@ -827,6 +833,25 @@ layer("TradingWakeupComposer", (it) => {
     },
   } as unknown as TradingPlanState;
 
+  /**
+   * The same waiting plan, declaring that its 4,040 trigger only counts on a
+   * close — while the armed watch at that level is a `price_cross`.
+   */
+  const misarmedStrategy = {
+    ...(strategy as unknown as Record<string, unknown>),
+    entry: {
+      ...(strategy.entry as unknown as Record<string, unknown>),
+      triggers: [
+        {
+          description: "reclaim of the prior high",
+          priceLevel: 4_040,
+          confirmation: "close",
+          timeframe: "1m",
+        },
+      ],
+    },
+  } as unknown as TradingPlanState;
+
   it.effect("names the entry levels a waiting plan published but never armed", () =>
     Effect.gen(function* () {
       positionSize = 0;
@@ -850,6 +875,53 @@ layer("TradingWakeupComposer", (it) => {
       positionSize = 0;
 
       assert.equal(wakeup.unarmedEntryConditions, undefined);
+    }),
+  );
+
+  // Plan 34 step 2. The snapshot halves came off in round 5 and the holding
+  // wake did not shrink: `positionCosts` rendered the whole twenty-seven-line
+  // cost record, the fired watch echoed its persisted row, and an advisory
+  // about how the ENTRY watches were armed rode every wake of an open
+  // position.
+  it.effect("keeps a holding wake as lean as a flat one", () =>
+    Effect.gen(function* () {
+      positionSize = -0.474;
+      costedSize = null;
+      costedNotional = null;
+      const composed = yield* composeFull({ triggeringWatchId: "watch_up" });
+      positionSize = 0;
+
+      assert.isBelow(composed.text.length, 2_000);
+      // The cost line is five numbers, in the shape the flat wakes use.
+      const costs = composed.text.slice(composed.text.indexOf("positionCosts:"));
+      const costLine = costs.slice(0, costs.indexOf("\n", costs.indexOf("\n") + 1));
+      assert.include(costLine, "roundTripUsd=");
+      assert.include(costLine, "breakEvenMoveUsd=");
+      assert.include(costLine, "preferredTargetUsd=");
+      // The full record is a trading_look away; none of it rides the wake.
+      assert.notInclude(composed.text, "takerFeeBpsPerSide");
+      assert.notInclude(composed.text, "roundTripSlippageUsd");
+      assert.notInclude(composed.text, "measuredAt");
+      // The schema still carries the whole estimate for the persisted wake.
+      assert.notEqual(composed.wakeup.positionCosts?.takerFeeBpsPerSide, undefined);
+    }),
+  );
+
+  // Plan 34 F8: the model entered on the same turn it published the trigger,
+  // so the advisory described a condition that no longer mattered — and rode
+  // six holding wakes anyway.
+  it.effect("drops the entry-watch advisory once the entry has happened", () =>
+    Effect.gen(function* () {
+      positionSize = 0;
+      const flat = yield* composeFull({ activeStrategy: misarmedStrategy });
+      assert.include(flat.text, "misarmedEntryConditions");
+
+      positionSize = -0.474;
+      const holding = yield* composeFull({ activeStrategy: misarmedStrategy });
+      positionSize = 0;
+      assert.notInclude(holding.text, "misarmedEntryConditions");
+      // Render-side only: the observation still reports the gap.
+      assert.notEqual(holding.wakeup.misarmedEntryConditions, undefined);
     }),
   );
 

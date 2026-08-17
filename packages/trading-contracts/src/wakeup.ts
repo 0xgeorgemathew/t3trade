@@ -22,6 +22,7 @@ import { ObservedVolatility } from "./volatility.ts";
 import {
   MisarmedEntryCondition,
   PersistedWatch,
+  type PersistedWatchStatus,
   toWatchCondition,
   UnarmedEntryCondition,
   WatchArmedReason,
@@ -122,6 +123,75 @@ export function describeArmedWatchLine(armed: WakeupArmedWatch): WakeupArmedWatc
     ...(persisted.predictionVersion === undefined
       ? {}
       : { prediction: persisted.predictionVersion }),
+  };
+}
+
+/**
+ * The watch that fired, as the wake RENDERS it — plan 34 step 2.
+ *
+ * The persisted row echoed whole was ~350 characters of every woken turn:
+ * three UUIDs, two timestamps, and the predicate twice — once in the stored
+ * `watch` encoding and once in the `condition` vocabulary that is the only one
+ * `trading_watch` accepts. A run that has just been woken by a level needs to
+ * know which level, what it was reading, and whether it is spent. `id` is kept
+ * whole because `replacesWatchId` takes it.
+ */
+export interface WakeupTriggeringWatchLine {
+  readonly id: string;
+  readonly on: WatchCondition;
+  readonly status: PersistedWatchStatus;
+  /** Who armed it, when the runtime did rather than the harness. */
+  readonly reason?: WatchArmedReason;
+  /** The value the predicate was reading on the sweep that matched. */
+  readonly observed?: number;
+  /** The prediction this level belonged to, when it belonged to one. */
+  readonly prediction?: number;
+}
+
+/** Project the fired watch onto its rendered line. */
+export function describeTriggeringWatchLine(persisted: PersistedWatch): WakeupTriggeringWatchLine {
+  return {
+    id: persisted.id,
+    on: persisted.condition ?? toWatchCondition(persisted.watch),
+    status: persisted.status,
+    ...(persisted.armedReason === undefined ? {} : { reason: persisted.armedReason }),
+    ...(persisted.lastObservedValue === undefined ? {} : { observed: persisted.lastObservedValue }),
+    ...(persisted.predictionVersion === undefined
+      ? {}
+      : { prediction: persisted.predictionVersion }),
+  };
+}
+
+/**
+ * What a holding wake says about the cost of the position it holds — plan 34
+ * step 2.
+ *
+ * `TradingCostEstimate` is twenty-seven lines: both leg fees, three slippage
+ * readings, funding, three round-trip orientations, the break-even twice, and
+ * a prose note. Every one of them is one `trading_look` away, and the flat
+ * wakes already prove that a cost line answers the question a wake is for —
+ * *is the move on offer bigger than banking this costs?* — in five numbers.
+ */
+export interface WakeupPositionCostLine {
+  readonly sizeEth: number;
+  /** Both legs crossing: fees, spread and the walk. */
+  readonly roundTripUsd: number;
+  /** Crossing in and resting out — what a patient exit costs instead. */
+  readonly takerMakerUsd: number;
+  /** How far price must move per base unit just to break even. */
+  readonly breakEvenMoveUsd: number;
+  /** The rung the target aims at, in USD on this size. */
+  readonly preferredTargetUsd: number;
+}
+
+/** Project the position's cost estimate onto its rendered line. */
+export function describePositionCostLine(estimate: TradingCostEstimate): WakeupPositionCostLine {
+  return {
+    sizeEth: estimate.sizeEth,
+    roundTripUsd: estimate.roundTripUsd,
+    takerMakerUsd: estimate.roundTripTakerMakerUsd,
+    breakEvenMoveUsd: estimate.breakEvenPriceMoveUsd,
+    preferredTargetUsd: estimate.preferredTargetUsd,
   };
 }
 

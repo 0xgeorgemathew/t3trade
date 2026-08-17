@@ -77,6 +77,8 @@ import type { WakeupArmedWatch, WakeupArmedWatchLine } from "./Schemas.ts";
 import {
   describeArmedWatch,
   describeArmedWatchLine,
+  describePositionCostLine,
+  describeTriggeringWatchLine,
   findMisarmedEntryConditions,
   findUnarmedEntryConditions,
   TradingDomainEventSummary,
@@ -352,7 +354,10 @@ const renderMinimalWakeup = (wakeup: TradingHarnessWakeup): string =>
     market: wakeup.marketSnapshot.market,
     markPrice: wakeup.marketSnapshot.markPrice,
     position: wakeup.position,
-    triggeringWatch: wakeup.triggeringWatch,
+    triggeringWatch:
+      wakeup.triggeringWatch === undefined
+        ? undefined
+        : describeTriggeringWatchLine(wakeup.triggeringWatch),
     pendingEvents: wakeup.pendingEvents.slice(-1),
     omitted:
       "wakeup exceeded the context budget; call trading_look and fresh market tools before deciding",
@@ -383,13 +388,21 @@ const renderLeanWakeup = (
     harnessRunId: wakeup.harnessRunId,
     cause: wakeup.cause,
     occurredAt: wakeup.occurredAt,
-    triggeringWatch: wakeup.triggeringWatch,
+    triggeringWatch:
+      wakeup.triggeringWatch === undefined
+        ? undefined
+        : describeTriggeringWatchLine(wakeup.triggeringWatch),
     wakeReason: wakeup.wakeReason,
     userMessage: wakeup.userMessage,
     market: wakeup.marketSnapshot.market,
     markPrice: wakeup.marketSnapshot.markPrice,
     position: wakeup.position,
-    ...(wakeup.positionCosts === undefined ? {} : { positionCosts: wakeup.positionCosts }),
+    // One line, in the shape `costContext` already uses on the flat wakes.
+    // The full estimate is a `trading_look` away and was a thousand
+    // characters of every holding wake.
+    ...(wakeup.positionCosts === undefined
+      ? {}
+      : { positionCosts: describePositionCostLine(wakeup.positionCosts) }),
     ...(wakeup.costContext === undefined ? {} : { costContext: wakeup.costContext }),
     // The prediction the fired trigger belongs to, as one line. The trigger
     // itself carries `predictionVersion`; without this the run would have to
@@ -429,7 +442,10 @@ const renderLeanWakeup = (
     ...(wakeup.unarmedEntryConditions === undefined
       ? {}
       : { unarmedEntryConditions: wakeup.unarmedEntryConditions }),
-    ...(wakeup.misarmedEntryConditions === undefined
+    // An advisory about how the ENTRY watches are armed, once the entry has
+    // happened, describes a condition that no longer decides anything — and it
+    // rode every holding wake of the mission that found it (plan 34 F8).
+    ...(wakeup.misarmedEntryConditions === undefined || wakeup.position.size !== 0
       ? {}
       : { misarmedEntryConditions: wakeup.misarmedEntryConditions }),
     pendingEvents: wakeup.pendingEvents.slice(-caps.pendingEvents),

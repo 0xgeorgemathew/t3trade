@@ -102,6 +102,8 @@ export {
 export {
   describeArmedWatch,
   describeArmedWatchLine,
+  describePositionCostLine,
+  describeTriggeringWatchLine,
   HarnessRunRequest,
   HarnessRunOutcome,
   TradingDomainEventSummary,
@@ -109,7 +111,11 @@ export {
   WakeupArmedWatch,
 } from "@t3tools/trading-contracts/wakeup";
 
-export type { WakeupArmedWatchLine } from "@t3tools/trading-contracts/wakeup";
+export type {
+  WakeupArmedWatchLine,
+  WakeupPositionCostLine,
+  WakeupTriggeringWatchLine,
+} from "@t3tools/trading-contracts/wakeup";
 
 export {
   TRADING_WATCH_TOOL,
