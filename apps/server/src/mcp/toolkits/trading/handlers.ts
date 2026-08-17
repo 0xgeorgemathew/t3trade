@@ -720,14 +720,44 @@ const readObservation = Effect.fn("TradingToolkit.readObservation")(function* (
           return yield* history.read({ missionId: mission.id });
         }).pipe(Effect.catchCause(() => Effect.succeed(null)));
 
-  return {
+  const observation = {
     observedAt,
     market,
     ...marketHalf,
     ...(trades === null ? {} : { trades }),
     mission: missionResult,
   } satisfies TradingObservation;
+
+  // Plan 33 fix 2.3: which part of a look is actually expensive, measured
+  // rather than eyeballed off a transcript. The next thing to trim gets chosen
+  // from this.
+  yield* Effect.logInfo("trading_look: response size", {
+    missionId: mission?.id,
+    scopes: [...scopes],
+    ...measurePartChars(observation),
+  });
+
+  return observation;
 });
+
+/**
+ * Encoded size of each part of a look, in characters.
+ *
+ * One level into the mission half as well, because `mission` is a single field
+ * covering several very different costs — the watch registry and the plan
+ * history do not grow at the same rate or for the same reason.
+ */
+const measurePartChars = (observation: TradingObservation): Record<string, number> => {
+  const chars: Record<string, number> = {};
+  const measure = (prefix: string, value: object) => {
+    for (const [key, part] of Object.entries(value)) {
+      chars[`${prefix}${key}Chars`] = JSON.stringify(part)?.length ?? 0;
+    }
+  };
+  measure("", observation);
+  measure("mission.", observation.mission);
+  return chars;
+};
 
 /**
  * Why the market half is missing, in one line the model can act on.
