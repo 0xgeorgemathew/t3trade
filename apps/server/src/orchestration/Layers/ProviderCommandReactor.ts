@@ -28,6 +28,7 @@ import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import { isTradingThread } from "../../provider/SessionProfile.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -664,7 +665,15 @@ const make = Effect.gen(function* () {
       thread.session && thread.session.status !== "stopped" && activeSession ? thread.id : null;
     if (existingSessionThreadId) {
       const runtimeModeChanged = thread.runtimeMode !== thread.session?.runtimeMode;
-      const cwdChanged = effectiveCwd !== activeSession?.cwd;
+      // A trading session owns its own cwd: the adapters start it in the
+      // dedicated `trading-cwd` so the harness cannot read the repository it
+      // happens to be attached to. The thread still resolves the ordinary
+      // workspace path, so the two never match, and comparing them restarted
+      // the provider session on EVERY wake — which re-sent the contract and,
+      // worse, emitted the session-lifecycle events the run's lease watcher
+      // read as "the turn ended", killing each lease about a second after it
+      // was granted. The thread's workspace is simply not this session's cwd.
+      const cwdChanged = !isTradingThread(threadId) && effectiveCwd !== activeSession?.cwd;
       const sessionModelSwitch = (yield* providerService.getCapabilities(desiredInstanceId))
         .sessionModelSwitch;
       const modelChanged =
