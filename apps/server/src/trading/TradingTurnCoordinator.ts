@@ -152,40 +152,21 @@ const BootstrapWakeup = Schema.Struct({
   /** The operator's text, on a `user_message` wake. Without this the message
       that caused the wake never reaches the turn it caused. */
   userMessage: Schema.optional(Schema.String),
+  /**
+   * Retired: the bootstrap wake used to restate the decision contract in its
+   * own words, and the two texts disagreed about the projection — this one
+   * called it "an informed estimate, not a prediction" with a stale
+   * `{price, byMinutes}` field list, while the contract says the projection IS
+   * the prediction and names five fields. On Codex both landed in the same
+   * first-turn message. The contract is now the only copy, delivered at the
+   * session seam (`applyTradingTurnContract`) or as Claude's system prompt.
+   *
+   * The key stays optional on the schema so wakes persisted before this still
+   * decode; nothing writes it.
+   */
   firstTurnContract: Schema.optional(Schema.String),
 });
 const encodeBootstrapText = Schema.encodeSync(Schema.fromJsonString(BootstrapWakeup));
-
-/**
- * The one thing the first turn owes: a recorded decision. A turn that looks at
- * the market and declines to trade has reached a conclusion, and a conclusion
- * the mission does not record leaves it with no thesis to come back to, no
- * armed levels, and nothing for the operator's panel to show.
- */
-const FIRST_TURN_CONTRACT =
-  "Your operating loop, this turn and every wake after it: (1) assess the " +
-  "market with the tools (trading_look carries the snapshot, volatility, book " +
-  "and microstructure; pull candles/structure/costs as needed); (2) decide " +
-  "trade or no-trade; (3) if trade, pick the direction; (4) form your best " +
-  "current estimate of where price is likely to go and publish it as " +
-  "projection {price, byMinutes} on the plan — an informed estimate, not a " +
-  "prediction; (5) arm trading_watch conditions AROUND that projection: one " +
-  "set that fires when the move you expect happens, and safety-net conditions " +
-  "on the opposite side that fire when the market disagrees, so you always " +
-  "hear about being wrong; (6) choose when to look again. Conditions are not " +
-  "just price: kind 'metric' watches funding_rate_8h, open_interest, " +
-  "day_volume_usd, spread_bps, or volume_ratio (bar volume vs its recent " +
-  "average — 'wake me when volume picks up'), and kind 'time' is the clock " +
-  "fallback when no metric trigger fits. End the turn with trading_plan, " +
-  "whatever you decide. The plan is nine fields: market, intent, entry, stop, " +
-  "target, invalidation, reassess, projection, because. If the costs or the " +
-  'market do not justify entering, publish intent "stand_aside" — the ' +
-  "reasoning in because, and triggers armed at the levels that would change " +
-  "the read. A declined entry is a plan, not a missing one. " +
-  "reassess.afterMinutes is how often you are woken to re-look when nothing " +
-  "fires, measured from your last look; every wake costs a full turn, so " +
-  "choose the longest interval the thesis tolerates (values under 5 minutes " +
-  "are raised to 5) and lean on market triggers instead of the clock.";
 
 /** The columns of a run the no-op streak is judged from, newest first. */
 export interface NoOpWakeRow {
@@ -683,8 +664,8 @@ const make = Effect.gen(function* () {
     let text: string;
     if (input.cause === "mission_created" && activeStrategy._tag === "None") {
       // The first turn. Its job is to author the plan, so it carries the
-      // instruction and the contract rather than a snapshot of a market it is
-      // about to read itself.
+      // mandate rather than a snapshot of a market it is about to read itself.
+      // The decision contract arrives with the session, not with this wake.
       text = encodeBootstrapText({
         kind: "trading-harness-wakeup",
         bootstrap: true,
@@ -694,7 +675,6 @@ const make = Effect.gen(function* () {
         instruction: mission.instruction,
         defaultTimeframe: POC_DEFAULT_TIMEFRAME,
         ...(input.userMessage !== undefined ? { userMessage: input.userMessage } : {}),
-        firstTurnContract: FIRST_TURN_CONTRACT,
       });
     } else {
       // The full bounded wakeup — plan or no plan (plan 29 step 4.3). A

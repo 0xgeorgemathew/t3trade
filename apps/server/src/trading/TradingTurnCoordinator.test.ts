@@ -252,7 +252,12 @@ layer("TradingTurnCoordinator", (it) => {
       // The first turn is asked for a plan but not accused of owing one.
       const wake = yield* awaitBootstrapWake("mission_created");
       assert.isUndefined(wake["publishOverdue"]);
-      assert.isString(wake["firstTurnContract"]);
+      // The bootstrap wake carries the mandate, not a second copy of the
+      // decision contract — the two disagreed about what a projection is, and
+      // on Codex both arrived in the same first-turn message.
+      assert.isUndefined(wake["firstTurnContract"]);
+      assert.isString(wake["instruction"]);
+      assert.isString(wake["defaultTimeframe"]);
     }),
   );
 
