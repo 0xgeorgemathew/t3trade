@@ -376,6 +376,38 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
+  // Plan 33 fix 3.2. The lean render was the one path that never went through
+  // `renderBoundedWakeup`, so nothing capped it structurally.
+  it.effect("bounds the lean wake too, by dropping whole fields", () =>
+    Effect.gen(function* () {
+      const composer = yield* TradingWakeupComposer;
+      const composed = yield* composer.compose({
+        mission,
+        harnessRunId: "run_1",
+        cause: "market_watch_triggered",
+        occurredAt: NOW,
+        triggeringWatchId: "watch_up",
+        // Three of these ride an untrimmed lean wake, and three do not fit.
+        pendingEvents: Array.from({ length: 5 }, (_, i) => ({
+          category: "market" as const,
+          deduplicationKey: `event_${i}`,
+          occurredAt: NOW - i,
+          summary: `e${i} ${"s".repeat(2_000)}`,
+        })),
+        activeStrategy: strategy,
+      });
+
+      assert.isAtMost(composed.text.length, MAX_WAKEUP_CHARS);
+      // Structural, not a mid-field cut: the newest event survives whole, and
+      // the ones that did not fit are absent rather than clipped.
+      assert.include(composed.text, `e4 ${"s".repeat(2_000)}`);
+      assert.notInclude(composed.text, "e3 ");
+      assert.notInclude(composed.text, "…");
+      // And what fired is still the first thing the run reads.
+      assert.include(composed.text, "watch_up");
+    }),
+  );
+
   // The projection is the one thing a directional plan must never be without —
   // one that lacks it is told so on every wake until it republishes. A
   // stand-aside is exempt: the contract says it states none, so nagging it

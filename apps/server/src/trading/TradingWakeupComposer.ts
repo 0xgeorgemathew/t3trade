@@ -548,22 +548,30 @@ export const renderBoundedWakeup = (
   }
 
   steps.push("minimal_projection");
-  const minimal = renderWakeupProjection({
-    kind: current.kind,
-    missionId: current.missionId,
-    harnessRunId: current.harnessRunId,
-    cause: current.cause,
-    occurredAt: current.occurredAt,
-    market: current.marketSnapshot.market,
-    markPrice: current.marketSnapshot.markPrice,
-    position: current.position,
-    triggeringWatch: current.triggeringWatch,
-    pendingEvents: current.pendingEvents.slice(-1),
+  return { text: renderMinimalWakeup(current), steps, untrimmedChars };
+};
+
+/**
+ * The floor under every render path: what fired, what is held, and a pointer.
+ *
+ * Shared by the assessment ladder above and the lean ceiling below, so the two
+ * cannot disagree about what the last resort keeps.
+ */
+const renderMinimalWakeup = (wakeup: TradingHarnessWakeup): string =>
+  renderWakeupProjection({
+    kind: wakeup.kind,
+    missionId: wakeup.missionId,
+    harnessRunId: wakeup.harnessRunId,
+    cause: wakeup.cause,
+    occurredAt: wakeup.occurredAt,
+    market: wakeup.marketSnapshot.market,
+    markPrice: wakeup.marketSnapshot.markPrice,
+    position: wakeup.position,
+    triggeringWatch: wakeup.triggeringWatch,
+    pendingEvents: wakeup.pendingEvents.slice(-1),
     omitted:
       "wakeup exceeded the context budget; call trading_look and fresh market tools before deciding",
   });
-  return { text: minimal, steps, untrimmedChars };
-};
 
 /**
  * The causes whose wake is an ALERT, not an assessment.
@@ -580,12 +588,19 @@ const LEAN_WAKE_CAUSES: ReadonlySet<TradingHarnessRunCause> = new Set([
   "position_updated",
 ] as ReadonlyArray<TradingHarnessRunCause>);
 
+/** What a lean wake keeps of the two lists that can grow, and its fallback. */
+const LEAN_WAKE_CAPS = { armedWatches: 8, pendingEvents: 3 } as const;
+const LEAN_WAKE_TRIMMED_CAPS = { armedWatches: 4, pendingEvents: 1 } as const;
+
 /**
  * Render an alert wake: what fired, what the mission holds, the one review
  * line, and pointers. No candles, no volatility, no book — the model reads
  * those with `trading_look` if the alert warrants acting.
  */
-const renderLeanWakeup = (wakeup: TradingHarnessWakeup): string =>
+const renderLeanWakeup = (
+  wakeup: TradingHarnessWakeup,
+  caps: { readonly armedWatches: number; readonly pendingEvents: number },
+): string =>
   renderWakeupProjection({
     kind: wakeup.kind,
     missionId: wakeup.missionId,
@@ -609,12 +624,45 @@ const renderLeanWakeup = (wakeup: TradingHarnessWakeup): string =>
       : { plan: { intent: wakeup.activeStrategy.intent, phase: planPhase(wakeup.position.size) } }),
     ...(wakeup.strategyReview === undefined ? {} : { strategyReview: wakeup.strategyReview }),
     ...(wakeup.positionReview === undefined ? {} : { positionReview: wakeup.positionReview }),
-    armedWatches: renderArmedWatches(wakeup.armedWatches.slice(0, 8)),
-    pendingEvents: wakeup.pendingEvents.slice(-3),
+    armedWatches: renderArmedWatches(wakeup.armedWatches.slice(0, caps.armedWatches)),
+    pendingEvents: wakeup.pendingEvents.slice(-caps.pendingEvents),
     omitted:
       "alert wake — candles, volatility, structure, book, and the full plan are " +
       "deliberately not attached; call trading_look for fresh state before acting",
   });
+
+/**
+ * The lean path's own ceiling.
+ *
+ * This was the one render path that never went through `renderBoundedWakeup`,
+ * so a pathological review line or event tail had no cap at all — the lean
+ * wake was structurally the unbounded one. The trim is the same doctrine as
+ * the ladder above: cut whole fields, never a string mid-value.
+ *
+ * With the armed set now one line per watch it should never fire. It exists so
+ * that "the lean wake is small" is a guarantee rather than an expectation.
+ */
+const renderBoundedLeanWakeup = (
+  wakeup: TradingHarnessWakeup,
+): {
+  readonly text: string;
+  readonly steps: ReadonlyArray<string>;
+  readonly untrimmedChars: number;
+} => {
+  const text = renderLeanWakeup(wakeup, LEAN_WAKE_CAPS);
+  const untrimmedChars = text.length;
+  if (text.length <= MAX_WAKEUP_CHARS) return { text, steps: [], untrimmedChars };
+
+  const trimmed = renderLeanWakeup(wakeup, LEAN_WAKE_TRIMMED_CAPS);
+  const steps = ["lean_events_and_watches"];
+  if (trimmed.length <= MAX_WAKEUP_CHARS) return { text: trimmed, steps, untrimmedChars };
+
+  return {
+    text: renderMinimalWakeup(wakeup),
+    steps: [...steps, "minimal_projection"],
+    untrimmedChars,
+  };
+};
 
 /**
  * Failure surface for the compose step. A gateway failure (snapshot read) or a
@@ -1250,10 +1298,10 @@ const make = Effect.gen(function* () {
       // An alert wake carries the alert, not the market: the fired watch, the
       // position, the review line, and a pointer at trading_look. The full
       // snapshot renders only on the causes that are themselves an assessment.
-      if (LEAN_WAKE_CAUSES.has(cause)) {
-        return { wakeup: validated, text: renderLeanWakeup(validated) };
-      }
-      const { text, steps, untrimmedChars } = renderBoundedWakeup(validated);
+      // Both paths are bounded, and both report the same way when they trim.
+      const { text, steps, untrimmedChars } = LEAN_WAKE_CAUSES.has(cause)
+        ? renderBoundedLeanWakeup(validated)
+        : renderBoundedWakeup(validated);
       if (steps.length > 0) {
         yield* Effect.logWarning("TradingWakeupComposer: wakeup trimmed to fit the budget", {
           missionId: mission.id,
