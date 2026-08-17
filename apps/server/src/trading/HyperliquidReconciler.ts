@@ -41,6 +41,7 @@ import {
 } from "./TradingClosedTradeReview.ts";
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { recordLevelEvent } from "./TradingLevelHistory.ts";
+import { readTakeProfitOrders } from "./TradingProtectionLedger.ts";
 
 /** The reconciler failed at a named stage. */
 export class TradingReconciliationError extends Schema.TaggedErrorClass<TradingReconciliationError>()(
@@ -846,6 +847,55 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
       return review;
     });
 
+  /**
+   * Announce a fill on an order the SERVER rested — plan 34 step 5.1.
+   *
+   * The take-profit reconcile places a reduce-only ALO at the plan's target
+   * and nothing tells the harness when it fills. On the mission this was found
+   * on, two rungs filled between wakes, the position quietly halved, and the
+   * model attributed the drop to the give-back trigger it had armed itself.
+   * The order is in the protection ledger; the fill is matched against it here
+   * and rides the inbox, so the next wake states what happened.
+   *
+   * The deduplication key is the fill's own id, so re-observing the same fill
+   * on the next pass — which happens on every pass inside the `userFills`
+   * window — cannot queue it twice.
+   */
+  const recordTakeProfitFills = (
+    input: ReconcileInput,
+    fills: ReadonlyArray<ReconciledFill>,
+    positionSize: number,
+  ): Effect.Effect<void, never, SqlClient.SqlClient> =>
+    Effect.gen(function* () {
+      const attributed = fills.filter((fill) => fill.cloid !== undefined && fill.cloid !== null);
+      if (attributed.length === 0) return;
+      const ledger = yield* readTakeProfitOrders(input.missionId);
+      if (ledger.length === 0) return;
+      const restedByTheServer = new Set(ledger.map((row) => row.cloid));
+
+      for (const fill of attributed) {
+        if (!restedByTheServer.has(fill.cloid!)) continue;
+        yield* inbox
+          .persist({
+            missionId: input.missionId,
+            category: "system",
+            deduplicationKey: `take_profit_filled:${fill.fillId}`,
+            payload: {
+              cloid: fill.cloid,
+              filledSize: fill.filledSize,
+              avgFillPrice: fill.avgFillPrice,
+              positionSize,
+            },
+            occurredAt: fill.tradedAt,
+            summary:
+              `the plan's take-profit filled ${fill.filledSize} ${input.market} @ ` +
+              `${fill.avgFillPrice} — the server's own resting target, not your watch; ` +
+              `position now ${positionSize}`,
+          })
+          .pipe(Effect.ignore);
+      }
+    }).pipe(Effect.orElseSucceed(() => undefined));
+
   const readPreviousAccountValue = (missionId: string) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -1040,6 +1090,10 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
             }),
         ),
       );
+
+      // Also after the fills: a fill on an order the server rested is the one
+      // position change a wake would otherwise have no explanation for.
+      yield* recordTakeProfitFills(input, fills, position?.size ?? 0);
 
       // After the fills are persisted, so attribution reads the current table.
       const externalChanges = yield* recordExternalChanges(

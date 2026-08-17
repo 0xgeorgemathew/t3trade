@@ -69,6 +69,7 @@ import {
   TradingExecutionError,
 } from "./HyperliquidExecutionService.ts";
 import { HyperliquidReconciler } from "./HyperliquidReconciler.ts";
+import { recordTakeProfitOutcome } from "./TradingProtectionLedger.ts";
 import { TradingProtectionService } from "./TradingProtectionService.ts";
 import { TradingWorkingOrderService } from "./TradingWorkingOrderService.ts";
 import { TradingEmergencyCloseService } from "./TradingEmergencyCloseService.ts";
@@ -1008,6 +1009,18 @@ const make = Effect.gen(function* () {
         market: input.market,
         target,
         preserveCloids,
+      });
+      // The order the pass rested exists nowhere else on this side of the
+      // wire (plan 34 step 5.2). The ledger is what lets the fill reconciler
+      // recognise its fill as the server's own profit-taking rather than
+      // leaving the position to shrink unexplained between two wakes.
+      yield* recordTakeProfitOutcome({
+        missionId: input.missionId,
+        market: input.market,
+        ...(outcome.placedCloid === undefined ? {} : { placedCloid: outcome.placedCloid }),
+        targetPrice: outcome.targetPrice,
+        positionSize: outcome.positionSize,
+        cancelledCloids: outcome.cancelledCloids,
       });
       yield* Effect.logInfo("trading take-profit reconciled", {
         missionId: input.missionId,

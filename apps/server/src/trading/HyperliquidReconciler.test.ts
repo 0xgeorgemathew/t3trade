@@ -54,7 +54,7 @@ const input: ReconcileInput = {
 /** Migrate the shared in-memory db, then truncate the 038 tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 69 });
+  yield* runMigrations({ toMigrationInclusive: 70 });
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM trading_orders`;
@@ -63,6 +63,7 @@ const migrated = Effect.gen(function* () {
   yield* sql`DELETE FROM trading_event_inbox`;
   yield* sql`DELETE FROM trading_account_observations`;
   yield* sql`DELETE FROM trading_closed_trades`;
+  yield* sql`DELETE FROM trading_protection_orders`;
   yield* sql`DELETE FROM trading_missions`;
 });
 
@@ -767,6 +768,81 @@ layer("HyperliquidReconciler", (it) => {
       assert.equal(queued.length, 1);
       assert.match(queued[0]?.summary ?? "", /trade_closed: long 2 ETH/);
       assert.match(queued[0]?.summary ?? "", /NET \$24\.00/);
+    }),
+  );
+
+  // Plan 34 step 5.1. The take-profit the SERVER rests is the one order whose
+  // fill the harness cannot see coming: no execution record, no event, and the
+  // position simply smaller than it was on the last wake. The mission this was
+  // found on read two such fills as its own give-back trigger firing.
+  it.effect("announces a fill on the take-profit the server rested", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const reconciler = yield* HyperliquidReconciler;
+      const openedAt = yield* Clock.currentTimeMillis;
+      const cloid = "c105e".padEnd(32, "0");
+
+      yield* sql`
+        INSERT INTO trading_protection_orders (
+          cloid, mission_id, market, kind, size, limit_price, placed_at
+        ) VALUES (${cloid}, ${MISSION}, 'ETH', 'take_profit', 2, 3020, ${openedAt})
+      `;
+
+      yield* setState({
+        account: snapshotFromClearinghouse(clearinghouseWithPnl("20")),
+        fills: [],
+      });
+      yield* reconciler.reconcile(input, "after_position_update");
+
+      yield* setState({
+        account: snapshotFromClearinghouse(flatClearinghouse),
+        fills: [sellFill(openedAt + 1_000, "25", "1")],
+      });
+      yield* reconciler.reconcile(input, "after_fill");
+
+      const queued = yield* sql<{ readonly summary: string }>`
+        SELECT summary FROM trading_event_inbox
+        WHERE mission_id = ${MISSION} AND deduplication_key LIKE 'take_profit_filled:%'
+      `;
+      assert.equal(queued.length, 1);
+      assert.match(queued[0]?.summary ?? "", /take-profit filled 2 ETH @ 3020/);
+      assert.match(queued[0]?.summary ?? "", /not your watch/);
+
+      // The same fill observed again on the next pass — which happens on every
+      // pass inside the `userFills` window — is not a second event.
+      yield* reconciler.reconcile(input, "periodic_while_position_open");
+      const again = yield* sql<{ readonly summary: string }>`
+        SELECT summary FROM trading_event_inbox
+        WHERE mission_id = ${MISSION} AND deduplication_key LIKE 'take_profit_filled:%'
+      `;
+      assert.equal(again.length, 1);
+    }),
+  );
+
+  it.effect("says nothing about a fill on an order the server did not rest", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const reconciler = yield* HyperliquidReconciler;
+      const openedAt = yield* Clock.currentTimeMillis;
+
+      yield* setState({
+        account: snapshotFromClearinghouse(clearinghouseWithPnl("20")),
+        fills: [],
+      });
+      yield* reconciler.reconcile(input, "after_position_update");
+      yield* setState({
+        account: snapshotFromClearinghouse(flatClearinghouse),
+        fills: [sellFill(openedAt + 1_000, "25", "1")],
+      });
+      yield* reconciler.reconcile(input, "after_fill");
+
+      const queued = yield* sql<{ readonly summary: string }>`
+        SELECT summary FROM trading_event_inbox
+        WHERE mission_id = ${MISSION} AND deduplication_key LIKE 'take_profit_filled:%'
+      `;
+      assert.equal(queued.length, 0);
     }),
   );
 
