@@ -16,6 +16,8 @@ import {
   compareCandidates,
   DIRECTION_SCORE_THRESHOLD,
   findPivots,
+  MARKET_STRUCTURE_TIMEFRAMES,
+  MAX_REGIME_CONFLICTS,
   MIN_MARKET_STRUCTURE_BARS,
 } from "./marketStructure.ts";
 
@@ -157,6 +159,19 @@ describe("regime", () => {
 
     assert.notEqual(regime.classification, "ranging");
     assert.ok(regime.conflicts.length > 0);
+  });
+
+  it("bounds the conflicts and says how many it left out", () => {
+    // Four timeframes of a grind-down: enough facts a side that the cross
+    // product used to run to dozens of lines restating the same labels.
+    const grind = [...chop(3_000, 5, 90), ...ramp(3_000, -1, 30)];
+    const regime = classifyRegime(
+      MARKET_STRUCTURE_TIMEFRAMES.map((interval) => analyseTimeframe({ interval, candles: grind })),
+    );
+
+    assert.isAtMost(regime.conflicts.length, MAX_REGIME_CONFLICTS + 1);
+    const overflow = regime.conflicts[regime.conflicts.length - 1];
+    assert.ok(overflow?.startsWith("and ") === true, "the dropped pairs are counted, not hidden");
   });
 
   it("returns transition with no evidence when nothing was measurable", () => {

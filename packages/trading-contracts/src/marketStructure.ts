@@ -438,6 +438,16 @@ export type TimeframeAlignment = typeof TimeframeAlignment.Type;
 export const MarketRegime = Schema.Struct({
   classification: Schema.Literals(["trending", "ranging", "transition"]),
   evidence: Schema.Array(Schema.String),
+  /**
+   * The disagreeing feature pairs, bounded to
+   * {@link MAX_REGIME_CONFLICTS} — plan 33 fix D.
+   *
+   * Every trending fact against every ranging one is a cross product: four of
+   * each is sixteen lines, and a real four-timeframe read produced eighty-four
+   * — nearly 9k characters restating the same dozen labels. The bound is not a
+   * silent one: when pairs were dropped, the last entry says how many, so a
+   * turn reading a short list can tell "they agreed" from "there was more".
+   */
   conflicts: Schema.Array(Schema.String),
 });
 export type MarketRegime = typeof MarketRegime.Type;
@@ -1157,6 +1167,46 @@ interface RegimeFact {
   readonly label: string;
 }
 
+/**
+ * How many disagreeing pairs are worth naming — plan 33 fix D.
+ *
+ * The conflicts are a cross product, so they grow as the square of how much
+ * the read measured: a four-timeframe read with a handful of facts a side
+ * produced eighty-four lines and nearly 9k characters, out of a dozen distinct
+ * labels each repeated seven times. Four pairs is enough to see WHAT
+ * disagrees; the count line that follows says how much more of the same there
+ * was, and `evidence` already carries every fact on a `transition` read.
+ */
+export const MAX_REGIME_CONFLICTS = 4;
+
+/**
+ * The named disagreements, bounded.
+ *
+ * Pairs are taken one per trending fact before a second pair of any of them,
+ * so a short list shows the BREADTH of the disagreement rather than one
+ * trending fact argued against four ranging ones.
+ */
+function describeConflicts(
+  trending: ReadonlyArray<RegimeFact>,
+  ranging: ReadonlyArray<RegimeFact>,
+): ReadonlyArray<string> {
+  const total = trending.length * ranging.length;
+  if (total === 0) return [];
+
+  const named: Array<string> = [];
+  for (let round = 0; round < ranging.length && named.length < MAX_REGIME_CONFLICTS; round += 1) {
+    const range = ranging[round];
+    if (range === undefined) break;
+    for (const trend of trending) {
+      if (named.length >= MAX_REGIME_CONFLICTS) break;
+      named.push(`${trend.label} vs ${range.label}`);
+    }
+  }
+
+  if (total <= named.length) return named;
+  return [...named, `and ${total - named.length} more disagreeing pairs among the same features`];
+}
+
 /** Every regime fact one measured timeframe contributes. */
 function readRegimeFacts(frame: TimeframeReading, policy: TradingPolicy): Array<RegimeFact> {
   const facts: Array<RegimeFact> = [];
@@ -1286,12 +1336,7 @@ export function classifyRegime(
   const trending = facts.filter((fact) => fact.side === "trending");
   const ranging = facts.filter((fact) => fact.side === "ranging");
 
-  const conflicts: Array<string> = [];
-  for (const trend of trending) {
-    for (const range of ranging) {
-      conflicts.push(`${trend.label} vs ${range.label}`);
-    }
-  }
+  const conflicts = describeConflicts(trending, ranging);
 
   const classification =
     trending.length >= 2 && trending.length >= 2 * ranging.length
