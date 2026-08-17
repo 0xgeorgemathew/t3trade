@@ -39,7 +39,26 @@ interface TradeFillTotals {
   readonly realized_pnl: number | null;
   readonly fees_paid: number | null;
   readonly fill_count: number;
+  /** Base units filled on the side that OPENED the trade — its peak exposure. */
+  readonly opened_size: number | null;
 }
+
+/**
+ * How far before the first observation a fill can trade and still belong to
+ * this trade — plan 34 step 3.
+ *
+ * `opened_at` is when the reconciler first SAW the position, not when it was
+ * opened: the entry's fills trade a few hundred milliseconds earlier, and a
+ * window starting at the observation excluded every one of them. The mission
+ * this was found on reported half its real fee load to its own scorecard —
+ * which is what the standing-rules fee-share gate reads.
+ *
+ * The same minute of slack the entry-context join below already uses, and for
+ * the same reason. It is wide enough to be wrong only if a mission opened a
+ * new position within a minute of closing the last one, which the one-position
+ * mandate does not allow.
+ */
+const FILL_WINDOW_SLACK_MILLIS = 60_000;
 
 /** The strategy in force at the close, for scoring the thesis against it. */
 interface StrategyRow {
@@ -91,11 +110,11 @@ const measureStopAtEntry = (
 /**
  * Build the review, or return null when there is nothing to review.
  *
- * `openedAt` is what decides which fills belong to this trade: every fill since
- * the position was first observed non-flat, and none from before it. A row
- * written before migration 046 has no `opened_at`, so it falls back to the last
- * observation — which under-counts the trade rather than absorbing the previous
- * one's fills, and is the safer way to be wrong.
+ * `openedAt` is what decides which fills belong to this trade: every fill from
+ * a minute before the position was first observed non-flat — see
+ * {@link FILL_WINDOW_SLACK_MILLIS} — and none from before that. A row written
+ * before migration 046 has no `opened_at`, so it falls back to the last
+ * observation.
  */
 export const buildClosedTradeReview = (input: {
   readonly missionId: string;
@@ -114,18 +133,21 @@ export const buildClosedTradeReview = (input: {
     // the opposite side of the position, which is what makes an exit price
     // separable from the entries that preceded it.
     const closingSide = direction === "long" ? "sell" : "buy";
+    const openingSide = direction === "long" ? "buy" : "sell";
+    const fillsFrom = openedAt - FILL_WINDOW_SLACK_MILLIS;
 
     const totals = yield* sql<TradeFillTotals>`
-      SELECT SUM(closed_pnl) AS realized_pnl, SUM(fee_usd) AS fees_paid, COUNT(*) AS fill_count
+      SELECT SUM(closed_pnl) AS realized_pnl, SUM(fee_usd) AS fees_paid, COUNT(*) AS fill_count,
+             SUM(CASE WHEN side = ${openingSide} THEN filled_size ELSE 0 END) AS opened_size
       FROM trading_fills
       WHERE mission_id = ${input.missionId} AND market = ${input.market}
-        AND traded_at >= ${openedAt}
+        AND traded_at >= ${fillsFrom}
     `;
     const exits = yield* sql<{ readonly avg_price: number | null }>`
       SELECT SUM(filled_size * avg_fill_price) / SUM(filled_size) AS avg_price
       FROM trading_fills
       WHERE mission_id = ${input.missionId} AND market = ${input.market}
-        AND traded_at >= ${openedAt} AND side = ${closingSide}
+        AND traded_at >= ${fillsFrom} AND side = ${closingSide}
     `;
     // The entry that opened this trade: the newest open entry the server
     // committed to at or shortly before the position was first observed. Same
@@ -159,6 +181,7 @@ export const buildClosedTradeReview = (input: {
     const peak = Math.max(0, previous.peak_unrealised_pnl ?? 0);
     const trough = Math.min(0, previous.trough_unrealised_pnl ?? 0);
     const exitPrice = exits[0]?.avg_price ?? null;
+    const openedSize = Math.abs(totals[0]?.opened_size ?? 0);
     const strategy = strategies[0];
 
     return {
@@ -168,7 +191,10 @@ export const buildClosedTradeReview = (input: {
       openedAt,
       closedAt: input.closedAt,
       holdMillis: Math.max(0, input.closedAt - openedAt),
-      sizeEth: previous.size,
+      // The exposure the trade actually carried, not the chunk that happened
+      // to be left when it went flat: a position closed in three rungs was
+      // reviewed at the size of the last one.
+      sizeEth: openedSize > 0 ? (direction === "long" ? openedSize : -openedSize) : previous.size,
       ...(previous.entry_price !== null && previous.entry_price > 0
         ? { entryPrice: previous.entry_price }
         : {}),
