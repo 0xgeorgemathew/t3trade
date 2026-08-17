@@ -619,4 +619,56 @@ layer("the watch read a turn takes", (it) => {
       assert.equal(byStatus("cancelled").length, 10);
     }),
   );
+
+  // Plan 33 fix 2.1: a fired watch is history once the turn it woke has
+  // reasoned about it. `triggered` used to be unbounded alongside `active`, so
+  // a mission that re-levels on every wake carried every level it ever hit
+  // into every look.
+  it.effect("caps the fired tail too", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      yield* seedWatches("triggered", 24, 1_000);
+      yield* seedWatches("active", 6, 5_000);
+
+      const strategies = yield* TradingStrategyService;
+      const read = yield* strategies.listWatchesForRead("mission_1");
+
+      const byStatus = (status: string) => read.filter((w) => w.status === status);
+      // The live armed set is still whole.
+      assert.equal(byStatus("active").length, 6);
+      assert.equal(byStatus("triggered").length, 10);
+      // Newest first, same contract as the unbounded read.
+      assert.deepStrictEqual(
+        read.map((watch) => watch.createdAt),
+        [...read].map((watch) => watch.createdAt).sort((a, b) => b - a),
+      );
+    }),
+  );
+
+  // The cap on `triggered` is by FIRE time, which is the whole reason it is a
+  // separate arm: a watch armed hours ago and hit thirty seconds ago is the
+  // row the woken turn exists to answer, and arming order buries it.
+  it.effect("keeps the watch that fired most recently, however long ago it was armed", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const sql = yield* SqlClient.SqlClient;
+      // Armed first, fired last.
+      yield* sql`
+        INSERT INTO trading_watches
+          (watch_id, mission_id, watch_json, status, armed_reason, version, created_at, updated_at)
+        VALUES ('just_fired', 'mission_1',
+                '{"type":"price_cross","market":"ETH","priceSource":"mark","direction":"above","price":3200}',
+                'triggered', NULL, 1, 1, 9_000)
+      `;
+      // Armed after it, and all fired before it.
+      yield* seedWatches("triggered", 20, 1_000);
+
+      const strategies = yield* TradingStrategyService;
+      const read = yield* strategies.listWatchesForRead("mission_1");
+
+      const triggered = read.filter((watch) => watch.status === "triggered");
+      assert.equal(triggered.length, 10);
+      assert.isTrue(triggered.some((watch) => watch.id === "just_fired"));
+    }),
+  );
 });

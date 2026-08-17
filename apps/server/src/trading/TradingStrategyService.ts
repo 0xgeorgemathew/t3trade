@@ -68,19 +68,22 @@ export interface TradingStrategyServiceShape {
    * paying for a few hundred cancelled levels on every read — the same cost
    * `PLAN_HISTORY_READ_LIMIT` was introduced to stop on the plan journal.
    *
-   * The cap is NOT recency. A watch that has FIRED and has not yet been
-   * reasoned about is the single most important row in the list, and it is
-   * also, by construction, older than every level armed after it — recency
-   * alone would drop exactly the row the turn exists to answer. So nothing
-   * live is ever dropped: every `active` and every `triggered` watch is
-   * returned in full, and only the settled tail — cancelled, consumed,
-   * expired, superseded — is capped, newest first.
+   * Three arms, because the statuses are not one population:
    *
-   * That leaves the live set unbounded in principle. In practice it is bounded
-   * by what a mission can arm and have standing at once, which is the set the
-   * coverage floor and the evaluator both already work over; a watch that is
-   * still live is a watch the turn may need to act on, and dropping one to
-   * save tokens would be a silent risk change.
+   * - `active` is unbounded. It is the live armed set, small by construction —
+   *   a watch that is still armed is a watch the turn may need to act on, and
+   *   dropping one to save tokens would be a silent risk change.
+   * - `triggered` is capped, ordered by when it FIRED (`updated_at`), not by
+   *   when it was armed. A fired watch is history the moment the turn it woke
+   *   has reasoned about it, and a mission that re-levels on every wake was
+   *   carrying every one of them forever. Ordering by fire time is what keeps
+   *   the cap honest: the watch that has fired and has NOT yet been reasoned
+   *   about is the most recently updated row in this arm, so it is always in —
+   *   ordering by arming time would drop precisely the row the turn exists to
+   *   answer, because it is by construction older than every level armed after
+   *   it.
+   * - Everything terminal — cancelled, consumed, expired, superseded — is
+   *   capped by arming time, newest first.
    */
   readonly listWatchesForRead: (
     missionId: string,
@@ -158,7 +161,9 @@ const PLAN_HISTORY_READ_LIMIT = 10;
  *
  * Ten, for the same reason the plan journal keeps ten: enough to see the levels
  * this mission has been working and retiring, far short of the whole session.
- * Only terminal rows are counted against it — see `listWatchesForRead`.
+ * `active` is the only status exempt — see `listWatchesForRead`. A `triggered`
+ * watch has already fired, so it is the settled tail like any other, and a long
+ * mission was carrying every one of them into every read.
  */
 const SETTLED_WATCH_READ_LIMIT = 10;
 
@@ -243,7 +248,19 @@ const makeTradingStrategyService = Effect.gen(function* () {
              created_at, updated_at, prediction_version
       FROM trading_watches
       WHERE mission_id = ${missionId}
-        AND status IN ('active', 'triggered')
+        AND status = 'active'
+      UNION ALL
+      SELECT watch_id, mission_id, watch_json, status, armed_reason,
+             created_at, updated_at, prediction_version
+      FROM (
+        SELECT watch_id, mission_id, watch_json, status, armed_reason,
+               created_at, updated_at, prediction_version
+        FROM trading_watches
+        WHERE mission_id = ${missionId}
+          AND status = 'triggered'
+        ORDER BY updated_at DESC, watch_id DESC
+        LIMIT ${SETTLED_WATCH_READ_LIMIT}
+      )
       UNION ALL
       SELECT watch_id, mission_id, watch_json, status, armed_reason,
              created_at, updated_at, prediction_version
@@ -261,7 +278,7 @@ const makeTradingStrategyService = Effect.gen(function* () {
       Effect.map((rows) =>
         rows
           .map(toPersistedWatch)
-          // The two arms come back in whatever order the union produced. The
+          // The three arms come back in whatever order the union produced. The
           // caller's contract is the same as `listWatches`: newest first.
           .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1)),
       ),
