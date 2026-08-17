@@ -232,6 +232,17 @@ export const WatchRefusalCode = Schema.Literals([
    * named both (plan 29 step 6.5). One call does one thing to the armed set.
    */
   "needs_condition_or_cancel",
+  /**
+   * A `giveback` whose threshold the position has ALREADY given back — plan 34
+   * step 6.
+   *
+   * Such a watch is true the moment it is written, so it fires on the next
+   * sweep and wakes the run seconds later to widen the same threshold again.
+   * The mission this was found on armed $0.08 with $0.18 already given back
+   * (fired in 8s), then $0.25 with $0.41 given back (fired in 5s): three wakes
+   * in ninety seconds that did nothing but move a number.
+   */
+  "giveback_below_current_drawdown",
 ]);
 export type WatchRefusalCode = typeof WatchRefusalCode.Type;
 

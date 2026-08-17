@@ -215,6 +215,20 @@ export interface TradingMissionServiceShape {
   }) => Effect.Effect<number | null, PersistenceSqlError>;
 
   /**
+   * How far the held position has already come off that high-water mark — plan
+   * 34 step 6.
+   *
+   * The same subtraction the wakeup composer publishes as
+   * `position.drawdownFromPeakUsd`, read from the reconciler's snapshot rather
+   * than from the exchange, so arming a watch does not cost a market read.
+   * `null` when the mission is flat or has no peak to have come off.
+   */
+  readonly readDrawdownFromPeak: (input: {
+    readonly missionId: string;
+    readonly market: string;
+  }) => Effect.Effect<number | null, PersistenceSqlError>;
+
+  /**
    * Erase a mission and everything keyed to it, in one transaction.
    *
    * A settled mission is finished, and every row it ever wrote is finished with
@@ -413,6 +427,24 @@ const makeTradingMissionService = Effect.gen(function* () {
       if (row === undefined || row.size === 0) return null;
       const peak = row.peak_unrealised_pnl;
       return peak === null || peak <= 0 ? null : peak;
+    });
+
+  const readDrawdownFromPeak: TradingMissionServiceShape["readDrawdownFromPeak"] = (input) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{
+        readonly size: number;
+        readonly unrealised_pnl: number;
+        readonly peak_unrealised_pnl: number | null;
+      }>`
+        SELECT size, unrealised_pnl, peak_unrealised_pnl FROM trading_position_snapshots
+        WHERE mission_id = ${input.missionId} AND market = ${input.market}
+      `.pipe(Effect.mapError(sqlFail("readDrawdownFromPeak")));
+
+      const row = rows[0];
+      if (row === undefined || row.size === 0) return null;
+      const peak = row.peak_unrealised_pnl;
+      if (peak === null || peak <= 0) return null;
+      return Math.max(0, peak - row.unrealised_pnl);
     });
 
   const findMissionByThreadId: TradingMissionServiceShape["findMissionByThreadId"] = (threadId) =>
@@ -646,6 +678,7 @@ const makeTradingMissionService = Effect.gen(function* () {
     listPendingExecutions,
     getMasterWalletAddress,
     readPeakUnrealisedPnl,
+    readDrawdownFromPeak,
     deleteMission,
     listDeletableMissions,
   } satisfies TradingMissionServiceShape;

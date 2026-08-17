@@ -1378,6 +1378,76 @@ it.effect("retires a watch through the same tool that armed it", () =>
 );
 
 // One call does one thing to the armed set.
+// Plan 34 step 6. Armed under the drawdown it names, a giveback is true the
+// moment it is written: it fires on the next sweep, and the run wakes to widen
+// the same threshold again. The mission this was found on did that twice in
+// ninety seconds.
+it.effect("refuses a giveback the position has already given back", () => {
+  const fake = makeFakeExchange({ positionSize: -0.474 });
+  return withMcpServer(
+    ({ callTool, seedTradingAccount, seedPosition }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+        // Peaked at +$0.62, now +$0.21: $0.41 already given back.
+        yield* seedPosition({
+          size: -0.474,
+          entryPrice: 1_905.11,
+          unrealisedPnl: 0.21,
+          peakUnrealisedPnl: 0.62,
+        });
+
+        const refused = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: { kind: "giveback", market: "ETH", drawdownUsd: 0.25 },
+        });
+        assert.equal(refused.result.body.outcome, "refused");
+        assert.equal(refused.result.body.reason, "giveback_below_current_drawdown");
+        assert.include(refused.result.body.detail, "0.41");
+        // Reading is the answer, not standing down: the level is a fact about
+        // the position, and the position keeps moving.
+        assert.equal(refused.result.body.recovery.action, "read_state");
+
+        // Nothing was armed — a refusal changes nothing.
+        const look = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["mission"],
+        });
+        assert.equal(look.result.body.mission.watches.length, 0);
+
+        // Above the current drawdown, the same call arms.
+        const armed = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: { kind: "giveback", market: "ETH", drawdownUsd: 0.62 },
+        });
+        assert.equal(armed.result.body.outcome, "armed");
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
+it.effect("arms a giveback while the position is at its peak", () => {
+  const fake = makeFakeExchange({ positionSize: -0.474 });
+  return withMcpServer(
+    ({ callTool, seedTradingAccount, seedPosition }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+        yield* seedPosition({
+          size: -0.474,
+          entryPrice: 1_905.11,
+          unrealisedPnl: 0.62,
+          peakUnrealisedPnl: 0.62,
+        });
+
+        const armed = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: { kind: "giveback", market: "ETH", drawdownUsd: 0.1 },
+        });
+        assert.equal(armed.result.body.outcome, "armed");
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
 it.effect("refuses a watch call that names neither a condition nor a cancel", () =>
   withMcpServer(({ callTool }) =>
     Effect.gen(function* () {

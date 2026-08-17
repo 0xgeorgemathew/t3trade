@@ -1046,6 +1046,17 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
  * record are the same ones `trading_enter` produces.
  */
 /**
+ * A giveback threshold that is actually ahead of the position.
+ *
+ * Half the current drawdown again, to the cent: far enough that the level is
+ * not reached by the noise that just moved it, near enough to still be a
+ * give-back rather than a surrender. A suggestion in the refusal's own words —
+ * nothing arms it.
+ */
+const roundGivebackSuggestion = (drawdownUsd: number): string =>
+  (Math.ceil(drawdownUsd * 150) / 100).toFixed(2);
+
+/**
  * Retire one active watch — `trading_watch`'s `cancel` (plan 29 step 6.5).
  *
  * Lifted out of the retired `trading_cancel_watch` handler unchanged, including
@@ -1408,6 +1419,32 @@ const handlers = {
           detail: derived.detail,
           recovery: classifyFailure({ tag: "TradingWatchRefusal", reason: derived.code }),
         };
+      }
+
+      // A `giveback` the position has already given back is true the moment it
+      // is written: it fires on the next sweep and wakes the run to widen the
+      // same threshold again. Refusing costs the model one turn's arm; the
+      // mission this was found on spent three wakes in ninety seconds on it.
+      if (input.condition.kind === "giveback") {
+        const missions = yield* TradingMissionService;
+        const drawdown = yield* missions
+          .readDrawdownFromPeak({ missionId: mission.id, market: input.condition.market })
+          .pipe(Effect.catchCause(() => Effect.succeed(null)));
+        if (drawdown !== null && drawdown >= input.condition.drawdownUsd) {
+          const suggested = roundGivebackSuggestion(drawdown);
+          return {
+            outcome: "refused" as const,
+            reason: "giveback_below_current_drawdown" as const,
+            detail:
+              `this position has already given back $${drawdown.toFixed(2)} of its peak, so a ` +
+              `giveback at $${input.condition.drawdownUsd} would fire on the next sweep. Arm ` +
+              `above the current drawdown — $${suggested} or wider — or bank the position now`,
+            recovery: classifyFailure({
+              tag: "TradingWatchRefusal",
+              reason: "giveback_below_current_drawdown",
+            }),
+          };
+        }
       }
 
       const watches = yield* TradingWatchService;

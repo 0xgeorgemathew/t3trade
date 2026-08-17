@@ -148,8 +148,13 @@ export function classifyFailure(failure: ClassifiableFailure): FailureRecovery {
     // identical answer, so the fix is to say a different condition. The fourth
     // is not about the condition at all: the mission ended underneath the call.
     case "TradingWatchRefusal":
-      return failure.reason === "mission_not_found"
-        ? permanent("read_state", "watch_mission_not_found")
+      // Two of these are not about the condition being wrong as such. The
+      // mission ended underneath the call; or the level is one the position
+      // has already passed, which is a fact about the position and changes as
+      // the position does. Both are answered by reading, not by giving up.
+      return failure.reason === "mission_not_found" ||
+        failure.reason === "giveback_below_current_drawdown"
+        ? permanent("read_state", `watch_${failure.reason}`)
         : permanent("stand_down", `watch_${failure.reason ?? "refused"}`);
 
     // A `trading_exit` call that does not name an exit (plan 29 step 6.5).
