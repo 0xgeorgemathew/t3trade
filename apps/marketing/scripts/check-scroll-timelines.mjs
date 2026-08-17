@@ -2,15 +2,15 @@
 // which no browser parses, so scroll-driven animations vanish from a
 // production build while dev keeps working. This guard fails the build if the
 // built CSS loses its timelines or grows a folded shorthand.
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 const DIST = new URL("../dist/_astro/", import.meta.url).pathname;
 const MIN_TIMELINES = 12;
 
-const css = readdirSync(DIST)
+const css = NodeFS.readdirSync(DIST)
   .filter((name) => name.endsWith(".css"))
-  .map((name) => readFileSync(join(DIST, name), "utf8"))
+  .map((name) => NodeFS.readFileSync(NodePath.join(DIST, name), "utf8"))
   .join("\n");
 
 const timelines = css.match(/animation-timeline\s*:/g)?.length ?? 0;
