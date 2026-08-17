@@ -104,7 +104,7 @@ export const TradingLookTool = Tool.make("trading_look", {
 
 export const TradingPlanTool = Tool.make("trading_plan", {
   description:
-    'Publish the nine-field plan: market, intent, entry, stop, target, invalidation, reassess, projection, because. Declining to trade is intent "stand_aside" — but ALWAYS carry `projection` {price, byMinutes}, your best estimate of where price is heading, revised every publish. Derive the target off measured volatility. `expectedMissionVersion` (from trading_look); a stale publish is rejected. Revising replaces the plan in place — watches survive, so cancel or replace stale triggers.',
+    'Publish the plan: market, intent, entry, stop, target, invalidation, reassess, projection, because. `projection` is the prediction, never omitted: {direction, price, zone?, byMinutes, invalidationPrice} — where the read is WRONG, not your stop. Publishing arms its horizon+invalidation wakes; the next retires only those. Declining is intent "stand_aside". Derive the target off measured volatility. `expectedMissionVersion` from trading_look; stale is rejected. Your watches survive a revision.',
   parameters: TradingPublishPlanInput,
   success: TradingPublishPlanResult,
   failure: TradingToolRejectedError,
@@ -170,7 +170,7 @@ export const TradingEnterTool = Tool.make("trading_enter", {
 
 export const TradingStrategyTool = Tool.make("trading_strategy", {
   description:
-    "Read one named strategy. Each returns whenItApplies (trigger), procedure[] (ordered steps), gates[] (must clear before entry), standDownIf[] (retire a setup). In discretionary mode this is reference; when trading_look reports mode execute_strategy it is the decision procedure for the named one.",
+    "Read one named strategy — a playbook, never an indicator. Each returns whenItApplies (the setup it is for), procedure[] (ordered steps), gates[] (must clear before entry), standDownIf[] (retire a setup). Check your candidates against these for fit at every assessment and reassessment, and rank them; an indicator reading is evidence inside a strategy, not one. In discretionary mode this is reference; when trading_look reports mode execute_strategy it is the decision procedure for the named one.",
   parameters: TradingGetPlaybookInput,
   success: Playbook,
   failure: TradingToolRejectedError,

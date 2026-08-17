@@ -50,8 +50,13 @@ export type PlaybookProcedure = typeof PlaybookProcedure.Type;
  * `classify` is the regime read; `momentum` and `range_reversion` are the two
  * modes a regime resolves to; `opening_range` is the ORB placeholder the plan
  * authorises for a later session type; `ema_cross` and `rsi_reversion` are the
- * two simple indicator strategies, each standalone rather than a filter on the
- * structural ones; `standing_rules` is what holds in every mode.
+ * two strategies whose evidence is a single indicator reading rather than a
+ * structural level, each standalone rather than a filter on the structural
+ * ones; `standing_rules` is what holds in every mode.
+ *
+ * The indicator is never the strategy. An EMA crossing and an RSI at 72 are
+ * measurements; the playbook around them — which boundary to enter at, which
+ * gates to clear, when to stand down — is what makes either a decision.
  */
 export const TradingPlaybookName = Schema.Literals([
   "classify",
@@ -205,7 +210,7 @@ export const PLAYBOOKS: ReadonlyArray<Playbook> = [
   {
     name: "rsi_reversion",
     whenItApplies:
-      "RSI BAND REVERSION: Wilder's RSI(14) at an extreme, faded back toward the middle. The other simple indicator strategy, standalone beside the EMA cross — it reads one oscillator against fixed bands and needs no structural range at all.",
+      "RSI BAND REVERSION: Wilder's RSI(14) at an extreme, faded back toward the middle. The other strategy that reads a single indicator rather than a structural level, standalone beside the EMA cross — it weighs one oscillator against fixed bands and needs no structural range at all. The oscillator is the evidence; this procedure is the strategy.",
     procedure: [
       "Read `rsi` on the thesis timeframe. `condition` applies the bands (" +
         "overbought at 70, oversold at 30) so two turns cannot pick two different ones, and `barsSinceEnteringExtreme` is how long the extreme has held.",
