@@ -1111,6 +1111,93 @@ function toLatestProposedPlanState(proposedPlan: ProposedPlan): LatestProposedPl
   };
 }
 
+/**
+ * An MCP tool call as the expanded row shows it — plan 34 step 8.
+ *
+ * The row used to render `JSON.stringify(item)`, which put the tool's whole
+ * result inside a JSON string: a 35,000-character observation arrived as one
+ * escaped line of `\n`s and `\"`s, in a box sixteen lines tall. Nothing was
+ * truncated — the payload is complete in the database and complete in the DOM
+ * — but nobody could read it, which is why a whole session's worth of tool
+ * results looked cut off.
+ *
+ * So: arguments and result as two labelled blocks, each pretty-printed, and
+ * the result's own nested JSON parsed one level so it renders as the structure
+ * it is rather than as a string that happens to contain one.
+ */
+export function formatMcpToolCallDetail(toolData: unknown): string | null {
+  const item = asRecord(toolData);
+  if (item === null) return null;
+
+  const blocks: string[] = [];
+  const server = asTrimmedString(item.server);
+  const tool = asTrimmedString(item.tool);
+  if (server !== null || tool !== null) {
+    blocks.push([server, tool].filter((part) => part !== null).join(" · "));
+  }
+
+  if (item.arguments !== undefined) {
+    blocks.push(`Arguments
+${stringifyPretty(item.arguments)}`);
+  }
+
+  const resultText = readMcpResultText(item.result);
+  if (resultText !== null) {
+    blocks.push(`Result
+${resultText}`);
+  } else if (item.result !== undefined) {
+    blocks.push(`Result
+${stringifyPretty(item.result)}`);
+  }
+
+  if (item.error !== undefined) {
+    blocks.push(`Error
+${stringifyPretty(item.error)}`);
+  }
+
+  return blocks.length > 0 ? blocks.join("\n\n") : null;
+}
+
+/**
+ * The text an MCP result carries, unwrapped one level.
+ *
+ * The transport wraps every result as `content: [{ type: "text", text }]`, and
+ * the tools here put JSON in that `text`. Parsing it back means the reader
+ * sees an object; leaving it alone means they see the object's source code
+ * with every quote escaped.
+ */
+function readMcpResultText(result: unknown): string | null {
+  const record = asRecord(result);
+  const content = record === null ? null : record.content;
+  if (!Array.isArray(content)) return null;
+
+  const parts: string[] = [];
+  for (const entry of content) {
+    const part = asRecord(entry);
+    const text = part === null ? null : asTrimmedString(part.text);
+    if (text === null) continue;
+    parts.push(reindentJson(text));
+  }
+  return parts.length > 0 ? parts.join("\n\n") : null;
+}
+
+/** The same JSON, indented — or the original text when it is not JSON. */
+function reindentJson(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
+  }
+}
+
+function stringifyPretty(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }

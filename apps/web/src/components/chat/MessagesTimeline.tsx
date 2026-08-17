@@ -33,6 +33,7 @@ import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { FileDiff } from "@pierre/diffs/react";
 import {
   deriveTimelineEntries,
+  formatMcpToolCallDetail,
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
@@ -46,12 +47,17 @@ import {
 } from "../../lib/diffRendering";
 import ChatMarkdown from "../ChatMarkdown";
 import {
+  ActivityIcon,
+  AlarmClockIcon,
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
   EyeIcon,
+  PlayIcon,
+  RadioTowerIcon,
+  ReceiptIcon,
   GlobeIcon,
   HammerIcon,
   MessageCircleIcon,
@@ -983,33 +989,126 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
  * handed, so it stays one click away rather than being summarized out of
  * existence.
  */
+/**
+ * How recently a wakeup must have happened to read as an arrival rather than
+ * as scrollback.
+ *
+ * Generous enough to cover the round trip from the runtime's wake to the
+ * message reaching the thread, short enough that a wake from a minute ago —
+ * which the operator has already seen go by — renders static.
+ */
+const NEW_WAKEUP_WINDOW_MILLIS = 10_000;
+
+/**
+ * Which wakes are worth the accent, and which are just the loop running.
+ *
+ * A mission wakes several times a minute. If every wake were amber the colour
+ * would stop meaning anything, and the one wake that matters — a level crossed,
+ * a fill landed, the operator saying something — would be the same shade as the
+ * ninety before it. Event wakes get the accent; the clock's own wakes stay
+ * neutral and simply mark the spine.
+ */
+function isEventWake(cause: string): boolean {
+  return (
+    cause === "market_watch_triggered" ||
+    cause === "order_updated" ||
+    cause === "position_updated" ||
+    cause === "user_message"
+  );
+}
+
+/** The glyph for a cause, defaulting rather than guessing at an unknown one. */
+function wakeupIcon(card: WakeupCard): typeof ZapIcon {
+  if (card.cause === "mission_created") return PlayIcon;
+  if (card.cause === "scheduled_reassessment") return AlarmClockIcon;
+  if (card.cause === "order_updated" || card.cause === "position_updated") return ReceiptIcon;
+  if (card.cause === "market_watch_triggered") {
+    // A P&L floor being hit and a price level being crossed are both "a watch
+    // fired", and they are not the same event to a reader.
+    return card.triggeringWatchType?.startsWith("pnl") === true ? ActivityIcon : ZapIcon;
+  }
+  return RadioTowerIcon;
+}
+
+/**
+ * A trading wakeup, as one legible line.
+ *
+ * The runtime injects the wakeup snapshot as the resumed turn's user message
+ * (§12.4), so without this the operator's thread is a stack of JSON blobs where
+ * their own messages used to be. The payload is what the harness was actually
+ * handed, so it stays one click away rather than being summarized out of
+ * existence.
+ *
+ * Centred rather than right-aligned. These are not the operator's messages and
+ * they never were — they are the harness's own heartbeat, and running them down
+ * the middle makes the thread read as a spine of machine activity with the
+ * conversation on either side of it, instead of as the operator having sent a
+ * hundred JSON blobs.
+ */
 function TradingWakeupTimelineRow({ card }: { card: WakeupCard }) {
   const [expanded, setExpanded] = useState(false);
+  // Only a wakeup that has just landed gets the tick, and the payload's own
+  // clock is what says so. Mount order cannot: opening a thread mounts the
+  // whole scrollback in one pass, and every historical wake would replay.
+  // Read once, at mount, so a row does not stop animating mid-animation.
+  const [isNew] = useState(
+    () =>
+      card.occurredAtMillis !== null &&
+      Date.now() - card.occurredAtMillis < NEW_WAKEUP_WINDOW_MILLIS,
+  );
 
-  const details = [card.marketLabel, card.bootstrap ? "Bootstrap" : null]
-    .concat(card.pendingEventCount > 0 ? [`${card.pendingEventCount} pending`] : [])
-    .filter((part): part is string => part !== null);
+  const Icon = wakeupIcon(card);
+  const isEvent = isEventWake(card.cause);
 
   return (
-    <div className="flex flex-col items-end gap-1">
-      <div className="max-w-[80%] rounded-2xl border border-border/70 bg-muted/40 px-3 py-2">
+    <div className="flex justify-center">
+      <div
+        className={cn(
+          "rounded-xl border",
+          expanded ? "w-full max-w-[640px]" : "max-w-[420px]",
+          isEvent ? "border-armed/30 bg-armed/[0.06]" : "border-border/60 bg-muted/30",
+          isNew && "watch-tick-in",
+        )}
+      >
         <button
           type="button"
           aria-expanded={expanded}
           data-scroll-anchor-ignore
           onClick={() => setExpanded((value) => !value)}
-          className="flex w-full items-center gap-2 text-left text-xs text-muted-foreground hover:text-foreground/85"
+          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground/85"
         >
+          <span
+            className={cn(
+              "flex size-6 flex-none items-center justify-center rounded-md",
+              isEvent ? "bg-armed/15 text-armed" : "bg-foreground/[0.06] text-muted-foreground",
+            )}
+          >
+            <Icon className="size-3.5" strokeWidth={2} aria-hidden />
+          </span>
+          {/* One row, at most one separator. The pending count is a badge
+              rather than a third segment: it is a quantity attached to this
+              wake, not another fact of the same kind. */}
+          <span className="min-w-0 flex-1 truncate">
+            <span className="font-medium text-foreground/85">
+              Wakeup <span className="text-foreground/70">{card.causeLabel}</span>
+            </span>
+            {card.marketLabel === null ? null : (
+              <span className="font-mono text-muted-foreground"> · {card.marketLabel}</span>
+            )}
+          </span>
+          {card.pendingEventCount > 0 ? (
+            <span className="flex-none rounded-full bg-armed/15 px-1.5 font-mono text-[10px] text-armed">
+              +{card.pendingEventCount}
+            </span>
+          ) : null}
           {expanded ? (
-            <ChevronDownIcon className="size-3 shrink-0" />
+            <ChevronDownIcon className="size-3 flex-none" />
           ) : (
-            <ChevronRightIcon className="size-3 shrink-0" />
+            <ChevronRightIcon className="size-3 flex-none" />
           )}
-          <span className="font-medium text-foreground/80">Wakeup · {card.causeLabel}</span>
-          {details.length > 0 ? <span className="truncate">{details.join(" · ")}</span> : null}
         </button>
         {expanded ? (
-          <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-all text-[11px] text-muted-foreground">
+          <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all px-3 pb-2 text-[11px] text-muted-foreground">
             {card.rawJson}
           </pre>
         ) : null}
@@ -2106,7 +2205,10 @@ function buildToolCallExpandedBody(
 ): string | null {
   const blocks: string[] = [];
   if (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) {
-    blocks.push(`MCP call\n${JSON.stringify(workEntry.toolData, null, 2)}`);
+    // Arguments and result as two readable blocks, not the raw item — see
+    // `formatMcpToolCallDetail` (plan 34 step 8).
+    const detail = formatMcpToolCallDetail(workEntry.toolData);
+    if (detail !== null) blocks.push(detail);
   }
   const raw = workEntryRawCommand(workEntry);
   if (raw?.trim()) {
@@ -2438,9 +2540,15 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
           onClick={stopRowToggle}
           onPointerDown={stopRowToggle}
         >
-          <pre className="max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-secondary-label text-[11px] leading-relaxed select-text">
-            {expandedBody}
-          </pre>
+          <div className="flex items-start gap-2">
+            {/* A trading_look observation is tens of thousands of characters:
+                sixteen lines of it read as a truncated payload rather than a
+                long one, and scrolling it in a box that size is not reading. */}
+            <pre className="max-h-[32rem] flex-1 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-secondary-label text-[11px] leading-relaxed select-text">
+              {expandedBody}
+            </pre>
+            <MessageCopyButton text={expandedBody} size="icon-xs" variant="ghost" />
+          </div>
         </div>
       ) : null}
     </div>

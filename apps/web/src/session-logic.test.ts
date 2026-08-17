@@ -17,6 +17,7 @@ import {
   deriveTimelineEntries,
   deriveWorkLogEntries,
   findLatestProposedPlan,
+  formatMcpToolCallDetail,
   hasActionableProposedPlan,
   isLatestTurnSettled,
   workEntryIndicatesToolFailure,
@@ -1927,5 +1928,60 @@ describe("rerun workflows", () => {
     const spawnRows = entries.filter((entry) => entry.agentSpawn !== undefined);
     expect(spawnRows.map((row) => row.agentSpawn!.workflowId)).toEqual(["wf-run1", "wf-run2"]);
     expect(spawnRows.map((row) => row.turnId)).toEqual(["turn-1", "turn-2"]);
+  });
+});
+
+// Plan 34 step 8. The expanded row rendered `JSON.stringify(item)`, which put
+// the tool's whole result inside a JSON string: a 35,000-character observation
+// arrived as one escaped line. Nothing was truncated and nobody could read it.
+describe("formatMcpToolCallDetail", () => {
+  it("renders the arguments and the result as readable blocks", () => {
+    const detail = formatMcpToolCallDetail({
+      type: "mcpToolCall",
+      server: "t3-trade",
+      tool: "trading_look",
+      arguments: { scope: ["candles"], bars: 20 },
+      result: {
+        content: [{ type: "text", text: '{"observedAt":1,"market":"ETH"}' }],
+      },
+    });
+
+    expect(detail).not.toBeNull();
+    expect(detail).toContain("t3-trade · trading_look");
+    expect(detail).toContain("Arguments");
+    expect(detail).toContain('"bars": 20');
+    expect(detail).toContain("Result");
+    // The nested JSON string is parsed back into the structure it is, so it
+    // renders indented instead of as one line of escaped quotes.
+    expect(detail).toContain('"market": "ETH"');
+    expect(detail).not.toContain('\\"');
+  });
+
+  it("shows result text that is not JSON exactly as it came", () => {
+    const detail = formatMcpToolCallDetail({
+      server: "t3-trade",
+      tool: "preview_status",
+      arguments: {},
+      result: { content: [{ type: "text", text: "attached" }] },
+    });
+
+    expect(detail).toContain("Result\nattached");
+  });
+
+  it("gives an error its own block", () => {
+    const detail = formatMcpToolCallDetail({
+      server: "t3-trade",
+      tool: "trading_enter",
+      arguments: { side: "buy" },
+      error: { message: "refused" },
+    });
+
+    expect(detail).toContain("Error");
+    expect(detail).toContain('"message": "refused"');
+  });
+
+  it("has nothing to show for a call it cannot read", () => {
+    expect(formatMcpToolCallDetail(null)).toBeNull();
+    expect(formatMcpToolCallDetail("not an object")).toBeNull();
   });
 });
