@@ -33,7 +33,7 @@ export const CHART_VIEWBOX_HEIGHT = 160;
 /** The drawable plot area: viewBox minus the right-edge price-tag gutter. */
 export const PLOT_WIDTH = CHART_VIEWBOX_WIDTH - LABEL_GUTTER_WIDTH; // 880
 /** Padding above/below the y-domain, as a fraction of the span. */
-export const DOMAIN_PADDING_RATIO = 0.08;
+export const DOMAIN_PADDING_RATIO = 0.18;
 /** Fewer candles than this and there is no chart to draw. */
 export const MIN_CANDLES_FOR_SVG = 2;
 
@@ -76,8 +76,17 @@ export const GUTTER_LABEL_MERGE_DISTANCE = 6;
  */
 export const GUTTER_LABEL_EDGE_INSET = 9;
 
-/** How many armed condition levels the chart draws before it says "+N more". */
-export const MAX_DRAWN_CONDITIONS = 3;
+/**
+ * How many armed condition levels the chart draws before it says "+N more".
+ *
+ * Two, not three. The named levels — entry, stop, target, liquidation, the
+ * mark — already own most of the gutter, and a third dashed rule with a third
+ * "above"/"below" caption stacked beside them turned the right edge into a
+ * price list. The conditions are read as a list in the readout's checklist;
+ * on the chart they are there to say "and these two are near". The rest are
+ * counted, never silently dropped.
+ */
+export const MAX_DRAWN_CONDITIONS = 2;
 
 /**
  * How close two armed conditions have to be to become one drawn level, as a
@@ -346,6 +355,13 @@ export interface ChartGeometry {
   readonly fillPoints: ReadonlyArray<ChartFillPoint>;
   /** Pinned at {@link nowX}; null when markPrice is null. */
   readonly markPoint: ChartPoint | null;
+  /**
+   * The plan's projection as a drawable path: the live mark to the projected
+   * price at its expected moment, clamped into the future gutter. Empty when
+   * no projection is published, there is no clock, or there is no mark to
+   * start the path from.
+   */
+  readonly projectionPoints: ReadonlyArray<ChartPoint>;
   /** Every right-gutter price tag, already resolved against collisions. */
   readonly gutterTags: ReadonlyArray<GutterTag>;
   /** Scheduled future events, placed on the x axis in the future gutter. */
@@ -471,6 +487,13 @@ export interface ComputeChartGeometryInput {
     readonly at: number;
     readonly tone?: ChartTimeMarkerTone;
   }>;
+  /**
+   * The plan's published estimate of where price is headed: a price and the
+   * moment it is expected by. Drawn as a dotted path from the live mark into
+   * the future gutter — a claim, in the hypothetical register, never part of
+   * the record. Ignored without `nowMillis` (the review chart has no future).
+   */
+  readonly projection?: { readonly price: number; readonly atMillis: number } | null;
   /**
    * Moments that have already happened, newest-first as the projection sends
    * them. Placed inside the drawn window; anything older than the first candle
@@ -1111,8 +1134,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
   const hasClock = input.nowMillis !== undefined;
   // A clock behind the last bar would run the axis backwards. Trust the data
   // over the browser's clock when they disagree.
-  const timeEnd = hasClock ? Math.max(input.nowMillis!, lastCandleTime) : lastCandleTime;
-  const nowX = hasClock ? PLOT_WIDTH * (1 - FUTURE_GUTTER_RATIO) : PLOT_WIDTH;
+  const clockNow = hasClock ? Math.max(input.nowMillis!, lastCandleTime) : lastCandleTime;
 
   // The axis scale, in viewBox units per millisecond.
   //
@@ -1129,10 +1151,36 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
   // Without a clock (the review chart) the old fit-to-window mapping is kept
   // exactly: that window is closed, so it has nothing to slide.
   const barIntervalMillis = medianBarInterval(candles);
+  // The axis ends at the close of the bar currently forming, not at `now`.
+  //
+  // This is what makes the line progress left to right. Anchored at `now`, the
+  // window advanced with the clock: every bar slid leftward and the mark sat
+  // pinned at one x forever, so the only motion on the chart was history
+  // retreating. Anchored at the forming bar's close, the ruler holds still for
+  // the whole bar while `now` walks toward it — the mark travels rightward
+  // across the frame, the line grows after it, and when the bar closes the
+  // window steps left by exactly one bar pitch and the next one begins. That
+  // step is the "pane moves" motion, and it is one bar wide: on a 60-bar
+  // window, under two percent of the plot.
+  //
+  // Quantised against the last candle's own open, not against the epoch: a
+  // feed's bars are not aligned to absolute minute boundaries, and rounding to
+  // the epoch would put the axis end mid-bar and leave the step out of phase
+  // with the arrivals it is meant to absorb. At least one bar ahead, always —
+  // at the instant a bar opens there is still a whole bar forming.
+  const barsAhead = Math.max(1, Math.ceil((clockNow - lastCandleTime) / barIntervalMillis));
+  const timeEnd = hasClock ? lastCandleTime + barsAhead * barIntervalMillis : lastCandleTime;
+  // Where that closing moment lands. The gutter to its right is what holds the
+  // scheduled markers and the projection.
+  const axisEndX = hasClock ? PLOT_WIDTH * (1 - FUTURE_GUTTER_RATIO) : PLOT_WIDTH;
   const visibleSpan = hasClock ? barIntervalMillis * candles.length : timeEnd - timeStart;
-  const pixelsPerMilli = visibleSpan > 0 ? nowX / visibleSpan : 0;
+  const pixelsPerMilli = visibleSpan > 0 ? axisEndX / visibleSpan : 0;
 
-  const xForTime = (t: number): number => nowX - (timeEnd - t) * pixelsPerMilli;
+  const xForTime = (t: number): number => axisEndX - (timeEnd - t) * pixelsPerMilli;
+  // `now` is inside the frame rather than at its anchor: it is one bar's worth
+  // to the left of the axis end at a bar open, and reaches the anchor at the
+  // close.
+  const nowX = hasClock ? xForTime(clockNow) : PLOT_WIDTH;
 
   // Inverted: higher price → smaller y → top of SVG.
   const yForPrice = (p: number): number => {
@@ -1240,7 +1288,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
 
   // --- fills: the session's activity, placed on the axis. ------------------
   // A fill before the window's first candle has no honest x, so it is dropped;
-  // one after `timeEnd` (a fill landing between the mission poll and the clock
+  // one after `now` (a fill landing between the mission poll and the clock
   // tick) is pinned at now. The y is clamped for the same reason the mark's is.
   const fillPoints: ChartFillPoint[] = [];
   for (const fill of input.fills ?? []) {
@@ -1276,6 +1324,23 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
   const livePoints: ReadonlyArray<ChartPoint> =
     hasClock && markPoint !== null && lastPoint !== null ? [lastPoint, markPoint] : [];
 
+  // --- the projection: mark → the plan's expected price, in the gutter. -----
+  // Clamped like a time marker: an estimate further out than the gutter
+  // reaches is pinned at the frame edge rather than drawn off-canvas. The y is
+  // clamped like the mark's, so a bold call still points the right way from
+  // inside the frame.
+  const projection = input.projection ?? null;
+  const projectionPoints: ReadonlyArray<ChartPoint> =
+    hasClock && projection !== null && markPoint !== null
+      ? [
+          markPoint,
+          {
+            x: clamp(xForTime(projection.atMillis), nowX, PLOT_WIDTH),
+            y: clamp(yForPrice(projection.price), 0, CHART_VIEWBOX_HEIGHT),
+          },
+        ]
+      : [];
+
   // --- future markers, placed in the gutter to the right of now. -----------
   const timeMarkers: ChartTimeMarker[] = hasClock
     ? (input.timeMarkers ?? []).map((marker) => ({
@@ -1286,7 +1351,10 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
         // the gutter reaches still belongs on screen, pinned at the far edge,
         // rather than drawn off-canvas or silently dropped.
         x: clamp(xForTime(marker.at), nowX, PLOT_WIDTH),
-        overdue: marker.at <= timeEnd,
+        // Against the clock, not against the axis end: the axis now runs to
+        // the close of the forming bar, so a reassessment due in thirty
+        // seconds would otherwise be reported as already overdue.
+        overdue: marker.at <= clockNow,
         tone: marker.tone ?? "planned",
       }))
     : [];
@@ -1298,7 +1366,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
   const pastMarkers: ChartPastMarker[] = [];
   for (const marker of input.pastMarkers ?? []) {
     if (pastMarkers.length >= MAX_DRAWN_PAST_MARKERS) break;
-    if (marker.at < timeStart || marker.at > timeEnd) continue;
+    if (marker.at < timeStart || marker.at > clockNow) continue;
     pastMarkers.push({
       key: marker.key,
       kind: marker.kind,
@@ -1329,6 +1397,7 @@ export function computeChartGeometry(input: ComputeChartGeometryInput): ChartGeo
     levels,
     fillPoints,
     markPoint,
+    projectionPoints,
     gutterTags: buildGutterTags(levels, markPoint, markPrice),
     timeMarkers,
     pastMarkers,

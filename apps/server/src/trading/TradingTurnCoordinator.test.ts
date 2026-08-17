@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import { EventId, ThreadId, type OrchestrationEvent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -14,7 +14,12 @@ import type { TradingHarnessBinding } from "./Schemas.ts";
 import { TradingEventInbox, TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingStrategyService, TradingStrategyServiceLive } from "./TradingStrategyService.ts";
-import { TradingTurnCoordinator, TradingTurnCoordinatorLive } from "./TradingTurnCoordinator.ts";
+import {
+  consecutiveNoOpWakes,
+  TradingTurnCoordinator,
+  TradingTurnCoordinatorLive,
+  type NoOpWakeRow,
+} from "./TradingTurnCoordinator.ts";
 import { TradingWakeupComposer } from "./TradingWakeupComposer.ts";
 import { TradingWatchService, TradingWatchServiceLive } from "./TradingWatchService.ts";
 
@@ -660,3 +665,41 @@ it.live("releases the lease and consumes claimed inbox events when the turn ends
     }).pipe(Effect.provide(testLayer));
   }),
 );
+
+describe("consecutiveNoOpWakes", () => {
+  const noOpWake: NoOpWakeRow = {
+    cause: "scheduled_reassessment",
+    status: "completed",
+    published_plan: 0,
+    execute_attempted: 0,
+  };
+
+  it("counts a trailing streak of no-op scheduled wakes", () => {
+    assert.equal(consecutiveNoOpWakes([]), 0);
+    assert.equal(consecutiveNoOpWakes([noOpWake, noOpWake, noOpWake]), 3);
+  });
+
+  it("breaks the streak on a real-event cause", () => {
+    // Newest-first: the latest run was woken by a crossed level, so however
+    // long the metronome ran before it, the backoff resets.
+    assert.equal(
+      consecutiveNoOpWakes([{ ...noOpWake, cause: "market_watch_triggered" }, noOpWake, noOpWake]),
+      0,
+    );
+    // The streak only reaches back to the most recent real event.
+    assert.equal(
+      consecutiveNoOpWakes([noOpWake, { ...noOpWake, cause: "user_message" }, noOpWake]),
+      1,
+    );
+  });
+
+  it("breaks the streak on a wake that changed something", () => {
+    assert.equal(consecutiveNoOpWakes([{ ...noOpWake, published_plan: 1 }, noOpWake]), 0);
+    assert.equal(consecutiveNoOpWakes([{ ...noOpWake, execute_attempted: 1 }, noOpWake]), 0);
+  });
+
+  it("breaks the streak on a failed run", () => {
+    // A failed wake is not a considered no-op — nothing looked at the market.
+    assert.equal(consecutiveNoOpWakes([{ ...noOpWake, status: "failed" }, noOpWake]), 0);
+  });
+});

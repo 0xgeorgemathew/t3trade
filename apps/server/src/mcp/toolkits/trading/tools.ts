@@ -104,7 +104,7 @@ export const TradingLookTool = Tool.make("trading_look", {
 
 export const TradingPlanTool = Tool.make("trading_plan", {
   description:
-    'Publish the eight-field plan: market, intent, entry, stop, target, invalidation, reassess, because. Declining to trade is intent "stand_aside". Derive the target off measured volatility over the intended hold. `expectedMissionVersion` (from trading_look); a stale publish is rejected. Revising replaces the plan in place — watches survive, so cancel or replace any trigger you no longer want.',
+    'Publish the nine-field plan: market, intent, entry, stop, target, invalidation, reassess, projection, because. Declining to trade is intent "stand_aside" — but ALWAYS carry `projection` {price, byMinutes}, your best estimate of where price is heading, revised every publish. Derive the target off measured volatility. `expectedMissionVersion` (from trading_look); a stale publish is rejected. Revising replaces the plan in place — watches survive, so cancel or replace stale triggers.',
   parameters: TradingPublishPlanInput,
   success: TradingPublishPlanResult,
   failure: TradingToolRejectedError,
@@ -122,7 +122,7 @@ export const TradingPlanTool = Tool.make("trading_plan", {
 
 export const TradingWatchTool = Tool.make("trading_watch", {
   description:
-    'Arm one `condition` — `price` (a level; `confirm: "close"` needs an `interval`, otherwise it fires on touch), `pnl`, `giveback`, `fill`, `time` — or retire one by id with `cancel`; exactly one of the two per call. The armed set is on `trading_look`. Fires exactly once, then terminal — re-arm to keep a level standing. `replacesWatchId` moves a level in one transaction; if that watch already fired, what was armed is an ADDITION, not a swap. A refusal changes nothing and `recovery` says what to do.',
+    'Arm one `condition` — `price` (a level; `confirm: "close"` needs an `interval`, else fires on touch), `metric` (funding_rate_8h, open_interest, day_volume_usd, spread_bps, volume_ratio vs a value), `pnl`, `giveback`, `fill`, `time` (clock fallback) — or retire one with `cancel`; exactly one per call. Fires once, then terminal — re-arm to keep a level. `replacesWatchId` swaps in one transaction; if it already fired, the arm is an ADDITION. A refusal changes nothing; `recovery` says what to do.',
   parameters: TradingWatchInput,
   success: TradingWatchResult,
   failure: TradingToolRejectedError,

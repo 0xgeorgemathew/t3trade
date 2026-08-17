@@ -31,6 +31,28 @@ const EVERY_WATCH: ReadonlyArray<MarketWatch> = [
   { type: "pnl_below", market: "ETH", valueUsd: -6 },
   { type: "pnl_below", market: "ETH", valueUsd: 3 },
   { type: "pnl_giveback", market: "ETH", drawdownUsd: 4 },
+  {
+    type: "metric_threshold",
+    market: "ETH",
+    metric: "funding_rate_8h",
+    direction: "below",
+    value: -0.0001,
+  },
+  {
+    type: "metric_threshold",
+    market: "ETH",
+    metric: "day_volume_usd",
+    direction: "above",
+    value: 900_000_000,
+  },
+  {
+    type: "metric_threshold",
+    market: "ETH",
+    metric: "volume_ratio",
+    direction: "above",
+    value: 2,
+    interval: "1m",
+  },
 ];
 
 describe("the condition the model writes", () => {
@@ -71,6 +93,49 @@ describe("the condition the model writes", () => {
     );
     assert.isTrue(isWatchRefusal(refused));
     assert.equal(isWatchRefusal(refused) ? refused.code : "", "close_needs_interval");
+  });
+
+  // A volume ratio is measured on a bar series; a metric condition that names
+  // none gets the runtime's own default interval, the same 1m every other
+  // cadence in the system assumes.
+  it("defaults a volume-ratio condition to the 1m bar series", () => {
+    const armed = toMarketWatch(
+      decode({
+        kind: "metric",
+        market: "ETH",
+        metric: "volume_ratio",
+        direction: "above",
+        value: 2,
+      }),
+    );
+    assert.deepEqual(armed, {
+      type: "metric_threshold",
+      market: "ETH",
+      metric: "volume_ratio",
+      direction: "above",
+      value: 2,
+      interval: "1m",
+    });
+  });
+
+  // The snapshot metrics carry no bar series, and none is invented for them.
+  it("arms a snapshot metric without inventing an interval", () => {
+    const armed = toMarketWatch(
+      decode({
+        kind: "metric",
+        market: "ETH",
+        metric: "spread_bps",
+        direction: "above",
+        value: 5,
+      }),
+    );
+    assert.deepEqual(armed, {
+      type: "metric_threshold",
+      market: "ETH",
+      metric: "spread_bps",
+      direction: "above",
+      value: 5,
+    });
   });
 
   it("refuses a profit line that is not a profit", () => {

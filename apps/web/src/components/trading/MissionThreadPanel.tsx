@@ -578,14 +578,29 @@ export function MissionThreadCards({ mission }: { readonly mission: Orchestratio
         these rows sit at the end of a message timeline that reads downward, so
         the oldest fill belongs at the top and the newest nearest the composer.
       */}
-      {mission.recentFills.toReversed().map((fill) => (
-        <FillReceipt
-          key={`${fill.orderId}-${fill.tradedAt}`}
-          fill={fill}
-          intent={mission.inFlightExecution}
-          leverage={leverage}
-        />
-      ))}
+      {/*
+        The fills that opened the position the operator is currently holding do
+        not print here. That receipt was the only place the live position
+        appeared as a pill in the middle of the conversation, saying the same
+        market, side, leverage, size and entry the pinned panel says one screen
+        up — and unlike the panel it scrolled, so the position was in two places
+        and neither was where the eye went. The panel owns the open position now;
+        the thread keeps the history the panel does not carry, which is every
+        exit and every fill of a position that is already closed.
+      */}
+      {mission.recentFills
+        .toReversed()
+        .filter(
+          (fill) => openPosition === null || readFillLifecycle(fill.direction)?.action !== "open",
+        )
+        .map((fill) => (
+          <FillReceipt
+            key={`${fill.orderId}-${fill.tradedAt}`}
+            fill={fill}
+            intent={mission.inFlightExecution}
+            leverage={leverage}
+          />
+        ))}
     </div>
   );
 }

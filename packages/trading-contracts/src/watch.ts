@@ -18,6 +18,30 @@ export type WatchPriceSource = typeof WatchPriceSource.Type;
 export const WatchCrossDirection = Schema.Literals(["above", "below"]);
 export type WatchCrossDirection = typeof WatchCrossDirection.Type;
 
+/**
+ * The market metrics a watch can hold a threshold against — plan "any
+ * condition as a trigger". Everything here is a number the evaluator can
+ * already read without new data plumbing: the first four come off the gateway
+ * snapshot the 2s sweep takes anyway, and `volume_ratio` comes off the candle
+ * deliveries the evaluator already subscribes to.
+ *
+ * - `funding_rate_8h`: the raw 8h funding rate (0.0001 = 1bp/8h). Signed.
+ * - `open_interest`: open interest in base units, as the exchange reports it.
+ * - `day_volume_usd`: 24h notional volume in USD.
+ * - `spread_bps`: (ask − bid) / mid × 10 000, from the live BBO.
+ * - `volume_ratio`: the just-closed bar's volume against the average of the
+ *   prior bars on `interval` — 2.0 means the last bar traded twice its recent
+ *   pace, which is the "wake me when volume picks up" trigger.
+ */
+export const WatchMetricName = Schema.Literals([
+  "funding_rate_8h",
+  "open_interest",
+  "day_volume_usd",
+  "spread_bps",
+  "volume_ratio",
+]);
+export type WatchMetricName = typeof WatchMetricName.Type;
+
 export const MarketWatch = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("price_cross"),
@@ -76,6 +100,22 @@ export const MarketWatch = Schema.Union([
     type: Schema.Literal("pnl_giveback"),
     market: TradingMarket,
     drawdownUsd: PositiveUsdAmount,
+  }),
+  /**
+   * Fires when a named market metric crosses `value` in `direction`.
+   *
+   * The generalisation the price and PnL watches are special cases of: the
+   * model names WHICH number it is waiting on rather than being limited to the
+   * mark. `interval` only means something to `volume_ratio` (the bar series the
+   * ratio is measured on); the snapshot metrics ignore it.
+   */
+  Schema.Struct({
+    type: Schema.Literal("metric_threshold"),
+    market: TradingMarket,
+    metric: WatchMetricName,
+    direction: WatchCrossDirection,
+    value: Schema.Number,
+    interval: Schema.optional(TradingTimeframe),
   }),
 ]);
 export type MarketWatch = typeof MarketWatch.Type;
@@ -155,6 +195,24 @@ export const WatchCondition = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("time"),
     runAt: UnixMillis,
+  }),
+  /**
+   * A market metric reaches a threshold — funding, open interest, day volume,
+   * the spread, or the just-closed bar's volume against its own recent pace
+   * (`volume_ratio`, where 2 means "a bar printed at twice the recent
+   * volume"). This is how a plan waits on evidence that is not a price:
+   * "remind me when volume picks up", "wake me if funding flips negative".
+   *
+   * `interval` names the bar series for `volume_ratio` and defaults to `1m`;
+   * the snapshot metrics ignore it.
+   */
+  Schema.Struct({
+    kind: Schema.Literal("metric"),
+    market: TradingMarket,
+    metric: WatchMetricName,
+    direction: WatchCrossDirection,
+    value: Schema.Number,
+    interval: Schema.optional(TradingTimeframe),
   }),
 ]);
 export type WatchCondition = typeof WatchCondition.Type;
@@ -256,6 +314,22 @@ export function toMarketWatch(condition: WatchCondition): MarketWatch | WatchRef
 
     case "time":
       return { type: "scheduled_reassessment", runAt: condition.runAt };
+
+    case "metric":
+      return {
+        type: "metric_threshold",
+        market: condition.market,
+        metric: condition.metric,
+        direction: condition.direction,
+        value: condition.value,
+        // `volume_ratio` needs a bar series; 1m is the runtime's own default
+        // timeframe and the only interval a ratio should quietly assume.
+        ...(condition.metric === "volume_ratio"
+          ? { interval: condition.interval ?? "1m" }
+          : condition.interval === undefined
+            ? {}
+            : { interval: condition.interval }),
+      };
   }
 }
 
@@ -303,6 +377,15 @@ export function toWatchCondition(watch: MarketWatch): WatchCondition {
       return { kind: "fill", market: watch.market };
     case "scheduled_reassessment":
       return { kind: "time", runAt: watch.runAt };
+    case "metric_threshold":
+      return {
+        kind: "metric",
+        market: watch.market,
+        metric: watch.metric,
+        direction: watch.direction,
+        value: watch.value,
+        ...(watch.interval === undefined ? {} : { interval: watch.interval }),
+      };
   }
 }
 
@@ -471,6 +554,55 @@ export function watchCoverageFloorMillis(input: {
     Math.max(reassessment.flatFloorBars * bar, clampMinMinutes * MINUTE),
     clampMaxMinutes * MINUTE,
   );
+}
+
+/**
+ * How short a plan's own `reassess.afterMinutes` may pull the wake cadence.
+ *
+ * The cadence is model-chosen and the model has no cost model for its own
+ * turns: a plan that wrote `afterMinutes: 1` was asking to be woken every
+ * minute forever, each wake a full harness turn. Five minutes is the flat
+ * floor's own lower clamp — a thesis re-check is never more urgent than the
+ * tightest cadence the runtime itself would choose.
+ */
+export const PLAN_REASSESS_FLOOR_MILLIS = 5 * MINUTE;
+
+/**
+ * A plan's `reassess.afterMinutes` as a wake interval measured from now.
+ *
+ * This is a cadence, not a deadline. It used to be read as an instant —
+ * `updatedAt + afterMinutes` — and once that instant passed, "time until
+ * expiry" went to zero and every settlement armed a wake at `now`: the
+ * hot loop. Measured from the look that just ended, the interval is always
+ * strictly positive, and a turn that examined the thesis and changed nothing
+ * still counts as having looked — the deadline resets because the
+ * reassessment the plan asked for just happened.
+ */
+export function planReassessCadenceMillis(afterMinutes: number): number {
+  return Math.max(afterMinutes * MINUTE, PLAN_REASSESS_FLOOR_MILLIS);
+}
+
+/**
+ * The longest a flat mission's no-op backoff may stretch its wake interval.
+ */
+export const NO_OP_BACKOFF_CAP_MILLIS = 60 * MINUTE;
+
+/**
+ * Stretch a flat mission's wake interval after consecutive no-op wakes.
+ *
+ * A scheduled wake that concludes "nothing to do" and changes nothing feeds
+ * the next computation exactly the inputs of the last one — waking at the
+ * same cadence buys identical turns on a market that is not moving. Each
+ * consecutive no-op doubles the interval, capped at an hour; the count
+ * resets the moment any real event wakes the mission instead (see
+ * `consecutiveNoOpWakes` in the coordinator).
+ *
+ * Flat only. A mission holding a position never backs off — a slow wake on
+ * live exposure is the deafness the tight holding floor exists to prevent.
+ */
+export function backedOffFloorMillis(baseMillis: number, consecutiveNoOps: number): number {
+  const stretched = baseMillis * 2 ** Math.min(Math.max(consecutiveNoOps, 0), 6);
+  return Math.max(baseMillis, Math.min(stretched, NO_OP_BACKOFF_CAP_MILLIS));
 }
 
 /**

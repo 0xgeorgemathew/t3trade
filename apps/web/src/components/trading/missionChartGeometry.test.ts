@@ -638,8 +638,8 @@ describe("computeChartGeometry domain sanity", () => {
 
     const drawn = geometry.levels.filter((level) => level.kind.startsWith("condition_"));
     expect(drawn).toHaveLength(MAX_DRAWN_CONDITIONS);
-    expect(geometry.droppedConditions).toBe(3);
-    // Whichever three survive, they are the near ones: the two far conditions
+    expect(geometry.droppedConditions).toBe(6 - MAX_DRAWN_CONDITIONS);
+    // Whichever survive, they are the near ones: the two far conditions
     // are the first to go, and none of the four near ones is clustered away —
     // 0.1 apart on a 2-unit band is a tenth of the frame, not a coincidence.
     const prices = drawn.map((level) => level.price);
@@ -771,27 +771,41 @@ describe("computeChartGeometry — wall-clock axis", () => {
     expect(geometry.livePoints).toEqual([]);
   });
 
-  it("ends the axis at now and reserves the future gutter with a clock", () => {
+  it("ends the axis at the forming bar's close and reserves the future gutter", () => {
     const now = lastOpenTime + 30_000;
     const geometry = computeChartGeometry({ ...base, nowMillis: now });
     if (geometry === null) throw new Error("expected geometry");
 
-    expect(geometry.timeEnd).toBe(now);
-    expect(geometry.nowX).toBeCloseTo(PLOT_WIDTH * (1 - FUTURE_GUTTER_RATIO), 6);
+    // The ruler ends where the bar being drawn will close, so it holds still
+    // while that bar forms.
+    expect(geometry.timeEnd).toBe(lastOpenTime + 60_000);
+    const axisEndX = PLOT_WIDTH * (1 - FUTURE_GUTTER_RATIO);
+    expect(geometry.xForTime(geometry.timeEnd)).toBeCloseTo(axisEndX, 6);
+    // `now` is inside the frame, short of that end by the rest of the bar.
+    expect(geometry.nowX).toBeLessThan(axisEndX);
     expect(geometry.xForTime(now)).toBeCloseTo(geometry.nowX, 6);
     expect(geometry.markPoint?.x).toBeCloseTo(geometry.nowX, 6);
-    // The last candle is now behind the mark rather than under it.
+    // The last candle is behind the mark rather than under it.
     expect(geometry.xForTime(lastOpenTime)).toBeLessThan(geometry.nowX);
   });
 
-  it("slides the series left as the clock advances", () => {
+  it("holds the series still inside a bar and advances the mark rightward", () => {
     const early = computeChartGeometry({ ...base, nowMillis: lastOpenTime + 10_000 });
     const later = computeChartGeometry({ ...base, nowMillis: lastOpenTime + 40_000 });
     if (early === null || later === null) throw new Error("expected geometry");
 
-    // Same bar, later clock → further left. This is the drift; the candle feed
-    // has not moved at all between these two frames.
-    expect(later.xForTime(lastOpenTime)).toBeLessThan(early.xForTime(lastOpenTime));
+    // Same forming bar: the ruler has not moved, so no bar has shifted...
+    expect(later.xForTime(lastOpenTime)).toBeCloseTo(early.xForTime(lastOpenTime), 10);
+    // ...and the only thing that travelled is the live edge, to the right.
+    expect(later.nowX).toBeGreaterThan(early.nowX);
+  });
+
+  it("steps the window left by one bar when the forming bar closes", () => {
+    const inBar = computeChartGeometry({ ...base, nowMillis: lastOpenTime + 40_000 })!;
+    const nextBar = computeChartGeometry({ ...base, nowMillis: lastOpenTime + 70_000 })!;
+
+    const pitch = inBar.xForTime(lastOpenTime) - inBar.xForTime(lastOpenTime - 60_000);
+    expect(inBar.xForTime(lastOpenTime) - nextBar.xForTime(lastOpenTime)).toBeCloseTo(pitch, 6);
   });
 
   it("draws the forming bar from the last close to the mark", () => {
@@ -812,7 +826,9 @@ describe("computeChartGeometry — wall-clock axis", () => {
     const geometry = computeChartGeometry({ ...base, nowMillis: lastOpenTime - 60_000 });
     if (geometry === null) throw new Error("expected geometry");
 
-    expect(geometry.timeEnd).toBe(lastOpenTime);
+    // The clock is thrown away and the last bar becomes "now", so the live
+    // edge sits on it rather than a minute to its left.
+    expect(geometry.timeEnd).toBe(lastOpenTime + 60_000);
     expect(geometry.xForTime(lastOpenTime)).toBeCloseTo(geometry.nowX, 6);
   });
 });
@@ -1246,15 +1262,15 @@ describe("computeChartGeometry — a stable scale under a live clock", () => {
     const early = computeChartGeometry({ ...base, nowMillis: lastOpenTime + 5_000 })!;
     const later = computeChartGeometry({ ...base, nowMillis: lastOpenTime + 55_000 })!;
 
-    // Same candles, 50 seconds apart: every bar has moved left by the same
-    // amount and none of them has changed width.
+    // Same candles, 50 seconds apart, one forming bar: no bar has changed
+    // width and none has moved. The live edge is the only thing that travelled.
     expect(later.bars[0]!.halfWidth).toBeCloseTo(early.bars[0]!.halfWidth, 10);
-    const shift = early.xForTime(lastOpenTime) - later.xForTime(lastOpenTime);
-    expect(early.xForTime(candles[0]!.openTime) - later.xForTime(candles[0]!.openTime)).toBeCloseTo(
-      shift,
+    expect(later.xForTime(lastOpenTime)).toBeCloseTo(early.xForTime(lastOpenTime), 10);
+    expect(later.xForTime(candles[0]!.openTime)).toBeCloseTo(
+      early.xForTime(candles[0]!.openTime),
       10,
     );
-    expect(shift).toBeGreaterThan(0);
+    expect(later.nowX - early.nowX).toBeGreaterThan(0);
   });
 
   it("does not change the scale when a new candle closes", () => {
@@ -1544,31 +1560,30 @@ describe("computeChartGeometry — the series slides at a constant rate", () => 
     return before.xForTime(lastOpenTime) - after.xForTime(lastOpenTime);
   }
 
-  it("moves the same distance for the same elapsed time, wherever the clock is", () => {
-    // The rate must not depend on where in the bar the clock sits. It did
-    // before the scale was held constant: the window was fitted to
-    // `timeStart..now`, so the whole series crept and squashed between closes
-    // and snapped back when a bar landed.
-    const early = displacement(lastOpenTime + 1_000, lastOpenTime + 2_000);
-    const late = displacement(lastOpenTime + 58_000, lastOpenTime + 59_000);
-    expect(early).toBeCloseTo(late, 9);
+  it("does not move a drawn bar while a bar is forming, wherever the clock is", () => {
+    // The ruler is pinned to the forming bar's close, so a second passing does
+    // not move the record — it moves the live edge toward that close. A drawn
+    // bar that crept between ticks would be a bar whose x meant "when the
+    // browser last rendered" rather than "when it traded".
+    expect(displacement(lastOpenTime + 1_000, lastOpenTime + 2_000)).toBeCloseTo(0, 9);
+    expect(displacement(lastOpenTime + 58_000, lastOpenTime + 59_000)).toBeCloseTo(0, 9);
   });
 
-  it("crosses a bar close without a step", () => {
-    // The one second that spans a new candle arriving moves the series exactly
-    // as far as any other second. A new bar is not an event the geometry sees.
-    const acrossTheClose = displacement(lastOpenTime + 59_500, lastOpenTime + 60_500);
-    const inside = displacement(lastOpenTime + 10_000, lastOpenTime + 11_000);
-    expect(acrossTheClose).toBeCloseTo(inside, 9);
+  it("steps by exactly one bar pitch across a close, and by nothing inside one", () => {
+    const geometry = computeChartGeometry({ ...base, nowMillis: lastOpenTime + 10_000 })!;
+    const pitch = geometry.xForTime(lastOpenTime) - geometry.xForTime(lastOpenTime - 60_000);
+
+    expect(displacement(lastOpenTime + 59_500, lastOpenTime + 60_500)).toBeCloseTo(pitch, 9);
+    expect(displacement(lastOpenTime + 10_000, lastOpenTime + 11_000)).toBeCloseTo(0, 9);
   });
 
   it("advances by less than half a viewBox unit per second on a 1m window", () => {
     // Why no animation loop: at 60 one-minute bars the whole window is an hour
-    // wide, so one tick of the panel's 1Hz clock is `nowX / 3600` units — about
-    // a fifth of a unit, which at the widths this panel renders at is a
-    // fraction of one device pixel. The motion is already below the threshold
-    // where a step is distinguishable from a slide, and a requestAnimationFrame
-    // loop would spend a frame budget moving a quarter of a pixel.
+    // wide, so one second of the clock moves the live edge `axisEndX / 3600`
+    // units — about a fifth of a unit, which at the widths this panel renders
+    // at is a fraction of one device pixel. The motion is already below the
+    // threshold where a step is distinguishable from a slide, and a
+    // requestAnimationFrame loop would spend a frame budget on a quarter pixel.
     const hourWindow = Array.from({ length: 60 }, (_, i) => ({
       openTime: 1_700_000_000_000 + i * 60_000,
       open: 100,
@@ -1579,8 +1594,12 @@ describe("computeChartGeometry — the series slides at a constant rate", () => 
     const now = hourWindow[hourWindow.length - 1]!.openTime + 30_000;
     const before = computeChartGeometry({ ...base, candles: hourWindow, nowMillis: now })!;
     const after = computeChartGeometry({ ...base, candles: hourWindow, nowMillis: now + 1_000 })!;
-    const perSecond =
-      before.xForTime(hourWindow[0]!.openTime) - after.xForTime(hourWindow[0]!.openTime);
+    // The bars stand still inside a bar; the live edge is what moves.
+    expect(after.xForTime(hourWindow[0]!.openTime)).toBeCloseTo(
+      before.xForTime(hourWindow[0]!.openTime),
+      10,
+    );
+    const perSecond = after.nowX - before.nowX;
 
     expect(perSecond).toBeGreaterThan(0);
     expect(perSecond).toBeLessThan(0.5);

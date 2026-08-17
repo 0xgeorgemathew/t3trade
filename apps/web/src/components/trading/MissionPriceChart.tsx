@@ -28,7 +28,7 @@
 // rather than `<text>` inside it: undistorted at any width, and it gets
 // ellipsis and wrapping for free.
 
-import { useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import type { TradingChartCandle } from "@t3tools/contracts";
 
@@ -37,10 +37,12 @@ import { cn } from "~/lib/utils";
 import {
   CHART_VIEWBOX_HEIGHT,
   CHART_VIEWBOX_WIDTH,
+  FUTURE_GUTTER_RATIO,
   LABEL_GUTTER_WIDTH,
   PLOT_WIDTH,
   computeChartGeometry,
   findLevelAtPrice,
+  medianBarInterval,
   type ChartCondition,
   type ChartLevelKind,
   type ChartPoint,
@@ -106,6 +108,13 @@ interface MissionPriceChartProps {
    * invented rule there would be a lie about where it sits.
    */
   readonly flash?: { readonly price: number; readonly nonce: number } | null;
+  /**
+   * The plan's best current estimate of where price is headed: a dotted path
+   * from the live mark to `{price}` at `{atMillis}`, drawn in the future
+   * gutter's hypothetical register. Where the model thinks the market goes —
+   * the armed conditions around it are what it does about being wrong.
+   */
+  readonly projection?: { readonly price: number; readonly atMillis: number } | null;
   /** Future moments to stand in the gutter. Ignored without `nowMillis`. */
   readonly timeMarkers?: ReadonlyArray<{
     readonly key: string;
@@ -233,8 +242,8 @@ const RULE_MIX: Record<ChartLevelKind, number> = {
   stop: 28,
   target: 34,
   liquidation: 30,
-  // Quieter than the named levels and quieter than the two EMAs: a condition is
-  // a price nothing has happened at yet, and there can be three of them.
+  // Quieter than the named levels: a condition is a price nothing has happened
+  // at yet, and there can be three of them.
   condition_above: 22,
   condition_below: 22,
   // A resting order is about to become a position; it earns a little more.
@@ -333,6 +342,41 @@ function fillMarkerStyle(kind: ChartFillKind): {
 }
 
 /** Post-entry segment + fill colour, driven by which way the trade is running. */
+/**
+ * Round prices to rule the plot with, inside a domain.
+ *
+ * The step is the largest of 1, 2, 2.5 or 5 times a power of ten that still
+ * leaves at least three lines in the frame — so a $2 range gets $0.50 rules and
+ * a $200 range gets $50 ones, and the numbers on them are always numbers a
+ * person would say out loud.
+ */
+function gridPricesFor(min: number, max: number, targetLines: number): ReadonlyArray<number> {
+  const span = max - min;
+  if (!Number.isFinite(span) || span <= 0) return [];
+  const rough = span / targetLines;
+  const magnitude = 10 ** Math.floor(Math.log10(rough));
+  const step =
+    [1, 2, 2.5, 5, 10].map((multiple) => multiple * magnitude).find((size) => size >= rough) ??
+    10 * magnitude;
+  const lines: number[] = [];
+  for (let price = Math.ceil(min / step) * step; price <= max; price += step) {
+    // Re-rounded: repeated addition of 0.25 drifts into 1869.7500000000002,
+    // which prints as a price nobody chose.
+    lines.push(Number(price.toFixed(6)));
+  }
+  return lines;
+}
+
+/**
+ * The price line's stroke width, in CSS pixels (the stroke does not scale with
+ * the plot, so this is a real width and not a viewBox unit).
+ *
+ * 2.25 rather than 1.5. The plot stretches to fill a 700×440 card and a 1.5px
+ * line across that much glass reads as a hairline diagram; the subject of this
+ * card is the price, and the subject should be the boldest mark on it.
+ */
+const LINE_WIDTH = 2.25;
+
 function pnlColor(sign: "profit" | "loss" | null): string {
   if (sign === "profit") return "var(--color-profit)";
   if (sign === "loss") return "var(--color-loss)";
@@ -385,6 +429,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     flash,
     nowMillis,
     triggerExpiryAt,
+    projection,
     timeMarkers,
     pastMarkers,
     draggableKinds,
@@ -398,6 +443,23 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     readonly price: number;
   } | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
+  // The draw-in dash is stripped once the intro has played. Left on, the
+  // polyline keeps `stroke-dasharray: 1` against a `pathLength` that
+  // re-normalises every time the points change — and on a line that updates
+  // four times a second the dash boundary lands short of the path end often
+  // enough that the tail of the line visibly drops out. The class exists for
+  // one animation; after it, the line is just a line.
+  const [introDone, setIntroDone] = useState(false);
+  const drawClass = introDone ? undefined : "mission-line-draw";
+  // The crosshair: where the pointer is reading the series, Stocks-style.
+  const [hover, setHover] = useState<{
+    readonly x: number;
+    readonly y: number;
+    readonly price: number;
+    readonly at: number;
+    /** True when the sample is the live mark, not a candle close. */
+    readonly isMark: boolean;
+  } | null>(null);
 
   const geometry = computeChartGeometry({
     candles,
@@ -412,6 +474,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     ...(pendingOrder === undefined ? {} : { pendingOrder }),
     ...(nowMillis === undefined ? {} : { nowMillis }),
     ...(triggerExpiryAt === undefined ? {} : { triggerExpiryAt }),
+    ...(projection === undefined ? {} : { projection }),
     ...(timeMarkers === undefined ? {} : { timeMarkers }),
     ...(pastMarkers === undefined ? {} : { pastMarkers }),
   });
@@ -419,12 +482,64 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
   // Too few candles → the parent renders a skeleton / "chart unavailable".
   if (geometry === null) return null;
 
-  const segmentColor = pnlColor(pnlSign);
-  // Shade against the entry when there is one. With no entry (a flat, waiting
-  // mission) there is no baseline the band would mean anything against, so the
-  // line is drawn unshaded rather than filled to an invented level.
-  const entryLevelY = geometry.levels.find((level) => level.kind === "entry")?.y ?? null;
-  const areaPath = entryLevelY === null ? "" : toAreaPath(geometry.postEntryPoints, entryLevelY);
+  // Unique per mounted chart: two of these on one screen (the live panel and a
+  // review) would otherwise share one `<linearGradient id>` and the second
+  // would paint with the first's colour.
+  // Stripped to word characters: React's generated ids carry punctuation that
+  // is legal in an `id` attribute and illegal inside `url(#…)`.
+  const gradientId = `mission-chart-${useId().replaceAll(/[^a-zA-Z0-9_-]/g, "")}`;
+
+  // While flat there is no P&L to tint by, so the line takes the window's own
+  // direction — up over the hour is green, down is red — which is the rule the
+  // Stocks app draws by and the one a glance already expects. While exposed the
+  // trade's own result wins: what the position is doing outranks what the hour
+  // did.
+  const windowRise =
+    candles.length >= 2 ? candles[candles.length - 1]!.close - candles[0]!.close : 0;
+  const lineColor =
+    pnlSign !== null
+      ? pnlColor(pnlSign)
+      : windowRise < 0
+        ? "var(--color-loss)"
+        : "var(--color-profit)";
+  const segmentColor = lineColor;
+  // One fill, from the whole line down to the floor of the frame, fading out as
+  // it falls. The band that used to shade the line against the entry is gone:
+  // two washes on one plot — a P&L band and a ground gradient — is the
+  // "discoloration" that made the plot read as blocks of tinted paper rather
+  // than as a lit line. The entry keeps its own dashed rule, which is exactly
+  // what the Stocks app does with the previous close.
+  const areaPath = toAreaPath(
+    [...geometry.preEntryPoints, ...geometry.postEntryPoints],
+    CHART_VIEWBOX_HEIGHT,
+  );
+  const gridPrices = gridPricesFor(geometry.domainMin, geometry.domainMax, 4);
+
+  // One bar's width on the axis, and the slide that plays when a new one lands.
+  //
+  // Inside a bar the record holds still and only the live edge advances — a
+  // third of a pixel a second, which is true motion but not motion anyone can
+  // see. The visible event is the close: the window steps left by exactly one
+  // bar, and rather than teleporting there, the series starts one pitch to the
+  // right and travels into place. Once a minute the whole pane moves, in the
+  // direction time runs, for about the length of a breath.
+  const barPitch =
+    candles.length > 0 ? (PLOT_WIDTH * (1 - FUTURE_GUTTER_RATIO)) / candles.length : 0;
+  const lastBarAt = candles[candles.length - 1]?.openTime ?? 0;
+  const [slideOffset, setSlideOffset] = useState(0);
+  const lastBarRef = useRef(lastBarAt);
+  useEffect(() => {
+    if (lastBarRef.current === lastBarAt) return;
+    lastBarRef.current = lastBarAt;
+    setSlideOffset(barPitch);
+    // Two frames: the first commits the offset, the second releases it with a
+    // transition to animate against. One frame and the browser coalesces both
+    // into the end state, which is a teleport with extra steps.
+    const first = requestAnimationFrame(() => {
+      requestAnimationFrame(() => setSlideOffset(0));
+    });
+    return () => cancelAnimationFrame(first);
+  }, [lastBarAt, barPitch]);
   // The gutter overlay is positioned in percentages of the same viewBox the SVG
   // uses, so the two stay in register at any container size.
   const gutterPercent = (LABEL_GUTTER_WIDTH / CHART_VIEWBOX_WIDTH) * 100;
@@ -449,6 +564,61 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     // cheap market keeps the resolution its ticks actually have.
     const decimals = Math.abs(price) >= 1 ? 2 : 4;
     return Number(price.toFixed(decimals));
+  };
+
+  // Pointer x → the nearest plotted close, for the hover crosshair. The plot
+  // is a linear clock, so the mapping is one division and a nearest-neighbour
+  // scan over at most ~120 points. Nothing right of `now` is hoverable — the
+  // future gutter holds claims, not samples.
+  const hoverAtClient = (clientX: number): void => {
+    const frame = frameRef.current;
+    if (frame === null) return;
+    const box = frame.getBoundingClientRect();
+    if (box.width <= 0 || box.height <= 0) return;
+    const viewX = ((clientX - box.left) / box.width) * CHART_VIEWBOX_WIDTH;
+    if (viewX > geometry.nowX + 4) {
+      setHover(null);
+      return;
+    }
+    // A plotted point is a candle's CLOSE, so it is labeled with the close
+    // time (open + one interval), not the open. Labeled by the open, the point
+    // just left of "now" read a minute stale, and the mark truncated to the
+    // same minute as the bar it was closing — two points, one time.
+    const interval = medianBarInterval(candles);
+    let best: { x: number; y: number; price: number; at: number; isMark: boolean } | null = null;
+    for (const candle of candles) {
+      const x = geometry.xForTime(candle.openTime);
+      if (x < 0) continue;
+      if (best === null || Math.abs(x - viewX) < Math.abs(best.x - viewX)) {
+        // A forming bar's close is in the future; the clock caps the label at
+        // the newest moment that has actually happened.
+        const closedAt =
+          nowMillis === undefined
+            ? candle.openTime + interval
+            : Math.min(candle.openTime + interval, nowMillis);
+        best = {
+          x,
+          y: geometry.yForPrice(candle.close),
+          price: candle.close,
+          at: closedAt,
+          isMark: false,
+        };
+      }
+    }
+    // The live mark is a sample too — the newest one. Without it the crosshair
+    // could never read past the last CLOSED candle, so "now" (the minute
+    // currently forming) was unreachable and the readout stopped a minute in
+    // the past.
+    if (geometry.markPoint !== null && markPrice !== null && nowMillis !== undefined) {
+      const mark = geometry.markPoint;
+      if (best === null || Math.abs(mark.x - viewX) < Math.abs(best.x - viewX)) {
+        best = { x: mark.x, y: mark.y, price: markPrice, at: nowMillis, isMark: true };
+      }
+    }
+    // Vertical position is ignored entirely — Stocks reads the series wherever
+    // the finger is, and demanding the pointer be ON the line makes the
+    // crosshair flicker.
+    setHover(best);
   };
 
   const draggable = draggableKinds ?? [];
@@ -495,161 +665,194 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
     // `overflow-hidden`: the gutter tags and the mark dot are HTML positioned
     // in percentages of the viewBox, so anything the geometry places near an
     // edge would otherwise be drawn over the bands above and below the chart.
-    <div ref={frameRef} className={cn("relative h-full w-full overflow-hidden", className)}>
+    <div
+      ref={frameRef}
+      className={cn("relative h-full w-full overflow-hidden", className)}
+      // The crosshair follows the pointer whenever nothing is being dragged.
+      // The grab strips capture their own pointer during a drag, so the frame
+      // sees no moves then; the guard is for the pathological overlap.
+      onPointerMove={(event) => {
+        if (drag === null) hoverAtClient(event.clientX);
+      }}
+      onPointerLeave={() => setHover(null)}
+    >
       {/* The mark's ring animation, declared once for the whole chart. */}
       <style>{`@keyframes mission-mark-pulse { 0%, 100% { opacity: 0.9; transform: translate(-50%, -50%) scale(1); } 50% { opacity: 0.15; transform: translate(-50%, -50%) scale(1.35); } }
 @keyframes mission-level-flash { 0% { opacity: 0; } 15% { opacity: 1; } 100% { opacity: 0; } }
 .mission-level-flash { animation: mission-level-flash 1.4s ease-out 2 forwards; opacity: 0; }
 .mission-marker-slide { transition: transform 500ms cubic-bezier(0.22, 1, 0.36, 1), right 500ms cubic-bezier(0.22, 1, 0.36, 1); }
-@media (prefers-reduced-motion: reduce) { .mission-level-flash { animation: none; opacity: 1; } .mission-marker-slide { transition: none; } }`}</style>
+/* The line draws itself, left to right, once. A pathLength of 1 normalises
+   every polyline to a unit length, so one keyframe serves each segment
+   whatever its real length. */
+@keyframes mission-line-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+.mission-line-draw { stroke-dasharray: 1; animation: mission-line-draw 1100ms cubic-bezier(0.33, 1, 0.68, 1) both; }
+/* And the plot settles into place behind it, moving the same way. Six units of
+   a 1000-unit viewBox — enough to register as motion, too little to read as a
+   slide. */
+@keyframes mission-plot-settle { from { transform: translateX(-6px); opacity: 0.4; } to { transform: none; opacity: 1; } }
+.mission-plot-settle { animation: mission-plot-settle 1100ms cubic-bezier(0.33, 1, 0.68, 1) both; }
+@media (prefers-reduced-motion: reduce) { .mission-level-flash { animation: none; opacity: 1; } .mission-marker-slide { transition: none; } .mission-line-draw { stroke-dasharray: none; animation: none; } .mission-plot-settle { animation: none; } }`}</style>
       <svg
         viewBox={`0 0 ${CHART_VIEWBOX_WIDTH} ${CHART_VIEWBOX_HEIGHT}`}
         preserveAspectRatio="none"
         className="h-full w-full"
         aria-hidden="true"
       >
-        {/* The future gutter's own ground: a faint wash from now to the frame
-            edge, so everything standing in it is read as a claim about what
-            has not happened rather than as part of the record to its left. */}
+        <defs>
+          {/* The Stocks app's one piece of shading: the line's own colour
+              poured down to the floor and fading as it goes. It reads as
+              light under the line rather than as a filled region, which is
+              why it can be bright at the top without competing with the
+              stroke. */}
+          <linearGradient id={`${gradientId}-under`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={lineColor} stopOpacity={0.22} />
+            <stop offset="45%" stopColor={lineColor} stopOpacity={0.07} />
+            <stop offset="100%" stopColor={lineColor} stopOpacity={0} />
+          </linearGradient>
+        </defs>
+
+        {/* The price grid. Four rules at round numbers across the domain, which
+            is the frame the Stocks app reads its line against — without them a
+            price line is a shape with no scale, and every wiggle looks the same
+            size whether the market moved a dollar or twenty. */}
+        {gridPrices.map((price) => (
+          <line
+            key={`grid-${price}`}
+            x1={0}
+            y1={geometry.yForPrice(price)}
+            x2={PLOT_WIDTH}
+            y2={geometry.yForPrice(price)}
+            stroke="color-mix(in oklab, var(--color-foreground) 7%, transparent)"
+            strokeWidth={1}
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+
+        {/* The future gutter's ground. Barely there now: at 4% it was a grey
+            block pasted over the right third of the plot, and the eye read it
+            as a different material rather than as the same plot after now.
+            The hairline at `now` does the separating; the wash only tints. */}
         {geometry.nowX < PLOT_WIDTH ? (
           <rect
             x={geometry.nowX}
             y={0}
             width={PLOT_WIDTH - geometry.nowX}
             height={CHART_VIEWBOX_HEIGHT}
-            fill="color-mix(in oklab, var(--color-foreground) 4%, transparent)"
+            fill="color-mix(in oklab, var(--color-foreground) 1.5%, transparent)"
             stroke="none"
           />
         ) : null}
-
-        {/* The band between the line and the entry — the trade's P&L, as an
-            area. Denser than the old baseline slab was, because it is now a
-            thin band around the entry rather than half the frame. */}
-        {areaPath !== "" ? (
-          <path
-            d={areaPath}
-            fill={
-              pnlSign === "profit"
-                ? "color-mix(in oklab, var(--color-profit) 22%, transparent)"
-                : pnlSign === "loss"
-                  ? "color-mix(in oklab, var(--color-loss) 22%, transparent)"
-                  : "color-mix(in oklab, var(--color-muted-foreground) 14%, transparent)"
-            }
-            stroke="none"
-          />
-        ) : null}
-
-        {/* The candles. Drawn first, so everything the mission did sits on
-            top of them, and drawn quietly: they are the market's texture —
-            the wick that took a stop out, the bar that opened at its low —
-            not the subject. The subject is still the coloured segment above. */}
-        {geometry.bars.map((bar) => {
-          // Full strength. At 70% the body was translucent, so the wick drawn
-          // underneath it showed through as a dark stripe up the middle of
-          // every candle — the bar reading as two shades of its own colour.
-          const ink = bar.direction === "up" ? "var(--color-profit)" : "var(--color-loss)";
-          // The wick is a rect, not a stroked line. A `non-scaling-stroke`
-          // line is one device pixel wide whatever the container does, while
-          // the body next to it is stretched by the plot's x scale — so on a
-          // wide panel every bar was a fat slab with a hair sticking out of
-          // it. Drawn as a rect the two scale together, and the wick stays a
-          // fixed fraction of the body at any width.
-          const wickHalfWidth = Math.max(0.18, bar.halfWidth * 0.22);
-          // Drawn as the two pieces OUTSIDE the body rather than as one rect
-          // behind it: nothing then overlaps, so the candle is one flat shape
-          // whatever opacity anything above it is composited at.
-          const upperWick = Math.max(0, bar.bodyTop - bar.highY);
-          const lowerWick = Math.max(0, bar.lowY - bar.bodyBottom);
-          return (
-            <g key={`bar-${bar.key}`} fill={ink}>
-              {upperWick > 0 ? (
-                <rect
-                  x={bar.x - wickHalfWidth}
-                  y={bar.highY}
-                  width={wickHalfWidth * 2}
-                  height={upperWick}
-                />
-              ) : null}
-              {lowerWick > 0 ? (
-                <rect
-                  x={bar.x - wickHalfWidth}
-                  y={bar.bodyBottom}
-                  width={wickHalfWidth * 2}
-                  height={lowerWick}
-                />
-              ) : null}
-              <rect
-                x={bar.x - bar.halfWidth}
-                // A doji has no height, and a zero-height rect draws nothing —
-                // give it the thickness of a line so the bar is still there.
-                y={bar.bodyTop}
-                width={bar.halfWidth * 2}
-                height={Math.max(0.75, bar.bodyBottom - bar.bodyTop)}
-              />
-            </g>
-          );
-        })}
-
-        {/* The two EMAs — the strategy's entry read, drawn as the two curves it
-            is actually made of. Neutral ink on purpose: the cross is a
-            relationship between these two lines, and colouring them by
-            profit/loss would put them in the same conversation as the trade's
-            own shape. The slow one is thinner and quieter; the fast one is what
-            crosses. */}
-        {geometry.emaLines.map((line) => (
-          <polyline
-            key={`ema-${line.speed}`}
-            points={toPoints(line.points)}
-            fill="none"
-            stroke={
-              line.speed === "fast"
-                ? "color-mix(in oklab, var(--color-info) 75%, transparent)"
-                : "color-mix(in oklab, var(--color-muted-foreground) 55%, transparent)"
-            }
-            strokeWidth={line.speed === "fast" ? 1.25 : 1}
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-
-        {/* Pre-entry segment: muted, the flat part of the line. Suppressed
-            once the candles are drawn — the same closes twice, once as a line
-            through the bodies, is the noise this chart keeps clearing out. */}
-        {geometry.bars.length === 0 && geometry.preEntryPoints.length >= 2 ? (
-          <polyline
-            points={toPoints(geometry.preEntryPoints)}
-            fill="none"
-            stroke="color-mix(in oklab, var(--color-muted-foreground) 40%, transparent)"
-            strokeWidth={1.5}
+        {geometry.nowX < PLOT_WIDTH ? (
+          <line
+            x1={geometry.nowX}
+            y1={0}
+            x2={geometry.nowX}
+            y2={CHART_VIEWBOX_HEIGHT}
+            stroke="color-mix(in oklab, var(--color-foreground) 14%, transparent)"
+            strokeWidth={1}
             vectorEffect="non-scaling-stroke"
           />
         ) : null}
 
-        {/* Post-entry segment: the held part, coloured by pnl. With no entry
-            it is not a held part at all, just the closes again — so with
-            candles drawn it is suppressed exactly like the pre-entry one. */}
-        {(geometry.bars.length === 0 || entryLevelY !== null) &&
-        geometry.postEntryPoints.length >= 2 ? (
-          <polyline
-            points={toPoints(geometry.postEntryPoints)}
-            fill="none"
-            stroke={segmentColor}
-            strokeWidth={1.5}
-            vectorEffect="non-scaling-stroke"
-          />
-        ) : null}
+        {/* The series, as one moving object: the fill and all three line
+            segments travel together when a bar closes. */}
+        <g
+          style={{
+            transform: `translateX(${slideOffset}px)`,
+            transition:
+              slideOffset === 0 ? "transform 700ms cubic-bezier(0.33, 1, 0.68, 1)" : "none",
+          }}
+        >
+          {areaPath !== "" ? (
+            <path
+              className="mission-plot-settle"
+              d={areaPath}
+              fill={`url(#${gradientId}-under)`}
+              stroke="none"
+            />
+          ) : null}
 
-        {/* The forming bar: last close → the mark. The one part of the line
+          {/* The candle bars are gone: the chart is a line chart now — the
+            price is one continuous close line, which is the faithful shape of
+            "where has price been" without the texture of every bar competing
+            with the levels drawn over it. The geometry still computes bars;
+            nothing here reads them. */}
+
+          {/* The two EMAs are not drawn. Three curves in one frame — price, fast,
+            slow — read as three subjects, and the two that were meant to be a
+            quiet backdrop were the two the eye followed, because they are the
+            smooth ones. The chart's subject is the price and the levels the
+            plan drew across it. `geometry.emaLines` is still computed and still
+            tested; putting the pair back is this block and the legend below it. */}
+
+          {/* Pre-entry segment. Held at three quarters of the line's colour
+            rather than in grey: the hour before the fill is the same price
+            series, and draining it to muted grey was what made the chart look
+            like two different instruments spliced at the entry. */}
+          {geometry.preEntryPoints.length >= 2 ? (
+            <polyline
+              className={drawClass}
+              onAnimationEnd={() => setIntroDone(true)}
+              pathLength={1}
+              points={toPoints(geometry.preEntryPoints)}
+              fill="none"
+              stroke={lineColor}
+              strokeWidth={LINE_WIDTH}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              opacity={pnlSign === null ? 1 : 0.55}
+              vectorEffect="non-scaling-stroke"
+            />
+          ) : null}
+
+          {/* Post-entry segment: the held part, at full strength. */}
+          {geometry.postEntryPoints.length >= 2 ? (
+            <polyline
+              className={drawClass}
+              onAnimationEnd={() => setIntroDone(true)}
+              pathLength={1}
+              points={toPoints(geometry.postEntryPoints)}
+              fill="none"
+              stroke={segmentColor}
+              strokeWidth={LINE_WIDTH}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+            />
+          ) : null}
+
+          {/* The forming bar: last close → the mark. The one part of the line
             that changes between candle closes, which on a 1m series is 59
-            seconds out of every 60. */}
-        {geometry.livePoints.length === 2 ? (
+            seconds out of every 60 — so it is the segment that carries the
+            left-to-right progress, and it is drawn at full strength. */}
+          {geometry.livePoints.length === 2 ? (
+            <polyline
+              points={toPoints(geometry.livePoints)}
+              fill="none"
+              stroke={segmentColor}
+              strokeWidth={LINE_WIDTH}
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+            />
+          ) : null}
+        </g>
+
+        {/* The projection: where the model currently thinks price is going,
+            as a dotted path from the mark into the future gutter. The info
+            ink, not profit/loss — it is a read, not a result — and the
+            hypothetical dash, because everything right of now is a claim. */}
+        {geometry.projectionPoints.length === 2 ? (
           <polyline
-            points={toPoints(geometry.livePoints)}
+            data-testid="mission-chart-projection"
+            points={toPoints(geometry.projectionPoints)}
             fill="none"
-            stroke={segmentColor}
-            strokeWidth={1.5}
+            // Muted deliberately: the projection is the model's read, not the
+            // record, and it is on screen at all times — at full ink it would
+            // compete with the one saturated shape, the price.
+            stroke="color-mix(in oklab, var(--color-info) 55%, transparent)"
+            strokeWidth={1.25}
+            strokeDasharray="1 5"
             strokeLinecap="round"
-            opacity={0.75}
             vectorEffect="non-scaling-stroke"
           />
         ) : null}
@@ -907,6 +1110,23 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         </span>
       ) : null}
 
+      {/* The projection's endpoint: a hollow ring in the info ink, where the
+          read expects price to be. Hollow, because nothing has happened there
+          — the solid dot on this chart is reserved for the mark. */}
+      {geometry.projectionPoints.length === 2 ? (
+        <span
+          data-testid="mission-chart-projection-end"
+          className="pointer-events-none absolute size-[7px] -translate-x-1/2 -translate-y-1/2 rounded-full border-[1.5px]"
+          style={{
+            left: `${((geometry.projectionPoints[1]?.x ?? 0) / CHART_VIEWBOX_WIDTH) * 100}%`,
+            top: `${((geometry.projectionPoints[1]?.y ?? 0) / CHART_VIEWBOX_HEIGHT) * 100}%`,
+            borderColor: "var(--color-info)",
+            backgroundColor: "transparent",
+          }}
+          aria-hidden="true"
+        />
+      ) : null}
+
       {/* Marker captions. HTML for the same reason the gutter is, and anchored
           by their RIGHT edge to the rule so they grow leftward into the plot
           and can never overflow the frame. */}
@@ -915,7 +1135,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
           <span
             key={`marker-label-${marker.key}`}
             className={cn(
-              "mission-marker-slide pointer-events-none absolute top-0.5 whitespace-nowrap pr-1 text-[9px] leading-none",
+              "mission-marker-slide pointer-events-none absolute top-1 whitespace-nowrap pr-1.5 text-[10.5px] leading-none",
               marker.tone === "auto" ? "text-muted-foreground" : "text-armed",
             )}
             style={{ right: `${(1 - marker.x / CHART_VIEWBOX_WIDTH) * 100}%` }}
@@ -926,34 +1146,76 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
         ),
       )}
 
-      {/* Which two averages those lines are. Four characters each, in their own
-          ink, so the pair is identifiable without a legend box. */}
-      {geometry.emaLines.length === 2 ? (
+      {/* The EMA legend went with the lines it named. A legend for a series
+          that is not drawn is two more prices to read in the corner of a chart
+          whose top-left is otherwise empty ground. */}
+
+      {/* The grid's own prices, sitting just above their rules at the left of
+          the plot. The Stocks app puts this scale on the right; here the right
+          is the level gutter — entry, stop, target, the mark — and a price
+          scale interleaved with those would be two columns of numbers meaning
+          different things. The left of the plot is empty ground. */}
+      {gridPrices.map((price) => (
         <span
-          className="pointer-events-none absolute left-1.5 top-0.5 flex gap-2 text-[9px] leading-none"
+          key={`grid-label-${price}`}
+          className="pointer-events-none absolute left-1.5 -translate-y-full pb-0.5 font-mono text-[10px] leading-none tabular-nums text-muted-foreground/60"
+          style={{ top: `${(geometry.yForPrice(price) / CHART_VIEWBOX_HEIGHT) * 100}%` }}
           aria-hidden="true"
         >
-          {[...geometry.emaLines]
-            .sort((left, right) => left.period - right.period)
-            .map((line) => (
-              <span
-                key={`ema-legend-${line.speed}`}
-                className="tabular-nums"
-                style={{
-                  color:
-                    line.speed === "fast" ? "var(--color-info)" : "var(--color-muted-foreground)",
-                }}
-              >
-                EMA {line.period} {formatPrice(line.lastValue)}
-              </span>
-            ))}
+          {formatPrice(price)}
         </span>
-      ) : null}
+      ))}
+
+      {/* The hover crosshair — the Stocks-app read. A hairline at the sampled
+          moment, a dot on the line, and the price/time pair floating above,
+          all HTML so nothing stretches. It reads the record only; the future
+          gutter is claims, and claims have no sample to read. */}
+      {hover === null ? null : (
+        <>
+          <span
+            data-testid="mission-chart-crosshair"
+            className="pointer-events-none absolute inset-y-0 w-px bg-foreground/25"
+            style={{ left: `${(hover.x / CHART_VIEWBOX_WIDTH) * 100}%` }}
+            aria-hidden="true"
+          />
+          <span
+            className="pointer-events-none absolute size-[7px] -translate-x-1/2 -translate-y-1/2 rounded-full border-[1.5px] bg-background"
+            style={{
+              left: `${(hover.x / CHART_VIEWBOX_WIDTH) * 100}%`,
+              top: `${(hover.y / CHART_VIEWBOX_HEIGHT) * 100}%`,
+              borderColor: segmentColor,
+            }}
+            aria-hidden="true"
+          />
+          <span
+            className="pointer-events-none absolute top-1 -translate-x-1/2 whitespace-nowrap rounded-sm bg-background/90 px-1.5 py-0.5 font-mono text-[10.5px] leading-none tabular-nums text-foreground"
+            style={{
+              // Clamped in from both edges so the readout never leaves the
+              // frame at either end of the series.
+              left: `clamp(3rem, ${(hover.x / CHART_VIEWBOX_WIDTH) * 100}%, calc(100% - 3rem))`,
+            }}
+            aria-hidden="true"
+          >
+            {formatPrice(hover.price)}
+            <span className="text-muted-foreground">
+              {" · "}
+              {/* Seconds only on the live sample: candle closes land on the
+                  minute, but "now" is inside one, and without the seconds the
+                  mark read as the same moment as the bar it is closing. */}
+              {new Date(hover.at).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+                ...(hover.isMark ? { second: "2-digit" as const } : {}),
+              })}
+            </span>
+          </span>
+        </>
+      )}
 
       {/* The gutter: HTML, so the glyphs are never stretched by the plot's
           aspect ratio and a long caption can ellipsis instead of overflowing. */}
       <div
-        className="pointer-events-none absolute inset-y-0 right-0 text-[10px] leading-none tabular-nums"
+        className="pointer-events-none absolute inset-y-0 right-0 text-[11.5px] leading-none tabular-nums"
         // Step 8.7. The gutter was a flat 15% of the frame, which is ~56px on a
         // 375px phone — narrower than "○ ▲ 1,873.5" — so every tag clipped to
         // "1,8" and the panel stopped answering what is protecting you and at
@@ -986,7 +1248,7 @@ export function MissionPriceChart(props: MissionPriceChartProps) {
                 {tag.offScale === null ? null : <span>{tag.offScale === "above" ? "↑" : "↓"}</span>}
               </span>
               {caption === "" ? null : (
-                <span className="truncate text-[9px] opacity-70">
+                <span className="truncate text-[10px] opacity-80">
                   {tag.kind === "mark" ? `(${caption})` : caption}
                   {/* A cluster says how many watches it stands for, so folding
                       three near-identical levels into one rule hides no armed

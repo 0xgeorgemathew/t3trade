@@ -25,7 +25,11 @@ export const formatUsd = (value: number): string =>
   value.toLocaleString(undefined, {
     style: "currency",
     currency: "USD",
-    maximumFractionDigits: 0,
+    // Whole dollars once the cents stop mattering, cents while they are the
+    // whole figure. A plan targeting $0.66 printed "$1" — a 50% overstatement
+    // of the only number on the panel that says what the trade is for — and
+    // the same rounding turned a $0.40 risk into "$0".
+    maximumFractionDigits: Math.abs(value) < 10 ? 2 : 0,
   });
 
 /**
@@ -86,6 +90,8 @@ export function describeWatch(watch: MarketWatch): string {
       return `${watch.market} unrealised PnL falls to $${watch.valueUsd}`;
     case "pnl_giveback":
       return `${watch.market} unrealised PnL gives back $${watch.drawdownUsd} from its peak`;
+    case "metric_threshold":
+      return `${watch.market} ${humanizeLiteral(watch.metric)} crosses ${watch.direction} ${watch.value}`;
   }
 }
 
@@ -1247,6 +1253,12 @@ function describeWatchCondition(watch: MarketWatch): string {
       return `${watch.market} unrealised PnL falls to ${formatSignedUsd(watch.valueUsd)}`;
     case "pnl_giveback":
       return `${watch.market} PnL gives back ${formatUsd(watch.drawdownUsd)}`;
+    case "metric_threshold":
+      // "ETH volume ratio above 2" / "ETH funding rate 8h below -0.0001":
+      // the metric named in plain words, the threshold as the raw number the
+      // evaluator compares — a formatter that guessed units would lie about
+      // at least one metric.
+      return `${watch.market} ${humanizeLiteral(watch.metric)} ${watch.direction} ${watch.value}`;
   }
 }
 
@@ -1266,6 +1278,8 @@ function readWatchThreshold(watch: MarketWatch): number | null {
       return watch.valueUsd;
     case "pnl_giveback":
       return watch.drawdownUsd;
+    case "metric_threshold":
+      return watch.value;
     case "order_update":
     case "position_update":
     case "scheduled_reassessment":
@@ -1325,6 +1339,88 @@ export function deriveWatchConditions(mission: {
   }
 
   return { rows, nextReassessmentAt };
+}
+
+// ---------------------------------------------------------------------------
+// Alert lifecycle — pending alerts stay on the checklist, everything that has
+// fired or been retired moves into a scrollable history with the action that
+// followed it.
+// ---------------------------------------------------------------------------
+
+/** One retired alert: what was set, how it ended, and what happened next. */
+export interface WatchHistoryRow {
+  readonly id: string;
+  /** One line describing what the predicate was waiting for. */
+  readonly description: string;
+  /** How the watch left the active set. */
+  readonly outcome: "fired" | "cancelled" | "expired" | "replaced";
+  /** Epoch millis of the status change (the row's `updatedAt`). */
+  readonly endedAt: number;
+  /**
+   * The first thing the mission did at or after the watch ended, read off the
+   * timeline: a plan publish or stop move wins over the wake itself, because
+   * "woke" is the mechanism and the publish is the decision. Null when the
+   * timeline holds nothing after the firing yet.
+   */
+  readonly actionLabel: string | null;
+}
+
+/**
+ * Split a mission's watches into the live checklist and the history beneath it.
+ *
+ * `pending` is every active non-reassessment watch — the alerts still waiting,
+ * each carrying the live number it is measuring against. `history` is every
+ * watch that has left the active set, newest first: fired (`triggered` /
+ * `consumed`), `cancelled`, `expired`, or `superseded` (shown as "replaced").
+ * The action that followed a firing comes from the mission timeline rather
+ * than from the watch table, because the watch row only knows that it fired.
+ */
+export function deriveWatchLifecycle(mission: {
+  readonly watches: ReadonlyArray<PersistedWatch>;
+  readonly missionTimeline: ReadonlyArray<{
+    readonly at: string;
+    readonly kind: "wake" | "stop_adjusted" | "strategy_published" | "journal";
+    readonly label: string;
+  }>;
+}): { readonly history: ReadonlyArray<WatchHistoryRow> } {
+  // Timeline entries as (millis, kind, label), oldest first, so "the first
+  // thing after the firing" is a forward scan.
+  const timeline = mission.missionTimeline
+    .map((entry) => ({ at: Date.parse(entry.at), kind: entry.kind, label: entry.label }))
+    .filter((entry) => !Number.isNaN(entry.at))
+    .sort((a, b) => a.at - b.at);
+
+  const actionAfter = (firedAt: number): string | null => {
+    // The wake for this firing lands within moments; the decision it produced
+    // (a publish, a stop move) lands within the turn. Prefer the decision.
+    const after = timeline.filter((entry) => entry.at >= firedAt - 2_000);
+    const decision = after.find((entry) => entry.kind !== "wake");
+    if (decision !== undefined) return decision.label;
+    const wake = after.find((entry) => entry.kind === "wake");
+    return wake === undefined ? null : wake.label;
+  };
+
+  const history: WatchHistoryRow[] = [];
+  for (const persisted of mission.watches) {
+    if (persisted.status === "active") continue;
+    if (persisted.watch.type === "scheduled_reassessment") continue;
+    const fired = persisted.status === "triggered" || persisted.status === "consumed";
+    history.push({
+      id: persisted.id,
+      description: describeWatchCondition(persisted.watch),
+      outcome: fired
+        ? "fired"
+        : persisted.status === "cancelled"
+          ? "cancelled"
+          : persisted.status === "expired"
+            ? "expired"
+            : "replaced",
+      endedAt: persisted.updatedAt,
+      actionLabel: fired ? actionAfter(persisted.updatedAt) : null,
+    });
+  }
+  history.sort((a, b) => b.endedAt - a.endedAt);
+  return { history };
 }
 
 // ---------------------------------------------------------------------------

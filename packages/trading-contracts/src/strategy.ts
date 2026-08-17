@@ -310,6 +310,25 @@ export type TradingPlanTarget = typeof TradingPlanTarget.Type;
  */
 export const DEFAULT_REASSESS_AFTER_MINUTES = 90;
 
+/**
+ * The plan's best current estimate of where price is headed — not a
+ * prediction, an informed working read the safety-net triggers are set
+ * against.
+ *
+ * `price` is where the read says the mark may be `byMinutes` from publish.
+ * The web draws it as a dotted line from the live mark into the chart's
+ * future gutter, with the armed watches around it, so the operator sees in
+ * one picture what the mission expects AND what wakes it if the market
+ * disagrees. Optional: a stand-aside plan, or a read with no directional
+ * conviction, states none — a projection invented to fill the field would be
+ * drawn as if it were believed.
+ */
+export const TradingPlanProjection = Schema.Struct({
+  price: Price,
+  byMinutes: Schema.Number.check(Schema.isGreaterThan(0)),
+});
+export type TradingPlanProjection = typeof TradingPlanProjection.Type;
+
 export const TradingPlanReassess = Schema.Struct({
   afterMinutes: Schema.Number.check(Schema.isGreaterThan(0)).pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_REASSESS_AFTER_MINUTES)),
@@ -395,6 +414,14 @@ export const tradingPlanAuthoredFields = {
   invalidation: Schema.Array(TradingText),
 
   reassess: TradingPlanReassess,
+
+  /**
+   * Where the read expects price to go, and by when — see
+   * {@link TradingPlanProjection}. The triggers above should bracket it: one
+   * side confirms the expected move, the other is the safety net that says
+   * the market is doing something else.
+   */
+  projection: Schema.optional(TradingPlanProjection),
 
   /**
    * The narrative: why this plan, in plain language — the strategy and its

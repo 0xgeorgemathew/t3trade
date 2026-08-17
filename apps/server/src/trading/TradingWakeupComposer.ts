@@ -77,8 +77,15 @@ import { TradingMissionService } from "./TradingMissionService.ts";
 import { TradingStrategyService } from "./TradingStrategyService.ts";
 import { TradingWatchService } from "./TradingWatchService.ts";
 
-/** §12.2 bounds the candles a wakeup carries directly. */
-const WAKEUP_RECENT_CANDLES = 8;
+/**
+ * §12.2 bounds the candles a wakeup carries directly.
+ *
+ * Five, down from eight: the wakeup rides a conversation that grows by one
+ * wake per turn, and each embedded bar is a line repeated for the life of the
+ * thread. Five 1m bars still answer "what did price just do?"; anything
+ * deeper is one `trading_look` away.
+ */
+const WAKEUP_RECENT_CANDLES = 5;
 
 /** Whether a stored structure-read interval is a timeframe the wakeup can echo. */
 const isTradingTimeframe = (value: string): value is TradingTimeframe =>
@@ -101,6 +108,10 @@ const WAKEUP_HOLD_HORIZONS: ReadonlyArray<number> = [3, 20] as const;
  * Exceeding it never fails the compose — see `renderBoundedWakeup`. A wakeup
  * that does not fit is a wakeup that does not happen, and a mission whose every
  * wake fails is deaf while still holding exposure.
+ *
+ * The ceiling is the backstop, not the diet: the standing per-wake savings
+ * come from the short reviews and the five-bar candle slice above, which cut
+ * every wake, not just the oversized ones.
  */
 export const MAX_WAKEUP_CHARS = 5_000;
 
@@ -536,6 +547,60 @@ export const renderBoundedWakeup = (
   });
   return { text: minimal, steps, untrimmedChars };
 };
+
+/**
+ * The causes whose wake is an ALERT, not an assessment.
+ *
+ * A fired watch already tells the model exactly what changed; everything else
+ * about the market is one `trading_look` away and will be fresher when asked
+ * for. Injecting the full snapshot on every alert is how a mission's context
+ * fills after a handful of wakes. Scheduled reassessments, user messages, and
+ * the first turn keep the full snapshot — those turns ARE the assessment.
+ */
+const LEAN_WAKE_CAUSES: ReadonlySet<TradingHarnessRunCause> = new Set([
+  "market_watch_triggered",
+  "order_updated",
+  "position_updated",
+] as ReadonlyArray<TradingHarnessRunCause>);
+
+/**
+ * Render an alert wake: what fired, what the mission holds, the one review
+ * line, and pointers. No candles, no volatility, no book — the model reads
+ * those with `trading_look` if the alert warrants acting.
+ */
+const renderLeanWakeup = (wakeup: TradingHarnessWakeup): string =>
+  renderWakeupProjection({
+    kind: wakeup.kind,
+    missionId: wakeup.missionId,
+    harnessRunId: wakeup.harnessRunId,
+    cause: wakeup.cause,
+    occurredAt: wakeup.occurredAt,
+    triggeringWatch: wakeup.triggeringWatch,
+    wakeReason: wakeup.wakeReason,
+    market: wakeup.marketSnapshot.market,
+    markPrice: wakeup.marketSnapshot.markPrice,
+    position: wakeup.position,
+    ...(wakeup.positionCosts === undefined ? {} : { positionCosts: wakeup.positionCosts }),
+    ...(wakeup.costContext === undefined ? {} : { costContext: wakeup.costContext }),
+    ...(wakeup.activeStrategy === undefined
+      ? {}
+      : {
+          plan: {
+            intent: wakeup.activeStrategy.intent,
+            phase: planPhase(wakeup.position.size),
+            ...(wakeup.activeStrategy.projection === undefined
+              ? {}
+              : { projection: wakeup.activeStrategy.projection }),
+          },
+        }),
+    ...(wakeup.strategyReview === undefined ? {} : { strategyReview: wakeup.strategyReview }),
+    ...(wakeup.positionReview === undefined ? {} : { positionReview: wakeup.positionReview }),
+    armedWatches: wakeup.armedWatches.slice(0, 8),
+    pendingEvents: wakeup.pendingEvents.slice(-3),
+    omitted:
+      "alert wake — candles, volatility, structure, book, and the full plan are " +
+      "deliberately not attached; call trading_look for fresh state before acting",
+  });
 
 /**
  * Failure surface for the compose step. A gateway failure (snapshot read) or a
@@ -1061,11 +1126,22 @@ const make = Effect.gen(function* () {
       // plan-less flat mission gets the decision prompt instead — the turn is
       // the mission's read on the market, not an apology for a missing plan
       // (plan 29 step 4.3).
+      // These two briefs repeat on EVERY wake for the life of the mission, so
+      // they are kept terse: the doctrine they compress lives in the playbooks
+      // and the first-turn contract, both one call away.
       const flatReview =
         activeStrategy === undefined
-          ? "FLAT, NO PLAN ACTIVE — nothing is armed for this mission and no thesis is on file. Decide this turn: weigh the market against one question — is the expected move over the intended hold bigger than the round trip is worth? (`costContext` prices it) — and either publish a plan (`trading_plan`; standing aside is a plan too) or arm what you are waiting for."
-          : "FLAT — the field is open: momentum, range_reversion, opening_range, and rsi_reversion are all candidates again, and `candidates[]` carries each setup with its own cost arithmetic. ema_cross is a playbook too, but it is not scored for you — read `ema` on the thesis timeframe (bias, separationAtr, barsSinceCross) and decide. Weigh each against one question — is the expected move over the intended hold bigger than the round trip is worth? (`costContext` prices it) — and take the one that answers it best, or none of them if none do.";
-      const strategyReview = position.size === 0 ? `${staleNote}${flatReview}` : undefined;
+          ? "FLAT, NO PLAN ACTIVE — decide this turn: read the market, publish via trading_plan (standing aside counts), state a projection, and arm conditions around it on both sides."
+          : "FLAT — every playbook is a candidate again (momentum, range_reversion, opening_range, rsi_reversion; ema_cross unscored — read `ema`). Take the one whose expected move beats the round trip (`costContext`), or none.";
+      // The projection is the one thing the model must never be without: an
+      // informed estimate of where price is heading, on file whatever the
+      // intent. A plan without one gets told so on every wake until it is.
+      const projectionNote =
+        activeStrategy !== undefined && activeStrategy.projection === undefined
+          ? "NO PROJECTION ON FILE — republish the plan with projection {price, byMinutes}; a current price estimate is always required, stand_aside included. "
+          : "";
+      const strategyReview =
+        position.size === 0 ? `${projectionNote}${staleNote}${flatReview}` : undefined;
 
       // Holding: the turn belongs to the position, not to the thesis. See
       // `positionReview` on the wakeup schema. A stale plan still says so —
@@ -1073,7 +1149,7 @@ const make = Effect.gen(function* () {
       const positionReview =
         position.size === 0
           ? undefined
-          : `${staleNote}HOLDING — spend this turn on the position. Bank-or-extend against positionCosts (unrealisedPnl minus the remaining exit cost is what banking is worth) and preferredTargetUsd; check drawdownFromPeakUsd against peakUnrealisedPnl; trail the stop (trail_peak / breakeven, or volatility_room if ATR expanded) rather than leaving it where entry put it; keep a \`giveback\` condition armed under the peak whenever you are in profit.`;
+          : `${projectionNote}${staleNote}HOLDING — spend this turn on the position: bank-or-extend against positionCosts, check drawdownFromPeakUsd, trail the stop off the entry, keep a \`giveback\` armed while in profit.`;
 
       // The other half of the same read: a level that IS armed, with a watch
       // that cannot evaluate the confirmation the trigger declared.
@@ -1124,6 +1200,12 @@ const make = Effect.gen(function* () {
       // mission's life and no longer duplicated onto every wake — the rendered
       // text points the run at `trading_look` for them instead.
       const validated = decodeWakeup(wakeup);
+      // An alert wake carries the alert, not the market: the fired watch, the
+      // position, the review line, and a pointer at trading_look. The full
+      // snapshot renders only on the causes that are themselves an assessment.
+      if (LEAN_WAKE_CAUSES.has(cause)) {
+        return { wakeup: validated, text: renderLeanWakeup(validated) };
+      }
       const { text, steps, untrimmedChars } = renderBoundedWakeup(validated);
       if (steps.length > 0) {
         yield* Effect.logWarning("TradingWakeupComposer: wakeup trimmed to fit the budget", {

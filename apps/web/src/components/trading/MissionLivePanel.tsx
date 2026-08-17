@@ -10,33 +10,72 @@
 //
 // Four explicit states, driven purely by the projection:
 //
-//   planning  no strategy yet          → chart + schedule, "Analysing the market…"
+//   planning  no strategy yet          → chart + mark, "Analysing the market…"
 //   armed     strategy, flat, watching → chart + condition levels + plan summary
 //   live      position open            → the same, plus P&L and the held figures
 //   complete  mission finished         → the net result, kept for good (plan 27 H1)
 //
-// It is the same pane of glass as the composer it sits on — same surface tint,
-// blur, saturation and hairline outline — because two stacked surfaces with
-// different materials read as two objects, and this is one control strip.
+// It is THREE panes of glass, floating clear of each other and of the composer
+// below: the chart card on the left, closed by the risk/reward bar; the readout
+// card on the right — the side chip and the P&L, the progress rule, the thesis,
+// the grid of figures the exposure is made of, and the armed watches; and under
+// both of them, spanning the full width, the status bar that says in a sentence
+// what the mission is doing, with the ambient facts trailing right.
+// All three carry the composer's material, the same surface tint, blur,
+// saturation and hairline outline, plus a 1px inner highlight along the top
+// edge so each reads as a lit pane rather than a painted rectangle.
 //
-// Every figure on it is set in the mono face, at one of two sizes: the P&L at
-// 16px because it is the number being read, and everything else at 10.5-11px
-// because it is context for that number. Prose — the plan's thesis, the
-// disclosure — stays in the UI face. Mixing a proportional face into a column
-// of prices is what made four rows of numbers read as four unrelated facts.
+// One box holding everything was the first attempt and it was wrong: a price
+// chart and a column of prices divided by a single hairline read as one flat
+// table, and the eye had nothing to tell it where the picture ended and the
+// instrument began. The gaps do that. Below `lg` the two cards stack, each
+// keeping its own edges, and the bar stays under them.
 //
-// One rule holds the density down: a number appears exactly once. P&L, ROI and
-// progress-to-target are header figures, so the position strip at the foot does
-// not repeat them; the entry price is on the chart and in the strip but nowhere
-// else on screen.
+// Proportion is the point of the row. At the panel's own width (6xl, set at
+// its call site in ChatView) the readout takes a fixed 400px and the chart
+// takes everything else, which is about 64/35 — a picture with an instrument
+// beside it, not two columns splitting the difference. The chart is 440px tall
+// because the price line is the one thing here that is read as a shape.
+//
+// ONE line in the picture. The chart draws closes at the runtime's own
+// interval, and nothing else: no candle bodies, no moving averages. Three
+// curves in one frame — price, fast EMA, slow EMA — read as three subjects,
+// and the two smooth ones won, which is the opposite of the intent. Everything
+// else on the chart is a level the plan drew across that line.
+//
+// Every figure on it is set in the mono face, at one of three sizes: the P&L
+// at 24px because it is the number being read, the exposure figures and the
+// watch rows at 12px because they are read down a list, and the labels that
+// name them at 10.5px. Prose — the plan's thesis, the disclosure — stays in
+// the UI face. Mixing a proportional face into a column of prices is what made
+// four rows of numbers read as four unrelated facts.
+//
+// Density is held down by cutting whole objects, not by shrinking type. Three
+// things went in the pass that made this match its reference: the schedule
+// strip, whose every pill named a price the chart was already drawing a rule
+// at; the strip of recent wake pills, which was three amber capsules saying a
+// watch had fired, on a panel whose entire subject is watches; and the EMA
+// pair with its legend. What is left is a picture, a column of figures, a list
+// of conditions and a sentence.
+//
+// A number still appears at most twice, and only when the two say different
+// things: P&L, ROI and progress are header figures and the grid never repeats
+// them, while entry and mark ARE in both places — as a tag on the shape and as
+// a cell in the column — because the gutter says where and the cell says what.
+// Hold time, funding and the day's change are true but not acted on, so they
+// sit in the ambient line at the foot; the exact threshold behind each watch is
+// a hover; everything the plan said is one disclosure away. Exceptions get
+// louder, not quieter: a stop covering only part of the position takes a cell
+// of its own, in the loss tone, because that is the difference between a
+// bounded loss and an open one.
 //
 // `planning`, `armed` and `live` draw the same surface; what differs is how
 // much of it there is anything to say about. Planning has a market, a mark, a
 // candle series and a run history from its first turn, and none of that needs a
-// published strategy — but it has no thesis, no levels and no target, so the
-// header states only the market and the mark, and the checklist and plan
-// disclosure are absent rather than empty. Nothing on the surface is invented
-// to fill the space a plan will later take.
+// published strategy — but it has no thesis, no levels and no target, so its
+// grid holds a mark and a countdown, and the checklist, the risk/reward bar and
+// the plan disclosure are absent rather than empty. Nothing on the surface is
+// invented to fill the space a plan will later take.
 //
 // The chart's gate used to be "a
 // position exists", which meant a mission spent its whole waiting phase showing
@@ -57,8 +96,8 @@ import type {
   OrchestrationTradingMission,
   TradingMarketChartView,
 } from "@t3tools/contracts";
-import { ChevronDown, ChevronUp, ExternalLinkIcon } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { ChevronDown, ChevronUp, Clock, ExternalLinkIcon } from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import { readMissionMode } from "@t3tools/trading-contracts/mode";
 import { runtimeTimeframe } from "@t3tools/trading-contracts/strategy";
@@ -88,8 +127,8 @@ import {
   deriveNextReassessmentAt,
   deriveStrategyPlan,
   deriveTriggerExpiryMillis,
-  deriveUpNextItems,
   deriveWatchConditions,
+  deriveWatchLifecycle,
   describeDelayedRead,
   formatDuration,
   formatLeverage,
@@ -104,8 +143,8 @@ import {
   type ChartPastMarkerInput,
   type ChartTimeMarkerInput,
   type StrategyPlan,
-  type UpNextItem,
   type WatchConditionRow,
+  type WatchHistoryRow,
 } from "./tradingPresentation";
 
 /**
@@ -118,10 +157,40 @@ import {
  */
 const collapsedMissions: Record<string, boolean> = {};
 
-/** Expanded chart area height. */
-const CHART_HEIGHT_CLASS = "h-[168px] w-full";
+/** Expanded chart area height.
+ *
+ * Taller than the band-stacked panel it replaces: the chart no longer shares
+ * its column with the schedule, the checklist and the held figures, so the
+ * height it takes is height the readout beside it was going to take anyway. */
+const CHART_HEIGHT_CLASS = "h-[260px] w-full sm:h-[340px]";
+
+/**
+ * The readout card's width on a wide workspace.
+ *
+ * Wide enough for a full watch sentence, a price and its verdict on one line
+ * at 12px, which is the row this column exists to hold. At 336px the same row
+ * truncated the sentence to make room for the word "waiting".
+ */
+const READOUT_WIDTH_CLASS = "lg:w-[400px]";
+
+/** The thesis paragraph's line box: 12px set at 1.5. */
+const THESIS_LINE_HEIGHT_PX = 18;
+
+/**
+ * How often the panel's clock ticks.
+ *
+ * 250ms rather than a second. The axis ends at the forming bar's close, so the
+ * live edge walks toward it continuously — at 1Hz that walk was four visible
+ * steps a second apart, which reads as a re-render rather than as a price
+ * advancing. Four ticks a second is a text update and one ~60-point polyline
+ * re-render: no animation loop, no GPU work, and still nowhere near a frame
+ * budget. Durations shown in seconds simply re-render the same string three
+ * times out of four.
+ */
+const TICK_INTERVAL_MILLIS = 250;
+
 /** Collapsed summary row height, in pixels. */
-const COLLAPSED_ROW_HEIGHT_PX = 32;
+const COLLAPSED_ROW_HEIGHT_PX = 38;
 
 /**
  * How many condition rows the checklist shows before it says "+N more".
@@ -129,31 +198,14 @@ const COLLAPSED_ROW_HEIGHT_PX = 32;
  * The panel is pinned above the composer, so its height is taken directly out
  * of the conversation. A mission that has republished a few times can hold a
  * dozen watches, and the twelfth is never the one being read.
+ *
+ * A live mission gets one fewer. Holding a position adds a P&L, a progress
+ * rule and the exposure grid above the list, and the readout column must not
+ * grow taller than the chart it captions: a caption longer than its picture is
+ * a second column of reading, which is what the two-column shape was for.
  */
 const MAX_CONDITION_ROWS = 4;
-
-/**
- * How many schedule pills the strip shows before it says "+N more".
- *
- * The strip is a single centered row directly above the composer. Six pills is
- * what fits one line on a narrow workspace, and the seventh-nearest event is
- * not the one anyone is reading.
- */
-// Five, not six: step 8.7's bound is that no more than five future markers are
-// ever visible, and the chart's own gutter has held five since
-// MAX_DRAWN_TIME_MARKERS. A strip that showed six was the one surface breaking
-// the rule the chart was written to.
-const MAX_UP_NEXT_PILLS = 5;
-
-/**
- * How long a clicked level stays lit.
- *
- * Long enough to survive the eye travelling from the pill up to the chart, and
- * short enough that the highlight is over before the next 3s mission poll — a
- * rule that outlived the click would read as chart state rather than as an
- * answer to a question the operator asked.
- */
-const FLASH_DURATION_MILLIS = 2_800;
+const MAX_CONDITION_ROWS_LIVE = 3;
 
 /**
  * How many of the fetched bars the live chart draws.
@@ -164,11 +216,38 @@ const FLASH_DURATION_MILLIS = 2_800;
  * actually operating on: twice the price resolution, and twice the rate the
  * series slides left.
  */
-const VISIBLE_BARS = 60;
+const VISIBLE_BARS = 24;
 
-/** The panel sits above the composer, so it is a card with its own edges rather
- *  than a band bolted to the header. */
-const PANEL_BOX_CLASS = "mission-panel-glass overflow-hidden rounded-xl border";
+/**
+ * One card of glass.
+ *
+ * The chart and the readout are two of these, side by side with a gap between
+ * them, not two halves of one box divided by a hairline. A shared box made a
+ * chart and a column of figures read as one flat table; two cards on the
+ * thread's own ground read as a picture and the instrument beside it, which is
+ * what they are. Each carries the composer's material — the same surface tint,
+ * blur, saturation and outline — so the pair still belongs to the surface it
+ * is docked above.
+ */
+// The bevel and the drop shadow live in `.mission-panel-glass` rather than in a
+// utility here: a Tailwind `shadow-*` replaces the whole box-shadow, so setting
+// the inner highlight from this side silently deleted the outer one.
+const CARD_CLASS = "mission-panel-glass overflow-hidden rounded-xl border";
+
+/** The shell: the chart and the readout on one row, the status bar under both.
+ *  It draws nothing itself — the gaps are the separation, and a third surface
+ *  behind three glass ones would be a fourth object on a strip that should
+ *  read as one instrument. */
+const PANEL_SHELL_CLASS = "group/panel flex w-full flex-col gap-3";
+
+/** The two cards' own row. Wider gap than the shell's, because these two sit
+ *  shoulder to shoulder and the eye needs the seam between a picture and an
+ *  instrument to be unmistakable. */
+const CARD_ROW_CLASS = "flex flex-col gap-3 lg:flex-row lg:gap-4";
+
+/** The padding every band on either card starts from, so a figure in the
+ *  readout lines up with the chart's own left rule. */
+const BAND_PAD_CLASS = "px-4 sm:px-5";
 
 /**
  * The band heading — `next`, `armed`, `held` — that starts each section on the
@@ -179,15 +258,18 @@ const PANEL_BOX_CLASS = "mission-panel-glass overflow-hidden rounded-xl border";
  * four-letter lowercase word legible at 10px, and it separates the legend from
  * the mono values in the same band without needing a second colour.
  */
+// Set in the muted ink rather than a fraction of it: at 10px a 70%-opacity
+// label is under the AA contrast floor in both themes, and these are the words
+// that tell an operator what they are looking at.
 const BAND_LEGEND_CLASS =
-  "font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70";
+  "font-mono text-[10.5px] uppercase tracking-[0.14em] text-muted-foreground";
 
 /**
- * The two context strips — the schedule and the held line — that bracket the
- * checklist. Both sit on the same faint ground, a shade off the card, so the
- * checklist between them reads as the panel's centre of gravity.
+ * The context strips — the risk/reward bar, the schedule — that close out a
+ * card. Both sit on the same faint ground, a shade off the card, so the band
+ * above them reads as that card's centre of gravity.
  */
-const CONTEXT_BAND_CLASS = "border-t border-border/40 bg-foreground/[0.018] px-3 py-1.5 sm:px-4";
+const CONTEXT_BAND_CLASS = "border-t border-border/40 bg-foreground/[0.02] px-4 py-2 sm:px-5";
 
 /** Which of the four surfaces the projection says to render. */
 export type PanelState = "planning" | "armed" | "live" | "complete";
@@ -239,7 +321,7 @@ export function MissionLivePanel({
   // no-peg-the-GPU rule the same way it did when it only moved text.
   const [nowMillis, setNowMillis] = useState<number>(() => Date.now());
   useEffect(() => {
-    const id = window.setInterval(() => setNowMillis(Date.now()), 1_000);
+    const id = window.setInterval(() => setNowMillis(Date.now()), TICK_INTERVAL_MILLIS);
     return () => window.clearInterval(id);
   }, []);
 
@@ -255,20 +337,32 @@ export function MissionLivePanel({
   const markPrice = mission.marketPrice ?? position?.markPrice ?? null;
 
   const entryPrice = position?.entryPrice ?? null;
-  // The stop is a property of an exposure, not of the plan that intends one.
-  // The stop leg survives the position that it protected — it is still on the
-  // mission after the close, and often after the next republish — so drawing it
-  // unconditionally left a stop rule hanging on the chart across a flat
-  // mission, at a price nothing was protecting any more.
-  const stopPrice = position === null ? null : (strategy?.stop.price ?? null);
+  // The stop, in both states, on two different grounds.
+  //
+  // While exposed it is the price protecting the position. While armed it is
+  // the price the published plan says it will protect at — and a plan that
+  // states a stop and does not draw it is the panel withholding the number the
+  // whole trade is sized from. What it must NOT do is survive either: the stop
+  // leg outlives the position it protected, and drawing it unconditionally
+  // left a rule hanging across a flat mission at a price nothing was
+  // protecting. Gated on a live plan that intends a trade, it cannot.
+  const isPlanning = state === "planning";
+  const wantsPlanLevels = !isPlanning && plan?.isStandAside !== true;
+  const stopPrice = wantsPlanLevels ? (strategy?.stop.price ?? null) : null;
   // A stand-aside plan names no target, and drawing a target line from any
   // other figure on it would put a level on the chart for a trade that was
   // explicitly declined.
   const targetProfitUsd = plan?.isStandAside === true ? null : (strategy?.target.profitUsd ?? null);
+  // Derived from the exposure once there is one — the price at which this size
+  // makes the plan's money — and otherwise taken from the price the plan
+  // states. A waiting mission drew no target at all, so the chart showed a
+  // stop-less, target-less line while the readout beside it named both.
   const targetPrice =
     entryPrice !== null && targetProfitUsd !== null && position !== null
       ? deriveTargetPrice(entryPrice, targetProfitUsd, position.size)
-      : null;
+      : wantsPlanLevels
+        ? (strategy?.target.price ?? null)
+        : null;
   const progressPercent =
     markPrice !== null && entryPrice !== null && targetPrice !== null
       ? deriveProgressToTarget(markPrice, entryPrice, targetPrice)
@@ -366,6 +460,19 @@ export function MissionLivePanel({
   const pendingOrder =
     inFlight === null ? null : { price: inFlight.limitPrice, side: inFlight.side };
 
+  // The plan's own read of where price is headed, as a moment on the clock
+  // axis: `byMinutes` is measured from the publish, so the endpoint stays
+  // fixed while the series slides toward it. Drawn whatever the intent — a
+  // stand-aside plan still holds an estimate of where price is going, and the
+  // estimate is exactly why it is standing aside.
+  const planProjection =
+    strategy?.projection !== undefined
+      ? {
+          price: strategy.projection.price,
+          atMillis: strategy.updatedAt + strategy.projection.byMinutes * 60_000,
+        }
+      : null;
+
   // The next reassessment, as a mark on the axis rather than only as a
   // countdown in the header — "3m from now" is a moment, and the chart has an
   // axis of moments.
@@ -376,23 +483,6 @@ export function MissionLivePanel({
   // the frame edge claims the mission will still be waiting at that price then.
   const triggerExpiryAt = deriveTriggerExpiryMillis(mission);
 
-  // The whole schedule, not just its nearest item. The header's countdown is
-  // one reassessment; this is every future event the projection carries.
-  const upNext = deriveUpNextItems(mission, nowMillis);
-
-  // Clicking a pill lights up the level it names on the chart. The strip and
-  // the chart are two views of one set of price levels, and without this the
-  // operator has to find "wake @ 1899" among four unlabelled rules by eye. The
-  // nonce is what lets the same pill flash twice: it keys the overlay, so a
-  // second click remounts it and the animation runs again.
-  const [flash, setFlash] = useState<{ readonly price: number; readonly nonce: number } | null>(
-    null,
-  );
-  useEffect(() => {
-    if (flash === null) return;
-    const timer = setTimeout(() => setFlash(null), FLASH_DURATION_MILLIS);
-    return () => clearTimeout(timer);
-  }, [flash]);
   // Every armed reassessment, not only the nearest: the header's countdown is
   // one appointment, the axis is the whole queue.
   const timeMarkers = deriveChartTimeMarkers(mission);
@@ -410,9 +500,30 @@ export function MissionLivePanel({
   // staleness reassessment, which the schedule strip above already names — and
   // a checklist headed by a condition the mission never chose reads as a plan
   // when there is not one.
+  //
+  // Waiting rows first, met rows after: what the mission is still watching for
+  // is what the operator is monitoring, and a satisfied condition is a fact
+  // rather than a question. The sort is stable, so within each group the
+  // projection's own order survives — and because it runs before the cap, a
+  // waiting condition can never be the one pushed under "+N more" by three
+  // conditions that have already resolved.
   const rows = state === "planning" ? [] : (watches?.rows ?? []);
-  const visibleRows = rows.slice(0, MAX_CONDITION_ROWS);
-  const hiddenRows = rows.length - visibleRows.length;
+  // Fired alerts clear from the checklist — but not instantly. A row that just
+  // flipped keeps its place for a beat while the live dot becomes a tick, so
+  // the operator sees the moment happen instead of a row vanishing between
+  // polls. After the beat it lives in the history below.
+  const recentlyFired = useRecentlyFiredWatches(rows, nowMillis);
+  const pendingRows = rows.filter((row) => !row.met || recentlyFired.has(row.id));
+  const orderedRows = [...pendingRows].sort((a, b) => Number(a.met) - Number(b.met));
+  const visibleRows = orderedRows.slice(
+    0,
+    state === "live" ? MAX_CONDITION_ROWS_LIVE : MAX_CONDITION_ROWS,
+  );
+  const hiddenRows = pendingRows.length - visibleRows.length;
+
+  // Everything that already fired or was retired, newest first, with the
+  // action the mission took after it. The scrollback for the alert system.
+  const watchHistory = state === "planning" ? [] : deriveWatchLifecycle(mission).history;
 
   const pnlSign: "profit" | "loss" | null =
     position === null ? null : position.unrealisedPnl >= 0 ? "profit" : "loss";
@@ -441,15 +552,18 @@ export function MissionLivePanel({
         data-testid="mission-live-panel"
         data-panel-state="complete"
         className={cn(
-          PANEL_BOX_CLASS,
-          "flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs sm:px-4",
+          CARD_CLASS,
+          BAND_PAD_CLASS,
+          "flex flex-wrap items-center gap-x-4 gap-y-1 py-3 text-sm",
         )}
       >
         <span className="text-foreground">{mission.market} finished</span>
-        <span className={cn("font-mono tabular-nums", net >= 0 ? "text-profit" : "text-loss")}>
+        <span
+          className={cn("font-mono text-base tabular-nums", net >= 0 ? "text-profit" : "text-loss")}
+        >
           {formatSignedUsd(net)} net
         </span>
-        <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground/70">
+        <span className="font-mono text-[11.5px] tabular-nums text-muted-foreground">
           {mission.result.fillCount} fill{mission.result.fillCount === 1 ? "" : "s"} ·{" "}
           {formatUsd(mission.result.feesPaidUsd)} fees
         </span>
@@ -460,7 +574,7 @@ export function MissionLivePanel({
   // --- collapsed: the 32px summary row. -------------------------------------
   if (collapsed) {
     return (
-      <div data-testid="mission-live-panel" data-panel-state={state} className={PANEL_BOX_CLASS}>
+      <div data-testid="mission-live-panel" data-panel-state={state} className={CARD_CLASS}>
         <CollapsedRow
           market={mission.market}
           leverageLabel={leverage === null ? null : formatLeverage(leverage)}
@@ -479,325 +593,600 @@ export function MissionLivePanel({
     );
   }
 
-  return (
-    <div data-testid="mission-live-panel" data-panel-state={state} className={PANEL_BOX_CLASS}>
-      {/* Header: what the mission is doing, and the numbers that go with it. */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs sm:px-4">
-        {state === "planning" ? (
-          <PlanningHeader
-            market={mission.market}
-            markPrice={markPrice}
-            nextReassessmentAt={nextReassessmentAt}
-          />
-        ) : position === null ? (
-          <ArmedHeader
-            market={mission.market}
-            plan={plan}
-            nextReassessmentAt={nextReassessmentAt}
-          />
-        ) : (
+  // The schedule strip is gone. Every pill on it named a price the chart was
+  // already drawing a rule at, in the same gutter, with the same figure — so
+  // the readout carried a text copy of the picture beside it, and the copy was
+  // the noisier of the two. The next reassessment keeps both of its homes: a
+  // rule standing in the chart's future gutter, captioned there, and a cell in
+  // the grid in the two states that have room for one.
+  const visibleHistory = watchHistory.filter((entry) => !recentlyFired.has(entry.id));
+  const checklist =
+    visibleRows.length === 0 && visibleHistory.length === 0 ? null : (
+      <div className="border-t border-border/40 pt-2.5">
+        {visibleRows.length === 0 ? null : (
           <>
-            <SideChip
-              market={mission.market}
-              leverageLabel={leverage === null ? null : formatLeverage(leverage)}
-              isLong={position.size > 0}
-            />
-            {/* The one figure the operator is actually reading, at the one
-                size on this row that says so, and in the mono face every other
-                figure on the panel is set in. Everything after it is context
-                for it, grouped behind a separator and set in the muted ink
-                the rest of the panel uses for context. */}
-            <span
-              className={cn(
-                "font-mono text-base leading-none tracking-[-0.01em] tabular-nums",
-                pnlToneClass,
-              )}
-            >
-              {formatSignedUsd(position.unrealisedPnl)}
-            </span>
-            {roiPercent === null ? null : (
-              <span className={cn("font-mono text-xs tabular-nums", pnlToneClass)}>
-                {formatSignedPercent(roiPercent)}
-              </span>
-            )}
-            {progressPercent === null && holdLabel === null ? null : (
-              <span className="flex items-center gap-2 font-mono text-[10.5px] tabular-nums text-muted-foreground">
-                {progressPercent === null ? null : (
-                  <>
-                    <ProgressToTarget percent={progressPercent} />
-                    <span>{Math.round(progressPercent)}% to target</span>
-                  </>
-                )}
-                {progressPercent !== null && holdLabel !== null ? <span>·</span> : null}
-                {holdLabel === null ? null : <span>held {holdLabel}</span>}
-              </span>
+            <p className={cn(BAND_PAD_CLASS, "pb-1.5", BAND_LEGEND_CLASS)}>armed watches</p>
+            <div className="divide-y divide-border/25">
+              {visibleRows.map((row) => (
+                <ConditionRow key={row.id} row={row} justFired={recentlyFired.has(row.id)} />
+              ))}
+            </div>
+            {hiddenRows === 0 && droppedConditions === 0 ? null : (
+              <p
+                className={cn(BAND_PAD_CLASS, "py-1.5 font-mono text-[11px] text-muted-foreground")}
+              >
+                {hiddenRows > 0
+                  ? `+${hiddenRows} more condition${hiddenRows === 1 ? "" : "s"} armed`
+                  : `+${droppedConditions} more level${droppedConditions === 1 ? "" : "s"} armed, off the chart`}
+              </p>
             )}
           </>
         )}
-        <span className="ml-auto flex items-center gap-3">
-          {mode.kind === "execute_strategy" ? (
-            <span
-              data-testid="mission-mode"
-              className={BAND_LEGEND_CLASS}
-              title="This mission executes a named playbook rather than deciding for itself. It is read from the mandate."
-            >
-              execute · {mode.strategy.replaceAll("_", " ")}
-            </span>
-          ) : null}
-          {delayedRead === null ? null : (
-            <span
-              className="text-armed"
-              title="The position read is behind. Placement is only suspended once it stops landing altogether."
-            >
-              {delayedRead}
-            </span>
+        {visibleHistory.length === 0 ? null : (
+          <WatchHistoryList entries={visibleHistory} nowMillis={nowMillis} />
+        )}
+      </div>
+    );
+
+  return (
+    <div data-testid="mission-live-panel" data-panel-state={state} className={PANEL_SHELL_CLASS}>
+      {/* Two cards with air between them, not two halves of one box. The chart
+          is the picture and the readout is the instrument beside it; welding
+          them into a single bordered surface made a candle chart and a column
+          of prices read as one flat table, which is how the first pass at this
+          went wrong.
+
+          Below `lg` they stack, chart first, each keeping its own edges. */}
+      <div className={CARD_ROW_CLASS}>
+        <section className={cn(CARD_CLASS, "flex min-w-0 flex-1 flex-col")}>
+          <ChartPriceHeader
+            market={mission.market}
+            intervalLabel={interval}
+            markPrice={markPrice}
+            changePercent={chart.data?.change24hPercent ?? null}
+          />
+          <ChartSlot
+            data={chart.data}
+            isLoading={chart.isLoading}
+            error={chart.error}
+            entryPrice={entryPrice}
+            stopPrice={stopPrice}
+            targetPrice={targetPrice}
+            liquidationPrice={position?.liquidationPrice ?? null}
+            entryTime={entryMillis}
+            markPrice={markPrice}
+            pnlSign={pnlSign}
+            conditions={chartConditions}
+            fills={fillMarkers}
+            pendingOrder={pendingOrder}
+            nowMillis={nowMillis}
+            triggerExpiryAt={triggerExpiryAt}
+            projection={planProjection}
+            timeMarkers={timeMarkers}
+            pastMarkers={pastMarkers}
+            draggableKinds={draggableKinds}
+            onLevelDragEnd={onLevelDragEnd}
+            refusedStop={revision.refusedStop}
+            positionSize={position?.size ?? null}
+          />
+          <RiskRewardBar
+            riskUsd={plan?.maxLossUsd ?? null}
+            rewardUsd={targetProfitUsd}
+            isStandAside={plan?.isStandAside === true}
+          />
+        </section>
+
+        <section
+          className={cn(
+            CARD_CLASS,
+            READOUT_WIDTH_CLASS,
+            "flex w-full min-w-0 flex-col lg:flex-none",
           )}
-          {chart.stale ? (
-            <span className="text-muted-foreground" title="The last exchange read failed">
-              delayed
-            </span>
-          ) : null}
-          {exchangeUrl === null ? null : (
-            <a
-              href={exchangeUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-            >
-              open on hyperliquid
-              <ExternalLinkIcon className="size-3" aria-hidden />
-            </a>
-          )}
-          <button
-            type="button"
-            onClick={toggleCollapsed}
-            aria-label="Collapse chart"
-            className="text-muted-foreground hover:text-foreground"
-          >
-            <ChevronUp className="size-3.5" aria-hidden />
-          </button>
-        </span>
+        >
+          <div className="flex flex-1 flex-col">
+            {/* The header: what is held, and the one figure being read. */}
+            <div className={cn(BAND_PAD_CLASS, "flex items-center gap-x-3 py-3")}>
+              {position === null ? (
+                <StateChip
+                  market={mission.market}
+                  label={
+                    state === "planning"
+                      ? "Analysing"
+                      : plan?.isStandAside === true
+                        ? "Standing aside"
+                        : "Waiting"
+                  }
+                  isPulsing={state === "planning"}
+                />
+              ) : (
+                // Live, the identity chip belongs to the position block below —
+                // one pill per fact. What the header keeps is the P&L, which is
+                // the figure this card exists to show.
+                <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                  unrealised
+                </span>
+              )}
+              {/* The staleness word is the one thing allowed to interrupt the
+                header, because it qualifies every figure under it. */}
+              {delayedRead === null && !chart.stale ? null : (
+                <span
+                  // On one line, always. "Stale 2m 36s" wrapping after the
+                  // word STALE made the header two rows tall and pushed the
+                  // P&L — the figure this card exists for — down with it.
+                  className="flex-none whitespace-nowrap font-mono text-[11px] uppercase tracking-[0.1em] text-armed"
+                  title={
+                    delayedRead === null
+                      ? "The last exchange read failed"
+                      : "The position read is behind. Placement is only suspended once it stops landing altogether."
+                  }
+                >
+                  {delayedRead ?? "delayed"}
+                </span>
+              )}
+              {position === null ? null : (
+                <span className="ml-auto flex items-baseline gap-2">
+                  {roiPercent === null ? null : (
+                    <span className={cn("font-mono text-xs tabular-nums", pnlToneClass)}>
+                      {formatSignedPercent(roiPercent)}
+                    </span>
+                  )}
+                  <span
+                    className={cn(
+                      "font-mono text-2xl leading-none tracking-[-0.02em] tabular-nums transition-colors duration-300 motion-reduce:transition-none",
+                      pnlToneClass,
+                    )}
+                  >
+                    {formatSignedUsd(position.unrealisedPnl)}
+                  </span>
+                </span>
+              )}
+              {/* The collapse control is the panel's only chrome, so it recedes
+                to a hint until the pointer is on the panel. A monitoring
+                surface should read as figures, not as a toolbar. */}
+              <button
+                type="button"
+                onClick={toggleCollapsed}
+                aria-label="Collapse chart"
+                className={cn(
+                  "text-muted-foreground/50 transition-colors hover:text-foreground focus-visible:text-foreground group-hover/panel:text-muted-foreground motion-reduce:transition-none",
+                  position === null && "ml-auto",
+                )}
+              >
+                <ChevronUp className="size-4" aria-hidden />
+              </button>
+            </div>
+
+            {/* Progress to target as a full-width rule under the figure it
+              stands for, rather than a 28px stub inside a wrapping header
+              row. Same fact, at the width that makes it readable at a glance. */}
+            {progressPercent === null ? null : (
+              <div className={cn(BAND_PAD_CLASS, "flex items-center gap-3 pb-3")}>
+                <ProgressToTarget percent={progressPercent} />
+                <span className="flex-none font-mono text-[11px] tabular-nums text-muted-foreground">
+                  {Math.round(progressPercent)}% to target
+                </span>
+              </div>
+            )}
+
+            {/* The plan's own sentence: the "why?" of the trade, on the surface
+              rather than behind the disclosure.
+
+              Two lines while flat, one while live. Waiting IS the thesis, so
+              a waiting panel gives it the room to be read; once there is a
+              position the operator is monitoring what it does, not re-reading
+              why it was taken, and the full sentence is a hover and a
+              disclosure away. */}
+            {plan?.because != null && plan.because !== "" ? (
+              <p
+                data-testid="mission-live-because"
+                className={cn(
+                  BAND_PAD_CLASS,
+                  "pb-3 text-[12px] leading-[1.5] text-muted-foreground",
+                )}
+                // Clamped inline rather than through the `line-clamp-N`
+                // utility. The utility never took: `getComputedStyle` reports
+                // this paragraph's display as `flow-root` either way, and with
+                // the class alone a three-line thesis rendered all three lines,
+                // ran under the grid and was sliced in half by the card edge.
+                // Set here, the same declarations bite — verified in the
+                // harness — and a clamp ends the last line in an ellipsis,
+                // which a plain height bound does not: the reader can see the
+                // sentence was cut. It stays whole in the title and in the
+                // plan disclosure.
+                style={{
+                  display: "-webkit-box",
+                  WebkitBoxOrient: "vertical",
+                  WebkitLineClamp: state === "live" ? 2 : 3,
+                  // Belt and braces, and the braces are load-bearing: in the
+                  // packaged app the clamp put an ellipsis on the last line but
+                  // did not shorten the box, so one more line rendered under
+                  // the grid and was sliced in half by it. A max-height cannot
+                  // be ignored by any of them.
+                  maxHeight: `${(state === "live" ? 2 : 3) * THESIS_LINE_HEIGHT_PX}px`,
+                  overflow: "hidden",
+                }}
+                title={plan.because}
+              >
+                {plan.because}
+              </p>
+            ) : null}
+
+            {/* The position, where the receipt in the conversation used to say
+                it: the same chips, above the same figures. */}
+            {position === null ? null : (
+              <div className={cn(BAND_PAD_CLASS, "flex items-center gap-1.5 pb-2")}>
+                <SideChip
+                  market={mission.market}
+                  leverageLabel={leverage === null ? null : formatLeverage(leverage)}
+                  isLong={position.size > 0}
+                />
+                <span className="inline-flex items-center rounded-full border border-border/60 bg-foreground/[0.04] px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+                  Open
+                </span>
+                {mission.result.feesPaidUsd > 0 ? (
+                  <span className="ml-auto font-mono text-[11px] tabular-nums text-muted-foreground">
+                    {formatUsd(mission.result.feesPaidUsd)} fees
+                  </span>
+                ) : null}
+              </div>
+            )}
+
+            <StatGrid
+              state={state}
+              markPrice={markPrice}
+              countdown={formatReassessmentCountdown(nextReassessmentAt)}
+              plan={plan}
+              stopPrice={stopPrice}
+              {...(position === null ? {} : { position })}
+            />
+
+            {/* The exposure's own block, before there is an exposure. The
+                readout is built around six position figures, and while the
+                mission waits that whole region was blank — a third of the card
+                reading as something that had failed to render, and then
+                everything below it jumping when a fill landed. The skeleton
+                holds the shape and says what will fill it. */}
+            {position === null ? <PositionSkeleton market={mission.market} /> : null}
+          </div>
+
+          {/* The checklist sits at the foot of the card, so the slack a short
+            readout leaves collects ABOVE it rather than in the middle of the
+            list — which is exactly where the reference leaves its own air. */}
+          {checklist}
+          <RevisionNote revision={revision} />
+
+          {/* The whole published plan, one disclosure away. It used to be a card
+            in the timeline, where it consumed height on every scroll whether or
+            not anyone was reading it. */}
+          {plan === null ? null : <PlanDisclosure plan={plan} />}
+        </section>
       </div>
 
-      {/* Step 8.7, question five: "why?". An armed panel has carried the
-          plan's own sentence in its header since the restyle; a HOLDING panel
-          did not, so the one question a walk-away user could not answer from
-          one screen was the reason they were in the trade — it was behind the
-          plan disclosure. One line, the plan's own words, clamped to two rows
-          so a long thesis cannot push the chart off a phone. */}
-      {state === "live" && plan?.because != null && plan.because !== "" ? (
-        <p
-          data-testid="mission-live-because"
-          className="line-clamp-2 px-3 pb-1.5 text-[11px] leading-snug text-muted-foreground sm:px-4"
-          title={plan.because}
+      {/* The third element, spanning both cards: what the mission is doing,
+          said in a sentence, with the facts that qualify it trailing on the
+          right. It is the line the landing page closes its readout with, and
+          the panel had nowhere to say the one thing a passing glance wants —
+          not a price, not a percentage, but a state. Everything on it is
+          ambient: a state, a duration, a carrying cost, the day's move. None
+          of it is decided on, which is why it is a bar under the instrument
+          rather than a cell inside it. */}
+      <MissionStatusBar
+        headline={describeMissionStatus(state, position, watches, plan)}
+        tone={position === null ? "flat" : position.unrealisedPnl >= 0 ? "profit" : "loss"}
+        data={chart.data}
+        isHolding={position !== null}
+        holdLabel={holdLabel}
+        modeLabel={mode.kind === "execute_strategy" ? mode.strategy.replaceAll("_", " ") : null}
+        exchangeUrl={exchangeUrl}
+        lastActivity={deriveLastActivity(mission.missionTimeline, nowMillis)}
+      />
+    </div>
+  );
+}
+
+/**
+ * What the mission is doing, in one clause.
+ *
+ * The panel is dense with figures and had no sentence on it. A figure answers
+ * "how much"; this answers "what is happening", which is the question a glance
+ * from across the room is actually asking.
+ */
+function describeMissionStatus(
+  state: PanelState,
+  position: { readonly size: number } | null,
+  watches: { readonly rows: ReadonlyArray<{ readonly met: boolean }> } | null,
+  plan: StrategyPlan | null,
+): string {
+  if (position !== null) return position.size > 0 ? "Holding long" : "Holding short";
+  if (state === "planning") return "Analysing the market";
+  if (plan?.isStandAside === true) return "Standing aside";
+  const pending = watches?.rows.filter((row) => !row.met).length ?? 0;
+  if (pending === 0) return "Waiting for the entry";
+  return `Waiting on ${pending} condition${pending === 1 ? "" : "s"}`;
+}
+
+/**
+ * The price, above the picture of it.
+ *
+ * Borrowed wholesale from the Stocks app, which puts the number first and the
+ * shape under it: the market, then the mark set large, then how far the day has
+ * moved, then which bars are being drawn. It is the one figure that is true
+ * whatever the mission is doing — planning, waiting, holding — so it belongs to
+ * the chart card rather than to the readout, and it stays put while the panel's
+ * state changes underneath it.
+ *
+ * The mark is `mission.marketPrice` (3s poll) rather than the candle feed's
+ * (15s), so this figure and the dot at the end of the line are the same read.
+ */
+function ChartPriceHeader({
+  market,
+  intervalLabel,
+  markPrice,
+  changePercent,
+}: {
+  readonly market: string;
+  readonly intervalLabel: string;
+  readonly markPrice: number | null;
+  readonly changePercent: number | null;
+}): ReactNode {
+  const changeTone =
+    changePercent === null || changePercent === 0
+      ? "text-muted-foreground"
+      : changePercent > 0
+        ? "text-profit"
+        : "text-loss";
+  return (
+    <div className={cn(BAND_PAD_CLASS, "flex items-end justify-between gap-3 pb-2 pt-3")}>
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-muted-foreground">
+          {market} · USD
+        </span>
+        <span className="flex items-baseline gap-2">
+          <span
+            data-testid="mission-chart-mark"
+            className="font-mono text-[26px] leading-none tracking-[-0.02em] tabular-nums text-foreground"
+          >
+            {markPrice === null ? "—" : formatPrice(markPrice)}
+          </span>
+          {changePercent === null ? null : (
+            <span className={cn("font-mono text-[13px] tabular-nums", changeTone)}>
+              {formatSignedPercent(changePercent)}
+            </span>
+          )}
+        </span>
+      </div>
+      {/* Which bars the shape below is made of. The Stocks app puts a row of
+          ranges here; this chart draws one, so it states it rather than
+          offering it. */}
+      <span
+        data-testid="mission-chart-interval"
+        // Lower case, deliberately: "1M" is a month in every chart app the
+        // operator has ever used, and this is one minute.
+        className="flex-none rounded-full border border-border/60 px-2 py-0.5 font-mono text-[11px] lowercase tracking-[0.08em] text-muted-foreground"
+      >
+        {intervalLabel}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The two figures the plan fixed before it signed anything, drawn as one bar.
+ *
+ * The risk and the reward are the same statement read from two ends, so they
+ * are one object: a red segment and a green one, sized in proportion to each
+ * other. It sits under the chart because it is a property of the levels drawn
+ * on it, and it disappears when either half is unknown — half a risk/reward bar
+ * claims a ratio that has not been decided.
+ */
+/**
+ * A reward-to-risk ratio, printed so it never rounds itself away.
+ *
+ * A plan risking $63.67 to make $0.66 has a ratio of 0.0104, and one decimal
+ * place prints that as "0.0:1" — a figure that reads as a rendering fault
+ * rather than as the (alarming) thing it is. Below a tenth the ratio is stated
+ * as a bound instead, which is both honest and legible.
+ */
+function formatRatio(ratio: number): string {
+  if (ratio > 0 && ratio < 0.1) return "<0.1";
+  return ratio.toFixed(ratio < 10 ? 1 : 0);
+}
+
+function RiskRewardBar({
+  riskUsd,
+  rewardUsd,
+  isStandAside,
+}: {
+  readonly riskUsd: number | null;
+  readonly rewardUsd: number | null;
+  readonly isStandAside: boolean;
+}): ReactNode {
+  if (isStandAside) return null;
+  if (riskUsd === null || rewardUsd === null) return null;
+  if (riskUsd <= 0 || rewardUsd <= 0) return null;
+  const ratio = rewardUsd / riskUsd;
+  // The proportion is clamped to a readable band. A 6:1 plan drawn honestly
+  // gives the risk segment 14% of the bar, which is narrower than the figure
+  // printed in it, and a number spilling out of its own segment is worse than
+  // a foreshortened one. The exact ratio is stated in words beside the bar, so
+  // nothing here is the only source of the truth it shortens.
+  const riskShare = Math.min(72, Math.max(28, (riskUsd / (riskUsd + rewardUsd)) * 100));
+  return (
+    <div
+      data-testid="mission-risk-reward"
+      className={cn("flex items-center gap-3", CONTEXT_BAND_CLASS)}
+    >
+      <span className="flex h-5 min-w-0 flex-1 overflow-hidden rounded-[4px] font-mono text-[10px] tabular-nums">
+        <span
+          className="flex items-center justify-start whitespace-nowrap bg-loss/15 px-1.5 text-loss"
+          style={{ width: `${riskShare}%` }}
         >
-          {plan.because}
-        </p>
-      ) : null}
+          {formatSignedUsd(-riskUsd)}
+        </span>
+        <span className="flex flex-1 items-center justify-end whitespace-nowrap bg-profit/15 px-1.5 text-profit">
+          {formatSignedUsd(rewardUsd)}
+        </span>
+      </span>
+      <span className="flex-none font-mono text-[11px] tabular-nums text-muted-foreground">
+        {formatRatio(ratio)}:1 planned
+      </span>
+    </div>
+  );
+}
 
-      {/* Step 8.6: the bands are the same in every state; their ORDER is not.
-          What belongs at the top is whatever that state is a question about.
+/**
+ * The few figures that describe the exposure, as a two-column grid of hairline
+ * cells rather than a wrapping line of `label value` pairs.
+ *
+ * A wrapping line puts a different number under a different label every time
+ * the panel resizes; a grid puts the same figure in the same cell, so the eye
+ * learns where "liq" is and stops reading labels.
+ *
+ * Six cells while live, in the reference's own order: what is held, what it
+ * was bought at, what it is worth now, where it stops, where it is closed out
+ * for us, and what is posted against it. Entry and mark are also tagged on the
+ * chart, and that duplication is deliberate: the gutter tag says WHERE on the
+ * shape, the cell says WHAT the number is, and an operator reading a column of
+ * figures should not have to read a picture to find two of them. Two cells
+ * (size and stop, which is all the panel showed before this) left the card
+ * looking like it had failed to load the rest.
+ *
+ * P&L, ROI and progress stay out: they are header figures, and this grid sits
+ * directly beneath them.
+ *
+ * Protection is an exception cell, not a standing one. A stop that covers the
+ * whole position is the normal case and says nothing worth a row; a stop
+ * covering part of it, or none, is the difference between a bounded loss and
+ * an open-ended one, so THAT gets a cell, in the loss tone (§16.1).
+ */
+function StatGrid({
+  state,
+  position,
+  markPrice,
+  stopPrice,
+  plan,
+  countdown,
+}: {
+  readonly state: PanelState;
+  readonly position?: {
+    readonly size: number;
+    readonly entryPrice?: number | null | undefined;
+    readonly liquidationPrice?: number | null | undefined;
+    readonly marginUsed: number;
+    readonly protectedSize: number;
+  };
+  readonly markPrice: number | null;
+  readonly stopPrice: number | null;
+  readonly plan: StrategyPlan | null;
+  readonly countdown: string | null;
+}): ReactNode {
+  const cells: Array<{ label: string; value: string; tone?: string }> = [];
 
-          `armed` is a question about what the mission is waiting for, so the
-          schedule and the checklist stand above the chart and the chart
-          becomes the picture that explains them. `live` is a question about a
-          position, so the chart — the shape of the trade — stays at the top
-          and what is held sits directly under it, with the checklist below;
-          before this the checklist separated a position's chart from its own
-          size and protection. `planning` has neither band and reads as it did.
+  if (position !== undefined) {
+    cells.push({ label: "Size", value: formatSize(Math.abs(position.size)) });
+    if (position.entryPrice != null)
+      cells.push({ label: "Entry", value: formatPrice(position.entryPrice) });
+    if (markPrice !== null) cells.push({ label: "Mark", value: formatPrice(markPrice) });
+    cells.push(
+      stopPrice === null
+        ? { label: "Stop", value: "None", tone: "text-loss" }
+        : { label: "Stop", value: formatPrice(stopPrice) },
+    );
+    if (position.liquidationPrice != null)
+      cells.push({ label: "Liq", value: formatPrice(position.liquidationPrice) });
+    if (position.marginUsed > 0)
+      cells.push({ label: "Margin", value: formatUsd(position.marginUsed) });
+    const covered = Math.abs(position.protectedSize);
+    const held = Math.abs(position.size);
+    if (stopPrice !== null && covered < held)
+      cells.push({
+        label: "Protected",
+        value: covered === 0 ? "None" : `${formatSize(covered)} of ${formatSize(held)}`,
+        tone: "text-loss",
+      });
+  } else if (state === "armed") {
+    if (plan?.initialSizeUsd != null)
+      cells.push({ label: "Size", value: formatUsd(plan.initialSizeUsd) });
+    if (plan?.maxLossUsd != null)
+      cells.push({ label: "Risk", value: formatUsd(plan.maxLossUsd), tone: "text-loss" });
+    if (plan?.targetUsd != null)
+      cells.push({ label: "Target", value: formatUsd(plan.targetUsd), tone: "text-profit" });
+    if (countdown !== null) cells.push({ label: "Next", value: countdown });
+  } else {
+    // Planning has no plan to describe, so it says the one thing it knows: the
+    // market it is reading, and when it will look again.
+    if (markPrice !== null) cells.push({ label: "Mark", value: formatPrice(markPrice) });
+    if (countdown !== null) cells.push({ label: "Next", value: countdown });
+  }
 
-          The drag's answer always rides with the chart, wherever the chart is:
-          it is about a level that was just moved. */}
-      {state === "armed" ? (
-        <>
-          {/* The schedule, as one row of pills: what happens next, in the order it
-            is likely to arrive. The checklist below says what is armed; this says
-            when. */}
-          {upNext.length === 0 ? null : (
-            // Left-aligned under a label, not centred: every other band on this
-            // panel starts at the same left rule, and a centred row of pills was
-            // the one thing on the card that floated free of it. The label is what
-            // makes the row a section rather than a loose set of chips.
-            <div
-              data-testid="mission-up-next"
-              className={cn("flex flex-wrap items-center gap-1.5", CONTEXT_BAND_CLASS)}
-            >
-              <span className={cn("mr-0.5", BAND_LEGEND_CLASS)}>next</span>
-              {upNext.slice(0, MAX_UP_NEXT_PILLS).map((item) => (
-                <UpNextPill
-                  key={item.key}
-                  item={item}
-                  isFlashed={flash !== null && item.priceLevel === flash.price}
-                  onSelect={
-                    item.priceLevel === null
-                      ? null
-                      : (price) => setFlash((prev) => ({ price, nonce: (prev?.nonce ?? 0) + 1 }))
-                  }
-                />
-              ))}
-              {upNext.length > MAX_UP_NEXT_PILLS ? (
-                <span className="font-mono text-[10.5px] text-muted-foreground">
-                  +{upNext.length - MAX_UP_NEXT_PILLS} more
-                </span>
-              ) : null}
-            </div>
+  if (cells.length === 0) return null;
+  return (
+    <div
+      data-testid="mission-stat-grid"
+      className="mx-4 mb-3 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border/40 bg-border/40 sm:mx-5"
+    >
+      {cells.map((cell, index) => (
+        <span
+          key={cell.label}
+          // An odd last cell takes the whole row rather than leaving a hole in
+          // the grid: a blank half-cell reads as a figure that failed to load.
+          className={cn(
+            "flex items-baseline justify-between gap-2 bg-foreground/[0.03] px-3 py-2 font-mono text-[12px] tabular-nums",
+            index === cells.length - 1 && cells.length % 2 === 1 && "col-span-2",
           )}
-          {/* The full checklist, below the chart. The chart draws the four price
-            levels nearest the mark; these rows are the exact set, including the
-            watches that have no y on a price chart at all. */}
-          {visibleRows.length === 0 ? null : (
-            <div className="border-t border-border/40">
-              {/* The band's own label, on the panel's left rule like every other
-                section heading. Without it the rows read as a continuation of
-                the pill strip above rather than as the checklist. */}
-              <p className={cn("px-3 pb-0.5 pt-1.5 sm:px-4", BAND_LEGEND_CLASS)}>armed</p>
-              <div className="divide-y divide-border/25">
-                {visibleRows.map((row) => (
-                  <ConditionRow key={row.id} row={row} />
-                ))}
-              </div>
-              {hiddenRows === 0 && droppedConditions === 0 ? null : (
-                <p className="px-3 py-1 font-mono text-[10.5px] text-muted-foreground sm:px-4">
-                  {hiddenRows > 0
-                    ? `+${hiddenRows} more condition${hiddenRows === 1 ? "" : "s"} armed`
-                    : `+${droppedConditions} more level${droppedConditions === 1 ? "" : "s"} armed, off the chart`}
-                </p>
-              )}
-            </div>
-          )}
-          <div className="border-t border-border/40">
-            <ChartSlot
-              data={chart.data}
-              isLoading={chart.isLoading}
-              error={chart.error}
-              entryPrice={entryPrice}
-              stopPrice={stopPrice}
-              targetPrice={targetPrice}
-              liquidationPrice={position?.liquidationPrice ?? null}
-              entryTime={entryMillis}
-              markPrice={markPrice}
-              pnlSign={pnlSign}
-              conditions={chartConditions}
-              fills={fillMarkers}
-              pendingOrder={pendingOrder}
-              flash={flash}
-              nowMillis={nowMillis}
-              triggerExpiryAt={triggerExpiryAt}
-              timeMarkers={timeMarkers}
-              pastMarkers={pastMarkers}
-              draggableKinds={draggableKinds}
-              onLevelDragEnd={onLevelDragEnd}
-              refusedStop={revision.refusedStop}
-              positionSize={position?.size ?? null}
-            />
-          </div>
-          <RevisionNote revision={revision} />
-        </>
-      ) : (
-        <>
-          <div className="border-t border-border/40">
-            <ChartSlot
-              data={chart.data}
-              isLoading={chart.isLoading}
-              error={chart.error}
-              entryPrice={entryPrice}
-              stopPrice={stopPrice}
-              targetPrice={targetPrice}
-              liquidationPrice={position?.liquidationPrice ?? null}
-              entryTime={entryMillis}
-              markPrice={markPrice}
-              pnlSign={pnlSign}
-              conditions={chartConditions}
-              fills={fillMarkers}
-              pendingOrder={pendingOrder}
-              flash={flash}
-              nowMillis={nowMillis}
-              triggerExpiryAt={triggerExpiryAt}
-              timeMarkers={timeMarkers}
-              pastMarkers={pastMarkers}
-              draggableKinds={draggableKinds}
-              onLevelDragEnd={onLevelDragEnd}
-              refusedStop={revision.refusedStop}
-              positionSize={position?.size ?? null}
-            />
-          </div>
-          <RevisionNote revision={revision} />
-          {/* What is actually held, at the foot of the panel. This used to be a
-            `Position` card in the timeline — but a position is state, not an
-            event, and state in a scrolling log reads as a fact from the moment
-            you scrolled past. The fill receipts stay in the timeline, where an
-            event with a timestamp belongs. */}
-          {position === null ? null : (
-            <PositionStrip
-              size={position.size}
-              liquidationPrice={position.liquidationPrice ?? null}
-              protectedSize={position.protectedSize}
-            />
-          )}
-          {/* The schedule, as one row of pills: what happens next, in the order it
-            is likely to arrive. The checklist below says what is armed; this says
-            when. */}
-          {upNext.length === 0 ? null : (
-            // Left-aligned under a label, not centred: every other band on this
-            // panel starts at the same left rule, and a centred row of pills was
-            // the one thing on the card that floated free of it. The label is what
-            // makes the row a section rather than a loose set of chips.
-            <div
-              data-testid="mission-up-next"
-              className={cn("flex flex-wrap items-center gap-1.5", CONTEXT_BAND_CLASS)}
-            >
-              <span className={cn("mr-0.5", BAND_LEGEND_CLASS)}>next</span>
-              {upNext.slice(0, MAX_UP_NEXT_PILLS).map((item) => (
-                <UpNextPill
-                  key={item.key}
-                  item={item}
-                  isFlashed={flash !== null && item.priceLevel === flash.price}
-                  onSelect={
-                    item.priceLevel === null
-                      ? null
-                      : (price) => setFlash((prev) => ({ price, nonce: (prev?.nonce ?? 0) + 1 }))
-                  }
-                />
-              ))}
-              {upNext.length > MAX_UP_NEXT_PILLS ? (
-                <span className="font-mono text-[10.5px] text-muted-foreground">
-                  +{upNext.length - MAX_UP_NEXT_PILLS} more
-                </span>
-              ) : null}
-            </div>
-          )}
-          {/* The full checklist, below the chart. The chart draws the four price
-            levels nearest the mark; these rows are the exact set, including the
-            watches that have no y on a price chart at all. */}
-          {visibleRows.length === 0 ? null : (
-            <div className="border-t border-border/40">
-              {/* The band's own label, on the panel's left rule like every other
-                section heading. Without it the rows read as a continuation of
-                the pill strip above rather than as the checklist. */}
-              <p className={cn("px-3 pb-0.5 pt-1.5 sm:px-4", BAND_LEGEND_CLASS)}>armed</p>
-              <div className="divide-y divide-border/25">
-                {visibleRows.map((row) => (
-                  <ConditionRow key={row.id} row={row} />
-                ))}
-              </div>
-              {hiddenRows === 0 && droppedConditions === 0 ? null : (
-                <p className="px-3 py-1 font-mono text-[10.5px] text-muted-foreground sm:px-4">
-                  {hiddenRows > 0
-                    ? `+${hiddenRows} more condition${hiddenRows === 1 ? "" : "s"} armed`
-                    : `+${droppedConditions} more level${droppedConditions === 1 ? "" : "s"} armed, off the chart`}
-                </p>
-              )}
-            </div>
-          )}
-        </>
-      )}
+        >
+          <span className="text-[10.5px] uppercase tracking-[0.12em] text-muted-foreground">
+            {cell.label}
+          </span>
+          <span className={cn("truncate", cell.tone ?? "text-foreground")}>{cell.value}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
 
-      {/* The whole published plan, one disclosure away. It used to be a card in
-          the timeline, where it consumed height on every scroll whether or not
-          anyone was reading it. */}
-      {plan === null ? null : <PlanDisclosure plan={plan} />}
-
-      <FooterRow data={chart.data} isHolding={position !== null} />
+/**
+ * Where the exposure will be reported, drawn empty while there is none.
+ *
+ * The six cells the fill will fill, as bars — same grid, same rhythm, same
+ * height — so the card does not reflow at the one moment the operator is
+ * watching it hardest. It names the cells rather than shimmering anonymously:
+ * a placeholder that says SIZE / ENTRY / MARK / STOP / LIQ / MARGIN is telling
+ * the operator what is about to appear, which a generic loading block does not.
+ */
+function PositionSkeleton({ market }: { readonly market: string }): ReactNode {
+  const labels = ["Size", "Entry", "Mark", "Stop", "Liq", "Margin"] as const;
+  return (
+    <div data-testid="mission-position-skeleton" className="mx-4 mb-3 sm:mx-5">
+      {/* The receipt's own chip row, drawn empty. This is the pill that used to
+          sit in the conversation — same capsule, same rhythm — waiting in the
+          place it will report from. */}
+      <div className="flex items-center gap-1.5 pb-2">
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-dashed border-border/70 px-2.5 py-0.5 font-mono text-[11.5px] text-muted-foreground">
+          <Clock className="size-3 opacity-60" aria-hidden />
+          <span>{market}</span>
+          <span className="opacity-60">no position</span>
+        </span>
+        <span className={cn("ml-auto", BAND_LEGEND_CLASS)}>opens on the entry fill</span>
+      </div>
+      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-dashed border-border/50 bg-border/25">
+        {labels.map((label) => (
+          <span
+            key={label}
+            className="flex items-center justify-between gap-2 bg-foreground/[0.02] px-3 py-2"
+          >
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-muted-foreground/60">
+              {label}
+            </span>
+            {/* A static dash, not a shimmer: nothing is loading here — the
+                mission is flat and waiting for a fill. A shimmering bar in
+                this cell read as a request stuck forever. */}
+            <span className="font-mono text-[11px] text-muted-foreground/40" aria-hidden>
+              —
+            </span>
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -828,64 +1217,6 @@ function RevisionNote({ revision }: { readonly revision: MissionPlanRevision }):
   );
 }
 
-/**
- * One schedule pill.
- *
- * Same pill language as the header chip — a hairline ring, a tinted ground and
- * an 11px label — because the strip is the same class of statement about the
- * mission and two pill shapes on one card would read as two systems. A
- * `warning` pill is the one exception: the plan named a trigger level and
- * nothing is armed there, which is a gap and should look like one.
- */
-function UpNextPill({
-  item,
-  isFlashed,
-  onSelect,
-}: {
-  readonly item: UpNextItem;
-  /** Whether this pill's level is the one currently lit on the chart. */
-  readonly isFlashed: boolean;
-  /**
-   * Called with the pill's price when it is clicked. Null for the items that
-   * have no y on a price chart — a countdown, a working order with no limit —
-   * and those render as plain spans rather than as buttons that do nothing.
-   */
-  readonly onSelect: ((price: number) => void) | null;
-}): ReactNode {
-  const price = item.priceLevel;
-  const isClickable = onSelect !== null && price !== null;
-  const Tag = isClickable ? "button" : "span";
-  return (
-    <Tag
-      data-testid="mission-up-next-pill"
-      data-kind={item.kind}
-      data-tone={item.tone}
-      data-flashed={isFlashed ? "true" : undefined}
-      {...(isClickable
-        ? {
-            type: "button" as const,
-            onClick: () => onSelect(price),
-            title: `Show ${formatPrice(price)} on the chart`,
-          }
-        : {})}
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-2 py-px font-mono text-[10.5px] tabular-nums",
-        item.tone === "warning"
-          ? "border-armed/40 bg-armed/10 text-armed"
-          : "border-border/60 bg-foreground/[0.03] text-muted-foreground",
-        isClickable && "cursor-pointer transition-colors hover:bg-foreground/[0.07]",
-        isFlashed && "ring-1 ring-foreground/30",
-      )}
-    >
-      <span className="text-foreground">{item.label}</span>
-      {item.detail === null ? null : <span>{item.detail}</span>}
-      {item.chip === null ? null : (
-        <span className="rounded-full bg-foreground/10 px-1 text-[9.5px]">{item.chip}</span>
-      )}
-    </Tag>
-  );
-}
-
 /** What a collapsed armed mission says in one clause. */
 function describeArmedSummary(armed: { readonly rows: ReadonlyArray<unknown> } | null): string {
   if (armed === null || armed.rows.length === 0) return "Waiting";
@@ -893,100 +1224,30 @@ function describeArmedSummary(armed: { readonly rows: ReadonlyArray<unknown> } |
 }
 
 /**
- * The planning header: the mission is on the market but has published nothing.
+ * The header chip of a flat mission: the market, and what it is doing about it.
  *
- * It says only what is true — the market, the mark, and when it will look
- * again. No thesis, no size, no leverage ceiling: those are plan figures, and
- * there is no plan. The pulse is the same one the old one-line planning panel
- * carried, because the statement has not changed; what changed is that the
- * chart underneath it is now drawn.
+ * The figures that used to sit beside it — size, max loss, the countdown — are
+ * cells in the stat grid now, where they line up with the same figures a live
+ * mission shows. The pulse marks the one state where nothing has been decided
+ * yet, so it is the mission working rather than the mission waiting.
  */
-function PlanningHeader({
+function StateChip({
   market,
-  markPrice,
-  nextReassessmentAt,
+  label,
+  isPulsing,
 }: {
   readonly market: string;
-  readonly markPrice: number | null;
-  readonly nextReassessmentAt: number | null;
+  readonly label: string;
+  readonly isPulsing: boolean;
 }): ReactNode {
-  const countdown = formatReassessmentCountdown(nextReassessmentAt);
   return (
-    <>
-      <span className="inline-flex flex-none items-center gap-1.5 rounded-full border border-armed/40 bg-armed/10 px-2 py-px font-mono text-[11px] text-armed">
+    <span className="inline-flex flex-none items-center gap-1.5 rounded-full border border-armed/40 bg-armed/10 px-2.5 py-0.5 font-mono text-[12px] text-armed">
+      {isPulsing ? (
         <span className="size-1.5 animate-pulse rounded-full bg-armed" aria-hidden />
-        <span>{market}</span>
-      </span>
-      <span className="text-foreground">Analysing the market…</span>
-      {markPrice === null ? null : (
-        <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
-          {formatPrice(markPrice)}
-        </span>
-      )}
-      {countdown === null ? null : (
-        <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
-          {countdown}
-        </span>
-      )}
-    </>
-  );
-}
-
-/**
- * The armed header: what the plan intends, in the plainest terms it has.
- *
- * Leverage reads `up to 20x` rather than a number, because nothing is levered
- * yet — the figure is the authority's ceiling, not a position's setting.
- */
-function ArmedHeader({
-  market,
-  plan,
-  nextReassessmentAt,
-}: {
-  readonly market: string;
-  readonly plan: StrategyPlan | null;
-  readonly nextReassessmentAt: number | null;
-}): ReactNode {
-  const countdown = formatReassessmentCountdown(nextReassessmentAt);
-  // The narrative is the headline: setup, regime, and the plan in plain terms
-  // are one field now.
-  const headline = plan?.because ?? null;
-  // A stand-aside plan is not waiting on anything — saying "Waiting" would be
-  // the one wrong word on the row. The chip states the intent instead.
-  const state = plan?.isStandAside === true ? "Standing aside" : "Waiting";
-  return (
-    <>
-      <span className="inline-flex flex-none items-center gap-1.5 rounded-full border border-armed/40 bg-armed/10 px-2 py-px font-mono text-[11px] text-armed">
-        <span>{market}</span>
-        <span>{state}</span>
-      </span>
-      {headline === null ? null : (
-        <span className="min-w-0 max-w-[36ch] truncate text-foreground" title={headline}>
-          {headline}
-        </span>
-      )}
-      {plan?.initialSizeUsd == null ? null : (
-        <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
-          size {formatUsd(plan.initialSizeUsd)}
-        </span>
-      )}
-      {plan?.maxLossUsd == null ? null : (
-        <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
-          max loss {formatUsd(plan.maxLossUsd)}
-        </span>
-      )}
-      {/* The leverage ceiling stood here. Step 8.5: it is a constant of the
-          mission's authority, not a state of it — it says the same thing on
-          every turn of every session, and nothing the operator does while
-          waiting is decided by it. It is still in the plan disclosure. Size
-          and max loss stay: those two are what the next entry would actually
-          risk, which is the one thing an armed panel is for. */}
-      {countdown === null ? null : (
-        <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
-          {countdown}
-        </span>
-      )}
-    </>
+      ) : null}
+      <span>{market}</span>
+      <span className="text-armed/80">{label}</span>
+    </span>
   );
 }
 
@@ -1013,9 +1274,9 @@ function ChartSlot(props: {
   }>;
   readonly fills: ReadonlyArray<ChartFillMarker>;
   readonly pendingOrder: { readonly price: number; readonly side: "buy" | "sell" } | null;
-  readonly flash: { readonly price: number; readonly nonce: number } | null;
   readonly nowMillis: number;
   readonly triggerExpiryAt: number | null;
+  readonly projection: { readonly price: number; readonly atMillis: number } | null;
   readonly timeMarkers: ReadonlyArray<ChartTimeMarkerInput>;
   readonly pastMarkers: ReadonlyArray<ChartPastMarkerInput>;
   readonly draggableKinds: ReadonlyArray<ChartLevelKind>;
@@ -1068,9 +1329,9 @@ function ChartSlot(props: {
         conditions={props.conditions}
         fills={props.fills}
         pendingOrder={props.pendingOrder}
-        flash={props.flash}
         nowMillis={props.nowMillis}
         {...(props.triggerExpiryAt === null ? {} : { triggerExpiryAt: props.triggerExpiryAt })}
+        projection={props.projection}
         timeMarkers={props.timeMarkers}
         pastMarkers={props.pastMarkers}
         draggableKinds={props.draggableKinds}
@@ -1101,15 +1362,70 @@ function earliestFillAt(fills: ReadonlyArray<ChartFillMarker>): number | null {
   return earliest;
 }
 
+/**
+ * How long a just-fired row keeps its place on the checklist while the live
+ * dot becomes a tick, before it drops into the history below.
+ */
+const FIRED_LINGER_MILLIS = 4_000;
+
+/**
+ * Which rows flipped from waiting to met since the panel last looked.
+ *
+ * The server is the truth about `met`; this hook only remembers the moment of
+ * transition so the row can be held on screen through its tick animation. A
+ * row that mounts already met (the panel just opened) never counts — there is
+ * no moment to show.
+ */
+function useRecentlyFiredWatches(
+  rows: ReadonlyArray<WatchConditionRow>,
+  nowMillis: number,
+): ReadonlySet<string> {
+  // No timers: the panel already re-renders on its 250ms clock, so the linger
+  // is read off `nowMillis` and expired entries are pruned lazily. A timeout
+  // here would be cleared by the next poll's new `rows` identity and leave a
+  // fired row stuck on the checklist forever.
+  const seenMet = useRef<Map<string, boolean>>(new Map());
+  const firedAt = useRef<Map<string, number>>(new Map());
+
+  for (const row of rows) {
+    const wasMet = seenMet.current.get(row.id);
+    if (wasMet === false && row.met && !firedAt.current.has(row.id)) {
+      firedAt.current.set(row.id, nowMillis);
+    }
+    seenMet.current.set(row.id, row.met);
+  }
+
+  const fired = new Set<string>();
+  for (const [id, at] of firedAt.current) {
+    if (nowMillis - at < FIRED_LINGER_MILLIS) fired.add(id);
+    else firedAt.current.delete(id);
+  }
+  return fired;
+}
+
 /** One row of the checklist: glyph, description, observed vs threshold. */
-function ConditionRow({ row }: { readonly row: WatchConditionRow }): ReactNode {
+function ConditionRow({
+  row,
+  justFired,
+}: {
+  readonly row: WatchConditionRow;
+  readonly justFired: boolean;
+}): ReactNode {
+  // Waiting rows carry a live indicator — a breathing dot, because the
+  // evaluator really is sweeping this predicate every couple of seconds. When
+  // the predicate fires the dot becomes the tick in place (scale-in, dot
+  // fades), and after a beat the row moves down into the history.
   const glyph = row.met ? (
-    <span className="text-profit" aria-label="condition met">
+    <span
+      className={cn("inline-block text-profit", justFired && "watch-tick-in")}
+      aria-label="condition met"
+    >
       ✓
     </span>
   ) : (
-    <span className="text-muted-foreground" aria-label="condition waiting">
-      ○
+    <span className="relative inline-flex size-2" aria-label="condition waiting">
+      <span className="absolute inline-flex size-full animate-ping rounded-full bg-armed/50 [animation-duration:2.4s]" />
+      <span className="relative inline-flex size-2 rounded-full bg-armed/70" />
     </span>
   );
 
@@ -1131,35 +1447,94 @@ function ConditionRow({ row }: { readonly row: WatchConditionRow }): ReactNode {
         ? formatSignedUsd(row.thresholdValue)
         : formatPrice(row.thresholdValue);
 
-  // Fixed-width, right-aligned columns rather than a wrapping baseline row:
-  // the values are read DOWN the list against each other, and ragged right
-  // edges made four rows of numbers look like four unrelated facts.
+  // The row reads as a sentence and ends in a verdict: description, then the
+  // reading it is measured on, then met or waiting. The threshold column the
+  // wide panel carried is gone — the description already names the level, and
+  // in a 336px column it was the one figure that pushed the verdict off the
+  // end. It stays in the title so the exact pair is still one hover away.
+  //
+  // A met row recedes: it has stopped being a question, and holding it at the
+  // same strength as the rows still waiting made a satisfied checklist compete
+  // with the one condition the operator is actually watching.
   return (
-    <div className="flex items-baseline gap-x-3 px-3 py-1.5 font-mono text-[11px] sm:px-4">
+    <div
+      className={cn(BAND_PAD_CLASS, "flex items-baseline gap-x-2.5 py-2 font-mono text-[12px]")}
+      title={
+        threshold === null ? row.description : `${row.description} · ${observed} / ${threshold}`
+      }
+    >
       <span className="w-3 flex-none text-center">{glyph}</span>
-      {/* The description names the level; the reading beside it is the figure
-          being read down the list. So the sentence sits a step back from full
-          strength and the numbers keep the foreground ink. */}
       <span
-        className="min-w-0 flex-1 truncate leading-[1.35] text-foreground/85"
-        title={row.description}
+        className={cn(
+          "min-w-0 flex-1 truncate leading-[1.35]",
+          row.met ? "text-muted-foreground" : "text-foreground/90",
+        )}
       >
         {row.description}
       </span>
+      {/* The verdict, not a status colour per row: a column of amber "waiting"
+          on four rows is four alarms for the ordinary case. Green marks the
+          moment one resolves, which is the only event in this list. */}
       <span
-        className={cn(
-          "w-[68px] flex-none text-right tabular-nums",
-          row.met ? "text-profit" : "text-foreground",
-        )}
+        className={cn("flex-none tabular-nums", row.met ? "text-profit" : "text-muted-foreground")}
       >
-        {observed}
-      </span>
-      <span className="w-[68px] flex-none text-right tabular-nums text-muted-foreground/70">
-        {threshold === null ? "" : `/ ${threshold}`}
-      </span>
-      <span className="w-11 flex-none text-right text-muted-foreground/70">
         {row.met ? "met" : "waiting"}
       </span>
+    </div>
+  );
+}
+
+/**
+ * The alert scrollback: what was set, that it fired, and what followed.
+ *
+ * Scrollable rather than capped with "+N more": history only grows, and the
+ * row the operator wants is often the one from ten minutes ago. Three rows
+ * tall; the newest sits at the top. Each row is one line — outcome glyph,
+ * the predicate, its age — with the action the mission took on the line
+ * beneath in the faintest ink, indented under its alert.
+ */
+function WatchHistoryList({
+  entries,
+  nowMillis,
+}: {
+  readonly entries: ReadonlyArray<WatchHistoryRow>;
+  readonly nowMillis: number;
+}): ReactNode {
+  return (
+    <div data-testid="mission-watch-history" className="border-t border-border/40 pt-2">
+      <p className={cn(BAND_PAD_CLASS, "pb-1", BAND_LEGEND_CLASS)}>alert history</p>
+      <div className="max-h-[104px] overflow-y-auto overscroll-contain">
+        {entries.map((entry) => (
+          <div key={entry.id} className={cn(BAND_PAD_CLASS, "py-1.5 font-mono text-[11px]")}>
+            <div className="flex items-baseline gap-x-2">
+              <span
+                className={cn(
+                  "w-3 flex-none text-center",
+                  entry.outcome === "fired" ? "text-profit/80" : "text-muted-foreground/60",
+                )}
+                aria-hidden
+              >
+                {entry.outcome === "fired" ? "✓" : "—"}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                {entry.description}
+              </span>
+              <span className="flex-none tabular-nums text-muted-foreground/60">
+                {entry.outcome === "fired" ? "" : `${entry.outcome} · `}
+                {formatDuration(Math.max(0, nowMillis - entry.endedAt))} ago
+              </span>
+            </div>
+            {entry.actionLabel === null ? null : (
+              <p
+                className="truncate pl-5 text-[10.5px] leading-[1.6] text-muted-foreground/60"
+                title={entry.actionLabel}
+              >
+                → {entry.actionLabel}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1173,15 +1548,18 @@ function ConditionRow({ row }: { readonly row: WatchConditionRow }): ReactNode {
 function formatReassessmentCountdown(nextReassessmentAt: number | null): string | null {
   if (nextReassessmentAt === null) return null;
   const remaining = nextReassessmentAt - Date.now();
-  if (remaining <= 0) return "reassess due";
-  return `reassess in ${formatDuration(remaining)}`;
+  if (remaining <= 0) return "due";
+  // Just the duration. The cell is labelled NEXT, so "reassess in 14m 3s" both
+  // repeated its own label and overflowed the cell — the panel was printing
+  // "reassess in 14…", which says neither how long nor until what.
+  return formatDuration(remaining);
 }
 
 /** Everything the published plan says, behind one disclosure. */
 function PlanDisclosure({ plan }: { readonly plan: StrategyPlan }): ReactNode {
   return (
-    <details className="border-t border-border/40 px-3 py-2 text-xs sm:px-4">
-      <summary className="cursor-pointer select-none text-muted-foreground">
+    <details className={cn(BAND_PAD_CLASS, "border-t border-border/40 py-2.5 text-[12px]")}>
+      <summary className="cursor-pointer select-none text-muted-foreground transition-colors hover:text-foreground motion-reduce:transition-none">
         View full plan · {plan.isStandAside ? "standing aside" : plan.planPhase}
       </summary>
       <div className="mt-2 space-y-1">
@@ -1251,11 +1629,14 @@ function PlanField({
 function ProgressToTarget({ percent }: { readonly percent: number }): ReactNode {
   return (
     <span
-      className="inline-block h-[3px] w-7 overflow-hidden rounded-full bg-foreground/10"
+      className="block h-[3px] min-w-0 flex-1 overflow-hidden rounded-full bg-foreground/10"
       aria-hidden
     >
+      {/* The width eases rather than jumping: the mark moves every 3s, and a
+          rule that snaps reads as a re-render while one that travels reads as
+          the trade advancing. */}
       <span
-        className="block h-full rounded-full bg-primary"
+        className="block h-full rounded-full bg-primary transition-[width] duration-500 ease-out motion-reduce:transition-none"
         style={{ width: `${Math.max(2, Math.min(100, percent))}%` }}
       />
     </span>
@@ -1278,7 +1659,7 @@ function SideChip({
   return (
     <span
       className={cn(
-        "inline-flex flex-none items-center gap-1.5 rounded-full border px-2 py-px font-mono text-[11px]",
+        "inline-flex flex-none items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[12px]",
         tone,
       )}
     >
@@ -1287,81 +1668,6 @@ function SideChip({
         <span className="rounded-[3px] bg-current/15 px-1 tabular-nums">{leverageLabel}</span>
       )}
       <span>{isLong ? "Long" : "Short"}</span>
-    </span>
-  );
-}
-
-/**
- * The held position, as one wrapping line of `label value` pairs.
- *
- * Deliberately missing: unrealised P&L, ROI and progress-to-target. All three
- * are already in the panel header two bands up. One number, one place — the
- * whole reason the position card left the timeline was that the same figures
- * were being read in two places at once, and reproducing them here would have
- * moved the duplication rather than removed it.
- */
-function PositionStrip({
-  size,
-  liquidationPrice,
-  protectedSize,
-}: {
-  readonly size: number;
-  readonly liquidationPrice: number | null;
-  readonly protectedSize: number;
-}): ReactNode {
-  // §16.1: a stop covering less than the position is the difference between a
-  // bounded loss and an open-ended one, so it is a figure and not a checkmark.
-  const protection =
-    protectedSize === 0
-      ? "None"
-      : Math.abs(protectedSize) >= Math.abs(size)
-        ? "Full"
-        : `${formatSize(Math.abs(protectedSize))} of ${formatSize(Math.abs(size))}`;
-
-  return (
-    <div
-      data-testid="mission-position-strip"
-      className={cn(
-        "flex flex-wrap items-baseline gap-x-3 gap-y-0.5 font-mono text-[10.5px] tabular-nums text-muted-foreground/70",
-        CONTEXT_BAND_CLASS,
-      )}
-    >
-      <span className={cn("mr-0.5", BAND_LEGEND_CLASS)}>held</span>
-      <PositionStat label="Size" value={formatSize(Math.abs(size))} />
-      {/* Entry, mark and margin used to stand here. Step 8.5: the chart draws
-          the entry as its one solid rule and the mark as the moving dot, both
-          tagged with their price in the gutter — a second copy three rows down
-          is the same fact in a worse place. Margin went for a different
-          reason: it is size × entry ÷ leverage, and all three of those are
-          already on the panel, so it was a figure that could not disagree with
-          the ones above it. Liquidation stays: the chart shows it only when it
-          is inside the drawn domain, and when it is not, this is its only
-          home. */}
-      {liquidationPrice === null ? null : (
-        <PositionStat label="Liq" value={formatPrice(liquidationPrice)} />
-      )}
-      <PositionStat
-        label="Protected"
-        value={protection}
-        // An unprotected position is the one fact on this line worth a colour.
-        toneClass={protectedSize === 0 ? "text-loss" : undefined}
-      />
-    </div>
-  );
-}
-
-function PositionStat({
-  label,
-  value,
-  toneClass,
-}: {
-  readonly label: string;
-  readonly value: string;
-  readonly toneClass?: string | undefined;
-}): ReactNode {
-  return (
-    <span>
-      {label} <span className={cn("ml-0.5", toneClass ?? "text-foreground")}>{value}</span>
     </span>
   );
 }
@@ -1388,7 +1694,10 @@ function CollapsedRow({
       onClick={onExpand}
       aria-label="Expand chart"
       data-testid="mission-live-panel-collapsed"
-      className="flex w-full items-center gap-2 px-3 font-mono text-[11px] tabular-nums text-muted-foreground sm:px-4"
+      className={cn(
+        BAND_PAD_CLASS,
+        "flex w-full items-center gap-3 font-mono text-[12px] tabular-nums text-muted-foreground",
+      )}
       style={{ height: COLLAPSED_ROW_HEIGHT_PX }}
     >
       <span className="text-foreground">
@@ -1413,42 +1722,123 @@ function CollapsedRow({
  * price times the size.
  */
 /**
- * The market's own numbers, under everything.
+ * The ambient line, under everything: the facts that qualify the panel without
+ * being decided on.
  *
- * Step 8.5 took two of the four away. Open interest and 24h volume are market
- * structure the model reads through `look` and weighs in its own plan; nothing
- * the operator does with this panel turns on either, and they were here because
- * the chart view had fields for them. Funding is a cost of *carrying* — so it
- * appears when something is being carried and not before. The 24h change stays
- * unconditionally: the chart is an hour wide, so it is the one line on the
- * panel that says where the day has been.
+ * Hold time lives here rather than in the exposure grid. "Held 12m" is a
+ * property of the session, not a figure anyone acts on, and in the grid it
+ * displaced one that is. Funding is a cost of *carrying*, so it appears when
+ * something is being carried and not before. The 24h change stays
+ * unconditionally: the chart is an hour wide, so this is the one line that
+ * says where the day has been. Open interest and 24h volume left in step 8.5
+ * and have not come back.
+ *
+ * The exchange link sits at the end of it, at the panel's quietest edge. It is
+ * the one control here that leaves the app, and it was competing with the P&L
+ * for the top-right corner.
  */
-function FooterRow({
+/**
+ * The newest thing the harness did, for the status bar's activity segment.
+ *
+ * The timeline already carries composed prose for every wake, publish and
+ * stop move; the bar shows the newest one with its age, so a glance says not
+ * just what the mission is doing but what the model last did about it.
+ */
+function deriveLastActivity(
+  timeline: ReadonlyArray<{ readonly at: string; readonly label: string }>,
+  nowMillis: number,
+): { readonly label: string; readonly ageLabel: string } | null {
+  const newest = timeline[0];
+  if (newest === undefined) return null;
+  const at = Date.parse(newest.at);
+  if (Number.isNaN(at)) return null;
+  return {
+    label: newest.label,
+    ageLabel: formatDuration(Math.max(0, nowMillis - at)),
+  };
+}
+
+function MissionStatusBar({
+  headline,
+  tone,
   data,
   isHolding,
+  holdLabel,
+  modeLabel,
+  exchangeUrl,
+  lastActivity,
 }: {
+  readonly headline: string;
+  /** Tinted by the exposure, not by the market: the bar states what this
+   *  mission is doing, and a flat mission is neither winning nor losing. */
+  readonly tone: "profit" | "loss" | "flat";
   readonly data: TradingMarketChartView | null;
   readonly isHolding: boolean;
+  readonly holdLabel: string | null;
+  /** The playbook this mission executes, when it executes one rather than
+   *  deciding for itself. Read from the mandate, so nothing else on the panel
+   *  can disagree with it. */
+  readonly modeLabel: string | null;
+  readonly exchangeUrl: string | null;
+  /** The newest timeline entry — what the model last did, and how long ago. */
+  readonly lastActivity: { readonly label: string; readonly ageLabel: string } | null;
 }): ReactNode {
-  if (data === null) {
-    // Keep the row's border so expanding/collapsing doesn't reflow.
-    return <div className="h-6 border-t border-border/40" />;
-  }
-  const changeTone =
-    data.change24hPercent > 0
-      ? "text-profit"
-      : data.change24hPercent < 0
-        ? "text-loss"
-        : "text-muted-foreground";
+  const dotTone =
+    tone === "profit" ? "bg-profit" : tone === "loss" ? "bg-loss" : "bg-muted-foreground";
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-border/40 px-3 py-1 font-mono text-[10.5px] tabular-nums text-muted-foreground/70 sm:px-4">
-      {isHolding ? (
-        <span>
-          Funding <span className="text-foreground">{(data.fundingRate8h * 100).toFixed(4)}%</span>
-          /8h
+    <div
+      data-testid="mission-status-bar"
+      className={cn(
+        CARD_CLASS,
+        BAND_PAD_CLASS,
+        "flex flex-wrap items-center gap-x-4 gap-y-1 py-2.5",
+      )}
+    >
+      {/* The one dot on the panel. It carries real state — flat, up, down —
+          and it is what makes this a status bar rather than another figure
+          strip. */}
+      <span className={cn("size-1.5 flex-none rounded-full", dotTone)} aria-hidden />
+      <span className="flex-none text-[13px] text-foreground">{headline}</span>
+      {/* What the model last did, in its own composed words. The headline says
+          the state; this says the most recent step the harness took toward it
+          — the one line of model activity the panel has room for. Truncated,
+          with the full sentence a hover away. */}
+      {lastActivity === null ? null : (
+        <span
+          data-testid="mission-last-activity"
+          className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground/70"
+          title={lastActivity.label}
+        >
+          {lastActivity.label}
+          <span className="text-muted-foreground/50"> · {lastActivity.ageLabel} ago</span>
         </span>
-      ) : null}
-      <span className={changeTone}>24h {formatSignedPercent(data.change24hPercent)}</span>
+      )}
+      <span className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] tabular-nums text-muted-foreground">
+        {isHolding && holdLabel !== null ? <span>Held {holdLabel}</span> : null}
+        {isHolding && data !== null ? (
+          <span>Funding {(data.fundingRate8h * 100).toFixed(4)}%/8h</span>
+        ) : null}
+        {modeLabel === null ? null : (
+          <span
+            data-testid="mission-mode"
+            className="uppercase tracking-[0.12em]"
+            title="This mission executes a named playbook rather than deciding for itself. It is read from the mandate."
+          >
+            execute · {modeLabel}
+          </span>
+        )}
+        {exchangeUrl === null ? null : (
+          <a
+            href={exchangeUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-muted-foreground/60 underline-offset-2 transition-colors hover:text-foreground hover:underline group-hover/panel:text-muted-foreground motion-reduce:transition-none"
+          >
+            Hyperliquid
+            <ExternalLinkIcon className="size-3" aria-hidden />
+          </a>
+        )}
+      </span>
     </div>
   );
 }

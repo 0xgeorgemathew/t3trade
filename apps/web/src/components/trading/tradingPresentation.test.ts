@@ -15,6 +15,7 @@ import {
   describeWatch,
   deriveUpNextItems,
   deriveWatchConditions,
+  deriveWatchLifecycle,
   formatDuration,
   formatPrice,
   formatSignedUsd,
@@ -257,6 +258,85 @@ describe("mission strip", () => {
 
   it("reports the immutable harness binding", () => {
     expect(deriveMissionStrip(armed).harnessLabel).toBe("claude · available");
+  });
+});
+
+describe("deriveWatchLifecycle", () => {
+  const base = {
+    id: "watch-a",
+    missionId: "mission-1",
+    watch: {
+      type: "price_cross" as const,
+      market: "ETH" as const,
+      priceSource: "mark" as const,
+      direction: "above" as const,
+      price: 1900,
+    },
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+  };
+  const firedAtIso = new Date(1_700_000_120_000).toISOString();
+
+  it("keeps active watches out of the history and orders the rest newest first", () => {
+    const { history } = deriveWatchLifecycle({
+      watches: [
+        { ...base, id: "still-armed", status: "active" as const },
+        { ...base, id: "older-fire", status: "consumed" as const, updatedAt: 1_700_000_060_000 },
+        { ...base, id: "newer-fire", status: "triggered" as const, updatedAt: 1_700_000_120_000 },
+        { ...base, id: "retired", status: "cancelled" as const, updatedAt: 1_700_000_090_000 },
+      ] as PersistedWatch[],
+      missionTimeline: [],
+    });
+    expect(history.map((row) => row.id)).toEqual(["newer-fire", "retired", "older-fire"]);
+    expect(history[0]?.outcome).toBe("fired");
+    expect(history[1]?.outcome).toBe("cancelled");
+  });
+
+  it("pairs a firing with the decision that followed it, preferring it over the wake", () => {
+    const { history } = deriveWatchLifecycle({
+      watches: [
+        { ...base, id: "fired", status: "triggered" as const, updatedAt: 1_700_000_120_000 },
+      ] as PersistedWatch[],
+      missionTimeline: [
+        // Newest first, as the projection sends them.
+        {
+          at: new Date(1_700_000_150_000).toISOString(),
+          kind: "strategy_published" as const,
+          label: "published short below the range",
+        },
+        { at: firedAtIso, kind: "wake" as const, label: "woke on ETH mark above 1900" },
+        {
+          at: new Date(1_700_000_000_000).toISOString(),
+          kind: "wake" as const,
+          label: "an earlier wake that must not match",
+        },
+      ],
+    });
+    expect(history[0]?.actionLabel).toBe("published short below the range");
+  });
+
+  it("falls back to the wake when no decision has landed yet", () => {
+    const { history } = deriveWatchLifecycle({
+      watches: [
+        { ...base, id: "fired", status: "triggered" as const, updatedAt: 1_700_000_120_000 },
+      ] as PersistedWatch[],
+      missionTimeline: [
+        { at: firedAtIso, kind: "wake" as const, label: "woke on ETH mark above 1900" },
+      ],
+    });
+    expect(history[0]?.actionLabel).toBe("woke on ETH mark above 1900");
+  });
+
+  it("carries no action for a watch that was retired rather than fired", () => {
+    const { history } = deriveWatchLifecycle({
+      watches: [
+        { ...base, id: "retired", status: "cancelled" as const, updatedAt: 1_700_000_120_000 },
+      ] as PersistedWatch[],
+      missionTimeline: [
+        { at: firedAtIso, kind: "wake" as const, label: "a wake that has nothing to do with it" },
+      ],
+    });
+    expect(history[0]?.actionLabel).toBeNull();
   });
 });
 
@@ -818,7 +898,9 @@ describe("mission history (plan 27 H3)", () => {
     // §16.2: fees netted exactly once.
     expect(row.netUsd).toBe(23);
     expect(row.netLabel).toBe("+$23.00");
-    expect(row.feesLabel).toBe("$2");
+    // Cents survive under ten dollars: at whole-dollar rounding a $2 fee and a
+    // $2.49 fee printed the same figure, and fees are small by construction.
+    expect(row.feesLabel).toBe("$2.00");
     expect(row.durationLabel).toBe("45m 0s");
     expect(row.settledAtIso).toBe("2026-08-13T07:00:00.000Z");
   });

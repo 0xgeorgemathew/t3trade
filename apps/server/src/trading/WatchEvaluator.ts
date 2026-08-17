@@ -146,6 +146,8 @@ interface DeliveredCandle {
   readonly close: number;
   readonly high?: number | undefined;
   readonly low?: number | undefined;
+  /** Bar volume, when the frame carries it — the volume-ratio watches read it. */
+  readonly volume?: number | undefined;
 }
 
 /**
@@ -165,6 +167,7 @@ const candleFromDelivery = (delivery: WsDelivery): DeliveredCandle | undefined =
     close,
     high: num(field(candle, "h")),
     low: num(field(candle, "l")),
+    volume: num(field(candle, "v")),
   };
 };
 
@@ -270,6 +273,20 @@ const make = Effect.gen(function* () {
    * it.
    */
   const lastDelivered = new Map<string, DeliveredCandle>();
+
+  /**
+   * Finalized bar volumes per `coin:interval`, newest last, for the
+   * `volume_ratio` metric watches.
+   *
+   * In-memory on the same terms as `lastDelivered`: it compares a bar against
+   * the bars just before it, and a restart costs only the warm-up — the window
+   * refills at one bar per interval, and a ratio is not computed until the
+   * window holds `VOLUME_RATIO_MIN_PRIOR_BARS` priors again. Nothing durable
+   * depends on it.
+   */
+  const recentVolumes = new Map<string, number[]>();
+  const VOLUME_RATIO_WINDOW_BARS = 20;
+  const VOLUME_RATIO_MIN_PRIOR_BARS = 5;
 
   /**
    * Which candle, if any, this delivery proves is final.
@@ -649,6 +666,95 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /**
+   * Evaluate a snapshot-metric `metric_threshold` watch against the fresh
+   * gateway snapshot: funding, open interest, day volume, or the spread.
+   *
+   * `volume_ratio` is deliberately NOT evaluated here — it is a property of a
+   * finished bar, so it fires on the candle-finalisation path below, where the
+   * bar it measures actually exists.
+   */
+  const evaluateMetricThreshold = Effect.fn("WatchEvaluator.evaluateMetricThreshold")(function* (
+    tracked: TrackedWatch,
+  ) {
+    const watch = tracked.watch.watch;
+    if (watch.type !== "metric_threshold") return;
+    if (watch.metric === "volume_ratio") return;
+
+    const snapshot = yield* gateway.getMarketSnapshot(watch.market).pipe(Effect.orDie);
+    const bbo = snapshot.bestBidOffer;
+    const reading =
+      watch.metric === "funding_rate_8h"
+        ? snapshot.fundingRate8h
+        : watch.metric === "open_interest"
+          ? snapshot.openInterest
+          : watch.metric === "day_volume_usd"
+            ? snapshot.dayVolumeUsd
+            : // spread_bps needs both sides of the book; a one-sided book has
+              // no spread to measure, and the watch simply waits.
+              bbo.bidPrice !== undefined && bbo.askPrice !== undefined && bbo.askPrice > 0
+              ? ((bbo.askPrice - bbo.bidPrice) / ((bbo.askPrice + bbo.bidPrice) / 2)) * 10_000
+              : null;
+    if (reading === null) return;
+
+    const observedAt = yield* nowMs;
+    yield* recordObservation(tracked.watch.id, reading, observedAt);
+
+    const matched = watch.direction === "above" ? reading >= watch.value : reading <= watch.value;
+    if (!matched) return;
+
+    yield* enqueueFire(
+      tracked,
+      `metric_threshold:${tracked.watch.id}`,
+      `${watch.market} ${watch.metric} at ${reading.toPrecision(6)} crossed ${watch.direction} ${watch.value}`,
+      { metric: watch.metric, reading, value: watch.value, observedAt, watchId: tracked.watch.id },
+    );
+  });
+
+  /**
+   * Evaluate the `volume_ratio` metric watches against a bar that just
+   * finalised: the bar's volume over the average of the prior bars in the
+   * rolling window. Called from the delivery path AFTER the bar is known
+   * final, so a ratio can never be read off a bar still forming.
+   */
+  const evaluateVolumeRatio = (
+    tracked: TrackedWatch,
+    market: string,
+    interval: string,
+    barVolume: number,
+    priorVolumes: ReadonlyArray<number>,
+  ) =>
+    Effect.gen(function* () {
+      const watch = tracked.watch.watch;
+      if (watch.type !== "metric_threshold" || watch.metric !== "volume_ratio") return;
+      if (market !== watch.market) return;
+      if ((watch.interval ?? "1m") !== interval) return;
+      if (priorVolumes.length < VOLUME_RATIO_MIN_PRIOR_BARS) return;
+
+      const average = priorVolumes.reduce((sum, v) => sum + v, 0) / priorVolumes.length;
+      if (!(average > 0)) return;
+      const ratio = barVolume / average;
+
+      const observedAt = yield* nowMs;
+      yield* recordObservation(tracked.watch.id, ratio, observedAt);
+
+      const matched = watch.direction === "above" ? ratio >= watch.value : ratio <= watch.value;
+      if (!matched) return;
+
+      yield* enqueueFire(
+        tracked,
+        `metric_threshold:${tracked.watch.id}`,
+        `${watch.market} ${interval} bar volume ran at ${ratio.toFixed(2)}× its recent average (${watch.direction} ${watch.value})`,
+        {
+          metric: "volume_ratio",
+          ratio,
+          value: watch.value,
+          observedAt,
+          watchId: tracked.watch.id,
+        },
+      );
+    });
+
   /** Fire a `scheduled_reassessment` watch whose `runAt` has passed. */
   const evaluateScheduled = (tracked: TrackedWatch, observedAt: number) =>
     Effect.gen(function* () {
@@ -679,8 +785,19 @@ const make = Effect.gen(function* () {
       const finalized = yield* finalizedCandle(previous, candle);
       if (finalized === undefined) return;
 
+      // The prior window is read BEFORE this bar joins it: the ratio compares
+      // the finished bar against the bars before it, not against itself.
+      const priorVolumes = recentVolumes.get(key) ?? [];
+      const finalVolume = finalized.volume;
+
       const tracked = yield* activeTrackedWatches();
       yield* Effect.forEach(tracked, (t) => evaluateCandleClose(t, market, interval, finalized));
+      if (finalVolume !== undefined) {
+        yield* Effect.forEach(tracked, (t) =>
+          evaluateVolumeRatio(t, market, interval, finalVolume, priorVolumes),
+        );
+        recentVolumes.set(key, [...priorVolumes, finalVolume].slice(-VOLUME_RATIO_WINDOW_BARS));
+      }
     });
 
   const evaluateOne = (t: TrackedWatch, observedAt: number) => {
@@ -699,6 +816,8 @@ const make = Effect.gen(function* () {
         return evaluatePnlBelow(t);
       case "pnl_giveback":
         return evaluatePnlGiveback(t);
+      case "metric_threshold":
+        return evaluateMetricThreshold(t);
       default:
         return Effect.void;
     }
@@ -774,7 +893,10 @@ const make = Effect.gen(function* () {
     drain: worker.drain,
     evaluateDelivery,
     sweep,
-    forgetDeliveredCandles: Effect.sync(() => lastDelivered.clear()),
+    forgetDeliveredCandles: Effect.sync(() => {
+      lastDelivered.clear();
+      recentVolumes.clear();
+    }),
   } satisfies WatchEvaluatorShape;
 });
 

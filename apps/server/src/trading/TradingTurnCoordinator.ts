@@ -51,8 +51,10 @@ import {
   type TradingTimeframe,
 } from "@t3tools/trading-contracts/strategy";
 import {
+  backedOffFloorMillis,
   hasReassessmentWithin,
   isDeafWhileHoldingPosition,
+  planReassessCadenceMillis,
   readWatchCoverage,
   watchCoverageFloorMillis,
   watchSanityBackstopMillis,
@@ -161,12 +163,68 @@ const encodeBootstrapText = Schema.encodeSync(Schema.fromJsonString(BootstrapWak
  * armed levels, and nothing for the operator's panel to show.
  */
 const FIRST_TURN_CONTRACT =
-  "End the turn with trading_plan, whatever you decide. The plan is " +
-  "eight fields: market, intent, entry, stop, target, invalidation, reassess, " +
-  "because. If the costs or the market do not justify entering, publish intent " +
-  '"stand_aside" — the reasoning in because, and entry.triggers carrying the ' +
-  "price levels that would change the read. A declined entry is a plan, not a " +
-  "missing one.";
+  "Your operating loop, this turn and every wake after it: (1) assess the " +
+  "market with the tools (trading_look carries the snapshot, volatility, book " +
+  "and microstructure; pull candles/structure/costs as needed); (2) decide " +
+  "trade or no-trade; (3) if trade, pick the direction; (4) form your best " +
+  "current estimate of where price is likely to go and publish it as " +
+  "projection {price, byMinutes} on the plan — an informed estimate, not a " +
+  "prediction; (5) arm trading_watch conditions AROUND that projection: one " +
+  "set that fires when the move you expect happens, and safety-net conditions " +
+  "on the opposite side that fire when the market disagrees, so you always " +
+  "hear about being wrong; (6) choose when to look again. Conditions are not " +
+  "just price: kind 'metric' watches funding_rate_8h, open_interest, " +
+  "day_volume_usd, spread_bps, or volume_ratio (bar volume vs its recent " +
+  "average — 'wake me when volume picks up'), and kind 'time' is the clock " +
+  "fallback when no metric trigger fits. End the turn with trading_plan, " +
+  "whatever you decide. The plan is nine fields: market, intent, entry, stop, " +
+  "target, invalidation, reassess, projection, because. If the costs or the " +
+  'market do not justify entering, publish intent "stand_aside" — the ' +
+  "reasoning in because, and triggers armed at the levels that would change " +
+  "the read. A declined entry is a plan, not a missing one. " +
+  "reassess.afterMinutes is how often you are woken to re-look when nothing " +
+  "fires, measured from your last look; every wake costs a full turn, so " +
+  "choose the longest interval the thesis tolerates (values under 5 minutes " +
+  "are raised to 5) and lean on market triggers instead of the clock.";
+
+/** The columns of a run the no-op streak is judged from, newest first. */
+export interface NoOpWakeRow {
+  readonly cause: string;
+  readonly status: string;
+  readonly published_plan: number;
+  readonly execute_attempted: number;
+}
+
+/**
+ * How many scheduled wakes in a row, counting back from the newest run,
+ * completed without publishing a plan or attempting an execution.
+ *
+ * Only `scheduled_reassessment` runs extend the streak — those are the
+ * metronome. Any other cause is a real event (a level crossed, a fill, an
+ * operator message) and breaks the streak, as does a run that failed or one
+ * that changed anything. The rows come newest-first, and the run that just
+ * settled is among them, so a turn that acted resets its own mission's
+ * backoff in the same settlement that reads it.
+ */
+export function consecutiveNoOpWakes(rows: ReadonlyArray<NoOpWakeRow>): number {
+  let streak = 0;
+  for (const row of rows) {
+    const isNoOpScheduledWake =
+      row.cause === "scheduled_reassessment" &&
+      row.status === "completed" &&
+      row.published_plan === 0 &&
+      row.execute_attempted === 0;
+    if (!isNoOpScheduledWake) break;
+    streak += 1;
+  }
+  return streak;
+}
+
+/**
+ * How many trailing runs the streak read fetches. The backoff exponent is
+ * capped at 6, so reading past eight rows cannot change the armed interval.
+ */
+const NO_OP_STREAK_READ_LIMIT = 8;
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -404,6 +462,16 @@ const make = Effect.gen(function* () {
       });
     });
 
+  /** Read the mission's trailing runs and count the no-op wake streak. */
+  const countConsecutiveNoOpWakes = (missionId: string) =>
+    sql<NoOpWakeRow>`
+      SELECT cause, status, published_plan, execute_attempted
+      FROM trading_harness_runs
+      WHERE mission_id = ${missionId}
+      ORDER BY started_at DESC, run_id DESC
+      LIMIT ${NO_OP_STREAK_READ_LIMIT}
+    `.pipe(Effect.mapError(sqlFail("countConsecutiveNoOpWakes")), Effect.map(consecutiveNoOpWakes));
+
   /**
    * Never let a run end holding a position with nothing armed that can wake it.
    *
@@ -454,18 +522,21 @@ const make = Effect.gen(function* () {
       const strategyOption = yield* strategies.getCurrentStrategy(missionId);
       const primaryTimeframe = primaryTimeframeFor(mission.instruction);
 
-      // Plan 29 step 4.6: a plan's own `reassess.afterMinutes` is a floor no
-      // scheduled reassessment may arm later than. An untriggered plan that
-      // has gone stale gets its wake at its expiry, not at the coverage
-      // floor's cadence; a plan whose window is long leaves the floors as
-      // they were.
-      const planExpiryAt = Option.isSome(strategyOption)
-        ? strategyOption.value.updatedAt + strategyOption.value.reassess.afterMinutes * 60_000
+      // A plan's `reassess.afterMinutes` is a cadence measured from the look
+      // that just ended, not a deadline measured from publish. It used to be
+      // `updatedAt + afterMinutes`, and once that instant passed the
+      // `Math.max(0, …)` read "already expired" as "wake now" — every
+      // settlement armed a reassessment at `now`, the wake concluded nothing,
+      // settled, and armed the next one: a hot loop the model could only
+      // escape by republishing an unchanged plan. This turn just examined the
+      // thesis, so the plan's window restarts here whether or not the model
+      // republished; the interval is clamped below so a plan that wrote
+      // `afterMinutes: 1` cannot demand a per-minute metronome.
+      const planCadenceMillis = Option.isSome(strategyOption)
+        ? planReassessCadenceMillis(strategyOption.value.reassess.afterMinutes)
         : null;
-      const cappedByPlanExpiry = (floorMillis: number): number =>
-        planExpiryAt === null
-          ? floorMillis
-          : Math.min(floorMillis, Math.max(0, planExpiryAt - now));
+      const boundedByPlanCadence = (floorMillis: number): number =>
+        planCadenceMillis === null ? floorMillis : Math.min(floorMillis, planCadenceMillis);
 
       // Flat. Timing an entry is the harness's own business, so no level is
       // required on either side — but a mission that has published a thesis and
@@ -481,11 +552,21 @@ const make = Effect.gen(function* () {
         // typed. The floor runs on the default timeframe in that case, and
         // the wake it arms takes the plan-less composer path — market context
         // and a decision prompt, no plan required (plan 29 step 4.3).
-        const flatFloor = cappedByPlanExpiry(
-          watchCoverageFloorMillis({
-            timeframe: primaryTimeframe,
-            holdingPosition: false,
-          }),
+        //
+        // Flat only, the interval stretches on consecutive no-op scheduled wakes:
+        // a dead market that keeps producing "stand aside" turns gets asked at
+        // 10m, 20m, 40m, then hourly, and any real event — a price watch, a
+        // fill, an operator message — resets the count by being a different
+        // cause. A mission holding a position never reaches this branch.
+        const noOps = yield* countConsecutiveNoOpWakes(missionId);
+        const flatFloor = backedOffFloorMillis(
+          boundedByPlanCadence(
+            watchCoverageFloorMillis({
+              timeframe: primaryTimeframe,
+              holdingPosition: false,
+            }),
+          ),
+          noOps,
         );
         if (hasReassessmentWithin({ watches: armed, nowMillis: now, floorMillis: flatFloor }))
           return;
@@ -499,6 +580,7 @@ const make = Effect.gen(function* () {
             flat: true,
             primaryTimeframe,
             hasStrategy: strategyOption._tag === "Some",
+            consecutiveNoOpWakes: noOps,
           },
         });
         return;
@@ -516,7 +598,7 @@ const make = Effect.gen(function* () {
       }
 
       const markPrice = position.mark_px;
-      const holdingFloor = cappedByPlanExpiry(
+      const holdingFloor = boundedByPlanCadence(
         watchCoverageFloorMillis({
           timeframe: primaryTimeframe,
           holdingPosition: true,
@@ -551,7 +633,7 @@ const make = Effect.gen(function* () {
       // Covered on both sides. The mission will be woken by a real event, so the
       // only thing left to schedule is the slow look at whether the thesis still
       // holds — not the three-bar metronome the deaf case needs.
-      const sanityFloor = cappedByPlanExpiry(watchSanityBackstopMillis(primaryTimeframe));
+      const sanityFloor = boundedByPlanCadence(watchSanityBackstopMillis(primaryTimeframe));
       if (hasReassessmentWithin({ watches: armed, nowMillis: now, floorMillis: sanityFloor }))
         return;
 

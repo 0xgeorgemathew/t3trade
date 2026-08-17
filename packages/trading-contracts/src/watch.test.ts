@@ -10,8 +10,12 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import {
+  backedOffFloorMillis,
   findUnarmedEntryConditions,
   isDeafWhileHoldingPosition,
+  NO_OP_BACKOFF_CAP_MILLIS,
+  PLAN_REASSESS_FLOOR_MILLIS,
+  planReassessCadenceMillis,
   readWatchCoverage,
   watchCoverageFloorMillis,
   watchSanityBackstopMillis,
@@ -319,5 +323,54 @@ describe("watchCoverageFloorMillis", () => {
       watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: true, policy: quicker }),
       3 * MINUTE,
     );
+  });
+});
+
+describe("planReassessCadenceMillis", () => {
+  const MINUTE = 60_000;
+
+  it("is the plan's own interval when the plan chose a sane one", () => {
+    assert.equal(planReassessCadenceMillis(90), 90 * MINUTE);
+    assert.equal(planReassessCadenceMillis(10), 10 * MINUTE);
+  });
+
+  // The hot-loop plan wrote `afterMinutes: 1`. The cadence is model-chosen
+  // and the model has no cost model for its own turns, so the runtime clamps.
+  it("raises a sub-floor interval to the floor", () => {
+    assert.equal(planReassessCadenceMillis(1), PLAN_REASSESS_FLOOR_MILLIS);
+    assert.equal(planReassessCadenceMillis(0.05), PLAN_REASSESS_FLOOR_MILLIS);
+  });
+
+  it("is always strictly positive", () => {
+    assert.isAbove(planReassessCadenceMillis(0.0001), 0);
+  });
+});
+
+describe("backedOffFloorMillis", () => {
+  const MINUTE = 60_000;
+  const BASE = 10 * MINUTE;
+
+  it("leaves the base interval alone with no no-op streak", () => {
+    assert.equal(backedOffFloorMillis(BASE, 0), BASE);
+  });
+
+  it("doubles per consecutive no-op wake", () => {
+    assert.equal(backedOffFloorMillis(BASE, 1), 20 * MINUTE);
+    assert.equal(backedOffFloorMillis(BASE, 2), 40 * MINUTE);
+  });
+
+  it("caps at the hour", () => {
+    assert.equal(backedOffFloorMillis(BASE, 3), NO_OP_BACKOFF_CAP_MILLIS);
+    assert.equal(backedOffFloorMillis(BASE, 50), NO_OP_BACKOFF_CAP_MILLIS);
+  });
+
+  // A base above the cap must not be pulled DOWN to the cap: the backoff only
+  // ever stretches an interval, never shortens one someone else computed.
+  it("never shortens a base already above the cap", () => {
+    assert.equal(backedOffFloorMillis(90 * MINUTE, 2), 90 * MINUTE);
+  });
+
+  it("treats a negative streak as none", () => {
+    assert.equal(backedOffFloorMillis(BASE, -1), BASE);
   });
 });

@@ -26,6 +26,8 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
+  NO_OP_BACKOFF_CAP_MILLIS,
+  PLAN_REASSESS_FLOOR_MILLIS,
   watchCoverageFloorMillis,
   watchSanityBackstopMillis,
 } from "@t3tools/trading-contracts/watch";
@@ -33,7 +35,10 @@ import {
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import type { TradingHarnessBinding } from "./Schemas.ts";
+import * as Schema from "effect/Schema";
+
+import type { TradingHarnessBinding, TradingHarnessWakeup } from "./Schemas.ts";
+import { TradingPlanState } from "./Schemas.ts";
 import { TradingEventInboxLive } from "./TradingEventInbox.ts";
 import { TradingMissionService, TradingMissionServiceLive } from "./TradingMissionService.ts";
 import { TradingStrategyService, TradingStrategyServiceLive } from "./TradingStrategyService.ts";
@@ -91,10 +96,20 @@ const stubEngine = Layer.effect(
   }),
 );
 
-/** Never called: every run under test takes the `mission_created` bootstrap branch. */
+/**
+ * A `mission_created` run takes the bootstrap branch only while no plan is on
+ * file; the stale-plan cases insert one first, so their wake goes through the
+ * composer. The wake path reads only the rendered text, so a canned line
+ * stands in for the full market snapshot — these tests are about what
+ * settlement arms, not what the wakeup says.
+ */
 const stubComposer = Layer.succeed(TradingWakeupComposer, {
-  compose: () => Effect.die("the bootstrap branch does not compose a wakeup"),
-  observe: () => Effect.die("the bootstrap branch does not observe"),
+  compose: () =>
+    Effect.succeed({
+      wakeup: null as unknown as TradingHarnessWakeup,
+      text: "stub wakeup",
+    }),
+  observe: () => Effect.die("these tests never observe"),
 });
 
 const layer = it.layer(
@@ -216,9 +231,10 @@ const publishStrategy = Effect.gen(function* () {
 });
 
 /**
- * Publish a plan whose reassess window is about to lapse, so the floor it arms
- * is the plan's own expiry rather than the coverage cadence (plan 29 step
- * 4.6). `afterMinutes` is fractional on purpose: 0.05 min = 3 s.
+ * Publish a plan whose reassess interval is far under the runtime's clamp.
+ * `afterMinutes` is fractional on purpose: 0.05 min = 3 s. The cadence the
+ * floor honors is `planReassessCadenceMillis`, which raises it to the
+ * 5-minute floor — a plan cannot demand a sub-minute metronome.
  */
 const publishShortWindowStrategy = Effect.gen(function* () {
   const strategies = yield* TradingStrategyService;
@@ -238,6 +254,36 @@ const publishShortWindowStrategy = Effect.gen(function* () {
     },
   });
   assert.equal(published.outcome, "accepted");
+});
+
+/**
+ * Put a plan in history directly, dated as far in the past as the clock
+ * allows, with a 1-minute reassess window — the shape of the mission observed
+ * hot-looping on 2026-08-16. Written straight to the table because
+ * `publishPlan` stamps `updatedAt: now`, and the point is precisely a plan
+ * whose window is already spent.
+ */
+const encodePlanJson = Schema.encodeSync(Schema.fromJsonString(TradingPlanState));
+
+const insertStalePlan = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+  const updatedAt = Math.max(0, now - 2 * 60 * 60_000);
+  const plan = encodePlanJson({
+    market: "ETH",
+    intent: "long",
+    entry: { triggers: [], urgency: "now" },
+    stop: { method: "fixed" },
+    target: { profitUsd: 10 },
+    invalidation: [],
+    reassess: { afterMinutes: 1 },
+    because: "the window on this plan lapsed long ago",
+    updatedAt,
+  });
+  yield* sql`
+    INSERT INTO trading_plan_history (mission_id, version, strategy_json, created_at)
+    VALUES (${MISSION}, 1, ${plan}, ${updatedAt})
+  `;
 });
 
 const activeWatches = Effect.gen(function* () {
@@ -393,14 +439,13 @@ layer("run settlement: the armed-coverage floor", (it) => {
     }),
   );
 
-  // Plan 29 step 4.6: a plan's own `reassess.afterMinutes` caps the floor. A
-  // plan that expires in seconds must get its reassessment within seconds,
-  // not at the flat floor's ten-minute cadence.
-  it.effect("arms no later than the plan's own expiry", () =>
+  // A plan's `reassess.afterMinutes` is a cadence from the last look, clamped
+  // below. A plan that asked for seconds gets the 5-minute cadence floor —
+  // sooner than the flat floor's ten minutes, but never "now": arming at the
+  // lapsed instant is the hot loop this replaced.
+  it.effect("arms at the clamped plan cadence, sooner than the flat floor", () =>
     Effect.gen(function* () {
       yield* seed;
-      // Publish inside the turn, so the plan's clock starts when the turn is
-      // living it and the floor that arms at settlement measures from there.
       yield* startTurn;
       yield* publishShortWindowStrategy;
       yield* endTurn;
@@ -410,12 +455,126 @@ layer("run settlement: the armed-coverage floor", (it) => {
       assert.ok(watch !== undefined, "expected a scheduled reassessment");
       if (watch?.watch.type !== "scheduled_reassessment") return;
       const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-      // The plan's 3 s window has likely already lapsed by the time the floor
-      // arms; either way the wake is due within the window plus slack, far
-      // inside the 10-minute flat floor.
       const flatFloor = watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: false });
-      assert.isAtMost(watch.watch.runAt, now + 3_000 + 2_000);
+      assert.isAbove(watch.watch.runAt, now);
+      assert.isAtMost(watch.watch.runAt, now + PLAN_REASSESS_FLOOR_MILLIS + 1_000);
       assert.isBelow(watch.watch.runAt - now, flatFloor);
+    }),
+  );
+
+  // The hot-loop regression (2026-08-16). A plan published long ago with a
+  // short window read as "expiry in the past", which `Math.max(0, …)` turned
+  // into "wake now": settlement armed a reassessment at `now`, the wake
+  // concluded nothing, settled, and armed the next one — 14 turns in 4
+  // minutes on a flat market. The wake must always land strictly in the
+  // future, flat and holding both.
+  it.effect("a plan far past its window arms strictly in the future while flat", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* insertStalePlan;
+      yield* runOneTurn;
+
+      const active = yield* activeWatches;
+      const watch = active.find((w) => w.watch.type === "scheduled_reassessment");
+      assert.ok(watch !== undefined, "expected a scheduled reassessment");
+      if (watch?.watch.type !== "scheduled_reassessment") return;
+      const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      // Well clear of "now", and no sooner than the clamped cadence: the past
+      // expiry must not compress the interval at all. (The old code armed at
+      // the lapsed instant — `now` — or at the sub-clamp remainder.)
+      assert.isAbove(watch.watch.runAt, now + 60_000);
+      assert.isAtMost(watch.watch.runAt, now + PLAN_REASSESS_FLOOR_MILLIS + 1_000);
+    }),
+  );
+
+  it.effect("a plan far past its window arms strictly in the future while holding", () =>
+    // The dangerous variant: the same stale plan with live exposure and both
+    // sides covered took the sanity-backstop branch, where the same cap
+    // produced the same wake-at-now loop — while carrying a position.
+    Effect.gen(function* () {
+      yield* seed;
+      yield* insertStalePlan;
+      yield* holdPosition(0.05, 1_850);
+
+      const watches = yield* TradingWatchService;
+      yield* watches.registerWatch({
+        missionId: MISSION,
+        watch: {
+          type: "price_cross",
+          market: "ETH",
+          priceSource: "mark",
+          direction: "above",
+          price: 1_870,
+        },
+      });
+      yield* watches.registerWatch({
+        missionId: MISSION,
+        watch: {
+          type: "price_cross",
+          market: "ETH",
+          priceSource: "mark",
+          direction: "below",
+          price: 1_830,
+        },
+      });
+
+      yield* runOneTurn;
+
+      const active = yield* activeWatches;
+      const watch = active.find((w) => w.watch.type === "scheduled_reassessment");
+      assert.ok(watch !== undefined, "expected a scheduled reassessment");
+      if (watch?.watch.type !== "scheduled_reassessment") return;
+      const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      // The covered-both-sides path takes the sanity backstop bounded by the
+      // clamped cadence — never the lapsed instant.
+      assert.isAbove(watch.watch.runAt, now + 60_000);
+      assert.isAtMost(watch.watch.runAt, now + PLAN_REASSESS_FLOOR_MILLIS + 1_000);
+    }),
+  );
+
+  it.effect("stretches the flat floor after consecutive no-op scheduled wakes", () =>
+    // Backoff: a flat mission whose scheduled wakes keep concluding nothing
+    // gets asked less and less often, capped at an hour. Three prior no-op
+    // scheduled wakes plus the one settling now make a streak of four, which
+    // pushes the 10-minute flat floor past the cap.
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      for (const [index, startedAt] of [1, 2, 3].entries()) {
+        yield* sql`
+          INSERT INTO trading_harness_runs (run_id, mission_id, cause, status, started_at, created_at)
+          VALUES (${`run_noop_${index}`}, ${MISSION}, 'scheduled_reassessment', 'completed', ${startedAt}, ${startedAt})
+        `;
+      }
+
+      yield* startTurn;
+      // The run under test wakes as the metronome, like the loop it guards.
+      yield* sql`
+        UPDATE trading_harness_runs SET cause = 'scheduled_reassessment'
+        WHERE mission_id = ${MISSION} AND status NOT IN ('completed', 'failed')
+      `;
+      // `endTurn`'s wait counts settled runs, and the three pre-inserted rows
+      // already satisfy it — wait for the fourth instead.
+      yield* Queue.offer(turnEndQueue!, turnEnded);
+      for (let attempt = 0; attempt < 500; attempt++) {
+        const settled = yield* sql<{ readonly count: number }>`
+          SELECT COUNT(*) AS count FROM trading_harness_runs
+          WHERE mission_id = ${MISSION} AND status IN ('completed', 'failed')
+        `;
+        if ((settled[0]?.count ?? 0) >= 4) break;
+        yield* Effect.yieldNow;
+      }
+      for (let attempt = 0; attempt < 500; attempt++) yield* Effect.yieldNow;
+
+      const active = yield* activeWatches;
+      assert.equal(active.length, 1);
+      const watch = active[0]!.watch;
+      assert.equal(watch.type, "scheduled_reassessment");
+      if (watch.type !== "scheduled_reassessment") return;
+      const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      const flatFloor = watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: false });
+      assert.isAbove(watch.runAt, now + flatFloor);
+      assert.isAtMost(watch.runAt, now + NO_OP_BACKOFF_CAP_MILLIS + 1_000);
     }),
   );
 

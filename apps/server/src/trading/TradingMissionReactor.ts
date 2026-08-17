@@ -181,6 +181,8 @@ const describeWatchPredicate = (watch: PersistedWatch["watch"]): string => {
       return `${watch.market} unrealised PnL falls to $${watch.valueUsd}`;
     case "pnl_giveback":
       return `${watch.market} unrealised PnL gives back $${watch.drawdownUsd} from its peak`;
+    case "metric_threshold":
+      return `${watch.market} ${watch.metric} crosses ${watch.direction} ${watch.value}`;
   }
 };
 

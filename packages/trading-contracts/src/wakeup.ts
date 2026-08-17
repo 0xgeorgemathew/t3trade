@@ -193,12 +193,13 @@ export const TradingHarnessWakeup = Schema.Struct({
    */
   position: AgentNetPosition,
   /**
-   * The last 8 bars of the runtime timeframe (the interval the mandate names,
-   * else `1m` — see `runtimeTimeframe` in `./strategy.ts`).
+   * The last few bars of the runtime timeframe (the interval the mandate
+   * names, else `1m` — see `runtimeTimeframe` in `./strategy.ts`).
    *
    * A bounded slice of recent price action so the run can answer "what did
    * price just do?" without a `trading_look` round-trip. Deeper
-   * history stays behind that tool; this never exceeds 8 bars.
+   * history stays behind that tool; the composer bounds the count
+   * (`WAKEUP_RECENT_CANDLES`, 5 as shipped).
    */
   recentCandles: MarketHistory,
   /**

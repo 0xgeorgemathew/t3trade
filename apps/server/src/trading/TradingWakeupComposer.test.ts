@@ -278,6 +278,61 @@ const compose = (triggeringWatchId?: string) =>
   );
 
 layer("TradingWakeupComposer", (it) => {
+  // An alert wake is the alert, not the market: the fired watch, the position,
+  // the review line, and a pointer at trading_look. Injecting the full
+  // snapshot on every firing is how a mission's context filled after a
+  // handful of wakes.
+  it.effect("renders a watch-fire wake lean, pointing at trading_look for the rest", () =>
+    Effect.gen(function* () {
+      const composer = yield* TradingWakeupComposer;
+      const composed = yield* composer.compose({
+        mission,
+        harnessRunId: "run_1",
+        cause: "market_watch_triggered",
+        occurredAt: NOW,
+        triggeringWatchId: "watch_up",
+        pendingEvents: [],
+        activeStrategy: strategy,
+      });
+      // What fired, and where to get everything else.
+      assert.include(composed.text, "triggeringWatch");
+      assert.include(composed.text, "call trading_look");
+      assert.include(composed.text, "alert wake");
+      // What is deliberately NOT attached.
+      assert.notInclude(composed.text, "recentCandles");
+      assert.notInclude(composed.text, "observedVolatility");
+      assert.notInclude(composed.text, "microstructure");
+      // The structured wakeup is still the full one — only the text is lean.
+      assert.equal(composed.wakeup.recentCandles.candles.length, 5);
+      // And it is genuinely small.
+      assert.isBelow(composed.text.length, 2_000);
+    }),
+  );
+
+  it.effect("keeps the full snapshot on a scheduled reassessment", () =>
+    Effect.gen(function* () {
+      const composed = yield* composeFull({});
+      assert.include(composed.text, "recentCandles");
+      assert.include(composed.text, "observedVolatility");
+    }),
+  );
+
+  // The projection is the one thing the model must never be without — a plan
+  // that lacks one is told so on every wake until it republishes.
+  it.effect("nags for a projection when the plan has none, and only then", () =>
+    Effect.gen(function* () {
+      // The fixture plan carries no projection: every wake says so.
+      const bare = yield* compose();
+      assert.include(bare.strategyReview ?? "", "NO PROJECTION ON FILE");
+
+      // The same plan with one on file wakes without the nag.
+      const projected = yield* composeFull({
+        activeStrategy: { ...strategy, projection: { price: MARK + 12, byMinutes: 15 } },
+      }).pipe(Effect.map((composed) => composed.wakeup));
+      assert.notInclude(projected.strategyReview ?? "", "NO PROJECTION ON FILE");
+    }),
+  );
+
   it.effect("publishes the active watches with their distance from the mark", () =>
     Effect.gen(function* () {
       const wakeup = yield* compose();
@@ -324,7 +379,7 @@ layer("TradingWakeupComposer", (it) => {
       assert.equal(wakeup.position.size, 0);
       // The primary timeframe is strategy.timeframes[0] ("1m"); the slice is capped at 8.
       assert.equal(wakeup.recentCandles.interval, "1m");
-      assert.equal(wakeup.recentCandles.candles.length, 8);
+      assert.equal(wakeup.recentCandles.candles.length, 5);
     }),
   );
 

@@ -6220,7 +6220,19 @@ function ChatViewContent(props: ChatViewProps) {
                     <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                   )}
                   {boundMission && !isDraftHeroState ? (
-                    <div className="mx-auto mb-2 w-full max-w-3xl">
+                    // Wider than the composer it is docked above, deliberately.
+                    // The composer is a line of text and reads best at 3xl; the
+                    // panel is a chart beside an instrument, and at 3xl the two
+                    // shared 768px, which left a 380px chart next to a 384px
+                    // column of prices. It is centred, so the extra width opens
+                    // symmetrically on both sides and the composer stays the
+                    // narrower object underneath it.
+                    //
+                    // `mb-5` rather than a hairline gap: the panel is a set of
+                    // floating cards, and cards that nearly touch the composer
+                    // read as bolted to it. The air underneath is what makes
+                    // them read as lifted off the page.
+                    <div className="mx-auto mb-5 w-full max-w-6xl">
                       <MissionLivePanel mission={boundMission} environmentId={environmentId} />
                     </div>
                   ) : null}
