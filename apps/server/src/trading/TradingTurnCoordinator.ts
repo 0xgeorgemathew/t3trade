@@ -18,9 +18,10 @@
  * is what makes the resumed turn continue the same conversation.
  *
  * A forked watcher — subscribed before the turn is dispatched, so an early
- * turn-end cannot slip past it — waits for the first `thread.session-set` where
- * the session leaves `"running"`, releases the lease (marking the run
- * `completed` on a clean end, `failed` on an error), and terminates.
+ * turn-end cannot slip past it — waits for the session to start running the
+ * turn and then for the first `thread.session-set` where it leaves
+ * `"running"`, releases the lease (marking the run `completed` on a clean end,
+ * `failed` on an error), and terminates.
  *
  * @module TradingTurnCoordinator
  */
@@ -36,6 +37,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -289,10 +291,10 @@ const make = Effect.gen(function* () {
   /**
    * Wait for the turn triggered by this dispatch to end, then release the lease
    * and mark the run's claimed inbox events consumed. The turn-end signal is
-   * the first `thread.session-set` domain event where the session leaves
-   * `"running"` with no active turn — the canonical turn-end marker the client
-   * runtime itself uses (§B.1). A failed turn surfaces as status "error"; those
-   * mark the run `failed`.
+   * the first `thread.session-set` domain event, after the session has been
+   * seen running the turn, where it leaves `"running"` with no active turn —
+   * the canonical turn-end marker the client runtime itself uses (§B.1). A
+   * failed turn surfaces as status "error"; those mark the run `failed`.
    *
    * `Stream.take(1)` means the watcher terminates with the turn instead of
    * consuming the domain-event stream for the life of the process.
@@ -315,47 +317,113 @@ const make = Effect.gen(function* () {
     "error",
   ]);
 
-  const isTurnEndFor =
-    (threadId: string) =>
-    (event: OrchestrationEvent): boolean => {
-      if (event.type !== "thread.session-set") return false;
-      if (event.payload.threadId !== threadId) return false;
-      const { status, activeTurnId } = event.payload.session;
-      return TURN_END_STATUSES.has(status) && activeTurnId === null;
+  /**
+   * How long a dispatched run may go without its turn ever starting.
+   *
+   * Past this the run is marked `failed` so the lease is not held forever by a
+   * turn that never happened. It is deliberately far longer than any wake takes
+   * to reach the provider — it is a backstop, not a timeout on the turn itself,
+   * which may legitimately run long and must never have its lease pulled while
+   * it is still trading.
+   */
+  const TURN_START_DEADLINE = Duration.minutes(10);
+
+  /**
+   * The turn-end test, anchored to the turn this run actually dispatched.
+   *
+   * `hasStarted` flips on the first event where the session is running a turn,
+   * and only events after that can be a turn end. Session-lifecycle noise
+   * before the turn — a restart's `stopped → ready`, a `starting` on resume —
+   * carries no active turn and used to satisfy a bare "not running and no
+   * active turn" test, so a restarted session released the lease about a second
+   * after the dispatch and every trade the harness then tried was refused with
+   * `harness_run_owns_lease`. The restart itself is fixed (a trading session is
+   * no longer restarted for a workspace it does not use), but the lease must
+   * not depend on that: it is anchored to the turn instead.
+   *
+   * The flag is local to each watcher — one tracker per run, read and written
+   * by the single fiber that runs that run's stream.
+   */
+  const makeTurnEndTracker = (threadId: string) => {
+    let started = false;
+    return {
+      hasStarted: () => started,
+      isTurnEnd: (event: OrchestrationEvent): boolean => {
+        if (event.type !== "thread.session-set") return false;
+        if (event.payload.threadId !== threadId) return false;
+        const { status, activeTurnId } = event.payload.session;
+        if (!started) {
+          started = status === "running" && activeTurnId !== null;
+          return false;
+        }
+        return TURN_END_STATUSES.has(status) && activeTurnId === null;
+      },
     };
+  };
 
-  const watchTurnEndAndRelease = (runId: string, missionId: string, threadId: string) =>
-    engine.streamDomainEvents.pipe(
-      Stream.filter(isTurnEndFor(threadId)),
-      Stream.take(1),
-      Stream.runForEach((event) =>
-        Effect.gen(function* () {
-          if (event.type !== "thread.session-set") return;
-          const terminal: "completed" | "failed" =
-            event.payload.session.status === "error" ? "failed" : "completed";
-          yield* completeRun(runId, terminal).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("TradingTurnCoordinator: failed to release lease", {
+  const releaseOnTurnEnd = (runId: string, missionId: string, event: OrchestrationEvent) =>
+    Effect.gen(function* () {
+      if (event.type !== "thread.session-set") return;
+      const terminal: "completed" | "failed" =
+        event.payload.session.status === "error" ? "failed" : "completed";
+      yield* completeRun(runId, terminal).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("TradingTurnCoordinator: failed to release lease", {
+            runId,
+            status: terminal,
+            cause: String(cause),
+          }),
+        ),
+      );
+      // Close the inbox lifecycle for the events this run claimed.
+      yield* inbox.markIncludedConsumed(missionId).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("TradingTurnCoordinator: failed to mark inbox consumed", {
+            missionId,
+            cause: String(cause),
+          }),
+        ),
+      );
+
+      yield* ensureNotDeaf(missionId);
+    });
+
+  /**
+   * Release the lease if the dispatched turn never starts at all.
+   *
+   * The flag is read once the deadline has passed rather than raced against it,
+   * so a turn that did start leaves the watcher alone to wait for its end
+   * however long that takes.
+   */
+  const failIfTurnNeverStarted = (runId: string, hasStarted: () => boolean) =>
+    Effect.sleep(TURN_START_DEADLINE).pipe(
+      Effect.flatMap(() =>
+        hasStarted()
+          ? Effect.never
+          : Effect.logWarning(
+              "TradingTurnCoordinator: releasing a lease whose turn never started",
+              {
                 runId,
-                status: terminal,
-                cause: String(cause),
-              }),
+                afterMillis: Duration.toMillis(TURN_START_DEADLINE),
+              },
+            ).pipe(
+              Effect.andThen(
+                completeRun(runId, "failed").pipe(Effect.catchCause(() => Effect.void)),
+              ),
             ),
-          );
-          // Close the inbox lifecycle for the events this run claimed.
-          yield* inbox.markIncludedConsumed(missionId).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("TradingTurnCoordinator: failed to mark inbox consumed", {
-                missionId,
-                cause: String(cause),
-              }),
-            ),
-          );
-
-          yield* ensureNotDeaf(missionId);
-        }),
       ),
     );
+
+  const watchTurnEndAndRelease = (runId: string, missionId: string, threadId: string) =>
+    Effect.suspend(() => {
+      const tracker = makeTurnEndTracker(threadId);
+      const untilTurnEnds = engine.streamDomainEvents.pipe(
+        Stream.filter(tracker.isTurnEnd),
+        Stream.take(1),
+        Stream.runForEach((event) => releaseOnTurnEnd(runId, missionId, event)),
+      );
+      return Effect.race(untilTurnEnds, failIfTurnNeverStarted(runId, tracker.hasStarted));
+    });
 
   /**
    * Arm the floor's reassessment, once. `coversByReassessment` has already said

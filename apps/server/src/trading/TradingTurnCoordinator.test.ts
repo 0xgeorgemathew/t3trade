@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { EventId, ThreadId, type OrchestrationEvent } from "@t3tools/contracts";
+import { EventId, ThreadId, TurnId, type OrchestrationEvent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
@@ -579,6 +579,65 @@ const sessionStartingEvent = (threadId: string): OrchestrationEvent => ({
   },
 });
 
+/**
+ * A session restart: `stopped` then `ready`, neither carrying an active turn.
+ *
+ * This is the shape that killed every lease about a second after dispatch — the
+ * provider session was being restarted on each wake, and a bare "not running,
+ * no active turn" test read the restart as the turn ending.
+ */
+const sessionRestartEvents = (threadId: string): ReadonlyArray<OrchestrationEvent> =>
+  (["stopped", "ready"] as const).map((status, index) => ({
+    sequence: 1,
+    eventId: EventId.make(`evt-session-restart-${status}`),
+    aggregateKind: "thread" as const,
+    aggregateId: ThreadId.make(threadId),
+    occurredAt: "2026-07-30T00:00:00.600Z",
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    type: "thread.session-set" as const,
+    payload: {
+      threadId: ThreadId.make(threadId),
+      session: {
+        threadId: ThreadId.make(threadId),
+        status,
+        providerName: "claude",
+        runtimeMode: "approval-required" as const,
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: `2026-07-30T00:00:00.${600 + index}Z`,
+      },
+    },
+  }));
+
+/** The session running the turn this run dispatched: the lease's anchor. */
+const turnRunningEvent = (threadId: string): OrchestrationEvent => ({
+  sequence: 1,
+  eventId: EventId.make("evt-turn-running"),
+  aggregateKind: "thread",
+  aggregateId: ThreadId.make(threadId),
+  occurredAt: "2026-07-30T00:00:00.800Z",
+  commandId: null,
+  causationEventId: null,
+  correlationId: null,
+  metadata: {},
+  type: "thread.session-set",
+  payload: {
+    threadId: ThreadId.make(threadId),
+    session: {
+      threadId: ThreadId.make(threadId),
+      status: "running",
+      providerName: "claude",
+      runtimeMode: "approval-required",
+      activeTurnId: TurnId.make("turn_1"),
+      lastError: null,
+      updatedAt: "2026-07-30T00:00:00.800Z",
+    },
+  },
+});
+
 /** Poll a read until `done`, sleeping between attempts (the watcher is a fiber). */
 const awaitCondition = <A, E>(read: Effect.Effect<A, E>, done: (value: A) => boolean) =>
   Effect.gen(function* () {
@@ -663,7 +722,18 @@ it.live("releases the lease and consumes claimed inbox events when the turn ends
       assert.equal(yield* runStatus, "starting");
       assert.equal(yield* inboxStatus, "included_in_run");
 
-      // The turn ends: the watcher releases the lease and closes the inbox.
+      // A session restart before the turn is the same story: lifecycle noise,
+      // not a turn ending. The lease is anchored to the turn, so it holds.
+      for (const event of sessionRestartEvents("thread_1")) {
+        yield* Queue.offer(queue, event);
+      }
+      yield* Effect.sleep("50 millis");
+      assert.equal(yield* runStatus, "starting");
+      assert.equal(yield* inboxStatus, "included_in_run");
+
+      // The turn starts, then ends: the watcher releases the lease and closes
+      // the inbox.
+      yield* Queue.offer(queue, turnRunningEvent("thread_1"));
       yield* Queue.offer(queue, turnEndEvent("thread_1"));
       yield* awaitCondition(runStatus, (status) => status === "completed");
       yield* awaitCondition(inboxStatus, (status) => status === "consumed");
