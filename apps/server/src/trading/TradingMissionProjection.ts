@@ -199,6 +199,8 @@ interface MissionResultRow {
   readonly fill_count: number;
   readonly first_fill_at: number | null;
   readonly last_fill_at: number | null;
+  /** Planned loss at the approved stop, scaled to what actually filled. */
+  readonly planned_loss_at_stop: number | null;
 }
 
 /** Row shape for the latest position snapshot. */
@@ -344,6 +346,7 @@ const EMPTY_RESULT: MissionResultRow = {
   fill_count: 0,
   first_fill_at: null,
   last_fill_at: null,
+  planned_loss_at_stop: null,
 };
 
 const EMPTY_SURFACES: ExecutionSurfaces = {
@@ -417,6 +420,7 @@ const toMission = (
       fillCount: exec.result.fill_count,
       firstFillAt: exec.result.first_fill_at === null ? null : toIso(exec.result.first_fill_at),
       lastFillAt: exec.result.last_fill_at === null ? null : toIso(exec.result.last_fill_at),
+      plannedLossAtStopUsd: exec.result.planned_loss_at_stop,
     },
     position:
       exec.position === null
@@ -630,7 +634,7 @@ const makeTradingMissionProjection = Effect.gen(function* () {
       `.pipe(Effect.mapError(sqlFail("fills")));
 
       // The realised result across EVERY fill, for the completion summary.
-      const resultRows = yield* sql<MissionResultRow>`
+      const resultRows = yield* sql<Omit<MissionResultRow, "planned_loss_at_stop">>`
         SELECT
           SUM(closed_pnl) AS realized_pnl,
           SUM(fee_usd) AS fees_paid,
@@ -639,7 +643,32 @@ const makeTradingMissionProjection = Effect.gen(function* () {
           MAX(traded_at) AS last_fill_at
         FROM trading_fills WHERE mission_id = ${missionId}
       `.pipe(Effect.mapError(sqlFail("fills")));
-      const result = resultRows[0] ?? EMPTY_RESULT;
+
+      // What the mission really had at stake — plan 34 step 7.3. Each entry's
+      // planned loss at its approved stop, scaled by the fraction of that
+      // entry which actually filled. An IOC the account could not fund fills
+      // part of its request and still reports `filled`, so the approved number
+      // alone describes a position the mission never held.
+      const plannedRiskRows = yield* sql<{ readonly planned_loss_at_stop: number | null }>`
+        SELECT SUM(
+          e.planned_loss_at_stop_usd * MIN(1.0, COALESCE(f.filled_size, 0) / e.size)
+        ) AS planned_loss_at_stop
+        FROM trading_execution_records e
+        LEFT JOIN (
+          SELECT cloid, SUM(filled_size) AS filled_size
+          FROM trading_fills WHERE mission_id = ${missionId} AND cloid IS NOT NULL
+          GROUP BY cloid
+        ) f ON f.cloid = e.cloid
+        WHERE e.mission_id = ${missionId}
+          AND e.action_type IN ('open', 'scale_in')
+          AND e.planned_loss_at_stop_usd IS NOT NULL
+          AND e.size > 0
+      `.pipe(Effect.mapError(sqlFail("plannedRisk")));
+
+      const result: MissionResultRow = {
+        ...(resultRows[0] ?? EMPTY_RESULT),
+        planned_loss_at_stop: plannedRiskRows[0]?.planned_loss_at_stop ?? null,
+      };
 
       // The latest position snapshot. Null when the mission has never had one.
       const positionRows = yield* sql<PositionSnapshotRow>`

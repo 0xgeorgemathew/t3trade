@@ -227,6 +227,45 @@ export const makeTradingEntryService = Effect.gen(function* () {
       Effect.orElseSucceed(() => null),
     );
 
+  /**
+   * What the exchange account can actually carry, in gross notional — plan 34
+   * step 7.1.
+   *
+   * `account_value * leverage`, both from the reconciler's own snapshots: the
+   * account observation it writes every pass, and the leverage the exchange
+   * reports for this market, which survives the mission going flat. Null when
+   * either is missing, and then nothing is bound — an unknown capacity is not
+   * a zero one.
+   *
+   * The mandate's ceilings say what the mission may take. This says what the
+   * account can fund. When they disagree the account wins, because it is the
+   * one that has to settle: an entry sized off an 8x mandate against a 1x
+   * account filled an eighth of the request and reported `filled`.
+   */
+  const readAccountMarginCapacity = (input: {
+    readonly missionId: string;
+    readonly market: string;
+  }) =>
+    Effect.gen(function* () {
+      const accounts = yield* sql<{ readonly account_value: number }>`
+        SELECT account_value FROM trading_account_observations
+        WHERE mission_id = ${input.missionId}
+      `;
+      const positions = yield* sql<{ readonly leverage: number | null }>`
+        SELECT leverage FROM trading_position_snapshots
+        WHERE mission_id = ${input.missionId} AND market = ${input.market}
+      `;
+      const accountValue = accounts[0]?.account_value;
+      const leverage = positions[0]?.leverage;
+      if (accountValue == null || leverage == null) return null;
+      if (!(accountValue > 0) || !(leverage > 0)) return null;
+      return accountValue * leverage;
+    }).pipe(
+      // A sizing bound is never worth the turn. An unreadable row leaves the
+      // entry sized exactly as it was before this existed.
+      Effect.orElseSucceed(() => null),
+    );
+
   const prepare: TradingEntryService["Service"]["prepare"] = (request) =>
     Effect.gen(function* () {
       const mission = yield* missions.getMission(request.missionId);
@@ -335,6 +374,11 @@ export const makeTradingEntryService = Effect.gen(function* () {
               makerFeeBpsPerSide: feeRate.makerFeeBps,
             });
 
+      const marginCapacityUsd = yield* readAccountMarginCapacity({
+        missionId: request.missionId,
+        market: request.market,
+      });
+
       const sizing = deriveFeasibleSize({
         side: request.side,
         entryPrice,
@@ -351,6 +395,7 @@ export const makeTradingEntryService = Effect.gen(function* () {
         allocatedCapitalUsd: mission.authority.allocatedCapitalUsd,
         maximumLeverage: mission.authority.maximumLeverage,
         maximumGrossNotionalUsd: mission.authority.maximumGrossNotionalUsd,
+        ...(marginCapacityUsd === null ? {} : { accountMarginCapacityUsd: marginCapacityUsd }),
         maximumPlannedRiskPerPositionUsd: mission.authority.maximumPlannedRiskPerPositionUsd,
         remainingCumulativeLossUsd: budget.remainingCumulativeLossUsd,
         takerFeeBpsPerSide: takerFeeRateBps,

@@ -178,6 +178,19 @@ export const TradingMissionResultView = Schema.Struct({
   /** First and last fill, for the mission's traded duration. */
   firstFillAt: Schema.NullOr(IsoDateTime),
   lastFillAt: Schema.NullOr(IsoDateTime),
+  /**
+   * What the mission actually had at stake: each entry's planned loss at its
+   * approved stop, scaled to the part of that entry which really filled — plan
+   * 34 step 7.3.
+   *
+   * The card used to read the PLAN's `maximumPlannedLossUsd`, which a model
+   * writes from the authority's per-position ceiling. On a mission whose entry
+   * filled an eighth of its request that ceiling was $63 against $1.70 really
+   * risked, and "versus plan +$62.81" was arithmetic on a position that never
+   * existed. Null when no entry record carries a planned loss — then the plan's
+   * own number is all there is.
+   */
+  plannedLossAtStopUsd: Schema.NullOr(Schema.Number),
 });
 export type TradingMissionResultView = typeof TradingMissionResultView.Type;
 

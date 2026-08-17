@@ -68,6 +68,17 @@ export const EntrySizeConstraint = Schema.Literals([
   "target_notional",
   "gross_notional",
   "leverage",
+  /**
+   * The exchange account cannot fund the position at its configured leverage
+   * — plan 34 step 7.1.
+   *
+   * The four ceilings above are the MANDATE's: what the mission is allowed to
+   * take. This one is the account's: what it can actually take. They were
+   * allowed to disagree by a factor of eight, and an IOC sized off the mandate
+   * filled 12% of the request with `status: "filled"` and no warning, leaving
+   * the plan's risk arithmetic written against a position that never existed.
+   */
+  "account_margin",
   "planned_loss_ceiling",
   "loss_budget",
   "below_exchange_minimum",
@@ -127,6 +138,15 @@ export interface EntrySizingInput {
   readonly allocatedCapitalUsd: number;
   readonly maximumLeverage: number;
   readonly maximumGrossNotionalUsd: number;
+  /**
+   * Gross notional the exchange account itself can carry: free collateral at
+   * the leverage the account has this market configured at.
+   *
+   * Omitted when either half is unknown, and then it binds nothing — an
+   * unknown capacity is not a zero one. Present, it is a HARD bound: no
+   * mandate ceiling can make an account fund a position it has no margin for.
+   */
+  readonly accountMarginCapacityUsd?: number | undefined;
   readonly maximumPlannedRiskPerPositionUsd: number;
   readonly remainingCumulativeLossUsd: number;
   readonly takerFeeBpsPerSide: number;
@@ -217,6 +237,14 @@ export function deriveFeasibleSize(input: EntrySizingInput): EntrySizing {
 
   const caps: ReadonlyArray<{ readonly by: EntrySizeConstraint; readonly size: number }> = [
     { by: "gross_notional", size: notionalHeadroom(input.maximumGrossNotionalUsd) },
+    ...(input.accountMarginCapacityUsd === undefined
+      ? []
+      : [
+          {
+            by: "account_margin" as const,
+            size: notionalHeadroom(input.accountMarginCapacityUsd),
+          },
+        ]),
     {
       by: "leverage",
       size: notionalHeadroom(input.maximumLeverage * input.allocatedCapitalUsd),

@@ -11,7 +11,7 @@ import {
   TradingToolRejectedError,
   type TradingGetMissionResult,
 } from "@t3tools/trading-contracts/tools";
-import type { TradingOrderIntent } from "@t3tools/trading-contracts/execution";
+import type { TradingOrderIntent, TradingOrderResult } from "@t3tools/trading-contracts/execution";
 import type { TradingTimeframe, TradingUrgency } from "@t3tools/trading-contracts/strategy";
 import { readExitRequest } from "@t3tools/trading-contracts/exit";
 import type { StopAdjustmentJustification } from "@t3tools/trading-contracts/stop-adjustment";
@@ -1046,6 +1046,16 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
  * record are the same ones `trading_enter` produces.
  */
 /**
+ * How much of an approved entry has to fill before the fill is unremarkable.
+ *
+ * Below this the difference between what was approved and what is held is
+ * large enough that every number derived from the approved size — the stop's
+ * planned loss, the target, the next entry's headroom — is about a different
+ * position than the one the mission is in.
+ */
+const ENTRY_FILL_SHORTFALL_RATIO = 0.9;
+
+/**
  * A giveback threshold that is actually ahead of the position.
  *
  * Half the current drawdown again, to the cent: far enough that the level is
@@ -1276,6 +1286,30 @@ const handlers = {
         activeHarnessRunId: prepared.activeHarnessRunId,
       });
 
+      // What actually went on, as opposed to what was approved. An IOC that
+      // cannot be funded fills part of the request and still reports
+      // `filled` — 12% of it, on the mission that found this — so a harness
+      // reading only the approved size writes its plan's risk arithmetic
+      // against a position that does not exist.
+      const filledSize = (executed.orderResults as ReadonlyArray<TradingOrderResult>)
+        .filter((row) => row.role !== "protection")
+        .reduce((sum, row) => sum + (row.filledSize ?? 0), 0);
+      const shortfall = filledSize > 0 && filledSize < prepared.size * ENTRY_FILL_SHORTFALL_RATIO;
+      const notes = shortfall
+        ? [
+            ...prepared.notes,
+            `filled ${filledSize} of the approved ${prepared.size} — the rest did not fill, so ` +
+              `size your stop and your plan's risk off ${filledSize}`,
+          ]
+        : prepared.notes;
+
+      // What the position actually risks at the stop: the same stop distance,
+      // at the size that is really on.
+      const plannedLossAtStopUsd =
+        filledSize > 0 && prepared.size > 0
+          ? (prepared.plannedLossAtStopUsd * filledSize) / prepared.size
+          : prepared.plannedLossAtStopUsd;
+
       // What the server decided rides along with what the exchange did. A
       // harness told only "accepted" has to guess the size it is now holding,
       // and the guess is what it sizes its stop and its next entry against.
@@ -1284,9 +1318,9 @@ const handlers = {
         size: prepared.size,
         constrainedBy: prepared.constrainedBy,
         notionalUsd: prepared.notionalUsd,
-        plannedLossAtStopUsd: prepared.plannedLossAtStopUsd,
+        plannedLossAtStopUsd,
         estimatedRoundTripCostUsd: prepared.estimatedRoundTripCostUsd,
-        ...(prepared.notes.length === 0 ? {} : { notes: prepared.notes }),
+        ...(notes.length === 0 ? {} : { notes }),
       };
     }),
 

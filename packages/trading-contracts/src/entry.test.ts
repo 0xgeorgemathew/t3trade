@@ -30,6 +30,43 @@ const base: EntrySizingInput = {
 };
 
 describe("deriveFeasibleSize", () => {
+  // Plan 34 step 7.1. The four ceilings above are the mandate's — what the
+  // mission may take. This one is the account's — what it can fund. They were
+  // allowed to disagree by a factor of eight, and the IOC that resulted filled
+  // 12% of its request while reporting `filled`.
+  it("will not size past what the exchange account can fund", () => {
+    // 8x the mandate's ceiling, 1x the account's: the account binds.
+    const sizing = deriveFeasibleSize({
+      ...base,
+      maximumGrossNotionalUsd: 8_000,
+      accountMarginCapacityUsd: 900,
+    });
+
+    assert.strictEqual(sizing.feasible, true);
+    assert.strictEqual(sizing.constrainedBy, "account_margin");
+    assert.strictEqual(sizing.size, 0.45);
+    assert.strictEqual(sizing.notionalUsd, 900);
+  });
+
+  it("lets the mandate bind when the account can fund more than it allows", () => {
+    const sizing = deriveFeasibleSize({
+      ...base,
+      maximumGrossNotionalUsd: 800,
+      accountMarginCapacityUsd: 9_000,
+    });
+
+    assert.strictEqual(sizing.constrainedBy, "gross_notional");
+    assert.strictEqual(sizing.notionalUsd, 800);
+  });
+
+  // An unknown capacity is not a zero one: the bound is omitted, not guessed.
+  it("binds nothing when the account's capacity could not be read", () => {
+    const sizing = deriveFeasibleSize({ ...base, requestedSize: 0.5 });
+
+    assert.strictEqual(sizing.constrainedBy, "requested");
+    assert.strictEqual(sizing.size, 0.5);
+  });
+
   it("gives the harness the size it asked for when nothing binds", () => {
     const sizing = deriveFeasibleSize({ ...base, requestedSize: 0.5 });
 
