@@ -446,14 +446,39 @@ export const TradingToolkitRegistrationLive = Layer.effectDiscard(
   registerToolkitLenient(TradingToolkit),
 ).pipe(Layer.provide(TradingToolkitHandlersLive));
 
+/**
+ * The same trading toolkit registered a second time, for the trading-only
+ * endpoint. A distinct layer object on purpose: layers are memoized by
+ * identity, and reusing `TradingToolkitRegistrationLive` here would build it
+ * once against whichever `McpServer` came first instead of once per transport.
+ */
+const TradingOnlyToolkitRegistrationLive = Layer.effectDiscard(
+  registerToolkitLenient(TradingToolkit),
+).pipe(Layer.provide(TradingToolkitHandlersLive));
+
 const McpTransportLive = McpServer.layerHttp({
   name: "T3 Trade",
   version: packageJson.version,
-  path: "/mcp",
+  path: McpSessionRegistry.MCP_PATH,
+  protocols: [McpProtocol.v2025_06_18],
+}).pipe(Layer.provide(McpAuthMiddlewareLive));
+
+/**
+ * The trading-only transport. A trading session pays for every tool definition
+ * on its list on every API call; this endpoint lists the seven trading tools
+ * and nothing else, so the fifteen preview tools stop riding trading floors.
+ * `McpSessionRegistry` hands trading threads this endpoint's URL.
+ */
+const TradingMcpTransportLive = McpServer.layerHttp({
+  name: "T3 Trade",
+  version: packageJson.version,
+  path: McpSessionRegistry.TRADING_MCP_PATH,
   protocols: [McpProtocol.v2025_06_18],
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
 export const layer = Layer.mergeAll(
-  PreviewToolkitRegistrationLive,
-  TradingToolkitRegistrationLive,
-).pipe(Layer.provideMerge(McpTransportLive));
+  Layer.mergeAll(PreviewToolkitRegistrationLive, TradingToolkitRegistrationLive).pipe(
+    Layer.provideMerge(McpTransportLive),
+  ),
+  TradingOnlyToolkitRegistrationLive.pipe(Layer.provideMerge(TradingMcpTransportLive)),
+);

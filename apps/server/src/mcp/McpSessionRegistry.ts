@@ -8,8 +8,22 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import { HttpServer } from "effect/unstable/http";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { isTradingThread } from "../provider/SessionProfile.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpProviderSession from "./McpProviderSession.ts";
+
+/** Where the full toolkit (preview + trading) is served. */
+export const MCP_PATH = "/mcp";
+
+/**
+ * Where the trading-only toolkit is served.
+ *
+ * A trading session pays for every tool definition on its list on every API
+ * call, and the preview toolkit is fifteen UI-automation tools a trading
+ * thread can never legitimately use. Trading threads get an endpoint that
+ * simply does not list them.
+ */
+export const TRADING_MCP_PATH = "/mcp/trading";
 
 export interface McpCredentialRequest {
   readonly threadId: ThreadId;
@@ -98,10 +112,15 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   const state = yield* SynchronizedRef.make<RegistryState>({ records: new Map() });
   const currentTimeMillis = options.now ? Effect.sync(options.now) : Clock.currentTimeMillis;
   const livenessWindowMs = options.livenessWindowMs ?? DEFAULT_LIVENESS_WINDOW_MS;
-  const endpoint =
+  const endpointOrigin =
     httpServer.address._tag === "TcpAddress"
-      ? `http://${getHttpMcpEndpointHost(httpServer.address.hostname)}:${httpServer.address.port}/mcp`
-      : "http://127.0.0.1/mcp";
+      ? `http://${getHttpMcpEndpointHost(httpServer.address.hostname)}:${httpServer.address.port}`
+      : "http://127.0.0.1";
+  // Trading threads get the trading-only endpoint; the session profile is set
+  // by the trading coordinator before the provider session starts, so it is
+  // already decided by the time a credential is issued.
+  const endpointForThread = (threadId: ThreadId) =>
+    `${endpointOrigin}${isTradingThread(threadId) ? TRADING_MCP_PATH : MCP_PATH}`;
 
   const hashToken = (token: string) =>
     crypto
@@ -145,7 +164,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           threadId: scope.threadId,
           providerSessionId,
           providerInstanceId: scope.providerInstanceId,
-          endpoint,
+          endpoint: endpointForThread(scope.threadId),
           authorizationHeader: `Bearer ${rawToken}`,
         },
       };

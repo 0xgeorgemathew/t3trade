@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import { HttpServer } from "effect/unstable/http";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { clearSessionProfile, setSessionProfile } from "../provider/SessionProfile.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 
 const environmentId = EnvironmentId.make("environment-1");
@@ -73,6 +74,25 @@ it.effect("builds MCP endpoints from the bound server host", () =>
         providerInstanceId: ProviderInstanceId.make("codex"),
       });
       expect(issued.config.endpoint).toBe(expectedEndpoint);
+    }
+  }),
+);
+
+it.effect("hands a trading thread the trading-only endpoint", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const threadId = ThreadId.make("thread-trading-endpoint");
+    setSessionProfile({ threadId, kind: "trading" });
+    try {
+      const issued = yield* registry.issue({
+        threadId,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+      });
+      expect(issued.config.endpoint).toBe(
+        `http://127.0.0.1:43123${McpSessionRegistry.TRADING_MCP_PATH}`,
+      );
+    } finally {
+      clearSessionProfile(threadId);
     }
   }),
 );
