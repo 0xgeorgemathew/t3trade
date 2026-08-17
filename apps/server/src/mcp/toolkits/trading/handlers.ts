@@ -16,7 +16,7 @@ import type { TradingTimeframe, TradingUrgency } from "@t3tools/trading-contract
 import { readExitRequest } from "@t3tools/trading-contracts/exit";
 import type { StopAdjustmentJustification } from "@t3tools/trading-contracts/stop-adjustment";
 import { classifyFailure } from "@t3tools/trading-contracts/recovery";
-import { isWatchRefusal, toMarketWatch } from "@t3tools/trading-contracts/watch";
+import { isWatchRefusal, toMarketWatch, toWatchRow } from "@t3tools/trading-contracts/watch";
 import {
   isJournalRefusal,
   readJournalNote,
@@ -73,6 +73,11 @@ import type {
   OrderBook,
 } from "@t3tools/trading-contracts/market";
 import { readMicrostructure } from "@t3tools/trading-contracts/microstructure";
+import {
+  roundMarketStructure,
+  roundMicrostructure,
+  roundObservedVolatility,
+} from "@t3tools/trading-contracts/precision";
 import { PLAYBOOKS } from "@t3tools/trading-contracts/playbook";
 import { readMissionMode } from "@t3tools/trading-contracts/mode";
 import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
@@ -278,7 +283,8 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (
     authorityVersion: mission.authorityVersion,
     ...(Option.isNone(strategy) ? {} : { strategy: strategy.value }),
     missionVersion,
-    watches,
+    // Plan 33 fix B: the rows the model reads, not the rows the table stores.
+    watches: watches.map(toWatchRow),
     control: mission.control,
     harness: mission.harness,
     pendingExecutions,
@@ -644,7 +650,11 @@ const readMarketStructure = Effect.fn("TradingToolkit.readMarketStructure")(func
         )
       : candidates;
 
-  return { ...structure, candidates: pricedCandidates };
+  // Plan 33 fix A: the structure read is the numeric-heaviest thing a look
+  // returns, and almost all of it is derived arithmetic. Rounded here, at the
+  // read model, so the detectors above still score on the exact numbers and
+  // only what rides back to the model is trimmed.
+  return roundMarketStructure({ ...structure, candidates: pricedCandidates });
 });
 
 /**
@@ -806,7 +816,7 @@ const withMicrostructure = (
     openInterest: snapshot.openInterest,
     previousSample: null,
   });
-  return microstructure === null ? {} : { microstructure };
+  return microstructure === null ? {} : { microstructure: roundMicrostructure(microstructure) };
 };
 
 /**
@@ -859,12 +869,14 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
         ? {}
         : {
             candles: boundCandles(candles, bars),
-            volatility: measureVolatility({
-              market,
-              interval,
-              candles: candles.candles,
-              measuredAt: candles.freshness.observedAt,
-            }),
+            volatility: roundObservedVolatility(
+              measureVolatility({
+                market,
+                interval,
+                candles: candles.candles,
+                measuredAt: candles.freshness.observedAt,
+              }),
+            ),
           }),
       ...(orderBook === null || candles === null || snapshot === null
         ? {}

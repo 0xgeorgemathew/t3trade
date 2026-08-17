@@ -521,6 +521,65 @@ export const PersistedWatch = Schema.Struct({
 });
 export type PersistedWatch = typeof PersistedWatch.Type;
 
+/**
+ * A watch as `trading_look` reports it — plan 33 fix B.
+ *
+ * The persisted row above is the storage shape and stays exactly as it is. What
+ * the model is handed is this, for the same reason the wake renders one line
+ * per armed watch: the registry read rides on every mission-scoped look, and
+ * most of what it cost said nothing. `missionId` restated on every row the one
+ * the look is already about; `watch` was the persisted encoding sitting beside
+ * the `condition` that says the same thing in the only vocabulary
+ * `trading_watch` accepts — and a harness reading back the encoding and
+ * re-arming under its name would be writing a type the tool does not take.
+ *
+ * `id` is kept whole: it is what `cancel` and `replacesWatchId` take. The
+ * lifecycle is kept whole too — `status` and both timestamps — because "armed
+ * twenty minutes ago" and "fired just now" are what a look is being asked.
+ *
+ * `lastEvaluatedAt` is the one dropped reading: an active watch was swept
+ * within the sweep cadence, and a terminal one stopped being swept at
+ * `updatedAt`.
+ */
+export const TradingWatchRow = Schema.Struct({
+  id: TradingId,
+  /** The predicate, in the vocabulary `trading_watch` accepts. */
+  condition: WatchCondition,
+  status: PersistedWatchStatus,
+  armedReason: Schema.optional(WatchArmedReason),
+  /** The prediction this level belongs to, when it belongs to one. */
+  predictionVersion: Schema.optional(Schema.Number),
+  /** What the predicate last read, when the evaluator could read a value. */
+  lastObservedValue: Schema.optional(Schema.Number),
+  createdAt: UnixMillis,
+  updatedAt: UnixMillis,
+});
+export type TradingWatchRow = typeof TradingWatchRow.Type;
+
+/**
+ * Project a persisted watch onto the row a look returns.
+ *
+ * The condition is taken from the row when it carries one and derived from the
+ * persisted encoding otherwise, so a row written before the column existed
+ * still reports a predicate the model can re-arm.
+ */
+export function toWatchRow(persisted: PersistedWatch): TradingWatchRow {
+  return {
+    id: persisted.id,
+    condition: persisted.condition ?? toWatchCondition(persisted.watch),
+    status: persisted.status,
+    ...(persisted.armedReason === undefined ? {} : { armedReason: persisted.armedReason }),
+    ...(persisted.predictionVersion === undefined
+      ? {}
+      : { predictionVersion: persisted.predictionVersion }),
+    ...(persisted.lastObservedValue === undefined
+      ? {}
+      : { lastObservedValue: persisted.lastObservedValue }),
+    createdAt: persisted.createdAt,
+    updatedAt: persisted.updatedAt,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The armed-coverage floor for a mission holding a position
 // ---------------------------------------------------------------------------

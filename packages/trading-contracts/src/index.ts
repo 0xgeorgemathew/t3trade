@@ -18,6 +18,7 @@ export * from "./volatility.ts";
 export * from "./costs.ts";
 export * from "./marketStructure.ts";
 export * from "./microstructure.ts";
+export * from "./precision.ts";
 export * from "./history.ts";
 export * from "./calibration.ts";
 export * from "./playbook.ts";

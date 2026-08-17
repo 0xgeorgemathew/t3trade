@@ -42,7 +42,7 @@ import { EntrySizeConstraint } from "./entry.ts";
 import { TradingExitRefusalCode } from "./exit.ts";
 import { FailureRecovery } from "./recovery.ts";
 import { tradingPlanAuthoredFields, TradingPlanState } from "./strategy.ts";
-import { PersistedWatch, WatchCondition, WatchRefusalCode } from "./watch.ts";
+import { PersistedWatch, TradingWatchRow, WatchCondition, WatchRefusalCode } from "./watch.ts";
 import { Playbook, TradingPlaybookName } from "./playbook.ts";
 
 // Renamed from `trading_plan` — plan 29 step 6.5. The behaviour is
@@ -186,7 +186,12 @@ export const TradingBoundMissionResult = Schema.Struct({
    * strategy-version counter of its own.
    */
   missionVersion: Schema.Number,
-  watches: Schema.Array(PersistedWatch),
+  /**
+   * The armed set and a capped tail of what has already settled, as rows —
+   * see {@link TradingWatchRow}. The persisted encoding and the mission id
+   * each row used to repeat are not here (plan 33 fix B).
+   */
+  watches: Schema.Array(TradingWatchRow),
   control: TradingMissionControl,
   harness: TradingHarnessBinding,
   /** Executions written but not yet answered — what a lock rejection means. */

@@ -41,6 +41,12 @@ import {
 } from "@t3tools/trading-contracts/microstructure";
 import type { LevelHistoryEntry, PreviousStructureRead } from "@t3tools/trading-contracts/wakeup";
 import {
+  roundCostContext,
+  roundCostEstimate,
+  roundMicrostructure,
+  roundObservedVolatility,
+} from "@t3tools/trading-contracts/precision";
+import {
   costContextFromEstimate,
   type TradingCostContext,
   type TradingCostEstimate,
@@ -1116,6 +1122,12 @@ const make = Effect.gen(function* () {
         .listWatches(mission.id)
         .pipe(Effect.mapError((error) => fail("watch_list_failed", error)));
 
+      // Plan 33 fix A. The measurements above are IEEE arithmetic and are
+      // written here at the precision they are worth reading at — the one seam
+      // both a wake and the look's market half come through, so neither can
+      // publish a seventeen-figure ratio the other rounded. Prices, sizes and
+      // timestamps are not touched; see `roundMarketStructure` and friends for
+      // which field each read model derives.
       return {
         address,
         market,
@@ -1125,12 +1137,15 @@ const make = Effect.gen(function* () {
         position: positionWithPeak,
         history,
         recentCandles,
-        observedVolatility,
-        higherTimeframeVolatility,
+        observedVolatility: roundObservedVolatility(observedVolatility),
+        higherTimeframeVolatility:
+          higherTimeframeVolatility === null
+            ? null
+            : roundObservedVolatility(higherTimeframeVolatility),
         orderBook,
-        microstructure,
-        positionCosts,
-        costContext,
+        microstructure: microstructure === null ? null : roundMicrostructure(microstructure),
+        positionCosts: positionCosts === null ? null : roundCostEstimate(positionCosts),
+        costContext: costContext === null ? null : roundCostContext(costContext),
         levelHistory,
         previousStructureRead,
         enteredWithoutScoredSetup,

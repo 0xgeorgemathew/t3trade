@@ -18,6 +18,7 @@ import {
   planReassessCadenceMillis,
   readWatchCoverage,
   watchCoverageFloorMillis,
+  toWatchRow,
   watchSanityBackstopMillis,
   WATCH_COVERAGE_FLOOR_MILLIS,
   type MarketWatch,
@@ -372,5 +373,64 @@ describe("backedOffFloorMillis", () => {
 
   it("treats a negative streak as none", () => {
     assert.equal(backedOffFloorMillis(BASE, -1), BASE);
+  });
+});
+
+/**
+ * Plan 33 fix B. The look's registry read used to hand back the storage row:
+ * the mission id it already knew, and the persisted encoding beside the
+ * condition that says the same thing in the vocabulary the tool takes.
+ */
+describe("toWatchRow", () => {
+  const persisted: PersistedWatch = {
+    id: "watch_1",
+    missionId: "mission_1",
+    watch: { type: "pnl_giveback", market: "ETH", drawdownUsd: 4 },
+    condition: { kind: "giveback", market: "ETH", drawdownUsd: 4 },
+    status: "active",
+    armedReason: "profit_target",
+    predictionVersion: 7,
+    lastObservedValue: 1.5,
+    lastEvaluatedAt: NOW,
+    createdAt: NOW - 60_000,
+    updatedAt: NOW,
+  };
+
+  it("keeps the id, the condition, and the lifecycle", () => {
+    const row = toWatchRow(persisted);
+    assert.equal(row.id, "watch_1");
+    assert.deepEqual(row.condition, { kind: "giveback", market: "ETH", drawdownUsd: 4 });
+    assert.equal(row.status, "active");
+    assert.equal(row.armedReason, "profit_target");
+    assert.equal(row.predictionVersion, 7);
+    assert.equal(row.lastObservedValue, 1.5);
+    assert.equal(row.createdAt, NOW - 60_000);
+    assert.equal(row.updatedAt, NOW);
+  });
+
+  it("drops the mission id and the persisted encoding", () => {
+    assert.deepEqual(Object.keys(toWatchRow(persisted)).sort(), [
+      "armedReason",
+      "condition",
+      "createdAt",
+      "id",
+      "lastObservedValue",
+      "predictionVersion",
+      "status",
+      "updatedAt",
+    ]);
+  });
+
+  it("derives the condition on a row written before the column existed", () => {
+    const { condition: _dropped, ...older } = persisted;
+    assert.deepEqual(toWatchRow(older).condition, {
+      kind: "giveback",
+      market: "ETH",
+      drawdownUsd: 4,
+    });
+  });
+
+  it("encodes smaller than the row it projects", () => {
+    assert.isBelow(JSON.stringify(toWatchRow(persisted)).length, JSON.stringify(persisted).length);
   });
 });

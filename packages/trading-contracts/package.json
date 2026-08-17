@@ -124,6 +124,10 @@
       "types": "./src/recovery.ts",
       "import": "./src/recovery.ts"
     },
+    "./precision": {
+      "types": "./src/precision.ts",
+      "import": "./src/precision.ts"
+    },
     "./policy": {
       "types": "./src/policy.ts",
       "import": "./src/policy.ts"

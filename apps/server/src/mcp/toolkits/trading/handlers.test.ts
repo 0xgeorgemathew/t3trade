@@ -960,6 +960,17 @@ it.effect("registers a watch before the first plan is published", () =>
       assert.equal(watches.length, 1);
       assert.equal(watches[0].id, registeredWatch.id);
 
+      // Plan 33 fix B: the row is what the model reads, so it carries the
+      // lifecycle and the re-armable condition and nothing that only restated
+      // the look it arrived in.
+      assert.deepStrictEqual(Object.keys(watches[0]).sort(), [
+        "condition",
+        "createdAt",
+        "id",
+        "status",
+        "updatedAt",
+      ]);
+
       // The announce path succeeded rather than hitting its
       // "could not announce a registered watch" warning: a watch-registered
       // command reached the recording engine.
