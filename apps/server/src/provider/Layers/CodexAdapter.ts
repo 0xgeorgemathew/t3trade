@@ -31,6 +31,7 @@ import * as Crypto from "effect/Crypto";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -42,9 +43,12 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { isTradingThread } from "../SessionProfile.ts";
 import {
   applyTradingTurnContract,
+  markTradingContractDelivered,
   resetTradingContractDelivery,
+  TRADING_SYSTEM_PROMPT,
 } from "../TradingSessionProfile.ts";
 
 import {
@@ -76,6 +80,30 @@ const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 
 const PROVIDER = ProviderDriverKind.make("codex");
+
+/**
+ * Codex features a trading session has no use for, every one of which puts a
+ * tool definition (or several) into each API call's context. Disabled per
+ * session process via `-c features.<name>=false` — the app server treats an
+ * unknown feature name as a config warning (surfaced as a `config.warning`
+ * runtime event), not a failure, so this list degrades safely across Codex
+ * versions.
+ */
+const TRADING_CODEX_DISABLED_FEATURES = [
+  "shell_tool",
+  "browser_use",
+  "browser_use_external",
+  "computer_use",
+  "image_generation",
+  "apps",
+  "in_app_browser",
+  "multi_agent",
+  "plugins",
+] as const;
+
+const tradingCodexFeatureArgs: ReadonlyArray<string> = TRADING_CODEX_DISABLED_FEATURES.flatMap(
+  (feature) => ["-c", `features.${feature}=false`],
+);
 
 export interface CodexAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
@@ -1631,6 +1659,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 ) {
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("codex");
   const fileSystem = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const crypto = yield* Crypto.Crypto;
   const serverConfig = yield* Effect.service(ServerConfig);
@@ -1666,6 +1695,24 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         // trading contract in full again.
         resetTradingContractDelivery(input.threadId);
 
+        // The Codex mirror of the Claude adapter's trading profile (see
+        // ClaudeAdapter's queryOptions): the coding persona, the coding
+        // toolset, and a real workspace are dead weight a trading session pays
+        // for on every API call. `baseInstructions` replaces the persona with
+        // the trading system prompt — which carries the decision contract, so
+        // turns only ever need the header (hence markTradingContractDelivered
+        // below) — the feature flags drop the coding tools, and the cwd is an
+        // empty directory owned by this server so no AGENTS.md or leftover
+        // workspace ever leaks into the session.
+        const tradingProfile = isTradingThread(input.threadId);
+        const tradingCwd = pathService.join(serverConfig.stateDir, "trading-cwd");
+        if (tradingProfile) {
+          yield* fileSystem
+            .makeDirectory(tradingCwd, { recursive: true })
+            .pipe(Effect.catchCause(() => Effect.void));
+          markTradingContractDelivered(input.threadId);
+        }
+
         const serviceTier =
           input.modelSelection?.instanceId === boundInstanceId
             ? getCodexServiceTierOptionValue(input.modelSelection)
@@ -1674,7 +1721,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
-          cwd: input.cwd ?? process.cwd(),
+          cwd: tradingProfile ? tradingCwd : (input.cwd ?? process.cwd()),
           binaryPath: codexConfig.binaryPath,
           launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
           ...(options?.environment ? { environment: options.environment } : {}),
@@ -1687,6 +1734,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { model: input.modelSelection.model }
             : {}),
           ...(serviceTier ? { serviceTier } : {}),
+          ...(tradingProfile ? { baseInstructions: TRADING_SYSTEM_PROMPT } : {}),
           ...(mcpSession
             ? {
                 environment: {
@@ -1698,6 +1746,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                   `mcp_servers.t3-trade.url=${mcpSession.endpoint}`,
                   "-c",
                   'mcp_servers.t3-trade.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
+                  ...(tradingProfile ? tradingCodexFeatureArgs : []),
                 ],
               }
             : {}),

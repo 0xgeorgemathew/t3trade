@@ -423,6 +423,7 @@ describe("openCodexThread", () => {
         requestedModel: "gpt-5.3-codex",
         serviceTier: undefined,
         resumeThreadId: "stale-thread",
+        baseInstructions: undefined,
       });
 
       NodeAssert.equal(opened.thread.id, "fresh-thread");
@@ -462,6 +463,7 @@ describe("openCodexThread", () => {
         requestedModel: "gpt-5.3-codex",
         serviceTier: undefined,
         resumeThreadId: "stale-thread",
+        baseInstructions: undefined,
       }).pipe(Effect.flip);
 
       NodeAssert.ok(isCodexAppServerRequestError(error));

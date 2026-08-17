@@ -46,6 +46,7 @@ import {
   type CodexSessionRuntimeShape,
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
+import { TRADING_SYSTEM_PROMPT } from "../TradingSessionProfile.ts";
 import { makeCodexAdapter } from "./CodexAdapter.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
@@ -382,6 +383,41 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       NodeAssert.ok(sent.includes("blocked_by_data"));
       NodeAssert.ok(sent.endsWith("wakeup"));
       clearSessionProfile(threadId);
+    }),
+  );
+
+  it.effect("gives a trading thread the trading profile at session start", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("sess-trading-profile");
+      setSessionProfile({ threadId, kind: "trading" });
+      try {
+        const adapter = yield* CodexAdapter;
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+
+        const runtime = sessionRuntimeFactory.lastRuntime;
+        NodeAssert.ok(runtime);
+        // The persona seam: the coding-agent base prompt is replaced by the
+        // trading system prompt, which carries the decision contract.
+        NodeAssert.equal(runtime.options.baseInstructions, TRADING_SYSTEM_PROMPT);
+        // The workspace seam: an empty server-owned directory, not the cwd of
+        // whatever thread asked for the session.
+        NodeAssert.ok(runtime.options.cwd.endsWith("trading-cwd"));
+
+        // The contract already rode in `baseInstructions`, so the first turn
+        // carries only the header — never the 9.5k contract a second time.
+        runtime.sendTurnImpl.mockClear();
+        yield* Effect.ignore(adapter.sendTurn({ threadId, input: "wakeup", attachments: [] }));
+        const sent = runtime.sendTurnImpl.mock.calls[0]?.[0]?.input ?? "";
+        NodeAssert.ok(sent.includes("Trading mission turn"));
+        NodeAssert.ok(!sent.includes("THE LOOP IS: PREDICT"));
+        NodeAssert.ok(sent.endsWith("wakeup"));
+      } finally {
+        clearSessionProfile(threadId);
+      }
     }),
   );
 

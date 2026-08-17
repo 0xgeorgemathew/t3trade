@@ -164,6 +164,16 @@ export function resetTradingContractDelivery(threadId: ThreadId): void {
   contractDelivered.delete(threadId);
 }
 
+/**
+ * The contract reached this session instance some other way — as its base
+ * instructions / system prompt — so no turn needs to carry it as a prefix.
+ * Call it right after `resetTradingContractDelivery` in a `startSession` that
+ * installs `TRADING_SYSTEM_PROMPT` at the provider's own system-prompt seam.
+ */
+export function markTradingContractDelivered(threadId: ThreadId): void {
+  if (isTradingThread(threadId)) contractDelivered.add(threadId);
+}
+
 /** What one turn's prefix is, and how to record that it actually arrived. */
 export interface TradingTurnContract {
   readonly text: string;
