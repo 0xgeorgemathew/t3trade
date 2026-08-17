@@ -66,8 +66,10 @@ import { readMarketSample, writeMarketSample } from "./TradingMarketSample.ts";
 import type { TradingPlanState } from "./Schemas.ts";
 import type { PersistedWatch } from "./Schemas.ts";
 import type { TradingMission } from "./Schemas.ts";
+import type { WakeupArmedWatch, WakeupArmedWatchLine } from "./Schemas.ts";
 import {
   describeArmedWatch,
+  describeArmedWatchLine,
   findMisarmedEntryConditions,
   findUnarmedEntryConditions,
   TradingDomainEventSummary,
@@ -332,8 +334,22 @@ const renderWakeupProjection = (projection: Record<string, unknown>): string => 
   return lines.join("\n");
 };
 
+/**
+ * The armed set as the wake renders it: one line per watch.
+ *
+ * Every render path goes through here, so the schema keeps the whole
+ * `WakeupArmedWatch` (the persisted wake and the UI still read it) and only
+ * what the model is handed is compacted. See `describeArmedWatchLine`.
+ */
+const renderArmedWatches = (
+  armed: ReadonlyArray<WakeupArmedWatch>,
+): ReadonlyArray<WakeupArmedWatchLine> => armed.map(describeArmedWatchLine);
+
 export const renderWakeup = (wakeup: TradingHarnessWakeup): string =>
-  renderWakeupProjection(wakeup as unknown as Record<string, unknown>);
+  renderWakeupProjection({
+    ...wakeup,
+    armedWatches: renderArmedWatches(wakeup.armedWatches),
+  } as unknown as Record<string, unknown>);
 
 /**
  * Keep the first `WAKEUP_LIST_ENTRIES` entries, and say how many were dropped.
@@ -514,7 +530,7 @@ export const renderBoundedWakeup = (
             target: current.activeStrategy.target,
           },
         }),
-    armedWatches: current.armedWatches.slice(0, 6),
+    armedWatches: renderArmedWatches(current.armedWatches.slice(0, 6)),
     unarmedEntryConditions: current.unarmedEntryConditions,
     misarmedEntryConditions: current.misarmedEntryConditions,
     pendingEvents: current.pendingEvents.slice(-3),
@@ -593,7 +609,7 @@ const renderLeanWakeup = (wakeup: TradingHarnessWakeup): string =>
       : { plan: { intent: wakeup.activeStrategy.intent, phase: planPhase(wakeup.position.size) } }),
     ...(wakeup.strategyReview === undefined ? {} : { strategyReview: wakeup.strategyReview }),
     ...(wakeup.positionReview === undefined ? {} : { positionReview: wakeup.positionReview }),
-    armedWatches: wakeup.armedWatches.slice(0, 8),
+    armedWatches: renderArmedWatches(wakeup.armedWatches.slice(0, 8)),
     pendingEvents: wakeup.pendingEvents.slice(-3),
     omitted:
       "alert wake — candles, volatility, structure, book, and the full plan are " +

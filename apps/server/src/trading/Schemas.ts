@@ -101,12 +101,15 @@ export {
 
 export {
   describeArmedWatch,
+  describeArmedWatchLine,
   HarnessRunRequest,
   HarnessRunOutcome,
   TradingDomainEventSummary,
   TradingHarnessWakeup,
   WakeupArmedWatch,
 } from "@t3tools/trading-contracts/wakeup";
+
+export type { WakeupArmedWatchLine } from "@t3tools/trading-contracts/wakeup";
 
 export {
   TRADING_WATCH_TOOL,

@@ -102,6 +102,12 @@ const armed: ReadonlyArray<PersistedWatch> = [
   flooredWatch,
 ];
 
+/**
+ * What the registry answers with, when a test needs something other than the
+ * fixture set. Reset by the test that sets it, like `positionSize` below.
+ */
+let armedOverride: ReadonlyArray<PersistedWatch> | null = null;
+
 const freshness = { observedAt: NOW, source: "websocket", staleAfterMillis: 2_000 };
 
 /** The size the exchange reports as held. Mutated by the enrichment tests. */
@@ -227,12 +233,13 @@ const stubMissions = Layer.succeed(TradingMissionService)({
 } as unknown as TradingMissionService["Service"]);
 
 const stubWatches = Layer.succeed(TradingWatchService)({
-  getWatch: (id: string) => Effect.succeed(armed.find((w) => w.id === id) ?? null),
+  getWatch: (id: string) =>
+    Effect.succeed((armedOverride ?? armed).find((w) => w.id === id) ?? null),
 } as unknown as TradingWatchService["Service"]);
 
 const stubStrategies = Layer.succeed(TradingStrategyService)({
-  listWatches: () => Effect.succeed(armed),
-  listWatchesForRead: () => Effect.succeed(armed),
+  listWatches: () => Effect.succeed(armedOverride ?? armed),
+  listWatchesForRead: () => Effect.succeed(armedOverride ?? armed),
 } as unknown as TradingStrategyService["Service"]);
 
 const layer = it.layer(
@@ -314,6 +321,58 @@ layer("TradingWakeupComposer", (it) => {
       const composed = yield* composeFull({});
       assert.include(composed.text, "recentCandles");
       assert.include(composed.text, "observedVolatility");
+    }),
+  );
+
+  // Plan 33 fix 3.1. The armed set was over half a real wake and most of that
+  // was repetition: a `missionId` on every entry restating the one the wake
+  // already carries, timestamps no decision reads, and a `watch` encoding
+  // sitting beside the `condition` that says the same thing.
+  it.effect("renders one line per armed watch, and the fired one in full", () =>
+    Effect.gen(function* () {
+      armedOverride = Array.from({ length: 8 }, (_, i) =>
+        watch(`watch_level_${i}`, {
+          type: "price_cross",
+          market: "ETH",
+          priceSource: "mark",
+          direction: "above",
+          price: 4_000 + i,
+        }),
+      );
+      const composer = yield* TradingWakeupComposer;
+      const composed = yield* composer.compose({
+        mission,
+        harnessRunId: "run_1",
+        cause: "market_watch_triggered",
+        occurredAt: NOW,
+        triggeringWatchId: "watch_level_0",
+        pendingEvents: [],
+        activeStrategy: strategy,
+      });
+      armedOverride = null;
+
+      const section = composed.text.slice(
+        composed.text.indexOf("armedWatches:"),
+        composed.text.indexOf("pendingEvents:"),
+      );
+      const lines = section.split("\n").filter((line) => /^\s*\[\d+] id=/.test(line));
+      assert.equal(lines.length, 8);
+      // Every watch is addressable — `cancel` and `replacesWatchId` take the id.
+      for (const id of armed.map((_, i) => `watch_level_${i}`)) {
+        assert.include(section, id);
+      }
+      // And the bulk that was riding beside each one is gone.
+      assert.notInclude(section, "missionId");
+      assert.notInclude(section, "createdAt");
+      assert.notInclude(section, "updatedAt");
+      // The compacting is render-side only: the schema still carries the whole
+      // watch, which is what the UI and the persisted wake read.
+      assert.equal(composed.wakeup.armedWatches[0]?.watch.missionId, "mission_1");
+
+      // The watch that FIRED is the one thing that keeps its full detail.
+      const fired = composed.text.slice(composed.text.indexOf("triggeringWatch:"));
+      assert.include(fired.slice(0, fired.indexOf("\nmarket:")), "watch_level_0");
+      assert.equal(composed.wakeup.triggeringWatch?.id, "watch_level_0");
     }),
   );
 

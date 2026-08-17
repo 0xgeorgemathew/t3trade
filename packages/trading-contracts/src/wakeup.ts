@@ -22,8 +22,10 @@ import { ObservedVolatility } from "./volatility.ts";
 import {
   MisarmedEntryCondition,
   PersistedWatch,
+  toWatchCondition,
   UnarmedEntryCondition,
   WatchArmedReason,
+  WatchCondition,
 } from "./watch.ts";
 
 /**
@@ -76,6 +78,50 @@ export function describeArmedWatch(persisted: PersistedWatch, markPrice: number)
     watch: persisted,
     distanceUsd,
     distanceBps: markPrice > 0 ? (distanceUsd / markPrice) * 10_000 : 0,
+  };
+}
+
+/**
+ * One armed watch as the wake RENDERS it — the same facts, minus the ones that
+ * cost more than they tell.
+ *
+ * `WakeupArmedWatch` above stays the schema: the persisted wake and the UI read
+ * it unchanged. What the model is handed is this. On a real wake the armed set
+ * was half the message and most of that was repetition — `missionId` on every
+ * entry restating the one the wake already carries, `createdAt`/`updatedAt`
+ * that no decision reads, and a `watch` encoding sitting beside the `condition`
+ * that says the same thing in the only vocabulary `trading_watch` accepts.
+ *
+ * `id` is kept whole, because it is what `cancel` and `replacesWatchId` take.
+ *
+ * Every field is a primitive or a primitive-only record, which is what makes
+ * the wakeup renderer fold each watch onto a single line.
+ */
+export interface WakeupArmedWatchLine {
+  readonly id: string;
+  readonly on: WatchCondition;
+  readonly awayUsd?: number;
+  readonly awayBps?: number;
+  /** The prediction this level belongs to, when it belongs to one. */
+  readonly prediction?: number;
+}
+
+/**
+ * Project a measured armed watch onto its rendered line.
+ *
+ * Takes the measurement rather than re-taking it: the signed distance is
+ * `describeArmedWatch`'s and stays written once.
+ */
+export function describeArmedWatchLine(armed: WakeupArmedWatch): WakeupArmedWatchLine {
+  const persisted = armed.watch;
+  return {
+    id: persisted.id,
+    on: persisted.condition ?? toWatchCondition(persisted.watch),
+    ...(armed.distanceUsd === undefined ? {} : { awayUsd: armed.distanceUsd }),
+    ...(armed.distanceBps === undefined ? {} : { awayBps: armed.distanceBps }),
+    ...(persisted.predictionVersion === undefined
+      ? {}
+      : { prediction: persisted.predictionVersion }),
   };
 }
 
