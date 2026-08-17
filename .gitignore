@@ -42,3 +42,9 @@ node_modules/
 .plans/
 artifacts/reports/
 artifacts/t3-trade-report/
+
+# T3 Trade themed assets & backups
+assets/themed-t3trade/
+assets/original-backup/
+assets/.asset-theme-state.json
+
