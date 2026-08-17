@@ -43,6 +43,10 @@ export const TRADING_LOOK_TOOL = "trading_look";
  * - `position`: what is held, the account behind it, resting orders, and what
  *   closing it costs.
  * - `mission`: mandate, authority, plan, watches, pending executions.
+ * - `retrospect`: what the mission has BELIEVED — plan history, journal,
+ *   target calibration. Split out of `mission` because it is the half that
+ *   grows: a turn reacting to a level that just fired was paying for its own
+ *   back-catalogue on every read.
  * - `trades`: this mission's completed orders and round trips.
  */
 export const TradingLookScope = Schema.Literals([
@@ -51,6 +55,7 @@ export const TradingLookScope = Schema.Literals([
   "structure",
   "position",
   "mission",
+  "retrospect",
   "trades",
 ]);
 export type TradingLookScope = typeof TradingLookScope.Type;
@@ -62,6 +67,7 @@ export const TRADING_LOOK_SCOPES: ReadonlyArray<TradingLookScope> = [
   "structure",
   "position",
   "mission",
+  "retrospect",
   "trades",
 ];
 

@@ -90,7 +90,7 @@ const dependencies = [
 
 export const TradingLookTool = Tool.make("trading_look", {
   description:
-    "The one read, scoped. `scope[]` picks parts — market (mark, book, `microstructure`, `cost`), candles (bars + volatility; `interval`/`bars` tune it), structure (multi-timeframe with scored `candidates[]`), position (flat is size 0, `account`, `openOrders`, costs), mission (mandate, authority, plan, watches, journal), trades. Omit `scope` for all of it — the assessment read; name one or two to answer a reaction. `cost` is context, never a gate. `mission.bound: false` with `lastMission` once ended.",
+    "The one read, scoped. `scope[]` picks parts — market (mark, book, `microstructure`, `cost`), candles (bars + volatility; `interval`/`bars`), structure (multi-timeframe, scored `candidates[]`), position (flat is size 0, `account`, `openOrders`, costs), mission (mandate, plan, watches), retrospect (plan history, journal, calibration), trades. Omit `scope` for the assessment read; name one or two for a reaction. `cost` is context, never a gate. `mission.bound: false` with `lastMission` once ended.",
   parameters: TradingLookInput,
   success: TradingObservation,
   failure: TradingToolRejectedError,

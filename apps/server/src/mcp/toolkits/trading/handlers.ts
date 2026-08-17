@@ -212,12 +212,15 @@ const readUnboundMission = Effect.fn("TradingToolkit.readUnboundMission")(functi
 /**
  * The mission half of a look.
  *
- * `withRetrospect` is the `mission` scope: the plan journal, the notes, and
+ * `withRetrospect` is the `retrospect` scope: the plan history, the notes, and
  * the target calibration are what the mission has BELIEVED, and a run reacting
  * to a fired level does not need its own back-catalogue to answer what just
- * happened. Everything else here is live state and is always read — a scoped
- * look that hid the armed watches or the pending executions would be a cheaper
- * read that is also a blind one.
+ * happened. It used to ride on `mission`, which meant a model scoping
+ * correctly still paid for it.
+ *
+ * Everything else here is live state and is always read — a scoped look that
+ * hid the armed watches or the pending executions would be a cheaper read that
+ * is also a blind one.
  */
 const readMission = Effect.fn("TradingToolkit.readMission")(function* (
   mission: TradingMission,
@@ -691,7 +694,7 @@ const readObservation = Effect.fn("TradingToolkit.readObservation")(function* (
   const missionResult =
     mission === null
       ? yield* readUnboundMission(call.threadId)
-      : yield* readMission(mission, scopes.has("mission"));
+      : yield* readMission(mission, scopes.has("retrospect"));
 
   const marketHalf = yield* readMarketHalf({
     market,

@@ -831,6 +831,31 @@ it.effect("rebuilds a reacting turn's picture in two scoped, bounded looks", () 
         assert.notEqual(fullRead.candles, undefined);
         assert.notEqual(fullRead.mission.strategyHistory, undefined);
         assert.notEqual(fullRead.mission.journal, undefined);
+
+        // Plan 33 fix 2.2: `mission` is the live working set. The
+        // back-catalogue is its own scope, so a turn that scoped correctly is
+        // not still paying for it.
+        const live = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["mission"],
+        });
+        const liveRead = live.result.body;
+        assert.equal(liveRead.mission.bound, true);
+        assert.notEqual(liveRead.mission.mission, undefined);
+        assert.notEqual(liveRead.mission.authority, undefined);
+        assert.notEqual(liveRead.mission.strategy, undefined);
+        assert.equal(liveRead.mission.watches.length, 1);
+        assert.equal(liveRead.mission.strategyHistory, undefined);
+        assert.equal(liveRead.mission.journal, undefined);
+        assert.equal(liveRead.mission.targetCalibration, undefined);
+
+        const retrospect = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["retrospect"],
+        });
+        const retrospectRead = retrospect.result.body;
+        assert.notEqual(retrospectRead.mission.strategyHistory, undefined);
+        assert.notEqual(retrospectRead.mission.journal, undefined);
       }),
     tradingLayerOverExchange(fake),
   );
