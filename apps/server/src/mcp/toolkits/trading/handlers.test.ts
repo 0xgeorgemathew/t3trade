@@ -59,6 +59,12 @@ import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 const INTERNAL_ERROR_TEXT = "Tool execution failed due to an internal server error.";
 
 const MISSION_ID = "mission_mcp_trading";
+/** A mission mandate at the length operators actually write them. */
+const MANDATE =
+  "Trade ETH momentum on the 1m. Read ema(20) and ema(50) through trading_look " +
+  "indicators rather than deriving them from raw bars. One gate decides whether " +
+  "a trade is worth taking: is the expected move over the intended hold bigger " +
+  "than the round trip? If it is not, stand down and say so in one line.";
 const BOUND_THREAD = ThreadId.make("thread-bound-to-mission");
 const UNBOUND_THREAD = ThreadId.make("thread-with-no-mission");
 const PROVIDER_INSTANCE = ProviderInstanceId.make("claude");
@@ -421,6 +427,9 @@ const withMcpServer = <A, E>(
     readonly seedPosition: (input: {
       readonly size: number;
       readonly entryPrice: number;
+      readonly unrealisedPnl?: number | undefined;
+      /** The reconciler's high-water mark, when the test needs a drawdown. */
+      readonly peakUnrealisedPnl?: number | undefined;
     }) => Effect.Effect<void, never, never>;
     /** Publish a plan row directly, with a known `updatedAt`. */
     readonly seedPlan: (input: {
@@ -495,13 +504,20 @@ const withMcpServer = <A, E>(
             'ready', 1, 1
           )
         `.pipe(Effect.asVoid, Effect.orDie);
-      const seedPosition = (input: { readonly size: number; readonly entryPrice: number }) =>
+      const seedPosition = (input: {
+        readonly size: number;
+        readonly entryPrice: number;
+        readonly unrealisedPnl?: number | undefined;
+        readonly peakUnrealisedPnl?: number | undefined;
+      }) =>
         sql`
           INSERT INTO trading_position_snapshots (
             mission_id, market, size, entry_price, unrealised_pnl,
-            margin_used, protected_size, observed_at, opened_at
+            margin_used, protected_size, observed_at, opened_at, peak_unrealised_pnl
           ) VALUES (
-            ${MISSION_ID}, 'ETH', ${input.size}, ${input.entryPrice}, 5, 100, 0, 1_000_000, 400_000
+            ${MISSION_ID}, 'ETH', ${input.size}, ${input.entryPrice},
+            ${input.unrealisedPnl ?? 5}, 100, 0, 1_000_000, 400_000,
+            ${input.peakUnrealisedPnl ?? null}
           )
         `.pipe(Effect.asVoid, Effect.orDie);
       const seedPlan = (input: {
@@ -580,7 +596,9 @@ const withMcpServer = <A, E>(
           missionId: MISSION_ID,
           userId: "user_mcp_trading",
           tradingAccountId: "acct_mcp_trading",
-          instruction: "Trade ETH momentum",
+          // A mandate the length real ones are: the abridging test below has
+          // nothing to measure against an eighteen-character one.
+          instruction: MANDATE,
           allocatedCapitalUsd: 1_000,
           harness: {
             provider: "claude",
@@ -894,6 +912,126 @@ it.effect("computes the indicators a look asks for, on bars already fetched", ()
           bars: 6,
         });
         assert.equal(bare.result.body.indicators, undefined);
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
+// Plan 34 step 1: the look that was 33,000 characters. A turn that pulled
+// `ema(20)` and `ema(50)` also got the 120-bar window it read them from, the
+// per-timeframe structure detail nothing downstream reads, and the mandate it
+// already knows — three copies of the same context, once per wake.
+it.effect("echoes the chart only when the chart is what was asked for", () => {
+  const fake = makeFakeExchange();
+  return withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+
+        // Indicators named, bars not: the readings, and none of the window
+        // they were read from.
+        const pulled = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["candles"],
+          indicators: [{ kind: "ema", period: 20 }],
+        });
+        const pulledRead = pulled.result.body;
+        assert.equal(pulledRead.candles.candles.length, 0);
+        assert.equal(pulledRead.indicators.length, 1);
+        // The measurements are still taken over the full fetched lookback.
+        assert.isTrue(Number.isFinite(pulledRead.indicators[0].value));
+        assert.equal(pulledRead.volatility.market, "ETH");
+
+        // `bars: 0` asks for the same thing outright.
+        const none = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["candles"],
+          bars: 0,
+        });
+        assert.equal(none.result.body.candles.candles.length, 0);
+
+        // Neither named: a short tail, not the whole lookback.
+        const tail = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["candles"],
+        });
+        assert.equal(tail.result.body.candles.candles.length, 20);
+
+        // A call that named bars beside indicators gets both.
+        const both = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["candles"],
+          bars: 5,
+          indicators: [{ kind: "ema", period: 20 }],
+        });
+        assert.equal(both.result.body.candles.candles.length, 5);
+        assert.equal(both.result.body.indicators.length, 1);
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
+// Plan 34 step 1.2: the structure read rides back as verdicts, not as the
+// thirty measured features per timeframe the detectors scored on.
+it.effect("returns the structure read digested, and the candidate table once", () => {
+  const fake = makeFakeExchange();
+  return withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+        const look = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["structure"],
+        });
+        const structure = look.result.body.structure;
+        assert.notEqual(structure, undefined);
+        assert.notEqual(structure.regime, undefined);
+        assert.notEqual(structure.alignment, undefined);
+        for (const frame of structure.timeframes) {
+          assert.isString(frame.interval);
+          assert.isNumber(frame.directionScore);
+          assert.isNumber(frame.atrUsd);
+          // The detector-only half stays behind: nothing downstream of the
+          // scoring reads it, and four frames of it was 4,700 characters.
+          assert.equal(frame.pivotTrend, undefined);
+          assert.equal(frame.ema, undefined);
+          assert.equal(frame.excursionSymmetryRatio, undefined);
+        }
+        // A candidate carries every field of the setup it was built from plus
+        // the cost of taking it, so the two tables are never both sent.
+        assert.isTrue(structure.candidates === undefined || structure.setups === undefined);
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
+// Plan 34 step 1.3: the mandate does not change for a mission's life, so a
+// reacting turn does not re-read a thousand characters of it every wake.
+it.effect("abridges the mandate off the hot path and serves it whole on retrospect", () => {
+  const fake = makeFakeExchange();
+  return withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+        const live = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["mission"],
+        });
+        const abridged = live.result.body.mission.mission.instruction;
+
+        const whole = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["mission", "retrospect"],
+        });
+        const full = whole.result.body.mission.mission.instruction;
+
+        if (full.length > 120) {
+          assert.isBelow(abridged.length, full.length);
+          assert.include(abridged, "retrospect");
+        } else {
+          // A short mandate is already its own pointer.
+          assert.equal(abridged, full);
+        }
       }),
     tradingLayerOverExchange(fake),
   );

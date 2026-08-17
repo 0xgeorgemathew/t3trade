@@ -19,7 +19,7 @@ import { TradingCostContext, TradingCostEstimate } from "./costs.ts";
 import { TradingTradeHistory } from "./history.ts";
 import { IndicatorReading, IndicatorRequest } from "./indicators.ts";
 import { AgentMarketSnapshot, MarketHistory, OrderBook, ResolvedMarket } from "./market.ts";
-import { MarketStructure } from "./marketStructure.ts";
+import { ObservedMarketStructure } from "./marketStructure.ts";
 import { MarketMicrostructure } from "./microstructure.ts";
 import { TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
 import { TradingTimeframe } from "./strategy.ts";
@@ -82,6 +82,16 @@ export const TRADING_LOOK_SCOPES: ReadonlyArray<TradingLookScope> = [
 export const TRADING_LOOK_MAX_BARS = 200;
 
 /**
+ * The bars a `candles` scope echoes when the call named neither `bars` nor
+ * `indicators`.
+ *
+ * Enough chart to see the last few prints; not the whole lookback the
+ * measurements were taken over. The lookback is still fetched and still
+ * measured — this bounds only what rides back.
+ */
+export const TRADING_LOOK_DEFAULT_BARS = 20;
+
+/**
  * `market` defaults to the mission's own market. A thread with no live mission
  * may still look at a market — the read is the same answer whoever asks — and
  * gets the market half of the observation with `mission.bound: false`.
@@ -97,14 +107,20 @@ export const TradingLookInput = Schema.Struct({
   /** The bar interval for the `candles` scope. Defaults to the mission's own. */
   interval: Schema.optional(TradingTimeframe),
   /**
-   * How many bars the `candles` scope returns, newest last. Clamped to
-   * {@link TRADING_LOOK_MAX_BARS}; omitted returns the volatility lookback the
-   * measurements were taken over.
+   * How many bars of raw chart the `candles` scope echoes back, newest last.
+   * Clamped to {@link TRADING_LOOK_MAX_BARS}. `0` returns no bars at all —
+   * the volatility, the freshness and the indicators, and none of the chart.
+   *
+   * Omitted, the default is {@link TRADING_LOOK_DEFAULT_BARS} — or none, when
+   * the call named `indicators`. A call that said what it wanted read off the
+   * bars has already read them; echoing the window as well was 18k characters
+   * of context nobody asked for (plan 34 step 1.1). The measurements are
+   * always taken over the full fetched lookback whatever this says.
    */
   bars: Schema.optional(
     Schema.Number.check(
       Schema.isInt(),
-      Schema.isBetween({ minimum: 1, maximum: TRADING_LOOK_MAX_BARS }),
+      Schema.isBetween({ minimum: 0, maximum: TRADING_LOOK_MAX_BARS }),
     ),
   ),
   /**
@@ -159,8 +175,8 @@ export const TradingObservation = Schema.Struct({
   indicators: Schema.optional(Schema.Array(IndicatorReading)),
   /** The same measurement one interval up; absent on the highest interval. */
   higherTimeframeVolatility: Schema.optional(ObservedVolatility),
-  /** Direction, alignment, regime, and the scored setups with their cost. */
-  structure: Schema.optional(MarketStructure),
+  /** Direction, alignment, regime, and the scored candidates with their cost. */
+  structure: Schema.optional(ObservedMarketStructure),
   /**
    * What the book says, as readings — plan 29 phase 7. The same value the wake
    * carries, from the same read: a look and a wake quote one book, never two.

@@ -6,7 +6,7 @@
  * insufficient-bars cases pin that "could not be computed" is an absent
  * `value`, never a zero.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
 
 import {
   computeIndicator,

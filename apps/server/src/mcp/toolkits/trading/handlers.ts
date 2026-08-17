@@ -26,6 +26,7 @@ import {
 } from "@t3tools/trading-contracts/journal";
 import {
   resolveLookScopes,
+  TRADING_LOOK_DEFAULT_BARS,
   type TradingLookInput,
   type TradingLookScope,
   type TradingObservation,
@@ -63,6 +64,7 @@ import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-co
 import {
   analyseMarketStructure,
   compareCandidates,
+  digestMarketStructure,
   MARKET_STRUCTURE_LOOKBACK_BARS,
   MARKET_STRUCTURE_TIMEFRAMES,
 } from "@t3tools/trading-contracts/market-structure";
@@ -282,7 +284,7 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (
 
   return {
     bound: true,
-    mission,
+    mission: withRetrospect ? mission : withMandatePointer(mission),
     mode,
     authority: mission.authority,
     authorityVersion: mission.authorityVersion,
@@ -306,6 +308,31 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (
 // attaches `peakUnrealisedPnl` and `drawdownFromPeakUsd` itself — so a look and
 // a wake report the same peak by construction rather than by two copies of the
 // same arithmetic agreeing.
+
+/**
+ * How much of the mandate a scoped look carries — plan 34 step 1.3.
+ *
+ * Enough to recognise which mandate it is, and not the thousand characters of
+ * it. The mandate does not change for a mission's life, so re-reading it on
+ * every wake-turn buys nothing; the full text is one scope away.
+ */
+const MANDATE_PREVIEW_CHARS = 120;
+
+/**
+ * The mission row with its mandate cut to a pointer.
+ *
+ * The `retrospect` scope — and so any unscoped assessment look — still carries
+ * the whole instruction. A run reacting to a level that fired does not: it
+ * already knows what it is doing, and the mandate was 1,050 characters of
+ * every look it took.
+ */
+const withMandatePointer = (mission: TradingMission): TradingMission =>
+  mission.instruction.length <= MANDATE_PREVIEW_CHARS
+    ? mission
+    : {
+        ...mission,
+        instruction: `${mission.instruction.slice(0, MANDATE_PREVIEW_CHARS)}… (mandate abridged — read it in full with scope "retrospect")`,
+      };
 
 const announceWatchRegistered = Effect.fn("TradingToolkit.announceWatchRegistered")(
   function* (input: {
@@ -832,10 +859,31 @@ const withMicrostructure = (
  * clipping the series does not change the volatility, it changes how much of
  * the chart rides back in the response.
  */
-const boundCandles = (history: MarketHistory, bars: number | undefined): MarketHistory =>
-  bars === undefined || history.candles.length <= bars
-    ? history
-    : { ...history, candles: history.candles.slice(-bars) };
+const boundCandles = (history: MarketHistory, bars: number): MarketHistory => {
+  // `slice(-0)` is `slice(0)` — the whole series. Zero bars is a real answer
+  // here, so it is taken before the arithmetic that would return everything.
+  if (bars <= 0) return { ...history, candles: [] };
+  if (history.candles.length <= bars) return history;
+  return { ...history, candles: history.candles.slice(-bars) };
+};
+
+/**
+ * How much of the chart this call gets echoed back — plan 34 step 1.1.
+ *
+ * A look that named `indicators` said what it wanted read off the bars, and
+ * the reading is 140 characters where the window it was read from is 18,000.
+ * Sending both is how one look became a third of a context window, so naming
+ * indicators without naming `bars` means the readings and no chart. `bars: 0`
+ * asks for the same thing outright; everything else is the number asked for,
+ * or a short tail when nothing was.
+ */
+const resolveEchoedBars = (input: {
+  readonly bars?: number | undefined;
+  readonly indicators?: ReadonlyArray<IndicatorRequest> | undefined;
+}): number => {
+  if (input.bars !== undefined) return input.bars;
+  return (input.indicators ?? []).length > 0 ? 0 : TRADING_LOOK_DEFAULT_BARS;
+};
 
 const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (input: {
   readonly market: TradingMarket;
@@ -845,7 +893,8 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
   readonly bars?: number;
   readonly indicators?: ReadonlyArray<IndicatorRequest>;
 }) {
-  const { market, mission, scopes, bars } = input;
+  const { market, mission, scopes } = input;
+  const echoedBars = resolveEchoedBars(input);
 
   // The indicator readings this call asked for, computed on the same bars the
   // candle read fetched — the model pulls `ema(20)` instead of deriving it
@@ -886,7 +935,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
       ...(candles === null || !wantsCandles
         ? {}
         : {
-            candles: boundCandles(candles, bars),
+            candles: boundCandles(candles, echoedBars),
             volatility: roundObservedVolatility(
               measureVolatility({
                 market,
@@ -900,7 +949,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
       ...(orderBook === null || candles === null || snapshot === null
         ? {}
         : withMicrostructure(orderBook, candles.candles, snapshot)),
-      ...(structure === null ? {} : { structure }),
+      ...(structure === null ? {} : { structure: digestMarketStructure(structure) }),
     };
   }
 
@@ -937,7 +986,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
           .getMarketHistory({
             market,
             interval: namedInterval,
-            maxBars: bars ?? VOLATILITY_LOOKBACK_BARS,
+            maxBars: VOLATILITY_LOOKBACK_BARS,
           })
           .pipe(Effect.catchCause(() => Effect.succeed(null)))
       : null;
@@ -966,7 +1015,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
       : {}),
     ...(wantsCandles
       ? {
-          candles: boundCandles(namedHistory ?? facts.history, bars),
+          candles: boundCandles(namedHistory ?? facts.history, echoedBars),
           volatility: facts.observedVolatility,
           ...(facts.higherTimeframeVolatility === null
             ? {}
@@ -974,7 +1023,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
           ...indicatorReadings(namedHistory ?? facts.history),
         }
       : {}),
-    ...(structure === null ? {} : { structure }),
+    ...(structure === null ? {} : { structure: digestMarketStructure(structure) }),
     ...(wantsPosition
       ? {
           account: facts.accountSnapshot,

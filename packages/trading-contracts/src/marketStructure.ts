@@ -524,6 +524,80 @@ export const MarketStructure = Schema.Struct({
 });
 export type MarketStructure = typeof MarketStructure.Type;
 
+/**
+ * One timeframe as it rides back to a model — plan 34 step 1.2.
+ *
+ * `TimeframeReading` carries thirty measured features per frame because the
+ * detectors score on them; four frames of it is 4,700 characters on every
+ * look, and nothing downstream of the detectors reads twenty-six of them. This
+ * is the half a turn actually reasons with: which way, how fast, how far, and
+ * where the boundaries are. The full reading is still what
+ * {@link analyseMarketStructure} computes and what `setups[]` and
+ * `candidates[]` are scored from — this bounds only the echo.
+ */
+export const TimeframeDigest = Schema.Struct({
+  interval: MarketCandleInterval,
+  /** False when the window is shorter than `MIN_MARKET_STRUCTURE_BARS`. */
+  sufficientData: Schema.Boolean,
+  /** The last close; the swing distances are measured from it. */
+  referencePrice: Price,
+  direction: MarketDirection,
+  directionScore: Schema.Number,
+  /** The same score over only the last `RECENT_DIRECTION_BARS` bars. */
+  recentDirectionScore: Schema.Number,
+  atrUsd: Schema.Number,
+  atrPercent: Schema.Number,
+  swingHighPrice: Schema.optional(Price),
+  swingLowPrice: Schema.optional(Price),
+});
+export type TimeframeDigest = typeof TimeframeDigest.Type;
+
+/** One frame, cut to what a turn reads. */
+export const digestTimeframe = (frame: TimeframeReading): TimeframeDigest => ({
+  interval: frame.interval,
+  sufficientData: frame.sufficientData,
+  referencePrice: frame.referencePrice,
+  direction: frame.direction,
+  directionScore: frame.directionScore,
+  recentDirectionScore: frame.recentDirectionScore,
+  atrUsd: frame.atrUsd,
+  atrPercent: frame.atrPercent,
+  ...(frame.swingHighPrice === undefined ? {} : { swingHighPrice: frame.swingHighPrice }),
+  ...(frame.swingLowPrice === undefined ? {} : { swingLowPrice: frame.swingLowPrice }),
+});
+
+/**
+ * The structure read as `trading_look` returns it.
+ *
+ * Same verdicts, less echo: the per-frame readings are digested, and `setups[]`
+ * is dropped whenever `candidates[]` is present — a candidate carries every
+ * field of the setup it was built from plus the cost of taking it, so shipping
+ * both was the same table twice.
+ */
+export const ObservedMarketStructure = Schema.Struct({
+  market: ExchangeMarket,
+  measuredAt: UnixMillis,
+  timeframes: Schema.Array(TimeframeDigest),
+  alignment: TimeframeAlignment,
+  regime: MarketRegime,
+  /** Present only when the read could not price a candidate table. */
+  setups: Schema.optional(Schema.Array(CandidateSetup)),
+  candidates: Schema.optional(Schema.Array(StrategyCandidate)),
+});
+export type ObservedMarketStructure = typeof ObservedMarketStructure.Type;
+
+/** {@link ObservedMarketStructure} from the full read. */
+export const digestMarketStructure = (structure: MarketStructure): ObservedMarketStructure => ({
+  market: structure.market,
+  measuredAt: structure.measuredAt,
+  timeframes: structure.timeframes.map(digestTimeframe),
+  alignment: structure.alignment,
+  regime: structure.regime,
+  ...(structure.candidates === undefined
+    ? { setups: structure.setups }
+    : { candidates: structure.candidates }),
+});
+
 // ---------------------------------------------------------------------------
 // Arithmetic
 // ---------------------------------------------------------------------------
