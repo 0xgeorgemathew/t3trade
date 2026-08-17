@@ -63,6 +63,22 @@ export const formatPrice = (value: number): string =>
 export const formatSize = (value: number): string =>
   value.toLocaleString(undefined, { maximumFractionDigits: 4 });
 
+/**
+ * A figure at the position ledger's own precision: exactly three decimals.
+ *
+ * Fixed rather than trimmed, and the same for sizes and prices, because the
+ * ledger is read down its columns as much as across its rows. Every figure the
+ * same width means right-aligning the price column also aligns the arrows
+ * between the two prices, which no per-row alignment could achieve while
+ * `0.2631` sat above `0.4`.
+ *
+ * Three, not four: the finest lot the POC's markets quote is a thousandth of a
+ * unit once the size has been through a partial fill, and the fourth decimal
+ * was only ever floating-point noise printed as data.
+ */
+export const formatFixed3 = (value: number): string =>
+  value.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+
 /** Turn an underscored domain literal into prose without inventing wording. */
 export const humanizeLiteral = (value: string): string => value.replaceAll("_", " ");
 
@@ -110,6 +126,35 @@ export function describeWatch(watch: MarketWatch): string {
 export interface WakeupCard {
   /** The §11.2 run cause, humanized. */
   readonly causeLabel: string;
+  /**
+   * The same cause, verbatim — `market_watch_triggered`, `mission_created`.
+   *
+   * The label is prose for the reader; this is what the timeline keys its icon
+   * and its tone off. A mission wakes several times a minute, and only the
+   * event wakes earn the amber accent, so the beacon has to match on the
+   * literal rather than on a humanized string that exists to be read.
+   */
+  readonly cause: string;
+  /**
+   * The kind of watch that woke the run, when a watch did — `price_cross`,
+   * `pnl_above`, `candle_close`. Null when the cause was not a watch, or when
+   * the payload did not name one.
+   *
+   * The cause alone says "a watch fired" but not which sort, and a P&L floor
+   * being hit and a price level being crossed are different enough events to
+   * be worth different icons.
+   */
+  readonly triggeringWatchType: string | null;
+  /**
+   * When the wake happened, in epoch millis. Null when the payload carried no
+   * readable timestamp.
+   *
+   * The timeline uses it to tell a wakeup that has just landed from the
+   * hundred a thread opens with, so only the arrival animates. Mount order
+   * cannot answer that — opening a thread mounts the whole scrollback at once,
+   * and every row would read as new.
+   */
+  readonly occurredAtMillis: number | null;
   /** True for the `mission_created` bootstrap, which carries no snapshot. */
   readonly bootstrap: boolean;
   /** "ETH · 3,142.50" while a snapshot is present; null on the bootstrap. */
@@ -162,8 +207,19 @@ function deriveFlatWakeupCard(text: string): WakeupCard | null {
   const pendingEventCount =
     eventsBody === null ? 0 : (eventsBody.match(/^\s*\[\d+\]/gm) ?? []).length;
 
+  const cause = sectionScalar("cause") ?? "wakeup";
+  // The `type=` pair inside the triggering watch's own section, so a `type=`
+  // belonging to some other section cannot be read as the watch's.
+  const watchBody = sectionBody("triggeringWatch");
+  const triggeringWatchType = watchBody?.match(/(?:^|\s)type=([^\s]+)/)?.[1] ?? null;
+
+  const occurredAtRaw = sectionScalar("occurredAt");
+
   return {
-    causeLabel: humanizeLiteral(sectionScalar("cause") ?? "wakeup"),
+    causeLabel: humanizeLiteral(cause),
+    cause,
+    triggeringWatchType,
+    occurredAtMillis: occurredAtRaw === null ? null : readNumber(Number(occurredAtRaw)),
     bootstrap: false,
     marketLabel:
       marketName === null
@@ -209,8 +265,27 @@ export function deriveWakeupCard(text: string): WakeupCard | null {
 
   const pendingEvents = payload["pendingEvents"];
 
+  const cause = readString(payload["cause"]) ?? "wakeup";
+  const triggeringWatch = payload["triggeringWatch"];
+  const watchFields =
+    typeof triggeringWatch === "object" && triggeringWatch !== null
+      ? (triggeringWatch as Record<string, unknown>)
+      : null;
+  // The persisted wrapper carries the predicate under `watch`; older payloads
+  // put the type on the wrapper itself. Both are read rather than guessed at.
+  const watchInner = watchFields?.["watch"];
+  const innerFields =
+    typeof watchInner === "object" && watchInner !== null
+      ? (watchInner as Record<string, unknown>)
+      : null;
+
   return {
-    causeLabel: humanizeLiteral(readString(payload["cause"]) ?? "wakeup"),
+    causeLabel: humanizeLiteral(cause),
+    cause,
+    triggeringWatchType:
+      (innerFields === null ? null : readString(innerFields["type"])) ??
+      (watchFields === null ? null : readString(watchFields["type"])),
+    occurredAtMillis: readNumber(payload["occurredAt"]),
     bootstrap: payload["bootstrap"] === true,
     marketLabel:
       marketName === null
@@ -957,6 +1032,8 @@ export function deriveCompletionSummary(mission: {
     readonly fillCount: number;
     readonly firstFillAt: string | null;
     readonly lastFillAt: string | null;
+    /** Planned loss at the approved stop, scaled to what actually filled. */
+    readonly plannedLossAtStopUsd?: number | null | undefined;
   };
   readonly strategy: {
     readonly stop: { readonly maximumPlannedLossUsd?: number | undefined };
@@ -972,7 +1049,13 @@ export function deriveCompletionSummary(mission: {
       ? null
       : Date.parse(result.lastFillAt) - Date.parse(result.firstFillAt);
 
-  const plannedLossUsd = mission.strategy?.stop.maximumPlannedLossUsd ?? null;
+  // What was really at stake, preferred over what the plan said was — plan 34
+  // step 7.3. `maximumPlannedLossUsd` is a number the model writes, and it
+  // writes it from the authority's per-position ceiling; the entry records say
+  // what the stop was actually going to cost at the size that actually filled.
+  // On the mission that found this the two were $63 and $1.70.
+  const plannedLossUsd =
+    mission.result.plannedLossAtStopUsd ?? mission.strategy?.stop.maximumPlannedLossUsd ?? null;
 
   return {
     realizedPnlUsd: result.realizedPnlUsd,
@@ -1288,6 +1371,45 @@ function readWatchThreshold(watch: MarketWatch): number | null {
 }
 
 /**
+ * Which side of its threshold a predicate waits on, where that means anything.
+ *
+ * The stream draws this as the chart gutter's own ▲ / ▼ glyph, so a row and the
+ * dotted line it belongs to read as one object in two places. A give-back
+ * measures a fall from a moving high-water mark rather than a fixed side, and
+ * the event watches compare nothing, so all three return null.
+ */
+function readWatchDirection(watch: MarketWatch): "above" | "below" | null {
+  switch (watch.type) {
+    case "price_cross":
+    case "candle_close":
+    case "metric_threshold":
+      return watch.direction;
+    case "pnl_above":
+      return "above";
+    case "pnl_below":
+      return "below";
+    case "pnl_giveback":
+    case "order_update":
+    case "position_update":
+    case "scheduled_reassessment":
+      return null;
+  }
+}
+
+/**
+ * The short qualifier that follows the row's figure.
+ *
+ * A candle close is only meaningful with the bar it closes on, and a metric
+ * threshold is only meaningful with the metric it reads — both are the same
+ * slot in the row, because both answer "the figure is what, exactly".
+ */
+function readWatchQualifier(watch: MarketWatch): string | null {
+  if (watch.type === "candle_close") return watch.interval;
+  if (watch.type === "metric_threshold") return humanizeLiteral(watch.metric);
+  return null;
+}
+
+/**
  * The armed-conditions checklist, or null when nothing is armed.
  *
  * The card is gated on at least one `active` watch (the mission must still hold
@@ -1357,12 +1479,32 @@ export function deriveWatchConditions(mission: {
  */
 export type WatchLifecycleState = "armed" | "triggered" | "disarmed" | "expired";
 
+/** Every watch predicate that can make a stream row (a reassessment cannot). */
+export type WatchRowType = Exclude<MarketWatch["type"], "scheduled_reassessment">;
+
 /** One row of the stream: a watch, where it is, and what it belongs to. */
 export interface WatchStreamRow {
+  /** Discriminates a single watch from a supersession group in the same list. */
+  readonly kind: "watch";
   readonly id: string;
   readonly state: WatchLifecycleState;
   /** One line describing what the predicate is (or was) waiting for. */
   readonly description: string;
+  /**
+   * The predicate's own type. The row renders an icon per type, and reading the
+   * type off the description string would be the panel parsing its own prose.
+   */
+  readonly watchType: WatchRowType;
+  /**
+   * Which side of the threshold the predicate waits on, where it has one. Null
+   * for the event watches and for a give-back, which measure no direction.
+   */
+  readonly direction: "above" | "below" | null;
+  /**
+   * The short qualifier that follows the figure: a candle's interval, or a
+   * metric's name in plain words. Null when the type has neither.
+   */
+  readonly intervalLabel: string | null;
   /**
    * The word the row shows for how it ended. `armed` rows carry null — they
    * have not ended. Distinguishes `replaced` from `cancelled`, which share a
@@ -1389,9 +1531,104 @@ export interface WatchStreamRow {
   readonly actionLabel: string | null;
 }
 
-/** Whether this row is still live, which is what orders the stream. */
-export function isArmedRow(row: WatchStreamRow): boolean {
-  return row.state === "armed";
+/**
+ * A burst of take-downs, folded into one row.
+ *
+ * Every replan supersedes the previous prediction's watches, so one
+ * reassessment retires three to six levels in the same tick. Left as
+ * individual rows they open the settled half with a wall of near-identical
+ * "cancelled" lines, and the row the operator came for — the one that fired —
+ * is pushed off screen by administrative churn.
+ */
+export interface WatchStreamGroup {
+  readonly kind: "group";
+  /** Stable across polls: derived from the newest member's id. */
+  readonly id: string;
+  readonly count: number;
+  /** `replaced` when every member was superseded, `retired` when they are mixed. */
+  readonly outcomeLabel: "replaced" | "retired";
+  /** The newest member's settle time, which is what the group's age reads from. */
+  readonly atMillis: number;
+  /** Newest first, so expanding the group reads in the same order as the stream. */
+  readonly members: ReadonlyArray<WatchStreamRow>;
+}
+
+/** One entry in the stream: a watch, or a burst of take-downs standing for several. */
+export type WatchStreamItem = WatchStreamRow | WatchStreamGroup;
+
+/** Whether this entry is still live, which is what orders the stream. */
+export function isArmedRow(item: WatchStreamItem): boolean {
+  return item.kind === "watch" && item.state === "armed";
+}
+
+/**
+ * How close two take-downs must settle to count as the same burst.
+ *
+ * One replan writes its supersessions inside a single transaction, so the real
+ * spread is milliseconds; five seconds is slack for a slow write, and short
+ * enough that two separate reassessments never merge into one row.
+ */
+const SUPERSESSION_BURST_MILLIS = 5_000;
+
+/** Whether this settled row is a take-down, which is the only thing that groups. */
+function isTakeDownRow(row: WatchStreamRow): boolean {
+  return row.outcomeLabel === "replaced" || row.outcomeLabel === "cancelled";
+}
+
+/**
+ * Fold consecutive take-downs that settled together into one row each.
+ *
+ * Only take-downs group. A firing is an event the operator follows to the
+ * decision it produced, and an expiry is a level the mission let lapse; both
+ * stay individual however many land at once. A burst of one is left as the
+ * ordinary row it already was — group chrome for a lone cancel would be a
+ * disclosure over a single line.
+ */
+function groupSupersessionBursts(
+  settled: ReadonlyArray<WatchStreamRow>,
+): ReadonlyArray<WatchStreamItem> {
+  const items: WatchStreamItem[] = [];
+  let index = 0;
+
+  while (index < settled.length) {
+    const first = settled[index]!;
+    if (!isTakeDownRow(first)) {
+      items.push(first);
+      index += 1;
+      continue;
+    }
+
+    // The window is anchored on the burst's newest member rather than chained
+    // member to member, so a long drizzle of cancels cannot drift into one
+    // group that spans minutes.
+    const burst: WatchStreamRow[] = [first];
+    let next = index + 1;
+    while (next < settled.length) {
+      const candidate = settled[next]!;
+      if (!isTakeDownRow(candidate)) break;
+      if (first.atMillis - candidate.atMillis > SUPERSESSION_BURST_MILLIS) break;
+      burst.push(candidate);
+      next += 1;
+    }
+
+    if (burst.length === 1) {
+      items.push(first);
+    } else {
+      items.push({
+        kind: "group",
+        id: `group-${first.id}`,
+        count: burst.length,
+        outcomeLabel: burst.every((row) => row.outcomeLabel === "replaced")
+          ? "replaced"
+          : "retired",
+        atMillis: first.atMillis,
+        members: burst,
+      });
+    }
+    index = next;
+  }
+
+  return items;
 }
 
 /**
@@ -1415,7 +1652,7 @@ export function deriveWatchLifecycle(mission: {
     readonly kind: "wake" | "stop_adjusted" | "strategy_published" | "journal";
     readonly label: string;
   }>;
-}): { readonly stream: ReadonlyArray<WatchStreamRow> } {
+}): { readonly stream: ReadonlyArray<WatchStreamItem> } {
   // Timeline entries as (millis, kind, label), oldest first, so "the first
   // thing after the firing" is a forward scan.
   const timeline = mission.missionTimeline
@@ -1441,8 +1678,12 @@ export function deriveWatchLifecycle(mission: {
     if (watch.type === "scheduled_reassessment") continue;
 
     const shared = {
+      kind: "watch" as const,
       id: persisted.id,
       description: describeWatchCondition(watch),
+      watchType: watch.type,
+      direction: readWatchDirection(watch),
+      intervalLabel: readWatchQualifier(watch),
       predictionVersion: persisted.predictionVersion ?? null,
       thresholdValue: readWatchThreshold(watch),
     };
@@ -1481,7 +1722,7 @@ export function deriveWatchLifecycle(mission: {
   }
 
   settled.sort((a, b) => b.atMillis - a.atMillis);
-  return { stream: [...armed, ...settled] };
+  return { stream: [...armed, ...groupSupersessionBursts(settled)] };
 }
 
 // ---------------------------------------------------------------------------
@@ -1933,6 +2174,317 @@ export function deriveChartFillMarkers(mission: {
 }
 
 /**
+ * One completed round trip: a position taken on and given back.
+ *
+ * The stat grid describes the exposure the mission is in. This describes the
+ * ones it is out of — which the panel had nowhere to say at all, so a session
+ * that had opened and closed three times before the trade on screen showed the
+ * chart's fill markers and nothing that named what they came to.
+ */
+export interface RoundTrip {
+  /** The side of the exposure, not the side of either order. */
+  readonly direction: "long" | "short";
+  /** What came back out, in base units. */
+  readonly size: number;
+  /** Null when the opening fill is older than the projection's fill window. */
+  readonly entryPrice: number | null;
+  readonly exitPrice: number;
+  /** What the pair actually paid: realised PnL less BOTH legs' fees. */
+  readonly netUsd: number;
+  /** The realised PnL the exchange attributed, before fees. */
+  readonly closedPnlUsd: number;
+  /** Both legs' fees. Only the closing leg's when the open is off the window. */
+  readonly feesUsd: number;
+  readonly closedAtMillis: number;
+  readonly openedAtMillis: number | null;
+  /** The closing order's id. */
+  readonly orderRef: string;
+  /** The opening order's id, when that fill is still in the window. */
+  readonly openOrderRef: string | null;
+}
+
+/** An opening leg waiting for the close, or closes, that will pair with it. */
+interface OpenLeg {
+  readonly price: number;
+  /** The whole leg's fee. A close pays the share of it that it consumes. */
+  readonly feeUsd: number;
+  /** Base units the leg opened with — the denominator of that share. */
+  readonly size: number;
+  /** Base units not yet paired with a close. */
+  remaining: number;
+  readonly atMillis: number;
+  readonly orderRef: string;
+}
+
+/**
+ * Base units below which a leg counts as consumed.
+ *
+ * Sizes come off the exchange as decimals and the arithmetic that pairs them
+ * is subtraction, so a leg closed exactly can be left holding 1e-17 of itself.
+ */
+const LEG_DUST = 1e-9;
+
+/**
+ * Every completed round trip in the mission's fill window, newest first.
+ *
+ * Fills are walked oldest-first and paired per side: an open pushes a leg, a
+ * close pops the oldest leg on its side and emits the pair. A reversal is both
+ * at once — "Long > Short" closes the long and opens the short — so it is
+ * handled as the two events it is rather than as a third kind of thing.
+ *
+ * Two honest gaps, both left visible rather than papered over:
+ *
+ *   - The projection carries a bounded window of fills, so a close whose open
+ *     scrolled off it still yields a round trip, with `entryPrice: null`. The
+ *     alternative is dropping a position the mission genuinely held.
+ *   - The size reported is the size that came OUT, so partial closes read as
+ *     one round trip per closing fill — which is what the operator watched
+ *     happen.
+ *
+ * Legs are consumed BY SIZE (plan 34 step 4): a close takes as much of the
+ * oldest open leg as it needs, splitting it and leaving the remainder for the
+ * next close, and pays that fraction of the leg's fee. Popping a whole leg per
+ * closing fill charged the entire opening fee to whichever rung happened to
+ * close first — a $0.03 profit read as a $0.30 loss, and the two rungs behind
+ * it reported no entry price at all, while the column total stayed right.
+ *
+ * The position currently open has no closing leg, so it never appears here —
+ * it is the stat grid's subject, not this band's.
+ */
+export function deriveRoundTrips(
+  fills: ReadonlyArray<{
+    readonly orderId: number;
+    readonly tradedAt: string;
+    readonly filledSize: number;
+    readonly avgFillPrice: number;
+    readonly feeUsd: number;
+    readonly closedPnl: number;
+    readonly direction?: string | undefined;
+  }>,
+): ReadonlyArray<RoundTrip> {
+  // The projection hands these over newest first; pairing only makes sense in
+  // the order they happened.
+  const chronological = fills
+    .map((fill) => ({ fill, at: Date.parse(fill.tradedAt) }))
+    .filter((entry) => !Number.isNaN(entry.at))
+    .sort((a, b) => a.at - b.at);
+
+  const openLegs: Record<"long" | "short", OpenLeg[]> = { long: [], short: [] };
+  const trips: RoundTrip[] = [];
+
+  /** Base units of a side the window still shows as open. */
+  const openExposure = (direction: "long" | "short"): number =>
+    openLegs[direction].reduce((sum, leg) => sum + leg.remaining, 0);
+
+  /** Pair a closing fill against the open legs, and report what it consumed. */
+  const closeOut = (
+    direction: "long" | "short",
+    entry: { readonly fill: (typeof chronological)[number]["fill"]; readonly at: number },
+    closingSize: number,
+  ): number => {
+    const legs = openLegs[direction];
+    let unpaired = closingSize;
+    let consumedSize = 0;
+    let consumedNotional = 0;
+    let openFeeUsd = 0;
+    let firstLeg: OpenLeg | null = null;
+
+    while (unpaired > LEG_DUST && legs.length > 0) {
+      const leg = legs[0]!;
+      const taken = Math.min(leg.remaining, unpaired);
+      firstLeg ??= leg;
+      consumedSize += taken;
+      consumedNotional += taken * leg.price;
+      openFeeUsd += leg.size > 0 ? (leg.feeUsd * taken) / leg.size : 0;
+      leg.remaining -= taken;
+      unpaired -= taken;
+      if (leg.remaining <= LEG_DUST) legs.shift();
+    }
+
+    const feesUsd = entry.fill.feeUsd + openFeeUsd;
+    trips.push({
+      direction,
+      size: closingSize,
+      entryPrice: consumedSize > 0 ? consumedNotional / consumedSize : null,
+      exitPrice: entry.fill.avgFillPrice,
+      netUsd: entry.fill.closedPnl - feesUsd,
+      closedPnlUsd: entry.fill.closedPnl,
+      feesUsd,
+      closedAtMillis: entry.at,
+      openedAtMillis: firstLeg?.atMillis ?? null,
+      orderRef: String(entry.fill.orderId),
+      openOrderRef: firstLeg?.orderRef ?? null,
+    });
+    return consumedSize;
+  };
+
+  for (const entry of chronological) {
+    const lifecycle = readFillLifecycle(entry.fill.direction);
+    // A fill the exchange did not label is not guessed at: `side` alone cannot
+    // tell an open from a close, and a wrong pairing invents a position.
+    if (lifecycle === null) continue;
+
+    if (lifecycle.action === "open" || lifecycle.action === "reverse") {
+      // A reversal gives back the other side before it takes this one on. It
+      // is one fill and so one fee: it is charged to the close, and the open
+      // leg it also is carries none — charging it twice would overstate the
+      // cost of both round trips.
+      const isReverse = lifecycle.action === "reverse";
+      const filledSize = Math.abs(entry.fill.filledSize);
+      // A reversal's fill size covers both halves: it gives back everything
+      // the other side held and takes on the rest. When that side is not in
+      // the window at all, the split is unknowable, so both halves are
+      // reported at the whole fill rather than one of them at zero.
+      const heldOnTheOtherSide = isReverse
+        ? openExposure(lifecycle.direction === "long" ? "short" : "long")
+        : 0;
+      if (isReverse) {
+        closeOut(
+          lifecycle.direction === "long" ? "short" : "long",
+          entry,
+          heldOnTheOtherSide > 0 ? Math.min(filledSize, heldOnTheOtherSide) : filledSize,
+        );
+      }
+      const openedSize =
+        isReverse && heldOnTheOtherSide > 0
+          ? filledSize - Math.min(filledSize, heldOnTheOtherSide)
+          : filledSize;
+      if (openedSize > LEG_DUST) {
+        openLegs[lifecycle.direction].push({
+          price: entry.fill.avgFillPrice,
+          feeUsd: isReverse ? 0 : entry.fill.feeUsd,
+          size: openedSize,
+          remaining: openedSize,
+          atMillis: entry.at,
+          orderRef: String(entry.fill.orderId),
+        });
+      }
+      continue;
+    }
+
+    closeOut(lifecycle.direction, entry, Math.abs(entry.fill.filledSize));
+  }
+
+  // Built oldest-first because that is the only order pairing works in;
+  // rendered newest-first because that is the order the band reads in.
+  return trips.toReversed();
+}
+
+/**
+ * One line of the position ledger: a position the mission holds, or held.
+ *
+ * The band used to show only what the mission was out of, which left the
+ * position it is IN described nowhere near the ones it came from — the operator
+ * could see three finished trades and their sizes, and had to look at a
+ * different block to learn what the fourth one was. One list, open row first,
+ * and the same five figures on every row.
+ */
+export interface PositionLedgerRow {
+  /** Stable across polls, so React does not remount a row every 3s. */
+  readonly key: string;
+  /** True for the position still open: its exit figure is the live mark. */
+  readonly isActive: boolean;
+  readonly direction: "long" | "short";
+  readonly size: number;
+  /** Null when the opening fill is older than the projection's fill window. */
+  readonly entryPrice: number | null;
+  /** The closing fill's price, or the live mark while the position is open. */
+  readonly exitPrice: number | null;
+  /**
+   * What the position committed: size at the price it was opened at.
+   *
+   * Null rather than approximated when the opening price is unknown. The exit
+   * price is not a stand-in — a position that ran a long way would report a
+   * notional it never had, and the ledger states no figure it was not given.
+   */
+  readonly notionalUsd: number | null;
+  /** Realised net for a closed row; unrealised P&L for the open one. */
+  readonly netUsd: number;
+  /** Exchange-attributed realised PnL. Null while the position is open. */
+  readonly closedPnlUsd: number | null;
+  /** Both legs' fees. Null while the position is open: the close has not paid. */
+  readonly feesUsd: number | null;
+  /** Margin the exchange holds against the open position. Null once closed. */
+  readonly marginUsd: number | null;
+  readonly openedAtMillis: number | null;
+  /** Null while the position is open. */
+  readonly closedAtMillis: number | null;
+  readonly orderRef: string | null;
+  readonly openOrderRef: string | null;
+}
+
+/**
+ * Every position the mission has taken, open one first, newest first after it.
+ *
+ * The open position has no closing leg and so is not a round trip; it is folded
+ * in here rather than in {@link deriveRoundTrips}, which stays the pure pairing
+ * of fills it was. Its exit column is the live mark, which is the honest reading
+ * of "where this position is now" and the reason the row can be told apart from
+ * a settled one without a colour of its own.
+ */
+export function derivePositionLedger(input: {
+  readonly position: {
+    readonly size: number;
+    readonly entryPrice?: number | undefined;
+    readonly unrealisedPnl: number;
+    readonly marginUsed?: number | undefined;
+    readonly observedAt?: string | undefined;
+  } | null;
+  readonly markPrice: number | null;
+  readonly trips: ReadonlyArray<RoundTrip>;
+  /**
+   * When the open position's own entry fill landed, where the panel already
+   * knows it (the chart marks the same moment). The position snapshot carries
+   * no opening time, and the alternative was walking the fills a second time.
+   */
+  readonly openedAtMillis: number | null;
+}): ReadonlyArray<PositionLedgerRow> {
+  const closed: PositionLedgerRow[] = input.trips.map((trip) => ({
+    key: `${trip.orderRef}-${trip.closedAtMillis}`,
+    isActive: false,
+    direction: trip.direction,
+    size: trip.size,
+    entryPrice: trip.entryPrice,
+    exitPrice: trip.exitPrice,
+    notionalUsd: trip.entryPrice === null ? null : trip.size * trip.entryPrice,
+    netUsd: trip.netUsd,
+    closedPnlUsd: trip.closedPnlUsd,
+    feesUsd: trip.feesUsd,
+    marginUsd: null,
+    openedAtMillis: trip.openedAtMillis,
+    closedAtMillis: trip.closedAtMillis,
+    orderRef: trip.orderRef,
+    openOrderRef: trip.openOrderRef,
+  }));
+
+  const position = input.position;
+  if (position === null || position.size === 0) return closed;
+
+  const size = Math.abs(position.size);
+  const entryPrice = position.entryPrice ?? null;
+  return [
+    {
+      key: "open-position",
+      isActive: true,
+      direction: position.size > 0 ? "long" : "short",
+      size,
+      entryPrice,
+      exitPrice: input.markPrice,
+      notionalUsd: entryPrice === null ? null : size * entryPrice,
+      netUsd: position.unrealisedPnl,
+      closedPnlUsd: null,
+      feesUsd: null,
+      marginUsd: position.marginUsed ?? null,
+      openedAtMillis: input.openedAtMillis,
+      closedAtMillis: null,
+      orderRef: null,
+      openOrderRef: null,
+    },
+    ...closed,
+  ];
+}
+
+/**
  * The next scheduled reassessment, as epoch millis, or null when none is armed.
  *
  * Separate from {@link deriveWatchConditions} because it is wanted in states
@@ -2085,6 +2637,25 @@ export function deriveChartTimeMarkers(mission: {
       tone: "planned",
     },
   ];
+}
+
+/**
+ * How long ago something happened, in the coarsest true words: "just now",
+ * "4m ago", "1h 12m ago".
+ *
+ * Deliberately not {@link formatDuration}. A stream of rows all reading
+ * "armed 8m 47s ago" reprints every second, so every row looks freshly minted
+ * and the eye is pulled to whichever digits happen to be changing — while the
+ * seconds themselves answer nothing about a level armed eight minutes ago.
+ * Countdowns keep their seconds (the bottom bar really is counting one down);
+ * ages lose them the moment a minute has passed.
+ */
+export function formatAge(millis: number): string {
+  const totalSeconds = Math.max(0, Math.floor(millis / 1_000));
+  if (totalSeconds < 60) return "just now";
+  const minutes = Math.floor(totalSeconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m ago`;
 }
 
 /** "2m 30s" from a duration in millis. */

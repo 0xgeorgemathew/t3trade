@@ -16,6 +16,7 @@ import {
   deriveUpNextItems,
   deriveWatchConditions,
   deriveWatchLifecycle,
+  formatAge,
   formatDuration,
   formatPrice,
   formatSignedUsd,
@@ -32,6 +33,9 @@ import {
   deriveChartPastMarkers,
   deriveChartTimeMarkers,
   deriveNextReassessmentAt,
+  derivePositionLedger,
+  deriveRoundTrips,
+  formatFixed3,
   MAX_DRAWN_TIME_MARKERS,
   derivePausedExposure,
   deriveStrategyPlan,
@@ -48,7 +52,13 @@ import {
   isLiveMission,
   shouldShowMissionStrip,
   visibleMissions,
+  type WatchStreamItem,
+  type WatchStreamRow,
 } from "./tradingPresentation";
+
+/** The single-watch rows of a stream, for assertions about a row's own fields. */
+const watchRows = (stream: ReadonlyArray<WatchStreamItem>): ReadonlyArray<WatchStreamRow> =>
+  stream.filter((item): item is WatchStreamRow => item.kind === "watch");
 
 describe("mission status labels", () => {
   it("names all ten §11.1 statuses", () => {
@@ -293,7 +303,12 @@ describe("deriveWatchLifecycle", () => {
       "retired",
       "older-fire",
     ]);
-    expect(stream.map((row) => row.state)).toEqual(["armed", "triggered", "disarmed", "triggered"]);
+    expect(watchRows(stream).map((row) => row.state)).toEqual([
+      "armed",
+      "triggered",
+      "disarmed",
+      "triggered",
+    ]);
     // Armed rows date from when they were armed; settled ones from when they
     // settled — the row's timestamp always means the state it is showing.
     expect(stream[0]?.atMillis).toBe(base.createdAt);
@@ -312,7 +327,7 @@ describe("deriveWatchLifecycle", () => {
       ] as PersistedWatch[],
       missionTimeline: [],
     });
-    expect(stream.map((row) => [row.state, row.outcomeLabel])).toEqual([
+    expect(watchRows(stream).map((row) => [row.state, row.outcomeLabel])).toEqual([
       ["expired", "expired"],
       ["disarmed", "replaced"],
       ["disarmed", "cancelled"],
@@ -329,7 +344,7 @@ describe("deriveWatchLifecycle", () => {
       ] as PersistedWatch[],
       missionTimeline: [],
     });
-    expect(stream.map((row) => row.predictionVersion)).toEqual([4, null]);
+    expect(watchRows(stream).map((row) => row.predictionVersion)).toEqual([4, null]);
   });
 
   it("pairs a firing with the decision that followed it, preferring it over the wake", () => {
@@ -352,7 +367,7 @@ describe("deriveWatchLifecycle", () => {
         },
       ],
     });
-    expect(stream[0]?.actionLabel).toBe("published short below the range");
+    expect(watchRows(stream)[0]?.actionLabel).toBe("published short below the range");
   });
 
   it("falls back to the wake when no decision has landed yet", () => {
@@ -364,7 +379,7 @@ describe("deriveWatchLifecycle", () => {
         { at: firedAtIso, kind: "wake" as const, label: "woke on ETH mark above 1900" },
       ],
     });
-    expect(stream[0]?.actionLabel).toBe("woke on ETH mark above 1900");
+    expect(watchRows(stream)[0]?.actionLabel).toBe("woke on ETH mark above 1900");
   });
 
   it("carries no action for a watch that was retired rather than fired", () => {
@@ -376,7 +391,144 @@ describe("deriveWatchLifecycle", () => {
         { at: firedAtIso, kind: "wake" as const, label: "a wake that has nothing to do with it" },
       ],
     });
-    expect(stream[0]?.actionLabel).toBeNull();
+    expect(watchRows(stream)[0]?.actionLabel).toBeNull();
+  });
+
+  // One replan supersedes every level of the prediction before it, so a mission
+  // that re-levels every few minutes buried its fired rows under a wall of
+  // near-identical cancels. The burst is one row now.
+  it("folds a burst of supersessions into one group row", () => {
+    const { stream } = deriveWatchLifecycle({
+      watches: [
+        { ...base, id: "a", status: "superseded" as const, updatedAt: 1_700_000_120_000 },
+        { ...base, id: "b", status: "superseded" as const, updatedAt: 1_700_000_119_000 },
+        { ...base, id: "c", status: "superseded" as const, updatedAt: 1_700_000_118_000 },
+      ] as PersistedWatch[],
+      missionTimeline: [],
+    });
+    expect(stream).toHaveLength(1);
+    const group = stream[0]!;
+    expect(group.kind).toBe("group");
+    if (group.kind !== "group") return;
+    expect(group.count).toBe(3);
+    expect(group.outcomeLabel).toBe("replaced");
+    // The group dates from its newest member, and holds them in stream order.
+    expect(group.atMillis).toBe(1_700_000_120_000);
+    expect(group.members.map((row) => row.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("names a mixed burst retired rather than replaced", () => {
+    const { stream } = deriveWatchLifecycle({
+      watches: [
+        { ...base, id: "a", status: "superseded" as const, updatedAt: 1_700_000_120_000 },
+        { ...base, id: "b", status: "cancelled" as const, updatedAt: 1_700_000_119_000 },
+      ] as PersistedWatch[],
+      missionTimeline: [],
+    });
+    expect(stream[0]?.kind).toBe("group");
+    expect(stream[0]?.kind === "group" ? stream[0].outcomeLabel : null).toBe("retired");
+  });
+
+  // A firing is the event the operator follows to the decision it produced. It
+  // never disappears into a group, even landing in the middle of one.
+  it("keeps a firing out of a burst that surrounds it", () => {
+    const { stream } = deriveWatchLifecycle({
+      watches: [
+        { ...base, id: "a", status: "superseded" as const, updatedAt: 1_700_000_120_000 },
+        { ...base, id: "fired", status: "triggered" as const, updatedAt: 1_700_000_119_500 },
+        { ...base, id: "b", status: "superseded" as const, updatedAt: 1_700_000_119_000 },
+      ] as PersistedWatch[],
+      missionTimeline: [],
+    });
+    expect(stream.map((item) => item.kind)).toEqual(["watch", "watch", "watch"]);
+    expect(watchRows(stream).map((row) => row.id)).toEqual(["a", "fired", "b"]);
+  });
+
+  it("leaves two bursts nine seconds apart as two groups", () => {
+    const { stream } = deriveWatchLifecycle({
+      watches: [
+        { ...base, id: "a", status: "superseded" as const, updatedAt: 1_700_000_120_000 },
+        { ...base, id: "b", status: "superseded" as const, updatedAt: 1_700_000_119_000 },
+        { ...base, id: "c", status: "superseded" as const, updatedAt: 1_700_000_111_000 },
+        { ...base, id: "d", status: "superseded" as const, updatedAt: 1_700_000_110_000 },
+      ] as PersistedWatch[],
+      missionTimeline: [],
+    });
+    expect(stream.map((item) => item.kind)).toEqual(["group", "group"]);
+    expect(stream.map((item) => (item.kind === "group" ? item.count : null))).toEqual([2, 2]);
+  });
+
+  it("leaves a lone cancel as an ordinary row", () => {
+    const { stream } = deriveWatchLifecycle({
+      watches: [
+        { ...base, id: "only", status: "cancelled" as const, updatedAt: 1_700_000_120_000 },
+      ] as PersistedWatch[],
+      missionTimeline: [],
+    });
+    expect(stream.map((item) => item.kind)).toEqual(["watch"]);
+  });
+
+  // The row draws its own icon, triangle and figure from these, rather than
+  // re-reading the sentence it used to print.
+  it("carries the predicate's type, direction and qualifier as fields", () => {
+    const { stream } = deriveWatchLifecycle({
+      watches: [
+        {
+          ...base,
+          id: "candle",
+          status: "active" as const,
+          watch: {
+            type: "candle_close" as const,
+            market: "ETH" as const,
+            interval: "5m" as const,
+            direction: "below" as const,
+            price: 1900,
+          },
+        },
+        {
+          ...base,
+          id: "metric",
+          status: "active" as const,
+          watch: {
+            type: "metric_threshold" as const,
+            market: "ETH" as const,
+            metric: "volume_ratio" as const,
+            direction: "above" as const,
+            value: 2,
+          },
+        },
+        {
+          ...base,
+          id: "giveback",
+          status: "active" as const,
+          watch: {
+            type: "pnl_giveback" as const,
+            market: "ETH" as const,
+            drawdownUsd: 3,
+          },
+        },
+      ] as PersistedWatch[],
+      missionTimeline: [],
+    });
+    expect(
+      watchRows(stream).map((row) => [row.watchType, row.direction, row.intervalLabel]),
+    ).toEqual([
+      ["candle_close", "below", "5m"],
+      ["metric_threshold", "above", "volume ratio"],
+      // A give-back measures a fall from a moving peak, so it has no side.
+      ["pnl_giveback", null, null],
+    ]);
+  });
+});
+
+describe("formatAge", () => {
+  it("says just now until a minute has passed, then never counts seconds again", () => {
+    expect(formatAge(0)).toBe("just now");
+    expect(formatAge(59_000)).toBe("just now");
+    expect(formatAge(60_000)).toBe("1m ago");
+    expect(formatAge(4 * 60_000 + 59_000)).toBe("4m ago");
+    expect(formatAge(3_600_000)).toBe("1h 0m ago");
+    expect(formatAge(3_600_000 + 12 * 60_000)).toBe("1h 12m ago");
   });
 });
 
@@ -838,6 +990,28 @@ describe("completion summary", () => {
     expect(summary.deviationFromPlanUsd).toBe(-4);
   });
 
+  // Plan 34 step 7.3. The plan's number is one the model writes off the
+  // authority's per-position ceiling; on a mission whose entry filled an
+  // eighth of its request that was $63 against $1.70 actually risked, and
+  // "versus plan" was arithmetic on a position that never existed.
+  it("prefers what was actually at stake over what the plan said would be", () => {
+    const summary = deriveCompletionSummary({
+      result: { ...result, realizedPnlUsd: -0.29, plannedLossAtStopUsd: 1.7 },
+      strategy: { stop: { maximumPlannedLossUsd: 63.26 } },
+    });
+    expect(summary.plannedLossUsd).toBe(1.7);
+    // Net -6.29 against 1.70 really at stake.
+    expect(summary.deviationFromPlanUsd).toBeCloseTo(-4.59, 10);
+  });
+
+  it("falls back to the plan's number when no entry record carries one", () => {
+    const summary = deriveCompletionSummary({
+      result: { ...result, plannedLossAtStopUsd: null },
+      strategy: { stop: { maximumPlannedLossUsd: 20 } },
+    });
+    expect(summary.plannedLossUsd).toBe(20);
+  });
+
   it("reports no deviation when nothing was planned", () => {
     const summary = deriveCompletionSummary({ result, strategy: null });
     expect(summary.plannedLossUsd).toBeNull();
@@ -1102,6 +1276,56 @@ describe("deriveWakeupCard", () => {
     expect(card?.pendingEventCount).toBe(2);
     expect(card?.bootstrap).toBe(false);
     expect(card?.rawJson).toBe(flat);
+  });
+
+  // The beacon keys its tone and its icon off the literal cause, not off the
+  // humanized label — a label exists to be read, and matching on prose would
+  // break the moment the wording improved.
+  it("carries the raw cause beside the humanized label", () => {
+    const card = deriveWakeupCard(JSON.stringify(wakeup))!;
+
+    expect(card.cause).toBe("market_watch_triggered");
+    expect(card.causeLabel).toBe("market watch triggered");
+    expect(card.occurredAtMillis).toBe(1_700_000);
+  });
+
+  // "A watch fired" is not one event: a P&L floor being hit and a price level
+  // being crossed read differently, and the payload names which.
+  it("reads the triggering watch's type, from either payload shape", () => {
+    const fromJson = deriveWakeupCard(
+      JSON.stringify({
+        ...wakeup,
+        triggeringWatch: { id: "w1", status: "triggered", watch: { type: "pnl_above" } },
+      }),
+    );
+    expect(fromJson?.triggeringWatchType).toBe("pnl_above");
+
+    const fromFlat = deriveWakeupCard(
+      [
+        "trading-harness-wakeup",
+        "cause:",
+        "  market_watch_triggered",
+        "occurredAt:",
+        "  1700000",
+        "triggeringWatch:",
+        "  id=w1 status=triggered",
+        "  type=price_cross",
+        "marketSnapshot:",
+        "  market=BTC",
+      ].join("\n"),
+    );
+    expect(fromFlat?.triggeringWatchType).toBe("price_cross");
+    expect(fromFlat?.cause).toBe("market_watch_triggered");
+    expect(fromFlat?.occurredAtMillis).toBe(1_700_000);
+  });
+
+  // A wake with no watch behind it must not borrow one, or a scheduled
+  // reassessment would render with a fired-watch icon.
+  it("names no watch type when the wake was not a watch", () => {
+    const card = deriveWakeupCard(
+      JSON.stringify({ ...wakeup, cause: "scheduled_reassessment", triggeringWatch: undefined }),
+    );
+    expect(card?.triggeringWatchType).toBeNull();
   });
 
   it("leaves anything that is not a wakeup alone", () => {
@@ -1658,6 +1882,327 @@ describe("deriveChartTimeMarkers", () => {
       label: "+3",
       at: 1_700_000_000_000 + 7 * 60_000,
     });
+  });
+});
+
+describe("deriveRoundTrips", () => {
+  const fill = (over: {
+    readonly orderId: number;
+    readonly tradedAt: string;
+    readonly filledSize: number;
+    readonly avgFillPrice: number;
+    readonly feeUsd: number;
+    readonly closedPnl: number;
+    readonly direction?: string;
+  }) => over;
+
+  // The projection hands fills over newest first, so every fixture below is in
+  // that order — pairing that only worked on a sorted input would pass a test
+  // and fail on the real thing.
+  const openLong = fill({
+    orderId: 1,
+    tradedAt: "2026-08-06T12:00:00.000Z",
+    filledSize: 0.2631,
+    avgFillPrice: 1_899.8,
+    feeUsd: 0.02,
+    closedPnl: 0,
+    direction: "Open Long",
+  });
+  const closeLong = fill({
+    orderId: 2,
+    tradedAt: "2026-08-06T12:06:00.000Z",
+    filledSize: 0.2631,
+    avgFillPrice: 1_900.16,
+    feeUsd: 0.02,
+    closedPnl: 0.14,
+    direction: "Close Long",
+  });
+
+  it("pairs an open with the close that ended it", () => {
+    const trips = deriveRoundTrips([closeLong, openLong]);
+
+    expect(trips).toHaveLength(1);
+    expect(trips[0]!.direction).toBe("long");
+    expect(trips[0]!.size).toBe(0.2631);
+    expect(trips[0]!.entryPrice).toBe(1_899.8);
+    expect(trips[0]!.exitPrice).toBe(1_900.16);
+    expect(trips[0]!.openOrderRef).toBe("1");
+    expect(trips[0]!.orderRef).toBe("2");
+    expect(trips[0]!.closedAtMillis).toBe(Date.parse("2026-08-06T12:06:00.000Z"));
+    expect(trips[0]!.openedAtMillis).toBe(Date.parse("2026-08-06T12:00:00.000Z"));
+  });
+
+  // The whole point of the pill's net figure: what the pair cost, not what the
+  // exchange attributed to the closing leg alone.
+  it("nets BOTH legs' fees out of the realised PnL", () => {
+    const trips = deriveRoundTrips([closeLong, openLong]);
+
+    expect(trips[0]!.closedPnlUsd).toBe(0.14);
+    expect(trips[0]!.feesUsd).toBeCloseTo(0.04, 10);
+    expect(trips[0]!.netUsd).toBeCloseTo(0.1, 10);
+  });
+
+  // The projection carries a bounded window of fills. A position whose opening
+  // fill has scrolled off it was still a position the mission held, so it is
+  // reported with the half that is known rather than dropped.
+  it("reports a close whose open is off the window, with a null entry", () => {
+    const trips = deriveRoundTrips([closeLong]);
+
+    expect(trips).toHaveLength(1);
+    expect(trips[0]!.entryPrice).toBeNull();
+    expect(trips[0]!.openedAtMillis).toBeNull();
+    expect(trips[0]!.openOrderRef).toBeNull();
+    // Only the closing leg's fee is known, so only it is charged.
+    expect(trips[0]!.feesUsd).toBeCloseTo(0.02, 10);
+  });
+
+  // The position on the panel right now is the stat grid's subject. An open
+  // with no close is not history and must not be reported as though it were.
+  it("excludes the position that is still open", () => {
+    expect(deriveRoundTrips([openLong])).toEqual([]);
+  });
+
+  it("returns completed trips newest first", () => {
+    const secondOpen = fill({
+      orderId: 3,
+      tradedAt: "2026-08-06T12:10:00.000Z",
+      filledSize: 0.5,
+      avgFillPrice: 1_910,
+      feeUsd: 0.03,
+      closedPnl: 0,
+      direction: "Open Short",
+    });
+    const secondClose = fill({
+      orderId: 4,
+      tradedAt: "2026-08-06T12:20:00.000Z",
+      filledSize: 0.5,
+      avgFillPrice: 1_905,
+      feeUsd: 0.03,
+      closedPnl: 2.5,
+      direction: "Close Short",
+    });
+
+    const trips = deriveRoundTrips([secondClose, secondOpen, closeLong, openLong]);
+
+    expect(trips.map((trip) => trip.orderRef)).toEqual(["4", "2"]);
+    expect(trips[0]!.direction).toBe("short");
+  });
+
+  // A reversal is one fill doing two things, and its single fee must be
+  // charged once — to the leg it closed.
+  it("reads a reversal as a close and an open, charging its fee once", () => {
+    // One fill of 0.5262: 0.2631 of it gives the long back, 0.2631 takes the
+    // short on. That is what a reversal is on the wire.
+    const reverse = fill({
+      orderId: 5,
+      tradedAt: "2026-08-06T12:06:00.000Z",
+      filledSize: 0.5262,
+      avgFillPrice: 1_900.16,
+      feeUsd: 0.02,
+      closedPnl: 0.14,
+      direction: "Long > Short",
+    });
+    const closeShort = fill({
+      orderId: 6,
+      tradedAt: "2026-08-06T12:09:00.000Z",
+      filledSize: 0.2631,
+      avgFillPrice: 1_890,
+      feeUsd: 0.02,
+      closedPnl: 1,
+      direction: "Close Short",
+    });
+
+    const trips = deriveRoundTrips([closeShort, reverse, openLong]);
+
+    expect(trips).toHaveLength(2);
+    // Newest first: the short the reversal opened, then the long it closed.
+    expect(trips[0]!.direction).toBe("short");
+    expect(trips[0]!.entryPrice).toBe(1_900.16);
+    expect(trips[0]!.feesUsd).toBeCloseTo(0.02, 10);
+    expect(trips[0]!.size).toBeCloseTo(0.2631, 10);
+    expect(trips[1]!.direction).toBe("long");
+    expect(trips[1]!.feesUsd).toBeCloseTo(0.04, 10);
+    // Only the half of the fill that gave the long back is the long's exit.
+    expect(trips[1]!.size).toBeCloseTo(0.2631, 10);
+  });
+
+  // Plan 34 step 4: the live ledger's rows were individually wrong while the
+  // column total stayed right. Mission 38502fa8, replayed at the per-order
+  // grain the projection serves: one 0.474 short opened as a single order,
+  // banked in three rungs.
+  it("splits an open leg across the closes that consume it", () => {
+    const openShort = fill({
+      orderId: 57_981_716_530,
+      tradedAt: "2026-08-17T22:11:20.144Z",
+      filledSize: 0.474,
+      avgFillPrice: 1_905.11,
+      feeUsd: 0.406359,
+      closedPnl: 0,
+      direction: "Open Short",
+    });
+    const firstRung = fill({
+      orderId: 57_981_968_170,
+      tradedAt: "2026-08-17T22:20:32.315Z",
+      filledSize: 0.0956,
+      avgFillPrice: 1_903.7,
+      feeUsd: 0.027299,
+      closedPnl: 0.134796,
+      direction: "Close Short",
+    });
+    const secondRung = fill({
+      orderId: 57_981_979_732,
+      tradedAt: "2026-08-17T22:20:55.664Z",
+      filledSize: 0.0394,
+      avgFillPrice: 1_903.7,
+      feeUsd: 0.011248,
+      closedPnl: 0.055554,
+      direction: "Close Short",
+    });
+    const finalRung = fill({
+      orderId: 57_982_033_147,
+      tradedAt: "2026-08-17T22:22:38.725Z",
+      filledSize: 0.339,
+      avgFillPrice: 1_904.82,
+      feeUsd: 0.290579,
+      closedPnl: 0.09743,
+      direction: "Close Short",
+    });
+
+    const trips = deriveRoundTrips([finalRung, secondRung, firstRung, openShort]);
+
+    expect(trips).toHaveLength(3);
+    // Every row knows where it was entered — none of them used to.
+    for (const trip of trips) {
+      expect(trip.entryPrice).toBeCloseTo(1_905.11, 10);
+      expect(trip.openOrderRef).toBe("57981716530");
+    }
+    // Each rung pays its own share of the opening fee, in proportion to the
+    // exposure it took off. Newest first.
+    expect(trips[2]!.netUsd).toBeCloseTo(0.02554, 4);
+    expect(trips[1]!.netUsd).toBeCloseTo(0.010528, 4);
+    expect(trips[0]!.netUsd).toBeCloseTo(-0.483772, 4);
+    // And the total is what it always was: the mission's real net.
+    const total = trips.reduce((sum, trip) => sum + trip.netUsd, 0);
+    expect(total).toBeCloseTo(-0.447705, 6);
+  });
+
+  // `side` alone cannot tell an open from a close, so an unlabelled fill is
+  // skipped rather than paired into a position that never happened.
+  it("skips a fill the exchange did not label", () => {
+    expect(deriveRoundTrips([{ ...closeLong, direction: undefined }])).toEqual([]);
+  });
+
+  it("drops fills with an unparseable timestamp", () => {
+    expect(deriveRoundTrips([{ ...closeLong, tradedAt: "not a date" }])).toEqual([]);
+  });
+});
+
+describe("derivePositionLedger", () => {
+  const trip = {
+    direction: "long" as const,
+    size: 0.2631,
+    entryPrice: 1_899.8,
+    exitPrice: 1_900.16,
+    netUsd: 0.1,
+    closedPnlUsd: 0.14,
+    feesUsd: 0.04,
+    closedAtMillis: 1_700_000_060_000,
+    openedAtMillis: 1_700_000_000_000,
+    orderRef: "2",
+    openOrderRef: "1",
+  };
+  const position = {
+    size: 0.5,
+    entryPrice: 1_864.2,
+    unrealisedPnl: 2.6,
+    marginUsed: 186.42,
+  };
+
+  it("puts the open position first, marked active, with the mark as its exit", () => {
+    const rows = derivePositionLedger({
+      position,
+      markPrice: 1_869.4,
+      trips: [trip],
+      openedAtMillis: 1_699_999_000_000,
+    });
+
+    expect(rows.map((row) => row.isActive)).toEqual([true, false]);
+    const open = rows[0]!;
+    expect(open.exitPrice).toBe(1_869.4);
+    // The open row's money figure is what it is holding, not what it settled.
+    expect(open.netUsd).toBe(2.6);
+    expect(open.closedPnlUsd).toBeNull();
+    expect(open.feesUsd).toBeNull();
+    expect(open.marginUsd).toBe(186.42);
+    expect(open.openedAtMillis).toBe(1_699_999_000_000);
+  });
+
+  it("reads the side off the sign of the exposure", () => {
+    const [row] = derivePositionLedger({
+      position: { ...position, size: -0.5 },
+      markPrice: 1_869.4,
+      trips: [],
+      openedAtMillis: null,
+    });
+    expect(row?.direction).toBe("short");
+    expect(row?.size).toBe(0.5);
+  });
+
+  it("commits a notional from the price the position opened at", () => {
+    const rows = derivePositionLedger({
+      position,
+      markPrice: 1_869.4,
+      trips: [trip],
+      openedAtMillis: null,
+    });
+    expect(rows[0]!.notionalUsd).toBeCloseTo(932.1, 6);
+    expect(rows[1]!.notionalUsd).toBeCloseTo(499.837_38, 6);
+  });
+
+  // The exit price is not a stand-in for an unknown entry: a position that ran
+  // a long way would report a notional it never had.
+  it("states no notional when the opening price is off the fill window", () => {
+    const rows = derivePositionLedger({
+      position: null,
+      markPrice: 1_869.4,
+      trips: [{ ...trip, entryPrice: null }],
+      openedAtMillis: null,
+    });
+    expect(rows[0]!.notionalUsd).toBeNull();
+    expect(rows[0]!.entryPrice).toBeNull();
+  });
+
+  it("shows only settled rows when the mission is flat", () => {
+    expect(
+      derivePositionLedger({
+        position: { size: 0, unrealisedPnl: 0 },
+        markPrice: 1_869.4,
+        trips: [trip],
+        openedAtMillis: null,
+      }).map((row) => row.isActive),
+    ).toEqual([false]);
+  });
+
+  it("leaves the open row's exit empty when no mark has been read", () => {
+    const [row] = derivePositionLedger({
+      position,
+      markPrice: null,
+      trips: [],
+      openedAtMillis: null,
+    });
+    expect(row?.exitPrice).toBeNull();
+  });
+});
+
+describe("formatFixed3", () => {
+  // Fixed, not trimmed: equal widths are what let the ledger's price column
+  // right-align and have its arrows line up too.
+  it("always shows three decimals, and rounds a longer figure to them", () => {
+    expect(formatFixed3(0.5)).toBe("0.500");
+    expect(formatFixed3(0.2631)).toBe("0.263");
+    expect(formatFixed3(1_899.8)).toBe("1,899.800");
+    expect(formatFixed3(1_900.16)).toBe("1,900.160");
+    expect(formatFixed3(2.9999999999999996)).toBe("3.000");
   });
 });
 
