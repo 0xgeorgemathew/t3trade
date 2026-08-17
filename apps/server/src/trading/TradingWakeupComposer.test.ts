@@ -317,8 +317,10 @@ layer("TradingWakeupComposer", (it) => {
     }),
   );
 
-  // The projection is the one thing the model must never be without — a plan
-  // that lacks one is told so on every wake until it republishes.
+  // The projection is the one thing a directional plan must never be without —
+  // one that lacks it is told so on every wake until it republishes. A
+  // stand-aside is exempt: the contract says it states none, so nagging it
+  // would demand an invented prediction the runtime then arms and draws.
   it.effect("nags for a projection when the plan has none, and only then", () =>
     Effect.gen(function* () {
       // The fixture plan carries no projection: every wake says so.
@@ -338,6 +340,13 @@ layer("TradingWakeupComposer", (it) => {
         },
       }).pipe(Effect.map((composed) => composed.wakeup));
       assert.notInclude(projected.strategyReview ?? "", "NO PROJECTION ON FILE");
+
+      // A stand-aside with no projection is the contract being followed,
+      // not a gap to nag about.
+      const standAside = yield* composeFull({
+        activeStrategy: { ...strategy, intent: "stand_aside" },
+      }).pipe(Effect.map((composed) => composed.wakeup));
+      assert.notInclude(standAside.strategyReview ?? "", "NO PROJECTION ON FILE");
     }),
   );
 

@@ -1146,14 +1146,17 @@ const make = Effect.gen(function* () {
       // and the first-turn contract, both one call away.
       const flatReview =
         activeStrategy === undefined
-          ? "FLAT, NO PLAN ACTIVE — decide this turn: read the market, publish via trading_plan (standing aside counts), state a projection, and arm conditions around it on both sides."
+          ? "FLAT, NO PLAN ACTIVE — decide this turn: read the market, publish via trading_plan (standing aside counts; a directional plan states a projection), and arm conditions around it on both sides."
           : "FLAT — every playbook is a candidate again (momentum, range_reversion, opening_range, rsi_reversion; ema_cross unscored — read `ema`). Take the one whose expected move beats the round trip (`costContext`), or none.";
-      // The projection is the one thing the model must never be without: an
-      // informed estimate of where price is heading, on file whatever the
-      // intent. A plan without one gets told so on every wake until it is.
+      // The projection is the one thing a DIRECTIONAL plan must never be
+      // without: an informed estimate of where price is heading. A stand-aside
+      // is exempt — the contract says it states none, because an invented
+      // prediction would be armed and drawn as if it were believed.
       const projectionNote =
-        activeStrategy !== undefined && activeStrategy.projection === undefined
-          ? "NO PROJECTION ON FILE — republish with projection {direction, price, byMinutes, invalidationPrice}; a prediction is always required, stand_aside included, and it is what arms the horizon and invalidation wakes. "
+        activeStrategy !== undefined &&
+        activeStrategy.projection === undefined &&
+        activeStrategy.intent !== "stand_aside"
+          ? "NO PROJECTION ON FILE — republish with projection {direction, price, byMinutes, invalidationPrice}; every directional plan states one, and it is what arms the horizon and invalidation wakes. "
           : "";
 
       // The prediction the mission is running, as one line and a version.
