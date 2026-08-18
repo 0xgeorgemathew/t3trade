@@ -44,9 +44,26 @@ import type * as SqlClient from "effect/unstable/sql/SqlClient";
 // shape of exchange change it was.
 const EXECUTION_TOOLS: ReadonlySet<string> = new Set([TRADING_ENTER_TOOL, TRADING_EXIT_TOOL]);
 
-/** How much of a message is worth keeping: one line, bounded. */
-const summarize = (text: string, limit = 300): string =>
-  (text.split("\n")[0] ?? "").trim().slice(0, limit);
+/** A schema issue's field path — `  at ["strategy"]["projection"]`. */
+const SCHEMA_ISSUE_PATH = /^\s*at \[/;
+
+/**
+ * How much of a message is worth keeping: the first line, plus the field it
+ * happened at, bounded.
+ *
+ * The first line alone is exactly the useless half of a validation error.
+ * `Expected object | undefined` was recorded without its `at [...]` line, so
+ * the stored error named no field and no amount of forensics could say which
+ * one had failed — the model was told, and the record was not. Stack frames
+ * still go, which is what dropping everything after line one was for; a schema
+ * path is distinguishable from a stack frame by the bracket.
+ */
+const summarize = (text: string, limit = 300): string => {
+  const lines = text.split("\n");
+  const head = (lines[0] ?? "").trim();
+  const paths = lines.slice(1).filter((line) => SCHEMA_ISSUE_PATH.test(line));
+  return [head, ...paths.map((line) => line.trim())].join(" ").trim().slice(0, limit);
+};
 
 type Sql = SqlClient.SqlClient;
 
