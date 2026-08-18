@@ -165,6 +165,17 @@ export const TradingCostContext = Schema.Struct({
   roundTripUsd: Schema.Number,
   /** The same cost in basis points of the reference notional. */
   roundTripBps: Schema.Number,
+  /**
+   * The rung a target should clear at this notional — twice the round trip.
+   *
+   * Carried on the flat line because the flat turn is where targets are set,
+   * and until this existed it was the one turn that could not see the number.
+   * `positionCosts` has it, but `positionCosts` is omitted with no position, so
+   * every ENTRY plan of one measured mission was published blind: all six named
+   * a target under the rung, and the three that met it were all published while
+   * already holding.
+   */
+  preferredTargetUsd: Schema.Number,
 });
 export type TradingCostContext = typeof TradingCostContext.Type;
 
@@ -175,6 +186,7 @@ export function costContextFromEstimate(estimate: TradingCostEstimate): TradingC
     roundTripUsd: estimate.roundTripUsd,
     roundTripBps:
       estimate.notionalUsd > 0 ? (estimate.roundTripUsd / estimate.notionalUsd) * 10_000 : 0,
+    preferredTargetUsd: estimate.preferredTargetUsd,
   };
 }
 
@@ -458,6 +470,41 @@ export function notionalForProfitTarget(input: {
       `${input.targetProfitUsd.toFixed(2)} USD of target over a ${(netFraction * 100).toFixed(3)}% ` +
       `net move (${(moveFraction * 100).toFixed(3)}% gross less a ${(input.costFractionOfNotional * 100).toFixed(3)}% ` +
       `round trip) needs ${notionalUsd.toFixed(2)} USD of notional`,
+  };
+}
+
+/**
+ * Hold a target's notional to the size the plan itself said it intended.
+ *
+ * {@link notionalForProfitTarget} answers "how big must this be for the target
+ * to be reachable", and the sizer uses that as a FLOOR. So an unreachable
+ * target does not fail — it grows the order until the arithmetic works. One
+ * measured mission published a $1.86 target over a move that netted 2.7 bps
+ * and the answer came back $6,809 of notional, against a plan that had just
+ * declared $500. The order went out at $6,809.
+ *
+ * A plan that cannot reach its target at the size it declared has published a
+ * bad target. It has not authorised a bigger position. Capping here keeps the
+ * `reason` honest about both numbers, so the shortfall reaches the model as
+ * `fundsTarget: false` and a sentence saying what it asked for and what it
+ * said it wanted — which is the correction, rather than a silent 13x fill.
+ *
+ * A null cap is no cap: a plan that declared no size is not one to hold to a
+ * number it never named.
+ */
+export function capTargetNotional(
+  target: TargetNotional | null,
+  declaredCapUsd: number | null,
+): TargetNotional | null {
+  if (target === null || target.notionalUsd === null) return target;
+  if (declaredCapUsd === null || !(declaredCapUsd > 0)) return target;
+  if (target.notionalUsd <= declaredCapUsd) return target;
+  return {
+    ...target,
+    notionalUsd: declaredCapUsd,
+    reason:
+      `${target.reason}, capped to the ${declaredCapUsd.toFixed(2)} USD this plan declared ` +
+      `it intended — the target is out of reach at that size`,
   };
 }
 

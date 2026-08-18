@@ -44,7 +44,7 @@ import {
   MARKET_STRUCTURE_LOOKBACK_BARS,
   MARKET_STRUCTURE_TIMEFRAMES,
 } from "@t3tools/trading-contracts/market-structure";
-import { targetNotionalForPlan } from "@t3tools/trading-contracts/costs";
+import { capTargetNotional, targetNotionalForPlan } from "@t3tools/trading-contracts/costs";
 import { stopNoiseFloorUsd } from "@t3tools/trading-contracts/stop-adjustment";
 import { ACTIVE_TRADING_POLICY } from "@t3tools/trading-contracts/policy";
 import { MIN_NOTIONAL_USD } from "@t3tools/hyperliquid/Precision";
@@ -55,6 +55,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { readAccountMarginCapacityUsd } from "./AccountMarginCapacity.ts";
 import { retryTransientRead } from "./RetryTransient.ts";
 import { IocSlippageConfig } from "./IocSlippageConfig.ts";
 import { TradingBudgetReader } from "./TradingBudgetReader.ts";
@@ -211,11 +212,16 @@ export const makeTradingEntryService = Effect.gen(function* () {
       readonly target_profit_usd: number | null;
       readonly take_profit_price: number | null;
       readonly stand_aside: number | null;
+      readonly maximum_intended_notional_usd: number | null;
+      readonly initial_notional_usd: number | null;
     }>`
       SELECT
         json_extract(s.strategy_json, '$.target.profitUsd') AS target_profit_usd,
         json_extract(s.strategy_json, '$.target.price') AS take_profit_price,
-        json_extract(s.strategy_json, '$.intent') = 'stand_aside' AS stand_aside
+        json_extract(s.strategy_json, '$.intent') = 'stand_aside' AS stand_aside,
+        json_extract(s.strategy_json, '$.entry.maximumIntendedNotionalUsd')
+          AS maximum_intended_notional_usd,
+        json_extract(s.strategy_json, '$.entry.initialNotionalUsd') AS initial_notional_usd
       FROM trading_plan_history s
       WHERE s.mission_id = ${missionId}
       ORDER BY s.version DESC
@@ -223,45 +229,6 @@ export const makeTradingEntryService = Effect.gen(function* () {
     `.pipe(
       Effect.map((rows) => rows[0] ?? null),
       // A sizing hint is never worth the turn: an unreadable row leaves the
-      // entry sized exactly as it was before this existed.
-      Effect.orElseSucceed(() => null),
-    );
-
-  /**
-   * What the exchange account can actually carry, in gross notional — plan 34
-   * step 7.1.
-   *
-   * `account_value * leverage`, both from the reconciler's own snapshots: the
-   * account observation it writes every pass, and the leverage the exchange
-   * reports for this market, which survives the mission going flat. Null when
-   * either is missing, and then nothing is bound — an unknown capacity is not
-   * a zero one.
-   *
-   * The mandate's ceilings say what the mission may take. This says what the
-   * account can fund. When they disagree the account wins, because it is the
-   * one that has to settle: an entry sized off an 8x mandate against a 1x
-   * account filled an eighth of the request and reported `filled`.
-   */
-  const readAccountMarginCapacity = (input: {
-    readonly missionId: string;
-    readonly market: string;
-  }) =>
-    Effect.gen(function* () {
-      const accounts = yield* sql<{ readonly account_value: number }>`
-        SELECT account_value FROM trading_account_observations
-        WHERE mission_id = ${input.missionId}
-      `;
-      const positions = yield* sql<{ readonly leverage: number | null }>`
-        SELECT leverage FROM trading_position_snapshots
-        WHERE mission_id = ${input.missionId} AND market = ${input.market}
-      `;
-      const accountValue = accounts[0]?.account_value;
-      const leverage = positions[0]?.leverage;
-      if (accountValue == null || leverage == null) return null;
-      if (!(accountValue > 0) || !(leverage > 0)) return null;
-      return accountValue * leverage;
-    }).pipe(
-      // A sizing bound is never worth the turn. An unreadable row leaves the
       // entry sized exactly as it was before this existed.
       Effect.orElseSucceed(() => null),
     );
@@ -354,7 +321,7 @@ export const makeTradingEntryService = Effect.gen(function* () {
       // what a target needs. The expected move is the distance from the entry
       // being taken to the plan's own take-profit price, so the lift applies
       // only to plans that name the level they are aiming at.
-      const targetNotional =
+      const targetNotionalUncapped =
         plan === null ||
         plan.stand_aside === 1 ||
         plan.target_profit_usd === null ||
@@ -374,7 +341,19 @@ export const makeTradingEntryService = Effect.gen(function* () {
               makerFeeBpsPerSide: feeRate.makerFeeBps,
             });
 
-      const marginCapacityUsd = yield* readAccountMarginCapacity({
+      // The lift is a floor under the size, so an unreachable target used to
+      // raise the order until the arithmetic worked: a $1.86 target over a
+      // 2.7 bps net move demanded $6,809 of notional from a plan that had
+      // declared $500, and the sizer funded it. A plan that cannot reach its
+      // target at the size it declared has published a bad target; it has not
+      // authorised a bigger position. Clamp the lift to what the plan itself
+      // said it intended, and let `fundsTarget: false` carry the disagreement
+      // back to the model, which is what that flag is for.
+      const declaredNotionalCapUsd =
+        plan?.maximum_intended_notional_usd ?? plan?.initial_notional_usd ?? null;
+      const targetNotional = capTargetNotional(targetNotionalUncapped, declaredNotionalCapUsd);
+
+      const marginCapacityUsd = yield* readAccountMarginCapacityUsd(sql, {
         missionId: request.missionId,
         market: request.market,
       });
