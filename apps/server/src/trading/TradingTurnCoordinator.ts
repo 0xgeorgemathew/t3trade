@@ -59,7 +59,6 @@ import {
   planReassessCadenceMillis,
   readWatchCoverage,
   watchCoverageFloorMillis,
-  watchSanityBackstopMillis,
 } from "@t3tools/trading-contracts/watch";
 import { toPersistenceSqlError, type PersistenceSqlError } from "../persistence/Errors.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -707,28 +706,36 @@ const make = Effect.gen(function* () {
               protectedSize: position.protected_size ?? 0,
             });
 
-      if (isDeafWhileHoldingPosition(coverage)) {
-        yield* armStalenessFloor({
-          missionId,
-          nowMillis: now,
-          floorMillis: holdingFloor,
-          detail: { positionSize: position.size, coverage, primaryTimeframe },
-        });
-        return;
-      }
-
-      // Covered on both sides. The mission will be woken by a real event, so the
-      // only thing left to schedule is the slow look at whether the thesis still
-      // holds — not the three-bar metronome the deaf case needs.
-      const sanityFloor = boundedByPlanCadence(watchSanityBackstopMillis(primaryTimeframe));
-      if (hasReassessmentWithin({ watches: armed, nowMillis: now, floorMillis: sanityFloor }))
+      // A held position gets the cadence unconditionally, covered or not.
+      //
+      // Coverage used to decide: a "covered" mission — one with levels armed
+      // each side — got the slow sanity backstop instead of the three-bar
+      // metronome. But levels are alerts and cadence is a separate question,
+      // and a mission can be covered by seven watches that all say something
+      // about price while nothing at all asks whether the thesis still holds.
+      // That is what happened live: a position held on a 1m mandate had seven
+      // armed watches, took the covered branch, and had no runtime-armed
+      // reassessment for its entire hold — its only clock was the model's own
+      // 5-minute projection horizon.
+      //
+      // This is what the profit target used to be. Rather than a number
+      // guessed at entry, the mission is asked on a clock whether there is
+      // enough profit to bank and whether the read still holds — against live
+      // conditions. The prediction horizon still sits on top, so a model that
+      // names a shorter one gets it.
+      if (hasReassessmentWithin({ watches: armed, nowMillis: now, floorMillis: holdingFloor }))
         return;
 
       yield* armStalenessFloor({
         missionId,
         nowMillis: now,
-        floorMillis: sanityFloor,
-        detail: { positionSize: position.size, coverage, primaryTimeframe, sanityBackstop: true },
+        floorMillis: holdingFloor,
+        detail: {
+          positionSize: position.size,
+          coverage,
+          primaryTimeframe,
+          deaf: isDeafWhileHoldingPosition(coverage),
+        },
       });
     }).pipe(
       Effect.catchCause((cause) =>

@@ -29,7 +29,6 @@ import {
   NO_OP_BACKOFF_CAP_MILLIS,
   PLAN_REASSESS_FLOOR_MILLIS,
   watchCoverageFloorMillis,
-  watchSanityBackstopMillis,
 } from "@t3tools/trading-contracts/watch";
 
 import { runMigrations } from "../persistence/Migrations.ts";
@@ -327,7 +326,13 @@ layer("run settlement: the armed-coverage floor", (it) => {
     }),
   );
 
-  it.effect("arms only the slow sanity backstop when both sides are already covered", () =>
+  // Plan 36 item 7. Coverage used to decide the cadence: a position with
+  // levels armed each side got the slow thesis-drift check instead of the
+  // three-bar metronome. But levels are alerts and cadence is a separate
+  // question — a live mission held a position under seven armed watches, took
+  // the covered branch, and had no runtime-armed reassessment for its whole
+  // hold. Its only clock was the model's own 5-minute projection.
+  it.effect("still arms the holding cadence when both sides are already covered", () =>
     Effect.gen(function* () {
       yield* seed;
       yield* holdPosition(0.05, 1_850);
@@ -356,24 +361,25 @@ layer("run settlement: the armed-coverage floor", (it) => {
 
       yield* runOneTurn;
 
-      // Both price levels survive, plus one reassessment — but far out: a
-      // covered position gets a thesis-drift check, not a 3-bar metronome.
+      // Both price levels survive, and the reassessment lands inside the
+      // holding floor — the same 3 bars an uncovered position gets. Being
+      // covered says the mission can hear the market; it does not say anything
+      // has asked whether the thesis still holds.
       const active = yield* activeWatches;
       assert.equal(active.length, 3);
       const reassessment = active.find((w) => w.watch.type === "scheduled_reassessment");
       assert.isDefined(reassessment);
       if (reassessment?.watch.type !== "scheduled_reassessment") return;
       const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-      const tight = watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: true });
-      assert.isAbove(reassessment.watch.runAt, now + tight);
-      assert.isAtMost(reassessment.watch.runAt, now + watchSanityBackstopMillis("1m") + 1_000);
+      const holdingFloor = watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: true });
+      assert.isAtMost(reassessment.watch.runAt, now + holdingFloor + 1_000);
     }),
   );
 
-  it.effect("treats a PnL target over a confirmed stop as covered on both sides", () =>
+  it.effect("gives a PnL target over a confirmed stop the cadence too", () =>
     // The observed mission's shape: a short with a target `pnl_above` armed and
-    // a reduce-only stop resting. Both directions are heard, so the only thing
-    // the floor should add is the slow thesis-drift check.
+    // a reduce-only stop resting. Both directions are heard — and it still gets
+    // a clock, because hearing the market is not the same as reconsidering.
     Effect.gen(function* () {
       yield* seed;
       yield* holdPosition(-0.05, 1_850);
@@ -392,9 +398,9 @@ layer("run settlement: the armed-coverage floor", (it) => {
       const scheduled = reassessments[0]!.watch;
       if (scheduled.type !== "scheduled_reassessment") return;
       const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-      assert.isAbove(
+      assert.isAtMost(
         scheduled.runAt,
-        now + watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: true }),
+        now + watchCoverageFloorMillis({ timeframe: "1m", holdingPosition: true }) + 1_000,
       );
     }),
   );
