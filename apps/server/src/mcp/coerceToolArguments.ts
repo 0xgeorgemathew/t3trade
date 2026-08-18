@@ -156,6 +156,23 @@ const unwrapScalarObject = (
   return undefined;
 };
 
+/**
+ * Whether a schema node would accept `null` as a value in its own right.
+ *
+ * Read before dropping a null-valued key, because the two readings of `null`
+ * are opposites: a schema that declares null wants the null, and one that does
+ * not was sent "I have nothing for this field" in the only vocabulary some
+ * providers reach for.
+ */
+const permitsNull = (node: JsonSchemaNode, root: JsonSchemaNode): boolean => {
+  const schema = resolveNode(node, root);
+  const declared = schema.type;
+  if (declared === "null") return true;
+  if (Array.isArray(declared) && declared.includes("null")) return true;
+  const branches = schema.anyOf ?? schema.oneOf;
+  return branches !== undefined && branches.some((branch) => permitsNull(branch, root));
+};
+
 const coerceValue = (value: unknown, node: JsonSchemaNode, root: JsonSchemaNode): unknown => {
   if (value === null || value === undefined) return value;
 
@@ -200,6 +217,15 @@ const coerceValue = (value: unknown, node: JsonSchemaNode, root: JsonSchemaNode)
     const coerced: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value)) {
       const childSchema = props[key];
+      // An explicit `null` on an optional field means "not supplied". No tool
+      // schema here declares a nullable input, so nothing can tell null from
+      // absent — but `Schema.optional` rejects the null and takes the whole
+      // call down with `Expected object | undefined`. One measured mission lost
+      // two turns that way, both on a stand-aside plan correctly saying it had
+      // no projection. A field that genuinely accepts null keeps it.
+      if (child === null && childSchema !== undefined && !permitsNull(childSchema, root)) {
+        continue;
+      }
       coerced[key] = childSchema ? coerceValue(child, childSchema, root) : child;
     }
     return coerced;
