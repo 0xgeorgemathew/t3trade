@@ -459,11 +459,11 @@ describe("watch handles", () => {
   });
 
   it("resolves a handle back to the one watch it names", () => {
-    assert.deepStrictEqual(resolveWatchHandle("4407584c", ids), [ids[0]]);
+    assert.deepStrictEqual(resolveWatchHandle("4407584c", ids), [ids[0]!]);
   });
 
   it("resolves a whole id, for a turn that quotes one", () => {
-    assert.deepStrictEqual(resolveWatchHandle(ids[1]!, ids), [ids[1]]);
+    assert.deepStrictEqual(resolveWatchHandle(ids[1]!, ids), [ids[1]!]);
   });
 
   it("finds nothing for the spliced id that started this", () => {
