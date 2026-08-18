@@ -68,9 +68,11 @@ import {
   MARKET_STRUCTURE_LOOKBACK_BARS,
   MARKET_STRUCTURE_TIMEFRAMES,
 } from "@t3tools/trading-contracts/market-structure";
+import { toCandleSeries } from "@t3tools/trading-contracts/market";
 import type {
   AgentMarketSnapshot,
   MarketCandle,
+  MarketCandleSeries,
   MarketHistory,
   OrderBook,
 } from "@t3tools/trading-contracts/market";
@@ -859,12 +861,12 @@ const withMicrostructure = (
  * clipping the series does not change the volatility, it changes how much of
  * the chart rides back in the response.
  */
-const boundCandles = (history: MarketHistory, bars: number): MarketHistory => {
+const boundCandles = (history: MarketHistory, bars: number): MarketCandleSeries => {
   // `slice(-0)` is `slice(0)` — the whole series. Zero bars is a real answer
   // here, so it is taken before the arithmetic that would return everything.
-  if (bars <= 0) return { ...history, candles: [] };
-  if (history.candles.length <= bars) return history;
-  return { ...history, candles: history.candles.slice(-bars) };
+  if (bars <= 0) return toCandleSeries({ ...history, candles: [] });
+  if (history.candles.length <= bars) return toCandleSeries(history);
+  return toCandleSeries({ ...history, candles: history.candles.slice(-bars) });
 };
 
 /**

@@ -18,7 +18,7 @@ import { AgentAccountSnapshot, AgentNetPosition, AgentOpenOrder } from "./accoun
 import { TradingCostContext, TradingCostEstimate } from "./costs.ts";
 import { TradingTradeHistory } from "./history.ts";
 import { IndicatorReading, IndicatorRequest } from "./indicators.ts";
-import { AgentMarketSnapshot, MarketHistory, OrderBook, ResolvedMarket } from "./market.ts";
+import { AgentMarketSnapshot, MarketCandleSeries, OrderBook, ResolvedMarket } from "./market.ts";
 import { ObservedMarketStructure } from "./marketStructure.ts";
 import { MarketMicrostructure } from "./microstructure.ts";
 import { TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
@@ -164,8 +164,11 @@ export const TradingObservation = Schema.Struct({
   resolvedMarket: Schema.optional(ResolvedMarket),
   snapshot: Schema.optional(AgentMarketSnapshot),
   orderBook: Schema.optional(OrderBook),
-  /** The lookback window the volatility and structure reads were taken over. */
-  candles: Schema.optional(MarketHistory),
+  /**
+   * The lookback window the volatility and structure reads were taken over,
+   * as a table rather than one keyed object per bar (plan 35 step 1).
+   */
+  candles: Schema.optional(MarketCandleSeries),
   /** Fluctuation on the mission's runtime timeframe. Gross of costs. */
   volatility: Schema.optional(ObservedVolatility),
   /**

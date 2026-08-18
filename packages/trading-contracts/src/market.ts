@@ -207,6 +207,74 @@ export const MarketHistory = Schema.Struct({
 });
 export type MarketHistory = typeof MarketHistory.Type;
 
+/**
+ * The bar interval, in milliseconds — the step between one row's open and the
+ * next one's on a contiguous series.
+ */
+const CANDLE_INTERVAL_MILLIS: Record<MarketCandleInterval, number> = {
+  "1m": 60_000,
+  "3m": 180_000,
+  "5m": 300_000,
+  "15m": 900_000,
+  "1h": 3_600_000,
+};
+
+/** The column order every {@link MarketCandleSeries} row is written in. */
+export const CANDLE_SERIES_COLUMNS = "open,high,low,close,volume,trades";
+
+/**
+ * A candle window as a table, which is what a chart in a context window is.
+ *
+ * The same bars as {@link MarketHistory} and nothing else, encoded once instead
+ * of once per bar. A 120-bar `MarketHistory` costs 131 characters a bar, of
+ * which 69 are the eight repeated key names and 48 are two 13-digit timestamps
+ * that a contiguous series makes derivable — so on the mission this was
+ * measured from (plan 35 phase 2), the raw chart was 16.3k characters of a
+ * 27k-character look, and 55% of every look the mission took.
+ *
+ * `firstOpenTime` plus `intervalMillis` reconstructs every stamp the row form
+ * carried, so nothing is lost; the model reads `bars[i]` positionally against
+ * {@link CANDLE_SERIES_COLUMNS}.
+ */
+export const MarketCandleSeries = Schema.Struct({
+  market: TradingMarket,
+  interval: MarketCandleInterval,
+  /** Open time of `bars[0]`. Absent when the window echoed no bars. */
+  firstOpenTime: Schema.optional(UnixMillis),
+  /** The step between consecutive rows — `bars[i]` opens at `firstOpenTime + i * this`. */
+  intervalMillis: Schema.Number,
+  /** What each row's numbers are, in order. */
+  columns: Schema.String,
+  /** Oldest first. One row per interval, in {@link CANDLE_SERIES_COLUMNS} order. */
+  bars: Schema.Array(Schema.Array(Schema.Number)),
+  /** Close time of the most recent finalised candle in the response, if any. */
+  finalisedClose: Schema.optional(UnixMillis),
+  freshness: FreshnessMeta,
+});
+export type MarketCandleSeries = typeof MarketCandleSeries.Type;
+
+/** Encode a candle window as the table a look returns. */
+export function toCandleSeries(history: MarketHistory): MarketCandleSeries {
+  const first = history.candles[0];
+  return {
+    market: history.market,
+    interval: history.interval,
+    ...(first === undefined ? {} : { firstOpenTime: first.openTime }),
+    intervalMillis: CANDLE_INTERVAL_MILLIS[history.interval],
+    columns: CANDLE_SERIES_COLUMNS,
+    bars: history.candles.map((candle) => [
+      candle.open,
+      candle.high,
+      candle.low,
+      candle.close,
+      candle.volume,
+      candle.trades ?? 0,
+    ]),
+    ...(history.finalisedClose === undefined ? {} : { finalisedClose: history.finalisedClose }),
+    freshness: history.freshness,
+  };
+}
+
 // -- order book --------------------------------------------------------------
 
 /** A single price level on the order book. */

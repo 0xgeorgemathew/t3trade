@@ -813,7 +813,7 @@ it.effect("rebuilds a reacting turn's picture in two scoped, bounded looks", () 
           bars: 6,
         });
         const barsRead = bars.result.body;
-        assert.isAtMost(barsRead.candles.candles.length, 6);
+        assert.isAtMost(barsRead.candles.bars.length, 6);
         assert.equal(barsRead.volatility.market, "ETH");
         // Everything a reaction did not ask for stayed home.
         assert.equal(barsRead.structure, undefined);
@@ -936,7 +936,7 @@ it.effect("echoes the chart only when the chart is what was asked for", () => {
           indicators: [{ kind: "ema", period: 20 }],
         });
         const pulledRead = pulled.result.body;
-        assert.equal(pulledRead.candles.candles.length, 0);
+        assert.equal(pulledRead.candles.bars.length, 0);
         assert.equal(pulledRead.indicators.length, 1);
         // The measurements are still taken over the full fetched lookback.
         assert.isTrue(Number.isFinite(pulledRead.indicators[0].value));
@@ -948,14 +948,14 @@ it.effect("echoes the chart only when the chart is what was asked for", () => {
           scope: ["candles"],
           bars: 0,
         });
-        assert.equal(none.result.body.candles.candles.length, 0);
+        assert.equal(none.result.body.candles.bars.length, 0);
 
         // Neither named: a short tail, not the whole lookback.
         const tail = yield* callTool(BOUND_THREAD, "trading_look", {
           missionId: MISSION_ID,
           scope: ["candles"],
         });
-        assert.equal(tail.result.body.candles.candles.length, 20);
+        assert.equal(tail.result.body.candles.bars.length, 20);
 
         // A call that named bars beside indicators gets both.
         const both = yield* callTool(BOUND_THREAD, "trading_look", {
@@ -964,7 +964,21 @@ it.effect("echoes the chart only when the chart is what was asked for", () => {
           bars: 5,
           indicators: [{ kind: "ema", period: 20 }],
         });
-        assert.equal(both.result.body.candles.candles.length, 5);
+        assert.equal(both.result.body.candles.bars.length, 5);
+
+        // Plan 35 step 1: the window rides back as a table. Six numbers a row
+        // in the column order the header names, and the stamps the row form
+        // repeated on every bar are reconstructible from the two it states.
+        const table = both.result.body.candles;
+        assert.equal(table.columns, "open,high,low,close,volume,trades");
+        assert.equal(table.intervalMillis, 60_000);
+        assert.isTrue(Number.isFinite(table.firstOpenTime));
+        assert.deepStrictEqual(
+          table.bars.map((row: ReadonlyArray<number>) => row.length),
+          [6, 6, 6, 6, 6],
+        );
+        // A window with no bars states no first stamp rather than a false one.
+        assert.equal(none.result.body.candles.firstOpenTime, undefined);
         assert.equal(both.result.body.indicators.length, 1);
       }),
     tradingLayerOverExchange(fake),
