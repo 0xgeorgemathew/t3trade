@@ -98,6 +98,7 @@ import {
 } from "@t3tools/trading-contracts/precision";
 import { PLAYBOOKS } from "@t3tools/trading-contracts/playbook";
 import { readMissionMode } from "@t3tools/trading-contracts/mode";
+import { readAccountMarginCapacityUsd } from "../../../trading/AccountMarginCapacity.ts";
 import { TradingCostEstimator } from "../../../trading/TradingCostEstimator.ts";
 import { TradingCalibrationService } from "../../../trading/TradingCalibrationService.ts";
 import { TradingTradeHistoryService } from "../../../trading/TradingTradeHistoryService.ts";
@@ -1288,6 +1289,63 @@ const moveStop = Effect.fn("TradingToolkit.moveStop")(function* (input: {
   };
 });
 
+/**
+ * Tell a plan that its target sits under the rung — in band, never blocking.
+ *
+ * The target is what the runtime arms `pnl_above` at, so a target below twice
+ * the round trip wakes the mission to bank a move that barely paid for itself.
+ * One measured mission published twelve such targets in fifteen directional
+ * plans, and it was not the model's fault: the cost block is omitted when flat,
+ * so every ENTRY plan was written with no rung in front of it and the accepted
+ * result echoed no numbers back.
+ *
+ * A warning, not a refusal. A hard publish-time rejection was tried and
+ * reverted — it made `trading_plan` fail in a way nothing could attribute —
+ * and a refusal that fires on a degraded estimate is worse than a plan with an
+ * optimistic target. So: state both numbers, accept the plan, let the next
+ * revision act on it.
+ *
+ * Priced at what the account can actually fund, for the same reason the wake's
+ * flat cost line is: the declared entry notional is not enforced anywhere, and
+ * pricing the rung against a number the entry will not take produces a rung
+ * that nothing fails.
+ */
+const targetBelowRungWarning = Effect.fn("TradingToolkit.targetBelowRungWarning")(
+  function* (input: { readonly mission: TradingMission; readonly strategy: TradingPlanState }) {
+    const target = input.strategy.target.profitUsd;
+    if (input.strategy.intent === "stand_aside" || target === undefined || !(target > 0))
+      return null;
+
+    const sql = yield* SqlClient.SqlClient;
+    const missions = yield* TradingMissionService;
+    const estimator = yield* TradingCostEstimator;
+    const masterAddress = yield* missions.getMasterWalletAddress(input.mission.tradingAccountId);
+    const fundable = yield* readAccountMarginCapacityUsd(sql, {
+      missionId: input.mission.id,
+      market: input.strategy.market,
+    });
+    const estimate = yield* estimator.estimate({
+      market: input.strategy.market,
+      masterAddress,
+      notionalUsd:
+        fundable ??
+        input.strategy.entry.initialNotionalUsd ??
+        input.mission.authority.allocatedCapitalUsd,
+      fallbackTakerFeeBpsPerSide: input.mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,
+    });
+    if (target >= estimate.preferredTargetUsd) return null;
+
+    return (
+      `target ${target.toFixed(2)} USD is under the ${estimate.preferredTargetUsd.toFixed(2)} USD ` +
+      `this trade should clear — twice the ${estimate.roundTripUsd.toFixed(2)} USD round trip at the ` +
+      `${estimate.notionalUsd.toFixed(2)} USD the account can fund. The plan stands; the target wakes ` +
+      `you for a move that barely pays for itself.`
+    );
+    // A cost read is an enrichment. A plan is never held up because one failed.
+  },
+  Effect.catchCause(() => Effect.succeed(null)),
+);
+
 const handlers = {
   trading_look: (input) => readObservation(input),
 
@@ -1309,8 +1367,19 @@ const handlers = {
       });
       const published = outcome.published;
       if (published.outcome !== "accepted") return published;
-      if (outcome.warnings.length === published.warnings.length) return published;
-      return { ...published, warnings: outcome.warnings };
+
+      const rungWarning = yield* targetBelowRungWarning({
+        mission,
+        strategy: published.strategy,
+      });
+      const warnings = [
+        ...(outcome.warnings.length === published.warnings.length
+          ? published.warnings
+          : outcome.warnings),
+        ...(rungWarning === null ? [] : [rungWarning]),
+      ];
+      if (warnings.length === published.warnings.length) return published;
+      return { ...published, warnings };
     }),
 
   /**

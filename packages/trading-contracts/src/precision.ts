@@ -317,6 +317,7 @@ const COST_CONTEXT_DIGITS: Readonly<Record<string, number>> = {
   referenceNotionalUsd: PRICE_SCALE_DIGITS,
   roundTripUsd: PRICE_SCALE_DIGITS,
   roundTripBps: RATIO_DIGITS,
+  preferredTargetUsd: PRICE_SCALE_DIGITS,
 };
 
 export function roundCostContext(context: TradingCostContext): TradingCostContext {

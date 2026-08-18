@@ -62,6 +62,7 @@ import {
 import { measureVolatility, VOLATILITY_LOOKBACK_BARS } from "@t3tools/trading-contracts/volatility";
 import type { ObservedVolatility } from "@t3tools/trading-contracts/volatility";
 
+import { readAccountMarginCapacityUsd } from "./AccountMarginCapacity.ts";
 import { TradingCostEstimator } from "./TradingCostEstimator.ts";
 import {
   LEVEL_GROUP_TOLERANCE_ATR,
@@ -701,11 +702,18 @@ const make = Effect.gen(function* () {
   /**
    * The one cost line a flat wake carries — plan 29 step 3.1.
    *
-   * Priced at the plan's intended entry notional when the plan names one, else
-   * at the mission's allocated capital: a notional the mission could actually
-   * trade, stated in the line itself. Context for the entry question, never a
-   * gate; a failed read costs the field, never the wake. Holding wakes carry
-   * `positionCosts` instead.
+   * Priced at what the ACCOUNT can fund, because that is what the entry will
+   * actually take. It used to price at the plan's declared entry notional, and
+   * nothing enforces that number: one mission declared $500 on every entry and
+   * took ~$900 on every one of them, bound by `account_margin`. The round trip
+   * on the line was therefore half the round trip it paid, the rung derived
+   * from it was half as high, and all six of its entry plans cleared a bar that
+   * did not exist. The declared notional and the allocated capital remain as
+   * fallbacks, in that order, for a mission with no account observation yet —
+   * and the line always names the notional it was priced at.
+   *
+   * Context for the entry question, never a gate; a failed read costs the
+   * field, never the wake. Holding wakes carry `positionCosts` instead.
    */
   const costFlatWakeup = (
     market: string,
@@ -807,6 +815,20 @@ const make = Effect.gen(function* () {
               drawdownFromPeakUsd: Math.max(0, peak - position.unrealisedPnl),
             };
 
+      // What the entry would actually be sized against, so the cost line it
+      // reasons from is priced at the notional it will really take. Null when
+      // the account has not been observed yet; the plan's own declared number
+      // is the fallback, and the allocated capital is the fallback under that.
+      const fundableNotionalUsd = yield* readAccountMarginCapacityUsd(sql, {
+        missionId: mission.id,
+        market,
+      });
+      const declaredEntryNotionalUsd =
+        activeStrategy?.entry.initialNotionalUsd !== undefined &&
+        activeStrategy.entry.initialNotionalUsd > 0
+          ? activeStrategy.entry.initialNotionalUsd
+          : null;
+
       // Both enrichments, concurrently, and both optional. Neither can fail the
       // compose: a wakeup that arrives without its second timeframe is worse
       // than one that arrives with it, and far better than one that never
@@ -825,11 +847,7 @@ const make = Effect.gen(function* () {
           position.size === 0
             ? costFlatWakeup(
                 market,
-                activeStrategy !== undefined &&
-                  activeStrategy.entry.initialNotionalUsd !== undefined &&
-                  activeStrategy.entry.initialNotionalUsd > 0
-                  ? activeStrategy.entry.initialNotionalUsd
-                  : null,
+                fundableNotionalUsd ?? declaredEntryNotionalUsd,
                 mission.authority.allocatedCapitalUsd,
                 address,
                 mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide,

@@ -216,7 +216,8 @@ describe("quick-trades sizing sanity at $1,000 equity (plan 27 I4)", () => {
 });
 
 // The one-line context a flat wakeup carries (plan 29 step 3.1): USD and bps
-// at a stated reference notional, and nothing else.
+// at a stated reference notional, plus the rung a target must clear — and
+// nothing else.
 describe("costContextFromEstimate", () => {
   it("reduces an estimate to the bounded line", () => {
     const estimate = estimateTradingCosts(input());
@@ -226,7 +227,11 @@ describe("costContextFromEstimate", () => {
     expect(context.roundTripUsd).toBeCloseTo(3, 10);
     // 3 USD on 2,000 of notional is 15 bps.
     expect(context.roundTripBps).toBeCloseTo(15, 10);
+    // The rung a target must clear: twice the round trip, carried here because
+    // the flat turn is the one that sets targets and has no `positionCosts`.
+    expect(context.preferredTargetUsd).toBeCloseTo(6, 10);
     expect(Object.keys(context).sort()).toEqual([
+      "preferredTargetUsd",
       "referenceNotionalUsd",
       "roundTripBps",
       "roundTripUsd",

@@ -176,8 +176,10 @@ describe("roundCostContext", () => {
       referenceNotionalUsd: 1000.123_456_789,
       roundTripUsd: 1.234_567_891_23,
       roundTripBps: 12.345_678_9,
+      preferredTargetUsd: 2.469_135_782_46,
     });
     assert.strictEqual(rounded.roundTripUsd, 1.23457);
     assert.strictEqual(rounded.roundTripBps, 12.3);
+    assert.strictEqual(rounded.preferredTargetUsd, 2.46914);
   });
 });

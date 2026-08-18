@@ -328,6 +328,10 @@ const fakeCostEstimator = Layer.succeed(TradingCostEstimator, {
       roundTripSpreadUsd: 0.1,
       roundTripSlippageUsd: 0,
       breakEvenPriceMoveUsd: 3,
+      // Twice the round trip, as the real estimator derives it. The `as
+      // unknown` cast below means an omitted field is a runtime undefined the
+      // contract declares as a number, so it must be stated.
+      preferredTargetUsd: 2,
       degraded: false,
     }),
 } as unknown as TradingCostEstimator["Service"]);
