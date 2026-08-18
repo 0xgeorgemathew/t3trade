@@ -307,8 +307,13 @@ layer("TradingWakeupComposer", (it) => {
       });
       // What fired, and where to get everything else.
       assert.include(composed.text, "triggeringWatch");
-      assert.include(composed.text, "call trading_look");
-      assert.include(composed.text, "deliberately not attached");
+      assert.include(composed.text, "call trading_look before acting");
+      // Plan 35: one pointer line. The `omitted` paragraph and the
+      // `mandate-and-authority` line under it said the same thing twice.
+      assert.notInclude(composed.text, "deliberately not attached");
+      assert.notInclude(composed.text, "mandate-and-authority");
+      // An empty pending list is an absent field, not `pendingEvents: -`.
+      assert.notInclude(composed.text, "pendingEvents");
       // What is deliberately NOT attached.
       assert.notInclude(composed.text, "recentCandles");
       assert.notInclude(composed.text, "observedVolatility");
@@ -410,7 +415,7 @@ layer("TradingWakeupComposer", (it) => {
 
       const section = composed.text.slice(
         composed.text.indexOf("armedWatches:"),
-        composed.text.indexOf("pendingEvents:"),
+        composed.text.indexOf("readFirst:"),
       );
       const lines = section.split("\n").filter((line) => /^\s*\[\d+] id=/.test(line));
       assert.equal(lines.length, 8);

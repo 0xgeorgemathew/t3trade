@@ -321,9 +321,6 @@ const renderWakeupProjection = (projection: Record<string, unknown>): string => 
     lines.push(`${key}:`);
     lines.push(...renderValue(value, 1));
   }
-  // The mandate and authority are no longer embedded on every wake — point the
-  // run at the one tool that returns them, so it does not have to discover it.
-  lines.push("mandate-and-authority: call trading_look");
   return lines.join("\n");
 };
 
@@ -359,7 +356,7 @@ const renderMinimalWakeup = (wakeup: TradingHarnessWakeup): string =>
         ? undefined
         : describeTriggeringWatchLine(wakeup.triggeringWatch),
     pendingEvents: wakeup.pendingEvents.slice(-1),
-    omitted:
+    readFirst:
       "wakeup exceeded the context budget; call trading_look and fresh market tools before deciding",
   });
 
@@ -448,10 +445,17 @@ const renderLeanWakeup = (
     ...(wakeup.misarmedEntryConditions === undefined || wakeup.position.size !== 0
       ? {}
       : { misarmedEntryConditions: wakeup.misarmedEntryConditions }),
-    pendingEvents: wakeup.pendingEvents.slice(-caps.pendingEvents),
-    omitted:
-      "candles, volatility, structure, book, the account, and the full plan are " +
-      "deliberately not attached; call trading_look for fresh state before acting",
+    // Nothing pending is the ordinary case, and `pendingEvents: -` said so on
+    // most wakes of the mission this was measured from. An absent list is the
+    // same fact in no characters (plan 35 phase 3).
+    ...(wakeup.pendingEvents.length === 0
+      ? {}
+      : { pendingEvents: wakeup.pendingEvents.slice(-caps.pendingEvents) }),
+    // One pointer line, not two blocks. The `omitted` paragraph and the
+    // `mandate-and-authority` line under it were 208 identical characters on
+    // every wake, saying the same thing twice: read before you act.
+    readFirst:
+      "no candles, book, structure, account or mandate here — call trading_look before acting",
   });
 
 /**
