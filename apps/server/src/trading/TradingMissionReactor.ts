@@ -1825,6 +1825,20 @@ const make = Effect.gen(function* () {
     });
     if (!wentFlat) return;
 
+    // The watches that only meant something while the position existed go with
+    // it. Left active they keep firing at a trade that is over: this mission's
+    // dead target level woke it 5m43s after the close, and four more had to be
+    // cancelled by hand two wasted wakes later.
+    const retiredWatches = yield* watches
+      .supersedePositionWatches({ missionId })
+      .pipe(Effect.orElseSucceed(() => []));
+    if (retiredWatches.length > 0) {
+      yield* Effect.logInfo("trading retired the position's watches with the position", {
+        missionId,
+        watchIds: retiredWatches,
+      });
+    }
+
     // The position that just left can leave a resting take-profit behind (a
     // stop-out takes the position without taking the profit order). The
     // exchange usually retires reduce-only orders with the position; this is

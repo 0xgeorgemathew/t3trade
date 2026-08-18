@@ -23,6 +23,8 @@ import { TradingMissionNotFoundError } from "./Errors.ts";
 import { recordLevelEvent } from "./TradingLevelHistory.ts";
 import { isActiveMissionStatus } from "./MissionTransitions.ts";
 import {
+  POSITION_SCOPED_ARMED_REASONS,
+  POSITION_SCOPED_WATCH_TYPES,
   PREDICTION_ARMED_REASONS,
   toWatchCondition,
   WatchArmedReason,
@@ -157,6 +159,26 @@ export interface TradingWatchServiceShape {
   readonly supersedePredictionWatches: (input: {
     readonly missionId: string;
     readonly beforeVersion: number;
+  }) => Effect.Effect<ReadonlyArray<string>, PersistenceSqlError>;
+
+  /**
+   * Retire the watches that belonged to a position the mission no longer has.
+   *
+   * `retireWorkingOrdersQuietly` retires the orders on the flat transition and
+   * nothing retired the watches, so they went on firing at a position that had
+   * closed: a live mission was woken 5m43s after its close by the target level
+   * of the dead trade, and concluded nothing. Everything measured in unrealised
+   * PnL, and everything the runtime armed to ask a question about a live trade,
+   * goes with the position.
+   *
+   * A model-armed price level survives — a level is still a level when flat —
+   * but loses its `prediction_version`, because the prediction it was bound to
+   * ended with the trade.
+   *
+   * Returns the ids it superseded, for the log line.
+   */
+  readonly supersedePositionWatches: (input: {
+    readonly missionId: string;
   }) => Effect.Effect<ReadonlyArray<string>, PersistenceSqlError>;
 }
 
@@ -403,12 +425,42 @@ const makeTradingWatchService = Effect.gen(function* () {
       return rows.map((row) => row.watch_id);
     });
 
+  const supersedePositionWatches: TradingWatchServiceShape["supersedePositionWatches"] = (input) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const rows = yield* sql<{ readonly watch_id: string }>`
+        UPDATE trading_watches
+        SET status = 'superseded', version = version + 1, updated_at = ${now}
+        WHERE mission_id = ${input.missionId}
+          AND status = 'active'
+          AND (
+            json_extract(watch_json, '$.type') IN ${sql.in(POSITION_SCOPED_WATCH_TYPES)}
+            OR ${sql.in("armed_reason", POSITION_SCOPED_ARMED_REASONS)}
+          )
+        RETURNING watch_id
+      `.pipe(Effect.mapError(sqlFail("supersedePositionWatches")));
+
+      // What survives is a level the harness armed itself. It keeps its
+      // condition and loses only its binding to a prediction that is over, so
+      // the next plan revision does not sweep it as a stale projection.
+      yield* sql`
+        UPDATE trading_watches
+        SET prediction_version = NULL, updated_at = ${now}
+        WHERE mission_id = ${input.missionId}
+          AND status = 'active'
+          AND prediction_version IS NOT NULL
+      `.pipe(Effect.mapError(sqlFail("supersedePositionWatches")));
+
+      return rows.map((row) => row.watch_id);
+    });
+
   return {
     registerWatch,
     cancelWatch,
     markTriggered,
     getWatch,
     supersedePredictionWatches,
+    supersedePositionWatches,
   } satisfies TradingWatchServiceShape;
 });
 

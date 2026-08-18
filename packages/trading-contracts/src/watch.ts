@@ -462,6 +462,36 @@ export const PREDICTION_ARMED_REASONS: ReadonlyArray<WatchArmedReason> = [
   "prediction_invalidation",
 ];
 
+/**
+ * The armed reasons that only mean anything while a position is held.
+ *
+ * Each of these is a question about a live trade — where its target is, how
+ * close its stop is, when its thesis expires. Flat, none of them has anything
+ * to ask, and a wake from one is a turn spent concluding nothing. A live
+ * mission was woken 5m43s after its position closed by the target level of the
+ * position that no longer existed.
+ */
+export const POSITION_SCOPED_ARMED_REASONS: ReadonlyArray<WatchArmedReason> = [
+  "profit_target",
+  "stop_proximity",
+  "stop_decision",
+  "prediction_horizon",
+  "prediction_invalidation",
+];
+
+/**
+ * The watch types that cannot be evaluated without a position.
+ *
+ * All three are measured against unrealised PnL, which is zero and meaningless
+ * when flat. A price level is not here on purpose: a level is still a level
+ * when flat, and the harness may well still want to know about it.
+ */
+export const POSITION_SCOPED_WATCH_TYPES: ReadonlyArray<string> = [
+  "pnl_above",
+  "pnl_below",
+  "pnl_giveback",
+];
+
 /** Whether a watch was armed by the runtime from a plan's projection. */
 export function isPredictionArmedReason(reason: WatchArmedReason | undefined): boolean {
   return reason !== undefined && PREDICTION_ARMED_REASONS.includes(reason);

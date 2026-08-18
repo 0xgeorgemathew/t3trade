@@ -40,7 +40,7 @@ const candleCloseWatch: MarketWatch = {
 /** Shared in-memory database; each test migrates then truncates the trading tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 69 });
+  yield* runMigrations({ toMigrationInclusive: 71 });
   yield* sql`DELETE FROM trading_missions`;
   yield* sql`DELETE FROM trading_authority_versions`;
   yield* sql`DELETE FROM trading_watches`;
@@ -86,6 +86,65 @@ const seedMission = Effect.gen(function* () {
 });
 
 layer("TradingWatchService", (it) => {
+  // Plan 36 item 3. Nothing retired the watches when the position went, so
+  // they went on firing at a trade that was over: the mission this was found
+  // on was woken 5m43s after its close by the target level of the dead
+  // position, and concluded nothing.
+  it.effect("retires the position's own watches, and keeps a model-armed level", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      yield* seedMission;
+      const sql = yield* SqlClient.SqlClient;
+      const watches = yield* TradingWatchService;
+
+      // Measured in unrealised PnL: meaningless without a position.
+      const { watch: target } = yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: { type: "pnl_above", market: "ETH", valueUsd: 1.12 },
+        armedReason: "profit_target",
+      });
+      // Armed by the runtime to ask a question about a live trade.
+      const { watch: proximity } = yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: {
+          type: "price_cross",
+          market: "ETH",
+          priceSource: "mark",
+          direction: "below",
+          price: 1_896,
+        },
+        armedReason: "stop_proximity",
+      });
+      // The harness's own level. A level is still a level when flat.
+      const { watch: level } = yield* watches.registerWatch({
+        missionId: "mission_1",
+        watch: candleCloseWatch,
+      });
+      yield* sql`
+        UPDATE trading_watches SET prediction_version = 3 WHERE watch_id = ${level.id}
+      `;
+
+      const retired = yield* watches.supersedePositionWatches({ missionId: "mission_1" });
+
+      assert.deepStrictEqual([...retired].sort(), [target.id, proximity.id].sort());
+      const statuses = yield* sql<{
+        readonly watch_id: string;
+        readonly status: string;
+        readonly prediction_version: number | null;
+      }>`
+        SELECT watch_id, status, prediction_version FROM trading_watches
+        WHERE mission_id = 'mission_1'
+      `;
+      const byId = new Map(statuses.map((row) => [row.watch_id, row]));
+      assert.equal(byId.get(target.id)?.status, "superseded");
+      assert.equal(byId.get(proximity.id)?.status, "superseded");
+      assert.equal(byId.get(level.id)?.status, "active");
+      // It survives, but not still bound to a prediction that ended with the
+      // trade — otherwise the next revision sweeps it as a stale projection.
+      assert.equal(byId.get(level.id)?.prediction_version, null);
+    }),
+  );
+
   it.effect("registers a watch bound to the mission, not to any plan revision", () =>
     Effect.gen(function* () {
       yield* migrated;
