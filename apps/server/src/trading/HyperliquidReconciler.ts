@@ -930,6 +930,27 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
     }).pipe(Effect.ignore);
 
   /**
+   * How far back of the previous observation a fill still counts as explaining a
+   * position change.
+   *
+   * The window compares two different clocks: `traded_at` is the exchange's trade
+   * time and `observed_at` is ours, and observation always trails trade. A pass
+   * that reads the account flat AFTER the fills have already traded stamps a
+   * baseline later than the only fills that could explain the next pass's delta —
+   * and the next pass then sees the position appear from nowhere. That is not
+   * hypothetical: one mission's own entry, five fills all carrying its own cloid,
+   * was reported to the model as "someone acted on the exchange directly" 347ms
+   * after it filled.
+   *
+   * Widening the window cannot manufacture a false negative worth having: a
+   * genuinely external action leaves fills with NO cloid, and those are invisible
+   * to this query at any width. The only case it could mask is an external order
+   * placed within the grace of one of our own fills, which is a far cheaper
+   * mistake than crying theft at the mission's own entry.
+   */
+  const ATTRIBUTION_GRACE_MILLIS = 60_000;
+
+  /**
    * Whether a fill T3 placed explains a change since `since`.
    *
    * Every order T3 signs carries a deterministic cloid; an order placed in the
@@ -940,9 +961,10 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
   const hasAttributedFill = (missionId: string, since: number) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+      const floor = since - ATTRIBUTION_GRACE_MILLIS;
       const rows = yield* sql<{ readonly fill_id: string }>`
         SELECT fill_id FROM trading_fills
-        WHERE mission_id = ${missionId} AND cloid IS NOT NULL AND traded_at >= ${since}
+        WHERE mission_id = ${missionId} AND cloid IS NOT NULL AND traded_at >= ${floor}
         LIMIT 1
       `;
       return rows.length > 0;
