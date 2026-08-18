@@ -54,7 +54,6 @@ import {
   PROTECTION_SIZE_EPSILON,
   samePrice,
 } from "@t3tools/trading-contracts/protection";
-import { takeProfitLimitPrice } from "@t3tools/trading-contracts/strategy";
 
 import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";
 
@@ -730,23 +729,6 @@ export const makeTradingProtectionService = Effect.gen(function* () {
     order.remainingSize > PROTECTION_SIZE_EPSILON &&
     !(order.cloid !== undefined && preserved.has(order.cloid));
 
-  /** Two targets the same at wire precision are the same target. */
-  const sameTargetPrice = samePrice;
-
-  /**
-   * The cloid a take-profit placement uses. The target price is part of the
-   * identity: a retry of the SAME target reuses the cloid (and a duplicate
-   * among resting orders means it is already there), while a plan that moved
-   * its target gets a fresh cloid and can rest alongside the old one until
-   * the old one is cancelled.
-   */
-  const takeProfitCloid = (input: TakeProfitInput, targetPrice: number): string =>
-    deriveCloid({
-      missionId: input.missionId,
-      executionSequence: input.executionSequence,
-      actionType: `take_profit_${targetPrice}`,
-    });
-
   const reconcileTakeProtection = (
     input: TakeProfitInput,
   ): Effect.Effect<TakeProfitOutcome, TradingProtectionError> =>
@@ -804,159 +786,39 @@ export const makeTradingProtectionService = Effect.gen(function* () {
         } satisfies TakeProfitOutcome;
       }
 
-      const targetPrice = takeProfitLimitPrice({
-        takeProfitPrice: input.target?.takeProfitPrice ?? null,
-        targetProfitUsd: input.target?.targetProfitUsd ?? null,
-        positionSize: view.positionSize,
-        entryPrice: view.entryPrice,
-      });
-
-      // --- no usable target: the plan withdrew its profit-taking ----------
-      if (targetPrice === null) {
-        const tps = view.openOrders.filter((order) =>
-          isTakeProfitOrder(order, {
-            market: input.market,
-            positionSize: view.positionSize,
-            referencePrice: view.referencePrice,
-            preserved,
-          }),
-        );
-        const cancelled = yield* cancelAll(tps);
-        return {
-          status: "withdrawn",
+      // --- the target is a wake, and never a resting order ----------------
+      //
+      // The server used to rest a reduce-only ALO at the plan's target. It made
+      // the target an exit the mission could not reconsider: whatever the
+      // market looked like when the level printed, the order took it. Worse, it
+      // took it at a number nothing had checked was worth banking — one live
+      // plan's target was $0.34 against $0.45 of round-trip fees.
+      //
+      // The target is now a `pnl_above` wake and nothing more, evaluated net of
+      // the exit it has yet to pay, so reaching it is a decision point rather
+      // than a fill. The stop stays server-side: a stop is protection and must
+      // work while nobody is looking, which is exactly what a target is not.
+      //
+      // This pass still runs, to withdraw what earlier builds rested.
+      const resting = view.openOrders.filter((order) =>
+        isTakeProfitOrder(order, {
+          market: input.market,
           positionSize: view.positionSize,
-          targetPrice: null,
-          cancelledCloids: cancelled,
-        } satisfies TakeProfitOutcome;
-      }
-
-      // --- ensure exactly one take-profit at the target --------------------
-      const takeProfitsIn = (v: typeof view): ReadonlyArray<AgentOpenOrder> =>
-        v.openOrders.filter((order) =>
-          isTakeProfitOrder(order, {
-            market: input.market,
-            positionSize: v.positionSize,
-            referencePrice: v.referencePrice,
-            preserved,
-          }),
-        );
-
-      /** The resting take-profit that already satisfies the plan, if any. */
-      const acceptableIn = (v: typeof view): AgentOpenOrder | undefined =>
-        takeProfitsIn(v).find(
-          (order) =>
-            sameTargetPrice(order.limitPrice, targetPrice) &&
-            order.remainingSize >= Math.abs(v.positionSize) - PROTECTION_SIZE_EPSILON,
-        );
-
-      let acceptable = acceptableIn(view);
-      const cancelledCloids: string[] = [];
-      let placedCloid: string | undefined;
-      let failure = "";
-
-      if (acceptable === undefined) {
-        const cloid = takeProfitCloid(input, targetPrice);
-        placedCloid = cloid;
-
-        // A rejected placement is a normal outcome here, not an error to
-        // retry harder: the exchange refuses an ALO that would cross, which
-        // is exactly what a target the market has already run through looks
-        // like. Banking at market is the wake's decision, never this path's.
-        failure = yield* execution
-          .submitReduceOnlyAlo({
-            market: input.market,
-            cloid,
-            positionSize: view.positionSize,
-            limitPrice: targetPrice,
-          })
-          .pipe(
-            Effect.match({
-              onSuccess: (rows) =>
-                rows
-                  .filter((row) => row.status === "error")
-                  .map((row) => row.reason ?? "rejected")
-                  .join("; "),
-              onFailure: (cause) => cause.message,
-            }),
-          );
-
-        // Confirm from canonical state, never from the response — the same
-        // rule as the stop. One attempt inside the window; the caller's
-        // cadence (the watchdog's 5s) is the retry, because a missing
-        // take-profit is an economic miss, not an uncovered position.
-        const polls = Math.floor(
-          PROTECTION_RECONCILIATION.windowMillis / PROTECTION_RECONCILIATION.confirmPollMillis,
-        );
-        const pollMillis = PROTECTION_RECONCILIATION.confirmPollMillis;
-        for (let poll = 0; poll < polls && acceptable === undefined; poll++) {
-          if (poll > 0) yield* Effect.sleep(`${pollMillis} millis`);
-          view = yield* readCanonical(input);
-          exposure = Math.abs(view.positionSize);
-          if (exposure <= PROTECTION_SIZE_EPSILON) break;
-          acceptable = acceptableIn(view);
-        }
-
-        if (exposure <= PROTECTION_SIZE_EPSILON) {
-          // The position left while the take-profit was landing — it may have
-          // filled against it. Withdraw the leftovers, same as the flat pass.
-          const cancelled = yield* cancelAll(
-            view.openOrders.filter((order) =>
-              isFlatLeftoverReduceLimit(order, input.market, preserved),
-            ),
-          );
-          return {
-            status: "flat",
-            positionSize: 0,
-            targetPrice,
-            placedCloid: cloid,
-            cancelledCloids: cancelled,
-          } satisfies TakeProfitOutcome;
-        }
-
-        if (acceptable === undefined) {
-          // Confirm-before-cancel: nothing is withdrawn when the replacement
-          // never rested. A prior take-profit stays where it was.
-          return {
-            status: "failed",
-            positionSize: view.positionSize,
-            targetPrice,
-            cancelledCloids,
-            detail:
-              `take-profit at ${targetPrice} did not confirm within ` +
-              `${PROTECTION_RECONCILIATION.windowMillis}ms` +
-              (failure === "" ? "" : `; placement: ${failure}`),
-          } satisfies TakeProfitOutcome;
-        }
-      }
-
-      // Only now, with the target's order confirmed resting, are others
-      // superseded. A failed cancel leaves overlapping reduce-only limits,
-      // which cannot open exposure — logged, not fatal.
-      for (const order of takeProfitsIn(view)) {
-        if (order === acceptable || order.cloid === undefined) continue;
-        yield* execution.submitCancel({ market: input.market, cloid: order.cloid }).pipe(
-          Effect.matchEffect({
-            onSuccess: () => Effect.sync(() => cancelledCloids.push(order.cloid!)),
-            onFailure: (cause) =>
-              Effect.logWarning(
-                "take-profit: could not cancel a superseded order; overlapping " +
-                  `reduce-only limits remain (cloid=${order.cloid}): ${cause.message}`,
-              ),
-          }),
-        );
-      }
-
+          referencePrice: view.referencePrice,
+          preserved,
+        }),
+      );
+      const cancelled = yield* cancelAll(resting);
       return {
-        status:
-          placedCloid === undefined
-            ? "unchanged"
-            : cancelledCloids.length > 0
-              ? "replaced"
-              : "placed",
+        status: "withdrawn",
         positionSize: view.positionSize,
-        targetPrice,
-        ...(placedCloid === undefined ? {} : { placedCloid }),
-        cancelledCloids,
+        targetPrice: null,
+        cancelledCloids: cancelled,
+        ...(cancelled.length === 0
+          ? {}
+          : {
+              detail: `${cancelled.length} resting take-profit(s) withdrawn: the target is a wake, not an order`,
+            }),
       } satisfies TakeProfitOutcome;
     });
 

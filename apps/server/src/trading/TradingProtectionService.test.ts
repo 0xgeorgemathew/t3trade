@@ -507,86 +507,45 @@ it.effect("has nothing to move on a flat position", () =>
   }),
 );
 
-// --- plan 29 step 2.5: the resting reduce-only take-profit -------------------
+// --- plan 36 item 6: the target is a wake, and never a resting order ---------
 //
-// The stop tests above stay exactly as they were: the take-profit is a new
-// reconciliation beside the stop, not a change to it. What these prove is the
-// take-profit's own lifecycle — placed from the plan's target, replaced when
-// the target moves, withdrawn when the plan or the position removes it — and
-// that none of it can touch a stop.
+// The server used to rest a reduce-only ALO at the plan's target. It made the
+// target an exit the mission could not reconsider — whatever the market looked
+// like when the level printed, the order took it — and it took it at a number
+// nothing had checked was worth banking: one live plan's target was $0.34
+// against $0.5589 of round trip. The target is now a `pnl_above` wake, so this
+// pass places nothing and exists to withdraw what earlier builds rested.
+//
+// The stop tests above stay exactly as they were: the stop is protection and
+// must work while nobody is looking, which is precisely what a target is not.
 
-it.effect("places a take-profit at the plan's derived target price", () =>
+it.effect("places nothing, whatever target the plan names", () =>
   Effect.gen(function* () {
-    // Long 0.5 at mark 3000, plan basis reference 3000 + move 200 → the
-    // profit is taken by selling 0.5 at 3200, resting as maker.
+    // Long 0.5 at mark 3000 with a $100 target — the input that used to rest a
+    // sell at 3200.
     const fake = makeFake();
     const outcome = yield* runTakeProfit(fake);
 
-    assert.equal(outcome.status, "placed");
-    assert.equal(outcome.targetPrice, 3_200);
-    assert.equal(fake.aloPlacements.length, 1);
-    // Never larger than the position: the placement is sized to the canonical
-    // size, which is the only authority on what there is to reduce.
-    assert.equal(fake.aloPlacements[0]!.positionSize, 0.5);
-    assert.equal(fake.aloPlacements[0]!.limitPrice, 3_200);
-
-    const resting = fake.orders.find((o) => o.cloid === fake.aloPlacements[0]!.cloid);
-    assert.ok(resting !== undefined);
-    assert.equal(resting.reduceOnly, true);
-    // A resting limit, not a trigger — the stop's wire shape stays the stop's.
-    assert.equal(resting.isTrigger, false);
-  }),
-);
-
-it.effect("derives a short take-profit below the plan's reference", () =>
-  Effect.gen(function* () {
-    // Short 0.5 at mark 3000, same basis: the target move flips to 2800 and
-    // the reducing side flips to buy. A sign error here rests a limit on the
-    // losing side that fills immediately at a loss.
-    const fake = makeFake({ positionSize: -0.5 });
-    const outcome = yield* runTakeProfit(fake);
-
-    assert.equal(outcome.status, "placed");
-    assert.equal(outcome.targetPrice, 2_800);
-    assert.equal(fake.aloPlacements[0]!.limitPrice, 2_800);
-    const resting = fake.orders.find((o) => o.cloid === fake.aloPlacements[0]!.cloid);
-    assert.ok(resting !== undefined);
-    assert.equal(resting.side, "buy");
-  }),
-);
-
-it.effect("replaces a moved target, confirming the new take-profit before cancelling the old", () =>
-  Effect.gen(function* () {
-    // The plan republished: 3100 became 3200. Same ordering rule as the stop
-    // replacement — place, confirm, and only then cancel — because the gap
-    // between a cancel and a placement is a take-profit that does not exist.
-    const fake = makeFake({ orders: [restingTakeProfit("0xoldtp", 0.5, 3_100)] });
-    const outcome = yield* runTakeProfit(fake);
-
-    assert.equal(outcome.status, "replaced");
-    assert.deepEqual(fake.log, ["place", "cancel"]);
-    assert.deepEqual(fake.cancels, ["0xoldtp"]);
-    assert.deepEqual(outcome.cancelledCloids, ["0xoldtp"]);
-    // And the replacement rests where the plan now says.
-    assert.equal(fake.aloPlacements[0]!.limitPrice, 3_200);
-  }),
-);
-
-it.effect("leaves the resting take-profit alone when it already matches the target", () =>
-  Effect.gen(function* () {
-    const fake = makeFake({ orders: [restingTakeProfit("0xtp", 0.5, 3_200)] });
-    const outcome = yield* runTakeProfit(fake);
-
-    assert.equal(outcome.status, "unchanged");
+    assert.equal(outcome.status, "withdrawn");
+    assert.equal(outcome.targetPrice, null);
     assert.deepEqual(fake.aloPlacements, []);
     assert.deepEqual(fake.cancels, []);
   }),
 );
 
+it.effect("withdraws a take-profit an earlier build rested", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ orders: [restingTakeProfit("0xoldtp", 0.5, 3_100)] });
+    const outcome = yield* runTakeProfit(fake);
+
+    assert.equal(outcome.status, "withdrawn");
+    assert.deepEqual(fake.cancels, ["0xoldtp"]);
+    assert.deepEqual(fake.aloPlacements, []);
+  }),
+);
+
 it.effect("places nothing and cancels nothing without a usable target", () =>
   Effect.gen(function* () {
-    // target null: the plan stood down or published nothing usable. No target
-    // means no order — and no leftover.
     const fake = makeFake();
     const outcome = yield* runTakeProfit(fake, { ...TP_INPUT, target: null });
 
@@ -606,55 +565,21 @@ it.effect("withdraws resting take-profits when the plan removes its target", () 
   }),
 );
 
-it.effect("rests at the plan's published take-profit price when it names one", () =>
-  Effect.gen(function* () {
-    // The published price wins over the derived rung ($100 on 0.5 from entry
-    // 3000 would say 3200; the plan says 3250, and 3250 is what rests).
-    const fake = makeFake({ orders: [restingTakeProfit("0xtp", 0.5, 3_250)] });
-    const outcome = yield* runTakeProfit(fake, {
-      ...TP_INPUT,
-      target: { takeProfitPrice: 3_250, targetProfitUsd: 100 },
-    });
-
-    assert.equal(outcome.status, "unchanged");
-    assert.deepEqual(fake.aloPlacements, []);
-    assert.deepEqual(fake.cancels, []);
-  }),
-);
-
-it.effect("leaves a harness-placed patient exit alone when the plan has no target", () =>
+it.effect("leaves a harness-placed patient exit alone", () =>
   Effect.gen(function* () {
     // A `patient` exit (plan 29 step 2.3) rests reduce-only on the reducing
     // side — the same shape as a take-profit, and only the execution record
     // says which is which. Cancelling it would undo the model's own decision
-    // five seconds after it made it.
+    // five seconds after it made it. Still true now that the pass only ever
+    // withdraws: what it withdraws is the server's own orders, never the
+    // harness's.
     const fake = makeFake({ orders: [restingTakeProfit("0xpatientexit", 0.5, 3_100)] });
     const outcome = yield* runTakeProfit(fake, {
       ...TP_INPUT,
-      target: null,
       preserveCloids: ["0xpatientexit"],
     });
 
     assert.equal(outcome.status, "withdrawn");
-    assert.deepEqual(fake.cancels, []);
-  }),
-);
-
-it.effect("does not let a patient exit stand in for the plan's take-profit", () =>
-  Effect.gen(function* () {
-    // Preserved both ways: the harness's order is neither cancelled nor
-    // counted as the plan's profit-taking, so the plan's own target still
-    // goes on the book beside it. Both are reduce-only, so the pair cannot
-    // take more than the position.
-    const fake = makeFake({ orders: [restingTakeProfit("0xpatientexit", 0.5, 3_200)] });
-    const outcome = yield* runTakeProfit(fake, {
-      ...TP_INPUT,
-      preserveCloids: ["0xpatientexit"],
-    });
-
-    assert.equal(outcome.status, "placed");
-    assert.equal(fake.aloPlacements.length, 1);
-    assert.equal(fake.aloPlacements[0]!.limitPrice, 3_200);
     assert.deepEqual(fake.cancels, []);
   }),
 );
@@ -676,24 +601,6 @@ it.effect("withdraws a leftover take-profit when the position is flat", () =>
   }),
 );
 
-it.effect("keeps the old take-profit when the replacement never confirms", () =>
-  Effect.gen(function* () {
-    // The placement is accepted but never shows up in canonical state. The
-    // old take-profit at 3100 must survive — cancelling it on the strength of
-    // an unconfirmed response is the exact §17.1 assumption this service
-    // exists to refuse.
-    const fake = makeFake({
-      orders: [restingTakeProfit("0xoldtp", 0.5, 3_100)],
-      swallowAlo: true,
-    });
-    const outcome = yield* runTakeProfit(fake);
-
-    assert.equal(outcome.status, "failed");
-    assert.deepEqual(fake.cancels, []);
-    assert.ok(fake.orders.some((o) => o.cloid === "0xoldtp"));
-  }),
-);
-
 it.effect("never touches a resting stop while reconciling the take-profit", () =>
   Effect.gen(function* () {
     // The stop is a trigger; the take-profit predicate matches resting limits
@@ -702,7 +609,7 @@ it.effect("never touches a resting stop while reconciling the take-profit", () =
     const fake = makeFake({ orders: [restingStop("0xstop", 0.5)] });
     const outcome = yield* runTakeProfit(fake);
 
-    assert.equal(outcome.status, "placed");
+    assert.equal(outcome.status, "withdrawn");
     assert.deepEqual(fake.cancels, []);
     const stop = fake.orders.find((o) => o.cloid === "0xstop");
     assert.ok(stop !== undefined);

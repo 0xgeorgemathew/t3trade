@@ -28,6 +28,8 @@ import type { ThreadId, TradingMissionId } from "@t3tools/contracts";
 import { CommandId } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { HyperliquidGateway } from "@t3tools/hyperliquid/Gateway";
+import type { AgentNetPosition } from "@t3tools/trading-contracts/account-snapshot";
+import { unpaidExitFeeUsd } from "@t3tools/trading-contracts/costs";
 import { HyperliquidWebSocketClient, type WsDelivery } from "@t3tools/hyperliquid/WebSocketClient";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -552,9 +554,42 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.orDie);
 
   /**
-   * Evaluate a `pnl_above` watch against the reconciled unrealised PnL.
+   * What the position would still owe to realise its profit, in USD.
+   *
+   * Zero when the fee rate cannot be read at all — a target that fires a little
+   * early is a decision point arriving early, which is recoverable; one that
+   * cannot fire because a fee read failed is a wake the mission never gets.
+   */
+  const unpaidExitCost = (tracked: TrackedWatch, position: AgentNetPosition) =>
+    Effect.gen(function* () {
+      const mission = yield* missions.getMission(tracked.missionId);
+      const address = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
+      const fallback = mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide;
+      const read = yield* gateway
+        .getTakerFeeRateBps(address)
+        .pipe(Effect.catchCause(() => Effect.succeed({ feeBps: fallback, observedAt: 0 })));
+      // The clearinghouse payload carries no mark, but upnl = (mark − entry) ×
+      // size, so mark = entry + upnl/size — the reconciler's own derivation.
+      const entryPrice = position.entryPrice;
+      if (entryPrice === undefined || position.size === 0) return 0;
+      const markPrice = entryPrice + position.unrealisedPnl / position.size;
+      return unpaidExitFeeUsd({
+        positionSize: position.size,
+        markPrice,
+        takerFeeBpsPerSide: read.feeBps,
+      });
+    }).pipe(Effect.orElseSucceed(() => 0));
+
+  /**
+   * Evaluate a `pnl_above` watch against unrealised PnL NET of the exit.
    *
    * The target lives in the strategy the watch was armed against.
+   *
+   * Net, because `unrealisedPnl` is gross and the exit that realises it has not
+   * been paid. Compared against the gross number the target fires at a profit
+   * the mission cannot actually bank: one live plan published a $0.34 target
+   * against $0.45 of round-trip fees, so reaching it exactly was worth minus
+   * eleven cents. A target that fires is now always genuinely bankable.
    *
    * `pnl_above` is not differential: it fires once when the threshold is first
    * reached, then `markTriggered` flips it terminal so a subsequent sweep
@@ -569,16 +604,22 @@ const make = Effect.gen(function* () {
     const position = yield* readLivePosition(tracked, watch.market);
     if (position === null) return;
 
+    const exitCostUsd = yield* unpaidExitCost(tracked, position);
+    const netPnl = position.unrealisedPnl - exitCostUsd;
+
     const observedAt = yield* nowMs;
-    yield* recordObservation(tracked.watch.id, position.unrealisedPnl, observedAt);
-    if (position.unrealisedPnl < watch.valueUsd) return;
+    yield* recordObservation(tracked.watch.id, netPnl, observedAt);
+    if (netPnl < watch.valueUsd) return;
 
     yield* enqueueFire(
       tracked,
       `pnl_above:${tracked.watch.id}`,
-      `unrealised PnL $${position.unrealisedPnl.toFixed(2)} reached target $${watch.valueUsd}`,
+      `unrealised PnL $${position.unrealisedPnl.toFixed(2)} less $${exitCostUsd.toFixed(2)} ` +
+        `still to pay on the exit reached target $${watch.valueUsd}`,
       {
         unrealisedPnl: position.unrealisedPnl,
+        netPnlUsd: netPnl,
+        exitCostUsd,
         valueUsd: watch.valueUsd,
         observedAt,
         watchId: tracked.watch.id,

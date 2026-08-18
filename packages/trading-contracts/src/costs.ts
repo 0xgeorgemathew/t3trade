@@ -31,6 +31,28 @@ import { ExchangeMarket, Price, UnixMillis } from "./primitives.ts";
  */
 export const PROFIT_TARGET_COST_MULTIPLE = ACTIVE_TRADING_POLICY.readings.targetCostMultiple;
 
+/**
+ * The exit fee a held position has not paid yet.
+ *
+ * `unrealisedPnl` is gross: the exchange reports what the position is worth
+ * before the trade that realises it. A profit target compared against it
+ * therefore fires at a number the mission cannot actually bank — one live
+ * target was $0.34 against $0.45 of round-trip fees, so hitting it exactly
+ * banked minus eleven cents, by construction.
+ *
+ * The fee only. Spread and slippage need a book, which the watch sweep has no
+ * reason to read on every pass, and the fee is both the larger and the certain
+ * part: an exit crosses at some price, but it always pays this.
+ */
+export function unpaidExitFeeUsd(input: {
+  readonly positionSize: number;
+  readonly markPrice: number;
+  readonly takerFeeBpsPerSide: number;
+}): number {
+  const notionalUsd = Math.abs(input.positionSize) * input.markPrice;
+  return notionalUsd * (input.takerFeeBpsPerSide / 10_000);
+}
+
 /** Where the taker fee rate in an estimate came from. */
 export const FeeRateSource = Schema.Literals(["hyperliquid_user_fees", "authority_fallback"]);
 export type FeeRateSource = typeof FeeRateSource.Type;

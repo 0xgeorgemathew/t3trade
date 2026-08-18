@@ -303,7 +303,18 @@ const exchangeGatewayLayer = (fake: FakeExchange) =>
         marginUsed: fake.positionSize === 0 ? 0 : 100,
         freshness: { observedAt: 1_000_000, source: "info_api", staleAfterMillis: 5_000 },
       }),
-    getTakerFeeRateBps: () => Effect.succeed(4.5),
+    // The real gateway answers with the rate AND when it was observed; the
+    // caller applies its own staleness window to that timestamp.
+    getTakerFeeRateBps: () => Effect.succeed({ feeBps: 4.5, observedAt: 1_000_000 }),
+    // The cost estimator reads both sides at once. Without this the estimate
+    // fell back to the authority's rate and priced every round trip wrong.
+    getUserFeeRatesBps: () =>
+      Effect.succeed({
+        takerFeeBps: 4.5,
+        makerFeeBps: 1.5,
+        makerRateSource: "read" as const,
+        observedAt: 1_000_000,
+      }),
   } as unknown as HyperliquidGateway["Service"]);
 
 const fakeCostEstimator = Layer.succeed(TradingCostEstimator, {
@@ -1463,6 +1474,12 @@ it.effect("refuses a giveback the position has already given back", () => {
   );
 });
 
+// Plan 36 item 6. A target below the round trip that reaches it is a loss with
+// extra steps: the mission this was found on published profitUsd 0.34 while
+// the same payload carried roundTripUsd 0.5589 and preferredTargetUsd 1.118,
+// so hitting the target exactly banked minus eleven cents against $0.45 of
+// actual fees. Nothing anywhere said so — the target was armed as published
+// and then graded against itself.
 // Plan 36 item 5. The mission this was found on published "1m close above
 // 1900.14" and "1m close below 1900.14" on every plan and armed both, five
 // pairs in a row: one of a straddle at the current price fires on the next bar

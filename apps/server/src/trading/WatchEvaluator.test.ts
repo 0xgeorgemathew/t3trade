@@ -83,6 +83,9 @@ const stubGateway = Layer.succeed(HyperliquidGateway, {
   getPosition: () =>
     stubPosition === null ? (unusedRead() as never) : Effect.succeed(stubPosition),
   getOpenOrders: unusedRead,
+  // 4.5 bps a side, so a $1,525 notional owes $0.69 to get out. `pnl_above`
+  // fires on unrealised PnL NET of that.
+  getTakerFeeRateBps: () => Effect.succeed({ feeBps: 4.5, observedAt: 0 }),
 } as unknown as (typeof HyperliquidGateway)["Service"]);
 
 const harness: TradingHarnessBinding = {
@@ -524,15 +527,53 @@ layer("WatchEvaluator", (it) => {
    * `pnl_above` is the runtime's half of the wake-and-decide profit target: the
    * strategy names the win worth banking, the evaluator wakes the harness when
    * the unrealised PnL reaches it. A flat position never fires it.
+   *
+   * Net of the exit, since plan 36 item 6. `unrealisedPnl` is gross and the
+   * trade that realises it has not been paid for, so a target compared against
+   * the gross number fires at a profit the mission cannot bank: one live plan
+   * published a $0.34 target against $0.45 of fees.
    */
-  it.effect("fires a pnl_above watch when unrealised PnL reaches the target", () =>
+  // The bug this closes: the target fired at a number the mission could not
+  // bank. One live plan published $0.34 against $0.5589 of round trip, so
+  // hitting it exactly was worth minus eleven cents — and the wake said
+  // "reached target" anyway.
+  it.effect("does not fire on a gross PnL the exit has not been taken out of", () =>
     Effect.gen(function* () {
       yield* migrated;
+      // Gross $25 exactly on 0.5 ETH: mark 3050, notional $1,525, $0.69 still
+      // owed. Banking now is worth $24.31 — under the target, so no wake.
       stubPosition = {
         market: "ETH",
         size: 0.5,
         entryPrice: 3_000,
         unrealisedPnl: 25,
+        cumulativeFunding: 0,
+        marginUsed: 50,
+        freshness,
+      };
+      yield* seed({ type: "pnl_above", market: "ETH", valueUsd: 25 });
+      yield* TestClock.setTime(NOW);
+      const evaluator = yield* WatchEvaluator;
+      yield* evaluator.forgetDeliveredCandles;
+
+      yield* evaluator.sweep;
+      yield* evaluator.drain;
+
+      const inbox = yield* TradingEventInbox;
+      assert.deepStrictEqual([...(yield* inbox.claimPending("mission_1"))], []);
+    }),
+  );
+
+  it.effect("fires a pnl_above watch when unrealised PnL NET of the exit reaches it", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      // Gross $26 on 0.5 ETH: mark 3052, notional $1,526, so $0.69 is still
+      // owed on the exit and $25.31 is what banking now is worth.
+      stubPosition = {
+        market: "ETH",
+        size: 0.5,
+        entryPrice: 3_000,
+        unrealisedPnl: 26,
         cumulativeFunding: 0,
         marginUsed: 50,
         freshness,
