@@ -554,6 +554,42 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.orDie);
 
   /**
+   * The taker fee rate for one wallet, read from the exchange at most this
+   * often.
+   *
+   * The sweep runs every two seconds against every armed watch, and `userFees`
+   * is one of the exchange's heavy info calls — read on every pass it would
+   * spend more of the rate limit than the rest of the server put together, on
+   * a number that moves with a fourteen-day volume tier. Rate limiting is not
+   * an abstract risk here: an unretried rate limit on the exit path is exactly
+   * what aborted a live close.
+   */
+  const FEE_RATE_TTL_MILLIS = 10 * 60_000;
+
+  const feeRateCache = new Map<string, { readonly feeBps: number; readonly readAt: number }>();
+
+  /**
+   * The wallet's taker fee in bps, cached, falling back to the mission's own
+   * policy figure when the exchange has never answered.
+   */
+  const takerFeeBps = (address: `0x${string}`, fallbackBps: number) =>
+    Effect.gen(function* () {
+      const now = yield* nowMs;
+      const cached = feeRateCache.get(address);
+      if (cached !== undefined && now - cached.readAt < FEE_RATE_TTL_MILLIS) return cached.feeBps;
+
+      const read = yield* gateway
+        .getTakerFeeRateBps(address)
+        .pipe(Effect.catchCause(() => Effect.succeed(null)));
+      // A failed read keeps whatever was last known rather than snapping the
+      // target's threshold to a different number for one sweep.
+      if (read === null) return cached?.feeBps ?? fallbackBps;
+
+      feeRateCache.set(address, { feeBps: read.feeBps, readAt: now });
+      return read.feeBps;
+    });
+
+  /**
    * What the position would still owe to realise its profit, in USD.
    *
    * Zero when the fee rate cannot be read at all — a target that fires a little
@@ -565,9 +601,7 @@ const make = Effect.gen(function* () {
       const mission = yield* missions.getMission(tracked.missionId);
       const address = yield* missions.getMasterWalletAddress(mission.tradingAccountId);
       const fallback = mission.authority.riskPolicy.fallbackTakerFeeBpsPerSide;
-      const read = yield* gateway
-        .getTakerFeeRateBps(address)
-        .pipe(Effect.catchCause(() => Effect.succeed({ feeBps: fallback, observedAt: 0 })));
+      const feeBps = yield* takerFeeBps(address, fallback);
       // The clearinghouse payload carries no mark, but upnl = (mark − entry) ×
       // size, so mark = entry + upnl/size — the reconciler's own derivation.
       const entryPrice = position.entryPrice;
@@ -576,7 +610,7 @@ const make = Effect.gen(function* () {
       return unpaidExitFeeUsd({
         positionSize: position.size,
         markPrice,
-        takerFeeBpsPerSide: read.feeBps,
+        takerFeeBpsPerSide: feeBps,
       });
     }).pipe(Effect.orElseSucceed(() => 0));
 
