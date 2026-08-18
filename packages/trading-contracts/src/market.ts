@@ -249,6 +249,14 @@ export const MarketCandleSeries = Schema.Struct({
   bars: Schema.Array(Schema.Array(Schema.Number)),
   /** Close time of the most recent finalised candle in the response, if any. */
   finalisedClose: Schema.optional(UnixMillis),
+  /**
+   * Why this table is shorter than the call asked for, when it is.
+   *
+   * The measurements and indicator readings beside it were taken over the full
+   * lookback either way, so a note here is about the chart that rode back and
+   * never about what was measured.
+   */
+  note: Schema.optional(Schema.String),
   freshness: FreshnessMeta,
 });
 export type MarketCandleSeries = typeof MarketCandleSeries.Type;

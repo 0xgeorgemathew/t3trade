@@ -92,6 +92,47 @@ export const TRADING_LOOK_MAX_BARS = 200;
 export const TRADING_LOOK_DEFAULT_BARS = 20;
 
 /**
+ * The most bars a look echoes while the mission holds no position.
+ *
+ * A stand-aside turn asked for 120 bars and used them to recompute `ema(20)`
+ * and `ema(50)` — readings the server had already computed and sent. Across
+ * one 23-minute mission that was 293,500 characters of `trading_look`, 82% of
+ * the model's entire context, to reach the same "no setup" thirteen times.
+ *
+ * Flat only. Entry and management turns keep whatever they asked for: the
+ * shape of the chart is what a trade is contemplated and managed against.
+ *
+ * Safe by construction — the measurements and the indicator readings are
+ * computed over the full fetched lookback, and only the echoed table is
+ * trimmed, so a 50-period EMA is unaffected by a 60-bar echo.
+ */
+export const TRADING_LOOK_FLAT_BAR_CAP = 60;
+
+/**
+ * How many bars of chart one look echoes back.
+ *
+ * Three inputs and one rule. A call that named `bars` gets that many; one that
+ * named indicators and no bars gets the readings and no chart (the reading is
+ * 140 characters where the window it came from is 18,000); anything else gets
+ * a short tail. Then, flat, the answer is capped — see
+ * {@link TRADING_LOOK_FLAT_BAR_CAP}.
+ */
+export function echoedBarsForLook(input: {
+  readonly bars?: number | undefined;
+  readonly indicators?: ReadonlyArray<unknown> | undefined;
+  /** Whether the mission holds a position right now. */
+  readonly holdingPosition?: boolean | undefined;
+}): number {
+  const asked =
+    input.bars !== undefined
+      ? input.bars
+      : (input.indicators ?? []).length > 0
+        ? 0
+        : TRADING_LOOK_DEFAULT_BARS;
+  return input.holdingPosition === true ? asked : Math.min(asked, TRADING_LOOK_FLAT_BAR_CAP);
+}
+
+/**
  * How many book levels a side a look echoes.
  *
  * Ten, because that is the depth `microstructure.bookImbalance` scores and

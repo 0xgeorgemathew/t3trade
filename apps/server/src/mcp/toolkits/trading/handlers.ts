@@ -35,6 +35,8 @@ import {
   resolveLookScopes,
   TRADING_LOOK_BOOK_LEVELS,
   TRADING_LOOK_DEFAULT_BARS,
+  TRADING_LOOK_FLAT_BAR_CAP,
+  echoedBarsForLook,
   type TradingLookInput,
   type TradingLookScope,
   type TradingObservation,
@@ -135,6 +137,24 @@ const rejectCall = (input: {
  * the credential — not an argument the harness supplies — decides which mission
  * is reachable. A `missionId` argument is checked against that binding rather
  * than trusted; an omitted `missionId` resolves to the bound mission.
+ */
+/**
+ * Refuse a `target.profitUsd` the trade cannot pay for, or null to publish.
+ *
+ * A target below the round trip that reaches it is a loss with extra steps:
+ * one live plan published $0.34 while the same payload carried $0.5589 of
+ * round trip and $1.118 of `preferredTargetUsd`, so hitting the target exactly
+ * banked minus eleven cents against $0.45 of actual fees. Nothing anywhere
+ * said so — the target was armed as published and graded against itself.
+ *
+ * Priced on the notional the plan itself names, or on the position when the
+ * mission is holding one, so the number refused against is the same
+ * `preferredTargetUsd` the model was already shown on its wake. That is what
+ * makes this one corrected republish rather than a loop.
+ *
+ * Quiet on everything it cannot price. A stand-aside has no trade to pay for a
+ * target, a plan naming no target arms nothing, and a cost read that does not
+ * answer is not evidence the target is wrong.
  */
 const resolveBoundCall = Effect.fn("TradingToolkit.resolveBoundCall")(function* (
   missionId: string | undefined,
@@ -873,12 +893,14 @@ const withMicrostructure = (
  * clipping the series does not change the volatility, it changes how much of
  * the chart rides back in the response.
  */
-const boundCandles = (history: MarketHistory, bars: number): MarketCandleSeries => {
+const boundCandles = (history: MarketHistory, bars: number, note?: string): MarketCandleSeries => {
+  const withNote = (series: MarketCandleSeries): MarketCandleSeries =>
+    note === undefined ? series : { ...series, note };
   // `slice(-0)` is `slice(0)` — the whole series. Zero bars is a real answer
   // here, so it is taken before the arithmetic that would return everything.
-  if (bars <= 0) return toCandleSeries({ ...history, candles: [] });
+  if (bars <= 0) return withNote(toCandleSeries({ ...history, candles: [] }));
   if (history.candles.length <= bars) return toCandleSeries(history);
-  return toCandleSeries({ ...history, candles: history.candles.slice(-bars) });
+  return withNote(toCandleSeries({ ...history, candles: history.candles.slice(-bars) }));
 };
 
 /**
@@ -903,14 +925,6 @@ const boundOrderBook = (book: OrderBook): OrderBook => ({
  * asks for the same thing outright; everything else is the number asked for,
  * or a short tail when nothing was.
  */
-const resolveEchoedBars = (input: {
-  readonly bars?: number | undefined;
-  readonly indicators?: ReadonlyArray<IndicatorRequest> | undefined;
-}): number => {
-  if (input.bars !== undefined) return input.bars;
-  return (input.indicators ?? []).length > 0 ? 0 : TRADING_LOOK_DEFAULT_BARS;
-};
-
 const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (input: {
   readonly market: TradingMarket;
   readonly mission: TradingMission | null;
@@ -920,7 +934,9 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
   readonly indicators?: ReadonlyArray<IndicatorRequest>;
 }) {
   const { market, mission, scopes } = input;
-  const echoedBars = resolveEchoedBars(input);
+  // A mission-less call has no position by definition; the mission branch below
+  // re-resolves this once the canonical position is in hand.
+  const echoedBars = echoedBarsForLook(input);
 
   // The indicator readings this call asked for, computed on the same bars the
   // candle read fetched — the model pulls `ema(20)` instead of deriving it
@@ -1017,6 +1033,19 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
           .pipe(Effect.catchCause(() => Effect.succeed(null)))
       : null;
 
+  // What the chart costs depends on whether there is a trade to manage. Flat,
+  // it is capped; holding, the call gets the window it asked for.
+  const holdingPosition = (facts.position?.size ?? 0) !== 0;
+  const heldBars = echoedBarsForLook({ ...input, holdingPosition });
+  // Said where the shortened table is, so the cap is a fact the model can act
+  // on rather than a silent truncation it reads as the whole chart.
+  const barsNote =
+    !holdingPosition && (input.bars ?? 0) > heldBars
+      ? `flat: the chart is capped at ${TRADING_LOOK_FLAT_BAR_CAP} bars (you asked for ` +
+        `${input.bars}). Every measurement and indicator here was still computed over the full ` +
+        `lookback. Ask again while holding a position, or name indicators, to read further back`
+      : undefined;
+
   // The book is NOT re-read here. `observe` already took it, and a second read
   // would let a look and a wake quote two different books — the drift the
   // shared market half exists to prevent.
@@ -1041,7 +1070,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
       : {}),
     ...(wantsCandles
       ? {
-          candles: boundCandles(namedHistory ?? facts.history, echoedBars),
+          candles: boundCandles(namedHistory ?? facts.history, heldBars, barsNote),
           volatility: facts.observedVolatility,
           ...(facts.higherTimeframeVolatility === null
             ? {}
@@ -1282,6 +1311,7 @@ const handlers = {
       // The strategy service keys off `input.missionId`; resolve it to the bound
       // mission so an omitted `missionId` reaches the publish path.
       const resolvedInput = { ...input, missionId: mission.id };
+
       // Publish plus everything an accepted publish drags behind it — the
       // announcements, the exchange reconcile, the withdrawn resting entry.
       // It lives in `TradingPlanPublication` because step 8.4's chart drag is a

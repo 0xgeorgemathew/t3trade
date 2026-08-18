@@ -6,6 +6,7 @@
  * injected `t3-trade` harness takes: bearer auth, MCP session, tool dispatch,
  * capability check, thread-to-mission resolution, and the trading services.
  */
+import { TRADING_LOOK_FLAT_BAR_CAP } from "@t3tools/trading-contracts/observation";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, it } from "@effect/vitest";
@@ -889,6 +890,71 @@ it.effect("rebuilds a reacting turn's picture in two scoped, bounded looks", () 
         const retrospectRead = retrospect.result.body;
         assert.notEqual(retrospectRead.mission.strategyHistory, undefined);
         assert.notEqual(retrospectRead.mission.journal, undefined);
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
+// Plan 36 item 8. 17 `trading_look` calls came to 293,500 characters — 82% of
+// one mission's entire context, against 35,589 for all 21 of its wake payloads
+// combined. The model asked for 120 bars on essentially every turn and used
+// them to recompute ema(20) and ema(50), which the server had already computed
+// and sent beside them. Thirteen of those turns concluded "no setup".
+const manyCandles = Array.from({ length: 150 }, (_, i) => ({
+  openTime: 4_000_000 - (150 - i) * 60_000,
+  closeTime: 4_000_000 - (150 - i) * 60_000 + 59_000,
+  open: 3_010,
+  close: 3_010 + (i % 7),
+  high: 3_020,
+  low: 3_000,
+  volume: 100,
+}));
+
+it.effect("caps the chart a flat look echoes, and says that it did", () => {
+  const fake = makeFakeExchange({ candles: manyCandles });
+  return withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+        const look = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["candles"],
+          bars: 120,
+          indicators: [{ kind: "ema", period: 50 }],
+        });
+        const read = look.result.body;
+        assert.equal(read.candles.bars.length, TRADING_LOOK_FLAT_BAR_CAP);
+        // Silent truncation reads as the whole chart, so the cap says so.
+        assert.include(read.candles.note ?? "", "capped");
+        assert.include(read.candles.note ?? "", "120");
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
+it.effect("reads a 50-period EMA the same however much chart rode back", () => {
+  const fake = makeFakeExchange({ candles: manyCandles });
+  return withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+        const wide = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["candles"],
+          bars: 120,
+          indicators: [{ kind: "ema", period: 50 }],
+        });
+        const narrow = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["candles"],
+          bars: 5,
+          indicators: [{ kind: "ema", period: 50 }],
+        });
+        // The whole safety argument for the cap: readings are computed over the
+        // full fetched lookback and only the echoed table is trimmed.
+        assert.isTrue(Number.isFinite(wide.result.body.indicators[0].value));
+        assert.equal(wide.result.body.indicators[0].value, narrow.result.body.indicators[0].value);
+        assert.equal(narrow.result.body.candles.bars.length, 5);
       }),
     tradingLayerOverExchange(fake),
   );
