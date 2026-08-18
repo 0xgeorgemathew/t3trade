@@ -18,7 +18,6 @@
  */
 import { Schema } from "effect";
 import { AgentAccountSnapshot, AgentNetPosition, AgentOpenOrder } from "./account-snapshot.ts";
-import { TradingAuthority } from "./authority.ts";
 import {
   AgentMarketSnapshot,
   MarketCandleInterval,
@@ -34,7 +33,7 @@ import { TargetCalibration } from "./calibration.ts";
 import { TradingJournalEntry } from "./journal.ts";
 import { TradingMissionModeState } from "./mode.ts";
 import { ObservedVolatility } from "./volatility.ts";
-import { TradingHarnessBinding, TradingMission, TradingMissionControl } from "./mission.ts";
+import { TradingMission } from "./mission.ts";
 import { Price, TradingId, TradingMarket, UnixMillis } from "./primitives.ts";
 import { StopAdjustmentJustification, StopAdjustmentRefusalCode } from "./stopAdjustment.ts";
 import { TradingOrderTimeInForce } from "./execution.ts";

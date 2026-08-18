@@ -50,19 +50,29 @@ const MISSION = "mission_floor";
 const THREAD = "thread_floor";
 
 /**
- * The turn-end signal. The coordinator's release watcher takes the first
- * `thread.session-set` where the session leaves "running" with no active turn.
+ * The turn as the coordinator sees it: it starts, then it ends.
+ *
+ * Both events are needed because the lease is anchored to the turn the run
+ * dispatched, not to bare session quiet — a watcher ignores everything until it
+ * has seen the session RUNNING a turn, so that a restart's `stopped → ready`
+ * cannot be mistaken for the turn finishing. Offering only the idle event
+ * leaves the run open forever, which is what these tests measure the tail of.
  */
-const turnEnded = {
-  type: "thread.session-set",
-  eventId: EventId.make("event_1"),
-  sequence: 1,
-  occurredAt: "1970-01-01T00:00:00.000Z",
-  payload: {
-    threadId: ThreadId.make(THREAD),
-    session: { status: "idle", activeTurnId: null },
-  },
-} as unknown as OrchestrationEvent;
+const sessionSet = (
+  id: string,
+  sequence: number,
+  session: { readonly status: string; readonly activeTurnId: string | null },
+) =>
+  ({
+    type: "thread.session-set",
+    eventId: EventId.make(id),
+    sequence,
+    occurredAt: "1970-01-01T00:00:00.000Z",
+    payload: { threadId: ThreadId.make(THREAD), session },
+  }) as unknown as OrchestrationEvent;
+
+const turnStarted = sessionSet("event_0", 0, { status: "running", activeTurnId: "turn_1" });
+const turnEnded = sessionSet("event_1", 1, { status: "idle", activeTurnId: null });
 
 /**
  * The turn-end event is offered by the test rather than replayed from a static
@@ -188,6 +198,7 @@ const startTurn = Effect.gen(function* () {
 
 /** End the turn and wait for the forked settlement — the floor runs there. */
 const endTurn = Effect.gen(function* () {
+  yield* Queue.offer(turnEndQueue!, turnStarted);
   yield* Queue.offer(turnEndQueue!, turnEnded);
 
   // `Effect.yieldNow` rather than a sleep, because these tests run on the test
@@ -555,6 +566,7 @@ layer("run settlement: the armed-coverage floor", (it) => {
       `;
       // `endTurn`'s wait counts settled runs, and the three pre-inserted rows
       // already satisfy it — wait for the fourth instead.
+      yield* Queue.offer(turnEndQueue!, turnStarted);
       yield* Queue.offer(turnEndQueue!, turnEnded);
       for (let attempt = 0; attempt < 500; attempt++) {
         const settled = yield* sql<{ readonly count: number }>`
