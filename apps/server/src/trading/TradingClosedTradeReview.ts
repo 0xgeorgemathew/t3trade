@@ -115,6 +115,9 @@ const measureStopAtEntry = (
  * {@link FILL_WINDOW_SLACK_MILLIS} — and none from before that. A row written
  * before migration 046 has no `opened_at`, so it falls back to the last
  * observation.
+ *
+ * `input.closedAt` is only a fallback: the review's own `closedAt` is the last
+ * closing fill's exchange timestamp whenever there is one.
  */
 export const buildClosedTradeReview = (input: {
   readonly missionId: string;
@@ -149,6 +152,20 @@ export const buildClosedTradeReview = (input: {
       WHERE mission_id = ${input.missionId} AND market = ${input.market}
         AND traded_at >= ${fillsFrom} AND side = ${closingSide}
     `;
+    // When the trade closed, according to the exchange rather than to us.
+    // `input.closedAt` is the instant a reconcile pass happened to look, and
+    // two passes observing one close look at two different instants — which is
+    // how one close became two rows 67ms apart. The last closing fill's own
+    // timestamp is the same number no matter how often it is read.
+    const closingFills = yield* sql<{ readonly traded_at: number }>`
+      SELECT traded_at
+      FROM trading_fills
+      WHERE mission_id = ${input.missionId} AND market = ${input.market}
+        AND traded_at >= ${fillsFrom} AND side = ${closingSide}
+      ORDER BY traded_at DESC, fill_id DESC
+      LIMIT 1
+    `;
+    const closedAt = closingFills[0]?.traded_at ?? input.closedAt;
     // The entry that opened this trade: the newest open entry the server
     // committed to at or shortly before the position was first observed. Same
     // join the entry governance read uses; a minute of slack covers the gap
@@ -189,8 +206,8 @@ export const buildClosedTradeReview = (input: {
       market: input.market,
       direction,
       openedAt,
-      closedAt: input.closedAt,
-      holdMillis: Math.max(0, input.closedAt - openedAt),
+      closedAt,
+      holdMillis: Math.max(0, closedAt - openedAt),
       // The exposure the trade actually carried, not the chunk that happened
       // to be left when it went flat: a position closed in three rungs was
       // reviewed at the size of the last one.
@@ -231,8 +248,12 @@ export const buildClosedTradeReview = (input: {
  * message, and `peakUnrealisedPnlUsd` exists nowhere else once the position
  * snapshot is cleared.
  *
- * Keyed on (mission, closedAt), so a re-run of the same reconcile pass rewrites
- * its row instead of counting the trade twice.
+ * Keyed on (mission, openedAt) — one opening is one trade. The key used to be
+ * the close time, which was a local observation clock rather than any fact
+ * about the trade: two reconciles observing the same close stamped two keys
+ * and the mission's own scorecard counted the trade twice. The opening is
+ * fixed by the time the close is being reviewed, so every pass over one close
+ * rewrites one row.
  */
 export const persistClosedTradeReview = (
   review: ClosedTradeReview,
@@ -258,7 +279,9 @@ export const persistClosedTradeReview = (
         ${review.stopPriceAtEntry ?? null}, ${review.stopDistanceUsd ?? null},
         ${review.stopDistanceAtrMultiple ?? null}, ${review.stopNoiseFloorMultiple ?? null}
       )
-      ON CONFLICT(mission_id, closed_at) DO UPDATE SET
+      ON CONFLICT(mission_id, opened_at) DO UPDATE SET
+        closed_at = ${review.closedAt}, hold_millis = ${review.holdMillis},
+        exit_price = ${review.exitPrice ?? null}, size = ${review.sizeEth},
         realized_pnl = ${review.realizedPnlUsd}, fees_paid = ${review.feesPaidUsd},
         net_pnl = ${review.netPnlUsd}, fill_count = ${review.fillCount}
     `;

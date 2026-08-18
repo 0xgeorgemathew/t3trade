@@ -57,7 +57,7 @@ const input: ReconcileInput = {
 /** Migrate the shared in-memory db, then truncate the 038 tables. */
 const migrated = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* runMigrations({ toMigrationInclusive: 70 });
+  yield* runMigrations({ toMigrationInclusive: 71 });
   yield* sql`DELETE FROM trading_position_snapshots`;
   yield* sql`DELETE FROM trading_fills`;
   yield* sql`DELETE FROM trading_orders`;
@@ -857,6 +857,47 @@ layer("HyperliquidReconciler", (it) => {
       assert.equal(queued.length, 1);
       assert.match(queued[0]?.summary ?? "", /trade_closed: long 2 ETH/);
       assert.match(queued[0]?.summary ?? "", /NET \$24\.00/);
+    }),
+  );
+
+  // Plan 36 item 2. The close row used to be keyed on the instant a pass
+  // happened to look, so the two reconciles that follow one close wrote two
+  // rows 67ms apart and announced the same trade to the harness twice. The
+  // mission's own scorecard — which later turns calibrate against — counted
+  // one trade as two.
+  it.effect("writes one row and one event when two passes observe one close", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      const sql = yield* SqlClient.SqlClient;
+      const reconciler = yield* HyperliquidReconciler;
+      const openedAt = yield* Clock.currentTimeMillis;
+
+      yield* setState({
+        account: snapshotFromClearinghouse(clearinghouseWithPnl("20")),
+        fills: [],
+      });
+      yield* reconciler.reconcile(input, "after_position_update");
+
+      yield* setState({
+        account: snapshotFromClearinghouse(flatClearinghouse),
+        fills: [sellFill(openedAt + 1_000, "25", "1")],
+      });
+      yield* reconciler.reconcile(input, "after_fill");
+      // The second pass looks at a different instant — the clock has moved —
+      // but at the same close.
+      yield* TestClock.adjust(Duration.millis(67));
+      yield* reconciler.reconcile(input, "after_fill");
+
+      const rows = yield* sql<{ readonly closed_at: number; readonly hold_millis: number }>`
+        SELECT closed_at, hold_millis FROM trading_closed_trades
+        WHERE mission_id = ${MISSION}
+      `;
+      assert.equal(rows.length, 1);
+      // Dated by the exchange's own fill, not by whichever pass got there.
+      assert.equal(rows[0]?.closed_at, openedAt + 1_000);
+
+      const queued = yield* readInboxSummaries();
+      assert.equal(queued.length, 1);
     }),
   );
 

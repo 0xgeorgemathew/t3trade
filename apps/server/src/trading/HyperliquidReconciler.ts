@@ -814,8 +814,10 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
    * The review rides the inbox rather than a new channel because the inbox is
    * already what a wakeup carries as `pendingEvents`, and a summary the harness
    * reads on its next turn is exactly what the closing turn needs. The
-   * deduplication key is the close time, so a re-run of the same pass cannot
-   * queue the same review twice.
+   * deduplication key is the trade's opening, so a second pass over the same
+   * close cannot queue the same review twice. It used to be the observation
+   * instant, which differs by milliseconds between passes: one live close was
+   * announced to the harness twice, carrying the same scorecard both times.
    */
   const recordClosedTrade = (
     input: ReconcileInput,
@@ -842,7 +844,7 @@ export const makeHyperliquidReconciler = Effect.gen(function* () {
         .persist({
           missionId: input.missionId,
           category: "exchange",
-          deduplicationKey: `trade_closed:${observedAt}`,
+          deduplicationKey: `trade_closed:${review.openedAt}`,
           payload: review,
           occurredAt: observedAt,
           summary,
