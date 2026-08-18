@@ -244,9 +244,14 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (
   const strategies = yield* TradingStrategyService;
   const strategy = yield* strategies.getCurrentStrategy(mission.id).pipe(Effect.orDie);
   // Bounded (plan 29 step 6.3): every live watch, plus a capped tail of
-  // settled ones. This read rides every turn, and the settled tail is the part
-  // that grows without limit.
-  const watches = yield* strategies.listWatchesForRead(mission.id).pipe(Effect.orDie);
+  // settled ones. The settled tail is retrospect — a watch that fired arrived
+  // as the wake's own `triggeringWatch`, and no turn of the mission this was
+  // measured on ever referred back to a retired one, while they were 46% of
+  // the registry a hot-path read carried (plan 35 phase 2).
+  const allWatches = yield* strategies.listWatchesForRead(mission.id).pipe(Effect.orDie);
+  const watches = withRetrospect
+    ? allWatches
+    : allWatches.filter((watch) => watch.status === "active");
   const missions = yield* TradingMissionService;
   // The same set preview item 16 refuses against, so a harness told
   // `no_conflicting_execution_pending` can read what is holding the lock.
@@ -289,14 +294,10 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (
     bound: true,
     mission: withRetrospect ? mission : withMandatePointer(mission),
     mode,
-    authority: mission.authority,
-    authorityVersion: mission.authorityVersion,
     ...(Option.isNone(strategy) ? {} : { strategy: strategy.value }),
     missionVersion,
     // Plan 33 fix B: the rows the model reads, not the rows the table stores.
     watches: watches.map(toWatchRow),
-    control: mission.control,
-    harness: mission.harness,
     pendingExecutions,
     ...(strategyHistory === null ? {} : { strategyHistory }),
     ...(journal === null ? {} : { journal }),

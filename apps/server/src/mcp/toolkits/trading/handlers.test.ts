@@ -686,9 +686,13 @@ it.effect("serves trading_look and a versioned publish over the real /mcp endpoi
         assert.equal(before.mission.status, "initializing");
         assert.equal(before.missionVersion, 1);
         assert.equal(before.strategy, undefined);
-        assert.equal(before.authorityVersion, 1);
-        assert.equal(before.authority.allocatedCapitalUsd, 1_000);
-        assert.equal(before.harness.threadId, BOUND_THREAD);
+        // Plan 35: the authority, the harness and the control flags are read
+        // off the mission row. They used to ride beside it as well.
+        assert.equal(before.authority, undefined);
+        assert.equal(before.harness, undefined);
+        assert.equal(before.mission.authorityVersion, 1);
+        assert.equal(before.mission.authority.allocatedCapitalUsd, 1_000);
+        assert.equal(before.mission.harness.threadId, BOUND_THREAD);
         assert.deepStrictEqual(before.watches, []);
         // The market half of the same answer, which used to be eleven more calls.
         assert.equal(initial.result.body.market, "ETH");
@@ -860,7 +864,7 @@ it.effect("rebuilds a reacting turn's picture in two scoped, bounded looks", () 
         const liveRead = live.result.body;
         assert.equal(liveRead.mission.bound, true);
         assert.notEqual(liveRead.mission.mission, undefined);
-        assert.notEqual(liveRead.mission.authority, undefined);
+        assert.notEqual(liveRead.mission.mission.authority, undefined);
         assert.notEqual(liveRead.mission.strategy, undefined);
         assert.equal(liveRead.mission.watches.length, 1);
         assert.equal(liveRead.mission.strategyHistory, undefined);
@@ -1346,11 +1350,21 @@ it.effect("moves a level atomically through replacesWatchId", () =>
       assert.equal(moved.result.isError, false);
       assert.equal(moved.result.body.replaced.id, originalId);
 
-      const listed = yield* callTool(BOUND_THREAD, "trading_look", {});
+      // The retired half is retrospect now, so the swap is read with it.
+      const listed = yield* callTool(BOUND_THREAD, "trading_look", {
+        scope: ["mission", "retrospect"],
+      });
       const watches = listed.result.body.mission.watches;
       const byId = new Map(watches.map((w: { id: string; status: string }) => [w.id, w.status]));
       assert.equal(byId.get(originalId), "cancelled");
       assert.equal(byId.get(moved.result.body.watch.id), "active");
+
+      // And a hot-path look carries only what can still fire.
+      const armedOnly = yield* callTool(BOUND_THREAD, "trading_look", { scope: ["mission"] });
+      assert.deepStrictEqual(
+        armedOnly.result.body.mission.watches.map((w: { status: string }) => w.status),
+        ["active"],
+      );
 
       // Both halves of the swap reach the workspace: an unannounced cancel
       // leaves a level rendered that is no longer standing.

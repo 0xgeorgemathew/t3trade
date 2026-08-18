@@ -167,6 +167,15 @@ export type PublishedStrategySummary = typeof PublishedStrategySummary.Type;
 export const TradingBoundMissionResult = Schema.Struct({
   /** Discriminates this from the unbound-thread answer below. */
   bound: Schema.Literal(true),
+  /**
+   * The mission row, which is where `authority`, `harness`, `control` and
+   * `authorityVersion` are read from.
+   *
+   * They used to sit here as siblings as well, and `TradingMission` carries
+   * all four — so every look shipped the authority twice, 718 characters of a
+   * payload that rides every turn (plan 35 phase 2). One copy, on the row that
+   * owns them.
+   */
   mission: TradingMission,
   /**
    * Which mode this mission runs in — plan 29 phase 9. Derived from the
@@ -176,8 +185,6 @@ export const TradingBoundMissionResult = Schema.Struct({
    * the doctrine that says what executing means.
    */
   mode: TradingMissionModeState,
-  authority: TradingAuthority,
-  authorityVersion: Schema.Number,
   strategy: Schema.optional(TradingPlanState),
   /**
    * The mission row's optimistic-lock version (plan 29 step 4.2). Publishing
@@ -187,13 +194,17 @@ export const TradingBoundMissionResult = Schema.Struct({
    */
   missionVersion: Schema.Number,
   /**
-   * The armed set and a capped tail of what has already settled, as rows —
-   * see {@link TradingWatchRow}. The persisted encoding and the mission id
-   * each row used to repeat are not here (plan 33 fix B).
+   * The armed set, as rows — see {@link TradingWatchRow}. The persisted
+   * encoding and the mission id each row used to repeat are not here
+   * (plan 33 fix B).
+   *
+   * What has already settled comes with the `retrospect` scope. A watch that
+   * fired arrived as its own wake's `triggeringWatch`, and no turn of the
+   * mission this was measured on ever referred back to a retired one — while
+   * on the last read of that mission they were 46% of the registry, on the hot
+   * path, every turn (plan 35 phase 2).
    */
   watches: Schema.Array(TradingWatchRow),
-  control: TradingMissionControl,
-  harness: TradingHarnessBinding,
   /** Executions written but not yet answered — what a lock rejection means. */
   pendingExecutions: Schema.Array(TradingPendingExecution),
   /**
