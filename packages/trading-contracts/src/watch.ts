@@ -243,6 +243,18 @@ export const WatchRefusalCode = Schema.Literals([
    * in ninety seconds that did nothing but move a number.
    */
   "giveback_below_current_drawdown",
+  /**
+   * A price level armed on the opposite side of one already active at the same
+   * price — plan 36 item 5.
+   *
+   * A level above and a level below the current price is not two triggers, it
+   * is a poll: one of them fires on the next bar whichever way the market
+   * goes. The mission this was found on published "1m close above 1900.14" and
+   * "1m close below 1900.14" on every plan and armed both, five pairs in a row,
+   * and paid a full turn per bar to conclude "no setup" from unchanged
+   * indicators. Twelve of its thirteen market wakes were this.
+   */
+  "level_mirrors_active_watch",
 ]);
 export type WatchRefusalCode = typeof WatchRefusalCode.Type;
 
@@ -932,6 +944,36 @@ export type UnarmedEntryCondition = typeof UnarmedEntryCondition.Type;
  * "1899" against a watch at 1899.2 is the same decision, not an unarmed one.
  */
 const ENTRY_HINT_TOLERANCE_BPS = 10;
+
+/**
+ * The active price level a new one would merely mirror, if there is one.
+ *
+ * A level above and a level below the same price is not two triggers. One of
+ * them fires on the next bar whichever way the market goes, so the pair is a
+ * poll wearing an alert's clothes — and each firing costs a full turn to
+ * conclude what the unchanged indicators already said. The mission this was
+ * found on armed five such pairs in a row and spent twelve of its thirteen
+ * market wakes on them.
+ *
+ * Same price within {@link ENTRY_HINT_TOLERANCE_BPS} and opposite direction is
+ * the whole test. Two levels genuinely apart are two theses and both arm; a
+ * re-level on the same side is a move, not a mirror, and goes through
+ * `replacesWatchId`.
+ */
+export function findMirroredLevel(input: {
+  readonly price: number;
+  readonly direction: WatchCrossDirection;
+  readonly watches: ReadonlyArray<PersistedWatch>;
+}): PersistedWatch | undefined {
+  const tolerance = (Math.abs(input.price) * ENTRY_HINT_TOLERANCE_BPS) / 10_000;
+  return input.watches.find((persisted) => {
+    if (persisted.status !== "active") return false;
+    const watch = persisted.watch;
+    if (watch.type !== "price_cross" && watch.type !== "candle_close") return false;
+    if (watch.direction === input.direction) return false;
+    return Math.abs(watch.price - input.price) <= tolerance;
+  });
+}
 
 /**
  * Find the price hints in a waiting plan's entry conditions that no active

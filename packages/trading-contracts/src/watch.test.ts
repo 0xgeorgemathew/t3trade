@@ -11,6 +11,7 @@ import { assert, describe, it } from "@effect/vitest";
 
 import {
   backedOffFloorMillis,
+  findMirroredLevel,
   findUnarmedEntryConditions,
   isDeafWhileHoldingPosition,
   NO_OP_BACKOFF_CAP_MILLIS,
@@ -189,6 +190,71 @@ describe("isDeafWhileHoldingPosition", () => {
       armed({ type: "scheduled_reassessment", runAt: NOW + 60_000 }),
     ]);
     assert.isFalse(isDeafWhileHoldingPosition(coverage));
+  });
+});
+
+// Plan 36 item 5. The mission this was found on published "1m close above
+// 1900.14" and "1m close below 1900.14" on every plan and armed both, five
+// pairs in a row. One of a straddle at the current price fires on the next bar
+// whichever way the market goes, so twelve of its thirteen market wakes were
+// its own polling, each paying a full turn to conclude "no setup".
+describe("findMirroredLevel", () => {
+  const closeAt = (price: number, direction: "above" | "below") =>
+    armed({ type: "candle_close", market: "ETH", interval: "1m", direction, price });
+
+  it("finds the level armed on the other side of the same price", () => {
+    const mirrored = findMirroredLevel({
+      price: 1_900.14,
+      direction: "below",
+      watches: [closeAt(1_900.14, "above")],
+    });
+    assert.equal(mirrored?.watch.type, "candle_close");
+  });
+
+  it("treats a level within 10 bps as the same price", () => {
+    // 1900.14 against 1900.2 is one level with two roundings, not two theses.
+    const mirrored = findMirroredLevel({
+      price: 1_900.14,
+      direction: "below",
+      watches: [closeAt(1_900.2, "above")],
+    });
+    assert.isDefined(mirrored);
+  });
+
+  it("leaves two levels genuinely apart alone", () => {
+    const mirrored = findMirroredLevel({
+      price: 1_930,
+      direction: "below",
+      watches: [closeAt(1_900.14, "above")],
+    });
+    assert.isUndefined(mirrored);
+  });
+
+  it("leaves a level on the SAME side alone — that is a re-level, not a mirror", () => {
+    const mirrored = findMirroredLevel({
+      price: 1_900.14,
+      direction: "above",
+      watches: [closeAt(1_900.14, "above")],
+    });
+    assert.isUndefined(mirrored);
+  });
+
+  it("ignores a watch that is no longer active", () => {
+    const mirrored = findMirroredLevel({
+      price: 1_900.14,
+      direction: "below",
+      watches: [{ ...closeAt(1_900.14, "above"), status: "triggered" }],
+    });
+    assert.isUndefined(mirrored);
+  });
+
+  it("ignores a watch that is not a price level at all", () => {
+    const mirrored = findMirroredLevel({
+      price: 1_900.14,
+      direction: "below",
+      watches: [armed({ type: "pnl_above", market: "ETH", valueUsd: 1.12 })],
+    });
+    assert.isUndefined(mirrored);
   });
 });
 

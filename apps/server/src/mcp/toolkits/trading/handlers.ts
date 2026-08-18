@@ -17,6 +17,7 @@ import { readExitRequest } from "@t3tools/trading-contracts/exit";
 import type { StopAdjustmentJustification } from "@t3tools/trading-contracts/stop-adjustment";
 import { classifyFailure } from "@t3tools/trading-contracts/recovery";
 import {
+  findMirroredLevel,
   isWatchRefusal,
   resolveWatchHandle,
   toMarketWatch,
@@ -1538,6 +1539,51 @@ const handlers = {
             recovery: classifyFailure({
               tag: "TradingWatchRefusal",
               reason: "giveback_below_current_drawdown",
+            }),
+          };
+        }
+      }
+
+      // A level armed on both sides of the current price fires on the next bar
+      // whichever way it goes: the pair is a poll, not an alert, and each
+      // firing costs a full turn to reconclude what the indicators already
+      // said. Refused with the incumbent's handle, so the correction available
+      // to the model is either to keep the level its thesis turns on or to
+      // re-level this one through `replacesWatchId`.
+      if (
+        (derived.type === "price_cross" || derived.type === "candle_close") &&
+        input.replacesWatchId === undefined
+      ) {
+        const strategies = yield* TradingStrategyService;
+        const existing = yield* strategies
+          .listWatches(mission.id)
+          .pipe(Effect.catchCause(() => Effect.succeed([])));
+        const mirrored = findMirroredLevel({
+          price: derived.price,
+          direction: derived.direction,
+          watches: existing,
+        });
+        // `findMirroredLevel` only ever returns a price level, so this narrows
+        // rather than filters — but the union needs the check to say so.
+        const incumbent = mirrored?.watch;
+        if (
+          incumbent !== undefined &&
+          (incumbent.type === "price_cross" || incumbent.type === "candle_close")
+        ) {
+          const confirmation = incumbent.type === "candle_close" ? "on the close" : "on touch";
+          return {
+            outcome: "refused" as const,
+            reason: "level_mirrors_active_watch" as const,
+            detail:
+              `watch ${mirrored?.id} is already armed ${confirmation} ${incumbent.direction} ` +
+              `${incumbent.price}, and this level is ${derived.direction} ${derived.price} — the ` +
+              `pair straddles the current price, so one side fires on the next bar whichever way ` +
+              `the market goes. Arm the level your thesis turns on, or arm nothing and let the ` +
+              `reassessment carry you; to move the existing level, pass ` +
+              `replacesWatchId=${mirrored?.id}`,
+            recovery: classifyFailure({
+              tag: "TradingWatchRefusal",
+              reason: "level_mirrors_active_watch",
             }),
           };
         }

@@ -1463,6 +1463,114 @@ it.effect("refuses a giveback the position has already given back", () => {
   );
 });
 
+// Plan 36 item 5. The mission this was found on published "1m close above
+// 1900.14" and "1m close below 1900.14" on every plan and armed both, five
+// pairs in a row: one of a straddle at the current price fires on the next bar
+// whichever way the market goes. Twelve of its thirteen market wakes were its
+// own polling, each paying a full turn to conclude "no setup" from indicators
+// that had not moved.
+it.effect("refuses a level armed on the other side of one already active", () => {
+  const fake = makeFakeExchange({ positionSize: 0 });
+  return withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+
+        const above = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: {
+            kind: "price",
+            market: "ETH",
+            price: 1_900.14,
+            direction: "above",
+            confirm: "close",
+            interval: "1m",
+          },
+        });
+        assert.equal(above.result.body.outcome, "armed");
+        const incumbent = above.result.body.watch.id;
+
+        const refused = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: {
+            kind: "price",
+            market: "ETH",
+            price: 1_900.14,
+            direction: "below",
+            confirm: "close",
+            interval: "1m",
+          },
+        });
+        assert.equal(refused.result.body.outcome, "refused");
+        assert.equal(refused.result.body.reason, "level_mirrors_active_watch");
+        // The refusal names the incumbent, so the correction is available
+        // without another read.
+        assert.include(refused.result.body.detail, incumbent);
+
+        // And nothing was armed: one level, not two.
+        const look = yield* callTool(BOUND_THREAD, "trading_look", {
+          missionId: MISSION_ID,
+          scope: ["mission"],
+        });
+        assert.equal(look.result.body.mission.watches.length, 1);
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
+it.effect("arms a level genuinely apart, and re-levels the same side through replaces", () => {
+  const fake = makeFakeExchange({ positionSize: 0 });
+  return withMcpServer(
+    ({ callTool, seedTradingAccount }) =>
+      Effect.gen(function* () {
+        yield* seedTradingAccount();
+
+        const above = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: {
+            kind: "price",
+            market: "ETH",
+            price: 1_900.14,
+            direction: "above",
+            confirm: "close",
+            interval: "1m",
+          },
+        });
+        assert.equal(above.result.body.outcome, "armed");
+
+        // Two levels genuinely apart are two theses, and both arm.
+        const farBelow = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          condition: {
+            kind: "price",
+            market: "ETH",
+            price: 1_880,
+            direction: "below",
+            confirm: "close",
+            interval: "1m",
+          },
+        });
+        assert.equal(farBelow.result.body.outcome, "armed");
+
+        // Moving a level is not a mirror, and goes through replacesWatchId.
+        const moved = yield* callTool(BOUND_THREAD, "trading_watch", {
+          missionId: MISSION_ID,
+          replacesWatchId: above.result.body.watch.id,
+          condition: {
+            kind: "price",
+            market: "ETH",
+            price: 1_900.14,
+            direction: "below",
+            confirm: "close",
+            interval: "1m",
+          },
+        });
+        assert.equal(moved.result.body.outcome, "armed");
+      }),
+    tradingLayerOverExchange(fake),
+  );
+});
+
 it.effect("arms a giveback while the position is at its peak", () => {
   const fake = makeFakeExchange({ positionSize: -0.474 });
   return withMcpServer(
