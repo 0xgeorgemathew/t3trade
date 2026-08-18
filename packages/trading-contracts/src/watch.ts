@@ -1065,6 +1065,16 @@ export function findMisarmedEntryConditions(input: {
 }): ReadonlyArray<MisarmedEntryCondition> {
   const armed = input.watches.flatMap((persisted) => {
     if (persisted.status !== "active") return [];
+    // Only levels the MODEL armed. A runtime watch carries an `armedReason`,
+    // and it is not an attempt to arm an entry trigger — it is the stop's
+    // proximity, or a prediction's horizon, that happens to sit at the same
+    // price. Judging the model's arming against one produces a complaint about
+    // a watch the model did not write: the last surviving false misarm on a
+    // measured mission was a plan's "hold above 1901.50" condition matched
+    // against the runtime's own `stop_proximity` level, reported as
+    // `armedAs=price_cross shouldBe=price_cross mismatch=direction` — the
+    // model told it armed the very thing it should have armed.
+    if (persisted.armedReason !== undefined) return [];
     const watch = persisted.watch;
     if (watch.type !== "price_cross" && watch.type !== "candle_close") return [];
     return [
