@@ -16,7 +16,13 @@ import type { TradingTimeframe, TradingUrgency } from "@t3tools/trading-contract
 import { readExitRequest } from "@t3tools/trading-contracts/exit";
 import type { StopAdjustmentJustification } from "@t3tools/trading-contracts/stop-adjustment";
 import { classifyFailure } from "@t3tools/trading-contracts/recovery";
-import { isWatchRefusal, toMarketWatch, toWatchRow } from "@t3tools/trading-contracts/watch";
+import {
+  isWatchRefusal,
+  resolveWatchHandle,
+  toMarketWatch,
+  toWatchRow,
+  watchHandle,
+} from "@t3tools/trading-contracts/watch";
 import {
   isJournalRefusal,
   readJournalNote,
@@ -297,7 +303,10 @@ const readMission = Effect.fn("TradingToolkit.readMission")(function* (
     ...(Option.isNone(strategy) ? {} : { strategy: strategy.value }),
     missionVersion,
     // Plan 33 fix B: the rows the model reads, not the rows the table stores.
-    watches: watches.map(toWatchRow),
+    watches: watches.map((watch) => {
+      const row = toWatchRow(watch);
+      return { ...row, id: watchHandle(row.id) };
+    }),
     pendingExecutions,
     ...(strategyHistory === null ? {} : { strategyHistory }),
     ...(journal === null ? {} : { journal }),
@@ -1090,6 +1099,40 @@ const roundGivebackSuggestion = (drawdownUsd: number): string =>
  * is there but already terminal are different facts about the armed set, and
  * collapsing them would tell a harness its level is gone when it fired.
  */
+/**
+ * Turn what the model quoted back into one watch id.
+ *
+ * Every model-facing surface renders a watch as an eight-character handle, so
+ * `cancel` and `replacesWatchId` arrive as handles — and sometimes as the full
+ * id, from a turn that read one before this change or copied one out of a tool
+ * result. Both resolve here against the mission's own registry.
+ *
+ * An unmatched handle is passed through unchanged: "no such watch" is the
+ * cancel path's own answer and it distinguishes a missing watch from a
+ * terminal one, which a refusal raised here would flatten.
+ */
+const resolveWatchId = Effect.fn("TradingToolkit.resolveWatchId")(function* (
+  missionId: string,
+  handle: string,
+) {
+  const strategies = yield* TradingStrategyService;
+  const watches = yield* strategies.listWatchesForRead(missionId).pipe(Effect.orDie);
+  const matches = resolveWatchHandle(
+    handle,
+    watches.map((watch) => watch.id),
+  );
+  // Two watches behind one handle is not something to guess at. Prefer the
+  // active one; only a genuine tie is ambiguous, and eight hex characters make
+  // that vanishingly unlikely inside one mission.
+  if (matches.length > 1) {
+    const active = watches.filter(
+      (watch) => matches.includes(watch.id) && watch.status === "active",
+    );
+    if (active.length === 1) return active[0]!.id;
+  }
+  return matches.length === 1 ? matches[0]! : handle;
+});
+
 const cancelWatch = Effect.fn("TradingToolkit.cancelWatch")(function* (
   threadId: string,
   missionId: string,
@@ -1452,7 +1495,10 @@ const handlers = {
       if (input.condition !== undefined && input.cancel !== undefined) {
         return refuseAmbiguous("a call arms a condition or cancels a watch, not both");
       }
-      if (input.cancel !== undefined) return yield* cancelWatch(threadId, mission.id, input.cancel);
+      if (input.cancel !== undefined) {
+        const watchId = yield* resolveWatchId(mission.id, input.cancel);
+        return yield* cancelWatch(threadId, mission.id, watchId);
+      }
       if (input.condition === undefined) {
         return refuseAmbiguous("name a condition to arm, or a watch id in `cancel` to retire");
       }
@@ -1497,14 +1543,17 @@ const handlers = {
         }
       }
 
+      const replaces =
+        input.replacesWatchId === undefined
+          ? undefined
+          : yield* resolveWatchId(mission.id, input.replacesWatchId);
+
       const watches = yield* TradingWatchService;
       const registered = yield* watches
         .registerWatch({
           missionId: mission.id,
           watch: derived,
-          ...(input.replacesWatchId === undefined
-            ? {}
-            : { replacesWatchId: input.replacesWatchId }),
+          ...(replaces === undefined ? {} : { replacesWatchId: replaces }),
         })
         .pipe(
           Effect.catchTags({

@@ -388,7 +388,7 @@ layer("TradingWakeupComposer", (it) => {
   it.effect("renders one line per armed watch, and the fired one in full", () =>
     Effect.gen(function* () {
       armedOverride = Array.from({ length: 8 }, (_, i) =>
-        watch(`watch_level_${i}`, {
+        watch(`0000000${i}-4c1e-4d0f-9a3b-1f2e3d4c5b6a`, {
           type: "price_cross",
           market: "ETH",
           priceSource: "mark",
@@ -402,7 +402,7 @@ layer("TradingWakeupComposer", (it) => {
         harnessRunId: "run_1",
         cause: "market_watch_triggered",
         occurredAt: NOW,
-        triggeringWatchId: "watch_level_0",
+        triggeringWatchId: "00000000-4c1e-4d0f-9a3b-1f2e3d4c5b6a",
         pendingEvents: [],
         activeStrategy: strategy,
       });
@@ -414,10 +414,13 @@ layer("TradingWakeupComposer", (it) => {
       );
       const lines = section.split("\n").filter((line) => /^\s*\[\d+] id=/.test(line));
       assert.equal(lines.length, 8);
-      // Every watch is addressable — `cancel` and `replacesWatchId` take the id.
-      for (const id of armed.map((_, i) => `watch_level_${i}`)) {
-        assert.include(section, id);
+      // Every watch is addressable, by the eight-character handle
+      // `trading_watch` resolves — plan 35, where a model copying a 36-char
+      // UUID back spliced another watch's tail onto it and the cancel missed.
+      for (const id of armed.map((_, i) => `0000000${i}`)) {
+        assert.include(section, `id=${id} `);
       }
+      assert.notInclude(section, "-4c1e-4d0f-");
       // And the bulk that was riding beside each one is gone.
       assert.notInclude(section, "missionId");
       assert.notInclude(section, "createdAt");
@@ -431,11 +434,12 @@ layer("TradingWakeupComposer", (it) => {
       // three UUIDs, its timestamps, and the predicate said twice.
       const fired = composed.text.slice(composed.text.indexOf("triggeringWatch:"));
       const firedLine = fired.slice(0, fired.indexOf("\nmarket:"));
-      assert.include(firedLine, "watch_level_0");
+      assert.include(firedLine, "id=00000000 ");
       assert.include(firedLine, "status=");
       assert.notInclude(firedLine, "missionId");
       assert.notInclude(firedLine, "createdAt");
-      assert.equal(composed.wakeup.triggeringWatch?.id, "watch_level_0");
+      // The compacting is render-side: the schema still carries the whole id.
+      assert.equal(composed.wakeup.triggeringWatch?.id, "00000000-4c1e-4d0f-9a3b-1f2e3d4c5b6a");
     }),
   );
 

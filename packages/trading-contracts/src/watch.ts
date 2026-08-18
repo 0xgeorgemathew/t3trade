@@ -574,6 +574,39 @@ export type TradingWatchRow = typeof TradingWatchRow.Type;
  * persisted encoding otherwise, so a row written before the column existed
  * still reports a predicate the model can re-arm.
  */
+/**
+ * How many characters of a watch id the model is handed.
+ *
+ * Eight — enough to be unique across a mission's registry, short enough to be
+ * copied without being retyped. A full 36-character UUID is not just 28 extra
+ * characters on every row of every wake and every look: on the mission this
+ * was measured from, the model copied one back with another watch's tail
+ * spliced onto it, the cancel came back `watch_not_found`, and a live
+ * protection level stayed armed after the position closed (plan 35 phase 3).
+ */
+export const WATCH_HANDLE_CHARS = 8;
+
+/** The short form of a watch id, as every model-facing surface renders it. */
+export function watchHandle(id: string): string {
+  return id.slice(0, WATCH_HANDLE_CHARS);
+}
+
+/**
+ * Resolve what the model sent back onto one watch id.
+ *
+ * Accepts the handle it was given and the full id alike, so a run that quotes
+ * either is understood. An empty result means no candidate; more than one is
+ * returned so the caller can refuse by naming them rather than guessing.
+ */
+export function resolveWatchHandle(
+  handle: string,
+  ids: ReadonlyArray<string>,
+): ReadonlyArray<string> {
+  const exact = ids.filter((id) => id === handle);
+  if (exact.length > 0) return exact;
+  return ids.filter((id) => id.startsWith(handle));
+}
+
 export function toWatchRow(persisted: PersistedWatch): TradingWatchRow {
   return {
     id: persisted.id,

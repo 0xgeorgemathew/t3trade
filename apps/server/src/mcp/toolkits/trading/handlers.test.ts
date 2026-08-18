@@ -1152,7 +1152,8 @@ it.effect("registers a watch before the first plan is published", () =>
       assert.equal(listed.result.isError, false);
       const watches = listed.result.body.mission.watches;
       assert.equal(watches.length, 1);
-      assert.equal(watches[0].id, registeredWatch.id);
+      // Plan 35: the model is handed a handle, never the whole UUID.
+      assert.equal(watches[0].id, registeredWatch.id.slice(0, 8));
 
       // Plan 33 fix B: the row is what the model reads, so it carries the
       // lifecycle and the re-armable condition and nothing that only restated
@@ -1172,6 +1173,15 @@ it.effect("registers a watch before the first plan is published", () =>
         dispatchedCommands.map((command) => command.type),
         ["trading.mission.watch-registered"],
       );
+
+      // And the handle it was handed is the one it can retire with. Plan 35:
+      // the model is never shown an id it cannot send back.
+      const retired = yield* callTool(BOUND_THREAD, "trading_watch", {
+        missionId: MISSION_ID,
+        cancel: watches[0].id,
+      });
+      assert.equal(retired.result.body.outcome, "cancelled");
+      assert.equal(retired.result.body.watch.id, registeredWatch.id);
     }),
   ),
 );
@@ -1356,8 +1366,8 @@ it.effect("moves a level atomically through replacesWatchId", () =>
       });
       const watches = listed.result.body.mission.watches;
       const byId = new Map(watches.map((w: { id: string; status: string }) => [w.id, w.status]));
-      assert.equal(byId.get(originalId), "cancelled");
-      assert.equal(byId.get(moved.result.body.watch.id), "active");
+      assert.equal(byId.get(originalId.slice(0, 8)), "cancelled");
+      assert.equal(byId.get(moved.result.body.watch.id.slice(0, 8)), "active");
 
       // And a hot-path look carries only what can still fire.
       const armedOnly = yield* callTool(BOUND_THREAD, "trading_look", { scope: ["mission"] });

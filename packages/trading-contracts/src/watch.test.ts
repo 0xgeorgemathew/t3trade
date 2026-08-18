@@ -17,7 +17,10 @@ import {
   PLAN_REASSESS_FLOOR_MILLIS,
   planReassessCadenceMillis,
   readWatchCoverage,
+  resolveWatchHandle,
   watchCoverageFloorMillis,
+  WATCH_HANDLE_CHARS,
+  watchHandle,
   toWatchRow,
   watchSanityBackstopMillis,
   WATCH_COVERAGE_FLOOR_MILLIS,
@@ -432,5 +435,43 @@ describe("toWatchRow", () => {
 
   it("encodes smaller than the row it projects", () => {
     assert.isBelow(JSON.stringify(toWatchRow(persisted)).length, JSON.stringify(persisted).length);
+  });
+});
+
+/**
+ * Plan 35: the model reads a handle and sends one back.
+ *
+ * The mission this came from cancelled seven watches in one turn and got two
+ * of them wrong — one id came back with a neighbouring watch's twelve-hex tail
+ * spliced onto its head, and the level it meant to retire stayed armed after
+ * the position closed. Eight characters is a thing a model copies correctly.
+ */
+describe("watch handles", () => {
+  const ids = [
+    "4407584c-8df5-4609-9e4e-08fa6b1c2d0b",
+    "42d86ff4-538e-45f0-ad0e-1ae79930717a",
+    "2d324e68-848f-436c-8300-12474ff00628",
+  ];
+
+  it("shortens an id to the handle every surface renders", () => {
+    assert.equal(watchHandle(ids[0]!), "4407584c");
+    assert.equal(watchHandle(ids[0]!).length, WATCH_HANDLE_CHARS);
+  });
+
+  it("resolves a handle back to the one watch it names", () => {
+    assert.deepStrictEqual(resolveWatchHandle("4407584c", ids), [ids[0]]);
+  });
+
+  it("resolves a whole id, for a turn that quotes one", () => {
+    assert.deepStrictEqual(resolveWatchHandle(ids[1]!, ids), [ids[1]]);
+  });
+
+  it("finds nothing for the spliced id that started this", () => {
+    assert.deepStrictEqual(resolveWatchHandle("4407584c-8df5-460f-ad0e-1ae79930717a", ids), []);
+  });
+
+  it("returns every candidate rather than guessing between them", () => {
+    const twins = ["ab12cd34-0000-4000-8000-000000000001", "ab12cd34-0000-4000-8000-000000000002"];
+    assert.deepStrictEqual(resolveWatchHandle("ab12cd34", twins), twins);
   });
 });

@@ -25,6 +25,7 @@ import {
   type PersistedWatchStatus,
   toWatchCondition,
   UnarmedEntryCondition,
+  watchHandle,
   WatchArmedReason,
   WatchCondition,
 } from "./watch.ts";
@@ -116,7 +117,7 @@ export interface WakeupArmedWatchLine {
 export function describeArmedWatchLine(armed: WakeupArmedWatch): WakeupArmedWatchLine {
   const persisted = armed.watch;
   return {
-    id: persisted.id,
+    id: watchHandle(persisted.id),
     on: persisted.condition ?? toWatchCondition(persisted.watch),
     ...(armed.distanceUsd === undefined ? {} : { awayUsd: armed.distanceUsd }),
     ...(armed.distanceBps === undefined ? {} : { awayBps: armed.distanceBps }),
@@ -133,8 +134,8 @@ export function describeArmedWatchLine(armed: WakeupArmedWatch): WakeupArmedWatc
  * three UUIDs, two timestamps, and the predicate twice — once in the stored
  * `watch` encoding and once in the `condition` vocabulary that is the only one
  * `trading_watch` accepts. A run that has just been woken by a level needs to
- * know which level, what it was reading, and whether it is spent. `id` is kept
- * whole because `replacesWatchId` takes it.
+ * know which level, what it was reading, and whether it is spent. `id` is the
+ * short handle `trading_watch` resolves — see {@link watchHandle}.
  */
 export interface WakeupTriggeringWatchLine {
   readonly id: string;
@@ -151,7 +152,7 @@ export interface WakeupTriggeringWatchLine {
 /** Project the fired watch onto its rendered line. */
 export function describeTriggeringWatchLine(persisted: PersistedWatch): WakeupTriggeringWatchLine {
   return {
-    id: persisted.id,
+    id: watchHandle(persisted.id),
     on: persisted.condition ?? toWatchCondition(persisted.watch),
     status: persisted.status,
     ...(persisted.armedReason === undefined ? {} : { reason: persisted.armedReason }),
