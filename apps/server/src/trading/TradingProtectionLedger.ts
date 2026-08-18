@@ -20,6 +20,8 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { PROTECTION_SIZE_EPSILON } from "@t3tools/trading-contracts/protection";
+
 /** One order the server rested, as the ledger holds it. */
 export interface ProtectionOrderRow {
   readonly cloid: string;
@@ -48,6 +50,13 @@ export interface TakeProfitLedgerInput {
  *
  * Idempotent on the cloid, because the pass is: a retry of the same target
  * reuses the cloid deliberately.
+ *
+ * Nothing is recorded against a flat position. The pass that places a
+ * take-profit and then finds the position gone reports the cloid it sent with
+ * a size of zero, and the ledger wrote that down as a live order: one mission
+ * carries a `take_profit` row of size 0.0 placed 280ms after its close, never
+ * retired. An order on nothing is not protection, and a row saying otherwise
+ * is read by the fill reconciler as an order still standing.
  */
 export const recordTakeProfitOutcome = (
   input: TakeProfitLedgerInput,
@@ -56,8 +65,10 @@ export const recordTakeProfitOutcome = (
     const sql = yield* SqlClient.SqlClient;
     const at = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
 
-    if (input.placedCloid !== undefined && input.targetPrice !== null) {
-      const size = Math.abs(input.positionSize);
+    const size = Math.abs(input.positionSize);
+    const flat = size <= PROTECTION_SIZE_EPSILON;
+
+    if (input.placedCloid !== undefined && input.targetPrice !== null && !flat) {
       yield* sql`
         INSERT INTO trading_protection_orders (
           cloid, mission_id, market, kind, size, limit_price, placed_at
@@ -67,6 +78,16 @@ export const recordTakeProfitOutcome = (
         )
         ON CONFLICT(cloid) DO UPDATE SET
           size = ${size}, limit_price = ${input.targetPrice}, retired_at = NULL
+      `;
+    }
+
+    // The position is gone, so every order the server was resting on it is
+    // gone with it — whether this pass managed to cancel it or the exchange
+    // retired it alongside the position.
+    if (flat) {
+      yield* sql`
+        UPDATE trading_protection_orders SET retired_at = ${at}
+        WHERE mission_id = ${input.missionId} AND retired_at IS NULL
       `;
     }
 
