@@ -505,8 +505,16 @@ const make = Effect.gen(function* () {
 
   /**
    * Arm a `pnl_above` watch at the strategy's declared profit target while the
-   * mission holds a position, once. A flat position never fires it and leaves
-   * it active; the strategy publish supersedes it like any other watch.
+   * mission holds a position, once.
+   *
+   * One target at a time. The runtime's previous target is passed as
+   * `replacesWatchId`, so a republish re-levels the rung rather than stacking a
+   * second one beside it. Without that, every republished number left its
+   * predecessor active: one measured mission republished the target eleven
+   * times and ended holding seven simultaneous `pnl_above` watches, which then
+   * fired in a burst — nine wakes off one price move, seven of them for
+   * positions that had already closed. A model-armed `pnl_above` is left alone;
+   * it is the harness's own instrument, not this one's to re-level.
    *
    * This is the runtime's half of the wake-and-decide profit target: the
    * strategy names the win worth banking, the runtime wakes the harness when
@@ -532,6 +540,13 @@ const make = Effect.gen(function* () {
       );
       if (alreadyArmed) return;
 
+      const previousTarget = input.armed.find(
+        (w) =>
+          w.status === "active" &&
+          w.watch.type === "pnl_above" &&
+          w.armedReason === "profit_target",
+      );
+
       const { watch } = yield* watches.registerWatch({
         missionId: input.missionId,
         watch: {
@@ -540,11 +555,15 @@ const make = Effect.gen(function* () {
           valueUsd: targetProfitUsd,
         },
         armedReason: "profit_target",
+        ...(previousTarget === undefined ? {} : { replacesWatchId: previousTarget.id }),
+        // A newer read moved the rung; nobody disarmed the old one.
+        replacedStatus: "superseded",
       });
       yield* Effect.logInfo("TradingTurnCoordinator: armed the profit-target watch", {
         missionId: input.missionId,
         watchId: watch.id,
         targetProfitUsd,
+        replaces: previousTarget?.id,
       });
     });
 
