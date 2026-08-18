@@ -52,7 +52,6 @@ import {
   isProtectiveOrder,
   PROTECTION_RECONCILIATION,
   PROTECTION_SIZE_EPSILON,
-  samePrice,
 } from "@t3tools/trading-contracts/protection";
 
 import { HyperliquidExecutionService } from "./HyperliquidExecutionService.ts";

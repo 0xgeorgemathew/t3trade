@@ -1,16 +1,20 @@
 /**
  * The ledger of orders the SERVER rests on a position — plan 34 step 5.
  *
- * The take-profit reconcile places a reduce-only ALO at the plan's target and
- * replaces it whenever the target moves. Until now those orders existed only
+ * The take-profit reconcile used to place a reduce-only ALO at the plan's
+ * target and replace it whenever the target moved. Those orders existed only
  * on the exchange: no execution record, no event, no row. So when one filled,
  * the position simply shrank between two wakes with nothing anywhere to say
  * why — and on the mission this was found on, the model attributed the
  * server's own profit-taking to the give-back watch it had armed itself.
  *
- * Two readers: {@link recordTakeProfitOutcome} writes what a reconcile pass
- * did, and {@link readTakeProfitOrders} tells the fill reconciler which cloids
- * are the server's, so a fill on one becomes an event the next wake carries.
+ * Plan 36 item 6 stopped resting them: a target is a wake now, not an order,
+ * so nothing new is placed and the insert below is reached only by a build
+ * that still did. What remains is the retirement half — a pass that cancels a
+ * leftover, or observes the position flat, writes that down — and
+ * {@link readTakeProfitOrders}, which tells the fill reconciler which cloids
+ * were the server's, so a fill against one an older build rested still becomes
+ * an event the next wake carries.
  *
  * Bookkeeping, never protection. Nothing here gates anything, and a write that
  * fails costs the attribution and nothing else.
@@ -87,7 +91,8 @@ export const recordTakeProfitOutcome = (
     if (flat) {
       yield* sql`
         UPDATE trading_protection_orders SET retired_at = ${at}
-        WHERE mission_id = ${input.missionId} AND retired_at IS NULL
+        WHERE mission_id = ${input.missionId} AND kind = 'take_profit'
+          AND retired_at IS NULL
       `;
     }
 

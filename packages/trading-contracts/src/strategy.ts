@@ -288,10 +288,15 @@ export type TradingPlanStop = typeof TradingPlanStop.Type;
  * The target leg: what the position is aiming at. A plan may state it as a
  * USD rung, a price, or both; a stand-aside plan states neither.
  *
- * `profitUsd` is the conservative rung the runtime arms a `pnl_above` watch at
- * and the resting reduce-only ALO is priced from (see
- * {@link takeProfitLimitPrice}) — both unchanged from when these fields lived
- * under `protection`.
+ * `profitUsd` is the rung the runtime arms a `pnl_above` watch at, and that
+ * watch is the whole of it: reaching the target wakes the mission to decide,
+ * net of the exit it has yet to pay. Nothing rests at the target. The server
+ * used to price a reduce-only ALO from this field, which made the target an
+ * exit the mission could not reconsider — and took it at a number nothing had
+ * checked was worth banking.
+ *
+ * The target is not the projection. `projection.price` is where the model
+ * thinks the market is going; this is the profit it would take off the table.
  */
 export const TradingPlanTarget = Schema.Struct({
   profitUsd: Schema.optional(PositiveUsdAmount),
@@ -381,48 +386,6 @@ export const TradingPlanReassess = Schema.Struct({
   ),
 });
 export type TradingPlanReassess = typeof TradingPlanReassess.Type;
-
-/**
- * The price a resting reduce-only take-profit limit rests at (plan 29 step
- * 2.5), derived from the plan's own target fields and the position.
- *
- * `target.price`, when the plan published one, IS the price. Otherwise the
- * plan states its target as a USD rung (`target.profitUsd` — `targetProfitUsd`
- * before plan 29 step 4.1), and the price is derived from the position's
- * entry, direction-aware: a long banks by selling ABOVE its entry, a short by
- * buying BELOW it. Getting the sign wrong is not a cosmetic defect; it would
- * rest a reduce-only limit on the losing side of the position where it fills
- * immediately at a loss.
- *
- * Returns `null` when no usable target exists — no published price, no rung a
- * positive entry price and size can price, or no position to derive a
- * direction from. The caller treats `null` as "withdraw any resting
- * take-profit", never as "keep whatever is there".
- */
-export function takeProfitLimitPrice(input: {
-  /** The plan's `target.price`, when it published one. */
-  readonly takeProfitPrice: number | null | undefined;
-  /** The plan's conservative target rung, in USD of profit. */
-  readonly targetProfitUsd: number | null | undefined;
-  /** Signed canonical position size; positive long, negative short. */
-  readonly positionSize: number;
-  /** The position's canonical entry price; null when the exchange reports none. */
-  readonly entryPrice: number | null | undefined;
-}): number | null {
-  if (!(input.positionSize > 0) && !(input.positionSize < 0)) return null;
-
-  if (input.takeProfitPrice !== null && input.takeProfitPrice !== undefined) {
-    return input.takeProfitPrice > 0 ? input.takeProfitPrice : null;
-  }
-
-  if (input.targetProfitUsd === null || input.targetProfitUsd === undefined) return null;
-  if (!(input.targetProfitUsd > 0)) return null;
-  if (input.entryPrice === null || input.entryPrice === undefined) return null;
-  if (!(input.entryPrice > 0)) return null;
-  const move = input.targetProfitUsd / Math.abs(input.positionSize);
-  if (!(move > 0)) return null;
-  return input.positionSize > 0 ? input.entryPrice + move : input.entryPrice - move;
-}
 
 /**
  * Every `TradingPlanState` field the harness authors — eight, one per line a
