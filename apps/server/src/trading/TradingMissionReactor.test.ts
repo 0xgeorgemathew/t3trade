@@ -50,6 +50,7 @@ import {
   type ReconciliationTrigger,
 } from "./HyperliquidReconciler.ts";
 import { TradingProtectionService } from "./TradingProtectionService.ts";
+import { TradingWatchService } from "./TradingWatchService.ts";
 import { TradingTurnCoordinator } from "./TradingTurnCoordinator.ts";
 import { FALLBACK_MISSION_CAPITAL_USD } from "./MissionCapital.ts";
 import { TradingLayerLive } from "./runtimeLayer.ts";
@@ -1059,6 +1060,136 @@ it.live("still creates the mission when the account cannot be read", () =>
     assert.ok(Option.isSome(projected));
     assert.equal(projected.value.authority.allocatedCapitalUsd, FALLBACK_MISSION_CAPITAL_USD);
   }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+);
+
+/**
+ * A harness-driven close retires the position's watches.
+ *
+ * Plan 36 wired `supersedePositionWatches` to the 5s watchdog, which only sees
+ * the STOP-OUT shape of going flat: the exchange takes the position while the
+ * mission sits in `position_open`. A close the harness asks for never presents
+ * that state — it is an execution, so the mission is already in `executing` and
+ * settles straight to `waiting`, leaving the watchdog nothing to observe. Six
+ * consecutive closes on a live mission therefore retired nothing, and four
+ * profit targets armed for the first trade fired three hours later against an
+ * unrelated one.
+ *
+ * The test has to drive a real transition. A test that calls
+ * `supersedePositionWatches` directly — which is what the coverage was — proves
+ * the sweep works IF invoked, and the defect was that it never was. The
+ * execution here is expected to fail; `settleAfterExecution` runs under
+ * `Effect.ensuring` on every exit path, which is exactly the path under test.
+ */
+it.live("retires the position's watches when the harness closes the position", () =>
+  Effect.gen(function* () {
+    const stubCoordinator = Layer.succeed(TradingTurnCoordinator, {
+      requestRun: () => Effect.succeed({ status: "started", harnessRunId: "run_1" } as const),
+      requestUserMessageRun: () => Effect.succeed(false),
+    });
+
+    const StubbedLayer = TradingMissionReactorLive.pipe(
+      Layer.provide(stubCoordinator),
+      Layer.provideMerge(TradingLayerLive),
+      Layer.provideMerge(OrchestrationEngineLive),
+      Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+      Layer.provideMerge(OrchestrationProjectionPipelineLive),
+      Layer.provideMerge(OrchestrationEventStoreLive),
+      Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+      Layer.provideMerge(RepositoryIdentityResolver.layer),
+      Layer.provideMerge(makeProviderRegistryLayer()),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-trading-retire-" })),
+      Layer.provideMerge(ThreadBackgroundLiveness.layer),
+      Layer.provideMerge(ThreadPlanProgress.layer),
+      Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    yield* Effect.gen(function* () {
+      yield* started;
+      yield* seedTradingAccount;
+      yield* createMission;
+
+      const missions = yield* TradingMissionService;
+      for (const to of ["waiting", "executing", "position_open"] as const) {
+        const expectedVersion = yield* missions.getMissionVersion(MISSION_ID);
+        yield* missions.transition({ missionId: MISSION_ID, to, expectedVersion });
+      }
+
+      // The close already reconciled: the snapshot the settle reads is flat.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO trading_position_snapshots (
+          mission_id, market, size, entry_price, unrealised_pnl,
+          margin_used, protected_size, observed_at
+        ) VALUES (${MISSION_ID}, 'ETH', 0, 3000, 0, 0, 0, 1000)
+      `;
+
+      // Two profit targets: one the runtime armed, one the model armed itself.
+      // The second is the reason the sweep matches on watch TYPE and not on
+      // `armed_reason` alone — a model-armed target has none.
+      const watches = yield* TradingWatchService;
+      const runtimeArmed = yield* watches.registerWatch({
+        missionId: MISSION_ID,
+        watch: { type: "pnl_above", market: "ETH", valueUsd: 5 },
+        armedReason: "profit_target",
+      });
+      const modelArmed = yield* watches.registerWatch({
+        missionId: MISSION_ID,
+        watch: { type: "pnl_above", market: "ETH", valueUsd: 9 },
+      });
+
+      // A level the model armed is NOT position-scoped: a level is still a
+      // level when flat, and it must survive the close.
+      const level = yield* watches.registerWatch({
+        missionId: MISSION_ID,
+        watch: {
+          type: "price_cross",
+          market: "ETH",
+          price: 3_100,
+          direction: "above",
+          priceSource: "mark",
+        },
+      });
+
+      const engine = yield* OrchestrationEngineService;
+      yield* engine
+        .dispatch({
+          type: "trading.execution.requested",
+          commandId: yield* commandId,
+          threadId: THREAD_ID,
+          missionId: MISSION_ID,
+          intent: {
+            missionId: MISSION_ID,
+            executionSequence: 1,
+            actionType: "close",
+            market: "ETH",
+            side: "sell",
+            size: 0.5,
+            orderPreference: "marketable_ioc",
+            limitPrice: 2_900,
+            reduceOnly: true,
+          },
+          expectedAuthorityVersion: 1,
+          activeHarnessRunId: "run_1",
+          createdAt: NOW,
+        })
+        .pipe(Effect.ignore);
+      yield* settle;
+
+      const mission = yield* missions.getMission(MISSION_ID);
+      assert.equal(mission.status, "waiting", "the close settles the mission flat");
+
+      const after = yield* sql<{
+        readonly watch_id: string;
+        readonly status: string;
+      }>`SELECT watch_id, status FROM trading_watches WHERE mission_id = ${MISSION_ID}`;
+      const statusOf = (id: string) => after.find((row) => row.watch_id === id)?.status;
+
+      assert.equal(statusOf(runtimeArmed.watch.id), "superseded", "the runtime's target retires");
+      assert.equal(statusOf(modelArmed.watch.id), "superseded", "the model's target retires too");
+      assert.equal(statusOf(level.watch.id), "active", "a price level outlives the position");
+    }).pipe(Effect.scoped, Effect.provide(StubbedLayer));
+  }),
 );
 
 /**

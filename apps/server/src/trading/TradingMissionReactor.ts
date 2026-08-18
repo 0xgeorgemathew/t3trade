@@ -1581,6 +1581,36 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * Retire the watches that only meant something while the position existed.
+   *
+   * Left active they keep firing at a trade that is over. On the mission this
+   * was measured on, four profit targets armed for the first long fired three
+   * hours later against an unrelated one, and two armed for a short fired on a
+   * long — each evaluated against the live position's PnL, because a `pnl_above`
+   * asks the position what it is worth and does not ask which position.
+   *
+   * Called from BOTH ways a mission goes flat. Plan 36 wired only the watchdog
+   * (`settleFlatPosition`), which sees the stop-out shape: the exchange takes
+   * the position while the mission sits in `position_open`. A harness-driven
+   * close never presents that state — it is an execution, so the mission is
+   * already in `executing` and settles straight to `waiting`, leaving the
+   * watchdog nothing to observe. Six closes in a row therefore retired nothing.
+   */
+  const retirePositionWatches = Effect.fn("TradingMissionReactor.retirePositionWatches")(function* (
+    missionId: TradingMissionId,
+  ) {
+    const retired = yield* watches
+      .supersedePositionWatches({ missionId })
+      .pipe(Effect.orElseSucceed(() => []));
+    if (retired.length > 0) {
+      yield* Effect.logInfo("trading retired the position's watches with the position", {
+        missionId,
+        watchIds: retired,
+      });
+    }
+  });
+
+  /**
    * Leave `executing` for whatever the exchange actually holds.
    *
    * §11.1 gives `executing` two exits: `position_open` and `waiting`. Which one
@@ -1609,13 +1639,16 @@ const make = Effect.gen(function* () {
     `;
     const size = rows[0]?.size ?? 0;
 
-    yield* advance({
+    const settled = yield* advance({
       missionId,
       threadId,
       from: ["executing"],
       to: size === 0 ? "waiting" : "position_open",
       reason: "execution_settled",
     });
+
+    // The close path. Everything the position was carrying goes with it.
+    if (settled && size === 0) yield* retirePositionWatches(missionId);
   });
 
   /**
@@ -1825,19 +1858,9 @@ const make = Effect.gen(function* () {
     });
     if (!wentFlat) return;
 
-    // The watches that only meant something while the position existed go with
-    // it. Left active they keep firing at a trade that is over: this mission's
-    // dead target level woke it 5m43s after the close, and four more had to be
-    // cancelled by hand two wasted wakes later.
-    const retiredWatches = yield* watches
-      .supersedePositionWatches({ missionId })
-      .pipe(Effect.orElseSucceed(() => []));
-    if (retiredWatches.length > 0) {
-      yield* Effect.logInfo("trading retired the position's watches with the position", {
-        missionId,
-        watchIds: retiredWatches,
-      });
-    }
+    // The stop-out path — the exchange took the position, so nothing the
+    // position was carrying is worth keeping either.
+    yield* retirePositionWatches(missionId);
 
     // The position that just left can leave a resting take-profit behind (a
     // stop-out takes the position without taking the profit order). The
