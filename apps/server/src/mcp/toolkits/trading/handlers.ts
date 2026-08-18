@@ -34,7 +34,6 @@ import {
 import {
   resolveLookScopes,
   TRADING_LOOK_BOOK_LEVELS,
-  TRADING_LOOK_DEFAULT_BARS,
   TRADING_LOOK_FLAT_BAR_CAP,
   echoedBarsForLook,
   type TradingLookInput,
@@ -137,24 +136,6 @@ const rejectCall = (input: {
  * the credential — not an argument the harness supplies — decides which mission
  * is reachable. A `missionId` argument is checked against that binding rather
  * than trusted; an omitted `missionId` resolves to the bound mission.
- */
-/**
- * Refuse a `target.profitUsd` the trade cannot pay for, or null to publish.
- *
- * A target below the round trip that reaches it is a loss with extra steps:
- * one live plan published $0.34 while the same payload carried $0.5589 of
- * round trip and $1.118 of `preferredTargetUsd`, so hitting the target exactly
- * banked minus eleven cents against $0.45 of actual fees. Nothing anywhere
- * said so — the target was armed as published and graded against itself.
- *
- * Priced on the notional the plan itself names, or on the position when the
- * mission is holding one, so the number refused against is the same
- * `preferredTargetUsd` the model was already shown on its wake. That is what
- * makes this one corrected republish rather than a loop.
- *
- * Quiet on everything it cannot price. A stand-aside has no trade to pay for a
- * target, a plan naming no target arms nothing, and a cost read that does not
- * answer is not evidence the target is wrong.
  */
 const resolveBoundCall = Effect.fn("TradingToolkit.resolveBoundCall")(function* (
   missionId: string | undefined,
@@ -1036,11 +1017,16 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
   // What the chart costs depends on whether there is a trade to manage. Flat,
   // it is capped; holding, the call gets the window it asked for.
   const holdingPosition = (facts.position?.size ?? 0) !== 0;
-  const heldBars = echoedBarsForLook({ ...input, holdingPosition });
+  // The close review is a flat turn that is nevertheless about a trade: the
+  // playbook sends it to the `retrospect` scope to grade the hold it just
+  // finished, and a chart capped to sixty bars there would hide the very hold
+  // being graded.
+  const readsFullChart = holdingPosition || scopes.has("retrospect");
+  const heldBars = echoedBarsForLook({ ...input, holdingPosition: readsFullChart });
   // Said where the shortened table is, so the cap is a fact the model can act
   // on rather than a silent truncation it reads as the whole chart.
   const barsNote =
-    !holdingPosition && (input.bars ?? 0) > heldBars
+    !readsFullChart && (input.bars ?? 0) > heldBars
       ? `flat: the chart is capped at ${TRADING_LOOK_FLAT_BAR_CAP} bars (you asked for ` +
         `${input.bars}). Every measurement and indicator here was still computed over the full ` +
         `lookback. Ask again while holding a position, or name indicators, to read further back`
@@ -1311,7 +1297,6 @@ const handlers = {
       // The strategy service keys off `input.missionId`; resolve it to the bound
       // mission so an omitted `missionId` reaches the publish path.
       const resolvedInput = { ...input, missionId: mission.id };
-
       // Publish plus everything an accepted publish drags behind it — the
       // announcements, the exchange reconcile, the withdrawn resting entry.
       // It lives in `TradingPlanPublication` because step 8.4's chart drag is a
@@ -1589,6 +1574,7 @@ const handlers = {
           .listWatches(mission.id)
           .pipe(Effect.catchCause(() => Effect.succeed([])));
         const mirrored = findMirroredLevel({
+          market: derived.market,
           price: derived.price,
           direction: derived.direction,
           watches: existing,

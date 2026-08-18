@@ -204,6 +204,7 @@ describe("findMirroredLevel", () => {
 
   it("finds the level armed on the other side of the same price", () => {
     const mirrored = findMirroredLevel({
+      market: "ETH",
       price: 1_900.14,
       direction: "below",
       watches: [closeAt(1_900.14, "above")],
@@ -214,6 +215,7 @@ describe("findMirroredLevel", () => {
   it("treats a level within 10 bps as the same price", () => {
     // 1900.14 against 1900.2 is one level with two roundings, not two theses.
     const mirrored = findMirroredLevel({
+      market: "ETH",
       price: 1_900.14,
       direction: "below",
       watches: [closeAt(1_900.2, "above")],
@@ -223,6 +225,7 @@ describe("findMirroredLevel", () => {
 
   it("leaves two levels genuinely apart alone", () => {
     const mirrored = findMirroredLevel({
+      market: "ETH",
       price: 1_930,
       direction: "below",
       watches: [closeAt(1_900.14, "above")],
@@ -232,6 +235,7 @@ describe("findMirroredLevel", () => {
 
   it("leaves a level on the SAME side alone — that is a re-level, not a mirror", () => {
     const mirrored = findMirroredLevel({
+      market: "ETH",
       price: 1_900.14,
       direction: "above",
       watches: [closeAt(1_900.14, "above")],
@@ -241,6 +245,7 @@ describe("findMirroredLevel", () => {
 
   it("ignores a watch that is no longer active", () => {
     const mirrored = findMirroredLevel({
+      market: "ETH",
       price: 1_900.14,
       direction: "below",
       watches: [{ ...closeAt(1_900.14, "above"), status: "triggered" }],
@@ -248,8 +253,20 @@ describe("findMirroredLevel", () => {
     assert.isUndefined(mirrored);
   });
 
+  it("ignores a level at the same price on another market", () => {
+    // Two markets that happen to trade near the same number are two theses.
+    const mirrored = findMirroredLevel({
+      market: "BTC",
+      price: 1_900.14,
+      direction: "below",
+      watches: [closeAt(1_900.14, "above")],
+    });
+    assert.isUndefined(mirrored);
+  });
+
   it("ignores a watch that is not a price level at all", () => {
     const mirrored = findMirroredLevel({
+      market: "ETH",
       price: 1_900.14,
       direction: "below",
       watches: [armed({ type: "pnl_above", market: "ETH", valueUsd: 1.12 })],

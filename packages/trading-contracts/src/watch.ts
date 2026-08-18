@@ -961,6 +961,8 @@ const ENTRY_HINT_TOLERANCE_BPS = 10;
  * `replacesWatchId`.
  */
 export function findMirroredLevel(input: {
+  /** The market the new level is armed on; a level on another market is not a mirror. */
+  readonly market: string;
   readonly price: number;
   readonly direction: WatchCrossDirection;
   readonly watches: ReadonlyArray<PersistedWatch>;
@@ -970,6 +972,7 @@ export function findMirroredLevel(input: {
     if (persisted.status !== "active") return false;
     const watch = persisted.watch;
     if (watch.type !== "price_cross" && watch.type !== "candle_close") return false;
+    if (watch.market !== input.market) return false;
     if (watch.direction === input.direction) return false;
     return Math.abs(watch.price - input.price) <= tolerance;
   });
