@@ -417,6 +417,22 @@ describe("deriveWatchLifecycle", () => {
     expect(group.members.map((row) => row.id)).toEqual(["a", "b", "c"]);
   });
 
+  it("names a superseded PnL watch retired — nothing replaced it, its position ended", () => {
+    const { stream } = deriveWatchLifecycle({
+      watches: [
+        {
+          ...base,
+          id: "target",
+          watch: { type: "pnl_above" as const, market: "ETH" as const, valueUsd: 2 },
+          status: "superseded" as const,
+          updatedAt: 1_700_000_120_000,
+        },
+      ] as PersistedWatch[],
+      missionTimeline: [],
+    });
+    expect(watchRows(stream).map((row) => row.outcomeLabel)).toEqual(["retired"]);
+  });
+
   it("names a mixed burst retired rather than replaced", () => {
     const { stream } = deriveWatchLifecycle({
       watches: [
@@ -2423,10 +2439,29 @@ describe("deriveUpNextItems", () => {
       NOW,
     );
     expect(items.map((item) => item.key)).toEqual(["near", "far"]);
-    expect(items[0]?.label).toBe("bank at +$2.00");
+    expect(items[0]?.label).toBe("wake at +$2.00");
     expect(items[0]?.chip).toBe("target");
     // The target's price, resolved through the exposure it is measured on.
     expect(items[0]?.priceLevel).toBe(1_902);
+  });
+
+  it("measures a target's distance from the evaluator's net reading, not gross PnL", () => {
+    // The evaluator compares net of the exit still to pay, so a position gross
+    // at the target is not yet at it. Reading the gross figure said "at it".
+    const items = deriveUpNextItems(
+      {
+        ...flatMission,
+        position: { size: 1, entryPrice: 1_900, unrealisedPnl: 2 },
+        watches: [
+          {
+            ...watch("near", { type: "pnl_above", market: "ETH", valueUsd: 2 }, "profit_target"),
+            lastObservedValue: 1.75,
+          },
+        ],
+      },
+      NOW,
+    );
+    expect(items[0]?.detail).toBe("$0.25 away");
   });
 
   it("chips a runtime-armed stop-proximity wake", () => {

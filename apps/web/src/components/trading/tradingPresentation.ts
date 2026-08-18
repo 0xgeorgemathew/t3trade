@@ -1281,8 +1281,12 @@ export interface WatchConditionRow {
   readonly status: PersistedWatchStatus;
   /**
    * The value the evaluator last read for this predicate (mark/mid price for
-   * `price_cross`, unrealised PnL for `pnl_above`/`pnl_below`, drawdown for
+   * `price_cross`, unrealised PnL for `pnl_below`, drawdown for
    * `pnl_giveback`). Null when the watch has never been swept.
+   *
+   * `pnl_above` is the one that is not gross: the target is compared net of
+   * the taker fee the exit has yet to pay, and this is the net figure, so the
+   * row and the predicate agree about how far away the threshold is.
    */
   readonly observedValue: number | null;
   /**
@@ -1331,7 +1335,10 @@ function describeWatchCondition(watch: MarketWatch): string {
     case "scheduled_reassessment":
       return `Scheduled reassessment`;
     case "pnl_above":
-      return `${watch.market} unrealised PnL reaches ${formatUsd(watch.valueUsd)}`;
+      // Net of the exit it has yet to pay: the evaluator subtracts the taker
+      // fee on the way out before it compares, so a target that fires is one
+      // the mission can actually bank.
+      return `${watch.market} PnL net of the exit reaches ${formatUsd(watch.valueUsd)}`;
     case "pnl_below":
       return `${watch.market} unrealised PnL falls to ${formatSignedUsd(watch.valueUsd)}`;
     case "pnl_giveback":
@@ -1343,6 +1350,18 @@ function describeWatchCondition(watch: MarketWatch): string {
       // at least one metric.
       return `${watch.market} ${humanizeLiteral(watch.metric)} ${watch.direction} ${watch.value}`;
   }
+}
+
+/**
+ * Whether this predicate only means anything while a position is held.
+ *
+ * All three are measured against unrealised PnL, which is zero and meaningless
+ * when flat — so the server retires them with the position rather than leaving
+ * them to fire at a trade that is over. The stream says "retired" for those and
+ * keeps "replaced" for a level a replan swapped out.
+ */
+function isPositionScopedWatch(watch: MarketWatch): boolean {
+  return watch.type === "pnl_above" || watch.type === "pnl_below" || watch.type === "pnl_giveback";
 }
 
 /**
@@ -1713,7 +1732,12 @@ export function deriveWatchLifecycle(mission: {
       outcomeLabel: fired
         ? null
         : persisted.status === "superseded"
-          ? "replaced"
+          ? // A superseded price level was replaced by the plan that took it
+            // down. A superseded PnL watch was not: nothing replaces it, the
+            // position it measured ended and it went with the position.
+            isPositionScopedWatch(watch)
+            ? "retired"
+            : "replaced"
           : persisted.status,
       atMillis: persisted.updatedAt,
       observedValue: persisted.lastObservedValue ?? null,
@@ -1848,12 +1872,21 @@ export function deriveUpNextItems(
 
     if (watch.type === "pnl_above" || watch.type === "pnl_below") {
       const isTarget = watch.type === "pnl_above";
-      const gap = position === null ? null : Math.abs(position.unrealisedPnl - watch.valueUsd);
+      // Measured from the evaluator's own last reading rather than from the
+      // position's gross PnL: a target is compared net of the exit still to be
+      // paid, so the gross figure would say "$0.00 away" while the watch sat
+      // there unfired. `lastObservedValue` is exactly the number the predicate
+      // compares, whichever side it measures.
+      const observed = persisted.lastObservedValue ?? position?.unrealisedPnl ?? null;
+      const gap = observed === null ? null : Math.abs(observed - watch.valueUsd);
       levels.push({
         item: {
           key: persisted.id,
           kind: "pnl",
-          label: `${isTarget ? "bank at" : "flag at"} ${formatSignedUsd(watch.valueUsd)}`,
+          // "wake at", not "bank at". The target is a decision point now, not
+          // an exit: nothing rests at it, and reaching it wakes the mission to
+          // weigh banking against holding on against live conditions.
+          label: `${isTarget ? "wake at" : "flag at"} ${formatSignedUsd(watch.valueUsd)}`,
           detail: gap === null ? null : `${formatUsdPrecise(gap)} away`,
           chip: persisted.armedReason === "profit_target" ? "target" : null,
           tone: "normal",
@@ -2039,6 +2072,12 @@ export function derivePnlLevelPrice(valueUsd: number, basis: PnlLevelBasis | nul
  * unrealised PnL, and `TradingPositionView` does not carry the peak even though
  * the reconciler records it. It stays a checklist row until the projection
  * surfaces `peakUnrealisedPnl`.
+ *
+ * A `pnl_above` line is drawn at the price that produces its threshold GROSS,
+ * while the evaluator fires it net of the exit fee — so the real wake sits a
+ * fee's worth further out (cents of price on a position this size). The
+ * projection carries no fee rate, and a line drawn from a guessed one would be
+ * wrong in a way nothing could check.
  */
 export function deriveChartConditions(
   mission: { readonly watches: ReadonlyArray<PersistedWatch> },
