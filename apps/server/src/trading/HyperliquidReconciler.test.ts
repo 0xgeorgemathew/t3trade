@@ -17,12 +17,15 @@ import { assert, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import { HyperliquidGateway } from "@t3tools/hyperliquid";
+import { HyperliquidRequestError } from "@t3tools/hyperliquid/errors";
 import { HyperliquidInfoClient } from "@t3tools/hyperliquid/InfoClient";
 import type {
   WireClearinghouseStateResponse,
@@ -79,6 +82,21 @@ interface FakeState {
   readonly fills: WireUserFillsResponse;
 }
 
+/**
+ * How many times the account read has been asked, and how many of those to
+ * answer with a rate limit. A 429 on this read used to refuse a close outright:
+ * the reconciler's preflight is the only exchange read on the exit path, and
+ * the operator had to retype the exit by hand.
+ */
+let accountReads = 0;
+let accountRateLimitsLeft = 0;
+
+/** Reset the transient-failure counters between tests. */
+const resetAccountReads = () => {
+  accountReads = 0;
+  accountRateLimitsLeft = 0;
+};
+
 /** Build a mutable fake gateway that reads account + orders from a Ref. */
 const makeMutableGateway = (ref: Ref.Ref<FakeState>) =>
   Layer.succeed(HyperliquidGateway, {
@@ -86,7 +104,23 @@ const makeMutableGateway = (ref: Ref.Ref<FakeState>) =>
     getMarketSnapshot: () => Effect.die("not used"),
     getMarketHistory: () => Effect.die("not used"),
     getOrderBook: () => Effect.die("not used"),
-    getAccountSnapshot: () => Effect.map(Ref.get(ref), (s) => s.account),
+    // Suspended, so the counter and the failure branch are evaluated per run
+    // rather than once when the effect is described — a retry re-runs it.
+    getAccountSnapshot: () =>
+      Effect.suspend(() => {
+        accountReads += 1;
+        if (accountRateLimitsLeft > 0) {
+          accountRateLimitsLeft -= 1;
+          return Effect.fail(
+            new HyperliquidRequestError({
+              reason: "http_error",
+              status: 429,
+              operation: "clearinghouseState",
+            }),
+          );
+        }
+        return Effect.map(Ref.get(ref), (s) => s.account);
+      }),
     getPosition: () => Effect.die("not used"),
     getOpenOrders: () => Effect.map(Ref.get(ref), (s) => s.orders),
     getTakerFeeRateBps: () => Effect.die("not used"),
@@ -341,6 +375,61 @@ const layer = it.layer(
 layer("HyperliquidReconciler", (it) => {
   /** Helper: swap the canned state on the shared Ref. */
   const setState = (patch: Partial<FakeState>) => Ref.update(stateRef, (s) => ({ ...s, ...patch }));
+
+  // -------------------------------------------------------------------------
+  // 0. A rate-limited canonical read must not refuse the turn that reads it.
+  // -------------------------------------------------------------------------
+  it.effect("reconciles through a rate-limited account read, on one retry", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      resetAccountReads();
+      yield* setState({
+        account: snapshotFromClearinghouse(longClearinghouse),
+        orders: [],
+        fills: [],
+      });
+      accountRateLimitsLeft = 1;
+
+      const reconciler = yield* HyperliquidReconciler;
+      // The retry waits out the 429's own backoff, so the test clock has to be
+      // moved past it rather than the test waiting.
+      const fiber = yield* reconciler.reconcile(input, "before_execution").pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(Duration.seconds(3));
+      const state = yield* Fiber.join(fiber);
+
+      assert.strictEqual(accountReads, 2);
+      assert.strictEqual(state.position?.size, 2);
+      resetAccountReads();
+    }),
+  );
+
+  it.effect("still surfaces account_read_failed when the retry fails too", () =>
+    Effect.gen(function* () {
+      yield* migrated;
+      resetAccountReads();
+      yield* setState({
+        account: snapshotFromClearinghouse(longClearinghouse),
+        orders: [],
+        fills: [],
+      });
+      accountRateLimitsLeft = 5;
+
+      const reconciler = yield* HyperliquidReconciler;
+      const fiber = yield* reconciler
+        .reconcile(input, "before_execution")
+        .pipe(Effect.exit, Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(Duration.seconds(3));
+      const outcome = yield* Fiber.join(fiber);
+
+      assert.isTrue(Exit.isFailure(outcome));
+      // Two attempts, not five. One retry is the difference between a blip and
+      // a problem; two would be a policy that hides an outage.
+      assert.strictEqual(accountReads, 2);
+      resetAccountReads();
+    }),
+  );
 
   // -------------------------------------------------------------------------
   // 1a. Fill upsert idempotency: persist the same fill twice ⇒ one row.

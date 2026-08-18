@@ -33,7 +33,11 @@ import {
   TradingExecutionError,
   type ExecutionInput,
 } from "./HyperliquidExecutionService.ts";
-import { HyperliquidReconciler, type ReconciledState } from "./HyperliquidReconciler.ts";
+import {
+  HyperliquidReconciler,
+  TradingReconciliationError,
+  type ReconciledState,
+} from "./HyperliquidReconciler.ts";
 import { TradingMissionVersionConflictError } from "./Errors.ts";
 import { TradingMissionService, type TradingMissionServiceError } from "./TradingMissionService.ts";
 import {
@@ -419,6 +423,57 @@ recordingLayer("TradingExecutionGuard — urgency on a reduce-only exit", (it) =
       assert.equal(submittedIntent?.limitPrice, 2_990);
       // The side still comes from the canonical position, never the intent.
       assert.equal(submittedIntent?.side, "sell");
+    }),
+  );
+});
+
+// ===========================================================================
+// The preflight read on the exit path.
+//
+// The retry that makes this survivable lives in the reconciler (its gateway
+// reads are wrapped in `retryTransientRead`), not here — which is why the
+// bounded-retry assertions are in HyperliquidReconciler.test.ts. What the
+// guard owns is the consequence: when the preflight genuinely cannot answer,
+// no order is sent, and the failure travels as itself rather than as the
+// budget saying no. Live, a 429 on this read refused a close outright and the
+// operator had to retype the exit by hand.
+// ===========================================================================
+
+const refusingReconciler = Layer.succeed(HyperliquidReconciler, {
+  reconcile: () =>
+    Effect.fail(
+      new TradingReconciliationError({
+        reason: "account_read_failed",
+        detail: "HyperliquidRequestError(http_error): clearinghouseState status=429",
+      }),
+    ),
+} as unknown as HyperliquidReconciler["Service"]);
+
+const refusingPreflightLayer = it.layer(
+  TradingExecutionGuardLive.pipe(
+    Layer.provideMerge(stubMissions),
+    Layer.provideMerge(recordingExecution),
+    Layer.provideMerge(refusingReconciler),
+    Layer.provideMerge(stubGateway),
+    Layer.provideMerge(stubInfo),
+    Layer.provideMerge(NodeSqliteClient.layerMemory()),
+  ),
+);
+
+refusingPreflightLayer("TradingExecutionGuard — a preflight that cannot answer", (it) => {
+  it.effect("sends no order, and names the read failure rather than the budget", () =>
+    Effect.gen(function* () {
+      submittedIntent = undefined;
+      const guard = yield* TradingExecutionGuard;
+
+      const error = yield* Effect.flip(guard.reduceOnlySized(reduceInput));
+
+      assert.equal(error._tag, "TradingReconciliationError");
+      if (error._tag !== "TradingReconciliationError") return;
+      assert.equal(error.reason, "account_read_failed");
+      // Nothing reached the exchange: an exit whose preflight did not answer
+      // must not become an exit sized against a position nobody read.
+      assert.equal(submittedIntent, undefined);
     }),
   );
 });

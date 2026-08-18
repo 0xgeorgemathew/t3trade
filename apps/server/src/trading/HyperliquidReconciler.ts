@@ -42,6 +42,7 @@ import {
 import { TradingEventInbox } from "./TradingEventInbox.ts";
 import { recordLevelEvent } from "./TradingLevelHistory.ts";
 import { readTakeProfitOrders } from "./TradingProtectionLedger.ts";
+import { retryTransientRead } from "./RetryTransient.ts";
 
 /** The reconciler failed at a named stage. */
 export class TradingReconciliationError extends Schema.TaggedErrorClass<TradingReconciliationError>()(
@@ -148,7 +149,14 @@ function readCanonicalAccount(
 ): Effect.Effect<CanonicalAccount, TradingReconciliationError, HyperliquidGateway> {
   return Effect.gen(function* () {
     const gateway = yield* HyperliquidGateway;
-    const snapshot = yield* gateway.getAccountSnapshot(input.masterAddress as `0x${string}`).pipe(
+    // A rate limit on this read is not a reason to refuse an exit. The retry
+    // wraps the raw gateway call, before the mapError below: the classifier
+    // reads the exchange's own tag and status, which a
+    // `TradingReconciliationError` no longer carries.
+    const snapshot = yield* retryTransientRead(
+      gateway.getAccountSnapshot(input.masterAddress as `0x${string}`),
+      "reconcile.getAccountSnapshot",
+    ).pipe(
       Effect.mapError(
         (cause) =>
           new TradingReconciliationError({
@@ -200,7 +208,10 @@ function readCanonicalOpenOrders(
 ): Effect.Effect<ReadonlyArray<AgentOpenOrder>, TradingReconciliationError, HyperliquidGateway> {
   return Effect.gen(function* () {
     const gateway = yield* HyperliquidGateway;
-    return yield* gateway.getOpenOrders(input.masterAddress as `0x${string}`).pipe(
+    return yield* retryTransientRead(
+      gateway.getOpenOrders(input.masterAddress as `0x${string}`),
+      "reconcile.getOpenOrders",
+    ).pipe(
       Effect.mapError(
         (cause) =>
           new TradingReconciliationError({
