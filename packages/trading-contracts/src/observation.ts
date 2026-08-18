@@ -92,6 +92,16 @@ export const TRADING_LOOK_MAX_BARS = 200;
 export const TRADING_LOOK_DEFAULT_BARS = 20;
 
 /**
+ * How many book levels a side a look echoes.
+ *
+ * Ten, because that is the depth `microstructure.bookImbalance` scores and
+ * `liquidity.nearDepthUsd` sums — the readings the model is pointed at. The
+ * twenty the gateway returns made the second half of the book a thing nothing
+ * in the response referred to.
+ */
+export const TRADING_LOOK_BOOK_LEVELS = 10;
+
+/**
  * `market` defaults to the mission's own market. A thread with no live mission
  * may still look at a market — the read is the same answer whoever asks — and
  * gets the market half of the observation with `mission.bound: false`.
@@ -163,6 +173,11 @@ export const TradingObservation = Schema.Struct({
   // failed market read costs these fields and nothing else.
   resolvedMarket: Schema.optional(ResolvedMarket),
   snapshot: Schema.optional(AgentMarketSnapshot),
+  /**
+   * The book, bounded to {@link TRADING_LOOK_BOOK_LEVELS} a side — the depth
+   * `microstructure` measures its readings over. Twenty levels rode every
+   * market-scope look and no turn ever quoted one (plan 35 phase 3).
+   */
   orderBook: Schema.optional(OrderBook),
   /**
    * The lookback window the volatility and structure reads were taken over,

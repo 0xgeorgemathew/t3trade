@@ -26,6 +26,7 @@ import {
 } from "@t3tools/trading-contracts/journal";
 import {
   resolveLookScopes,
+  TRADING_LOOK_BOOK_LEVELS,
   TRADING_LOOK_DEFAULT_BARS,
   type TradingLookInput,
   type TradingLookScope,
@@ -870,6 +871,18 @@ const boundCandles = (history: MarketHistory, bars: number): MarketCandleSeries 
 };
 
 /**
+ * The book, bounded to the depth the readings beside it are measured over.
+ *
+ * The gateway returns twenty levels a side and `microstructure` scores ten of
+ * them; the other ten were characters nothing in the response referred to.
+ */
+const boundOrderBook = (book: OrderBook): OrderBook => ({
+  ...book,
+  bids: book.bids.slice(0, TRADING_LOOK_BOOK_LEVELS),
+  asks: book.asks.slice(0, TRADING_LOOK_BOOK_LEVELS),
+});
+
+/**
  * How much of the chart this call gets echoed back — plan 34 step 1.1.
  *
  * A look that named `indicators` said what it wanted read off the bars, and
@@ -933,7 +946,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
     return {
       ...(resolvedMarket === null ? {} : { resolvedMarket }),
       ...(snapshot === null ? {} : { snapshot }),
-      ...(orderBook === null ? {} : { orderBook }),
+      ...(orderBook === null ? {} : { orderBook: boundOrderBook(orderBook) }),
       ...(candles === null || !wantsCandles
         ? {}
         : {
@@ -1010,7 +1023,7 @@ const readMarketHalf = Effect.fn("TradingToolkit.readMarketHalf")(function* (inp
     ...(wantsMarket
       ? {
           snapshot: facts.marketSnapshot,
-          ...(facts.orderBook === null ? {} : { orderBook: facts.orderBook }),
+          ...(facts.orderBook === null ? {} : { orderBook: boundOrderBook(facts.orderBook) }),
           ...(facts.microstructure === null ? {} : { microstructure: facts.microstructure }),
           ...(facts.costContext === null ? {} : { cost: facts.costContext }),
         }
